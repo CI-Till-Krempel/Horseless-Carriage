@@ -1,0 +1,16 @@
+---
+# Declarative repository configuration (placeholders)
+repo:
+  name: horseless-carriage
+  owner: your-org
+  default_branch: main
+  visibility: public
+policy:
+  branch_protection:
+    enabled: true
+    require_reviews: true
+    require_status_checks: false
+  signed_commits: false
+metadata:
+  description: Multi-agent Scrum team orchestrator
+  topics: [agents, scrum, orchestration]

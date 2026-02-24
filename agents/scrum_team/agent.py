@@ -21,6 +21,17 @@ from .tools import (
     add_impediment,
     add_retro_action,
     plan_sprint_backlog_item,
+    git_push,
+    gh_pr_create,
+    gh_release_create,
+    write_file,
+    create_from_template,
+    configure_github_repo,
+    configure_github_app,
+    seed_repository,
+    repo_status,
+    save_state_to_repo,
+    load_state_from_repo,
 )
 
 # --- LiteLLM Proxy wiring ---
@@ -43,7 +54,15 @@ product_owner = LlmAgent(
     model=M("scrum-po"),
     description="Owns product vision/goals, backlog ordering, acceptance criteria, scope tradeoffs.",
     instruction=PO_PROMPT,
-    tools=[init_scrum_state, upsert_backlog_item, set_priority, log_decision],
+    tools=[
+        init_scrum_state,
+        upsert_backlog_item,
+        set_priority,
+        log_decision,
+        create_from_template,
+        write_file,
+        gh_release_create,
+    ],
 )
 
 scrum_master = LlmAgent(
@@ -59,7 +78,16 @@ dev_team = LlmAgent(
     model=M("scrum-dev"),
     description="Plans/estimates/implements stories, owns technical decisions, ensures DoD, creates sprint plan.",
     instruction=DEV_PROMPT,
-    tools=[init_scrum_state, plan_sprint_backlog_item, add_impediment, log_decision],
+    tools=[
+        init_scrum_state,
+        plan_sprint_backlog_item,
+        add_impediment,
+        log_decision,
+        write_file,
+        create_from_template,
+        git_push,
+        gh_pr_create,
+    ],
 )
 
 qa_agent = LlmAgent(
@@ -82,8 +110,22 @@ architect = LlmAgent(
 root_agent = LlmAgent(
     name="ScrumOrchestrator",
     model=M("scrum-orchestrator"),
-    description="Routes requests within Scrum team and maintains shared artifacts in session.state.",
+    description="Routes requests within Scrum team and maintains shared artifacts in session.state and the configured GitHub repo.",
     instruction=ORCHESTRATOR_PROMPT,
-    tools=[init_scrum_state, log_decision],
+    tools=[
+        init_scrum_state,
+        log_decision,
+        configure_github_repo,
+        configure_github_app,
+        seed_repository,
+        repo_status,
+        save_state_to_repo,
+        load_state_from_repo,
+        git_push,
+        gh_pr_create,
+        gh_release_create,
+        write_file,
+        create_from_template,
+    ],
     sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect],
 )

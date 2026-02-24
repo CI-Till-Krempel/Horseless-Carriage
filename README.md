@@ -72,3 +72,60 @@ Exactly how you *run* the agent depends on the host app / runner you plug it int
 
 - If `LITELLM_PROXY_API_BASE` is set, the agents assume “proxy mode” and use LiteLLM via the proxy endpoint.
 - Keep your `.env` local and never commit real API keys.
+
+## Repository documentation structure
+
+This repo includes a first-class docs workspace under `docs/` to keep requirements, architecture, stories, and agentic workflows versioned with code:
+
+- `docs/requirements/`
+  - `README.md` — guidance and index
+  - `TEMPLATE-PRD.md` — Product Requirements Document template
+  - `TEMPLATE-SRS.md` — Software Requirements Specification template
+- `docs/architecture/`
+  - `README.md` — guidance and index
+  - `TEMPLATE-ADR.md` — Architecture Decision Record template
+- `docs/stories/`
+  - `README.md` — guidance and index
+  - `TEMPLATE-USER-STORY.md` — user story template
+- `docs/workflows/`
+  - `README.md` — guidance and index
+  - `TEMPLATE-AGENT-WORKFLOW.md` — agentic workflow/runbook template
+
+Contribution rules
+- One artifact per file; keep them small and link related docs together
+- Update docs in the same PR as the related code when possible
+- Never commit real secrets — use placeholders, keep real values in your local `.env`
+
+## GitHub integration and repository configuration
+
+This project ships with a minimal GitHub setup you can adopt:
+
+- `.github/workflows/ci.yml` — basic CI installing dependencies
+- `.github/ISSUE_TEMPLATE/` — bug report and feature request templates
+- `.github/PULL_REQUEST_TEMPLATE.md` — PR checklist emphasizing documentation updates
+- `.github/CODEOWNERS` — placeholder ownership (edit to your team)
+- `config/github_config.yaml` — declarative repository policy placeholders (e.g., branch protection)
+
+Authentication and configuration
+1) Copy `.env.example` to `.env` and fill placeholders (do not commit real secrets):
+
+- `GITHUB_OWNER` — org or username that owns the repo
+- `GITHUB_REPO` — repository name
+- `GITHUB_TOKEN` — a GitHub Personal Access Token with `repo` scope (for automation or local scripts)
+- `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` — used by scripts/commits as needed
+- Optional policy toggles: `DEFAULT_BRANCH`, `ENABLE_BRANCH_PROTECTION`, `REQUIRE_SIGNED_COMMITS`
+
+2) Create or connect a GitHub repository:
+
+- Using CLI (example):
+  - `git init`
+  - `git remote add origin git@github.com:<GITHUB_OWNER>/<GITHUB_REPO>.git`
+  - `git add . && git commit -m "chore: init repo with docs + CI"`
+  - `git push -u origin main`
+
+3) Adjust CODEOWNERS, issue templates, and CI as you see fit. For Python lint/test, extend `ci.yml` with your tools (e.g., `ruff`, `pytest`).
+
+Security notes
+- Store tokens only locally in `.env` or a secure secret manager
+- For GitHub Actions secrets, add them in the repository settings under Secrets and variables → Actions (e.g., `OPENAI_API_KEY` if runners need it)
+

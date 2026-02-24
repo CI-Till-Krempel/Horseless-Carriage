@@ -2,6 +2,15 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+import os
+import json
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+import jwt
+import requests
 
 DEFAULT_DOD = [
     "Code reviewed",
@@ -14,6 +23,7 @@ DEFAULT_DOD = [
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     """
     Initialize all Scrum artifacts in session.state if missing.
+    If a repo is configured and a state file exists, load it.
     """
     s = tool_context.state
 
@@ -26,6 +36,15 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("impediment_log", [])           # list[dict]
     s.setdefault("retro_actions", [])            # list[dict]
     s.setdefault("decision_log", [])             # list[dict]
+
+    # Try to load from repo if present
+    try:
+        repo_root = _configured_repo_root(tool_context)
+        fp = _state_file_path(repo_root)
+        if fp.exists():
+            _ = load_state_from_repo(tool_context)
+    except Exception:
+        pass
 
     return {"status": "ok", "initialized": True}
 
@@ -41,6 +60,7 @@ def log_decision(title: str, decision: str, rationale: str, owner: str, tool_con
         "owner": owner.strip(),
     }
     s["decision_log"] = list(s.get("decision_log", [])) + [entry]
+    _ = save_state_to_repo(tool_context)
     return {"status": "ok", "decision": entry}
 
 def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
@@ -62,10 +82,12 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
         if matches(x):
             backlog[i] = {**x, **item}
             s["product_backlog"] = backlog
+            _ = save_state_to_repo(tool_context)
             return {"status": "ok", "updated": True, "item": backlog[i]}
 
     backlog.append(item)
     s["product_backlog"] = backlog
+    _ = save_state_to_repo(tool_context)
     return {"status": "ok", "updated": False, "item": item}
 
 def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str, Any]:
@@ -79,6 +101,7 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
         if x.get("id") == title_or_id or x.get("title") == title_or_id:
             x["priority"] = priority
             s["product_backlog"] = backlog
+            _ = save_state_to_repo(tool_context)
             return {"status": "ok", "item": x}
 
     return {"status": "error", "message": "Item not found."}
@@ -90,6 +113,7 @@ def add_impediment(description: str, owner: str, tool_context=None) -> Dict[str,
     s = tool_context.state
     imp = {"description": description.strip(), "owner": owner.strip(), "status": "open"}
     s["impediment_log"] = list(s.get("impediment_log", [])) + [imp]
+    _ = save_state_to_repo(tool_context)
     return {"status": "ok", "impediment": imp}
 
 def add_retro_action(action: str, owner: str, success_metric: str, tool_context=None) -> Dict[str, Any]:
@@ -104,6 +128,7 @@ def add_retro_action(action: str, owner: str, success_metric: str, tool_context=
         "status": "open",
     }
     s["retro_actions"] = list(s.get("retro_actions", [])) + [entry]
+    _ = save_state_to_repo(tool_context)
     return {"status": "ok", "retro_action": entry}
 
 def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
@@ -124,9 +149,434 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
         if x.get("id") == key or x.get("title") == key:
             sprint[i] = {**x, **plan}
             s["sprint_backlog"] = sprint
+            _ = save_state_to_repo(tool_context)
             return {"status": "ok", "updated": True, "item": sprint[i]}
 
     entry = {"title": key, **plan}
     sprint.append(entry)
     s["sprint_backlog"] = sprint
+    _ = save_state_to_repo(tool_context)
     return {"status": "ok", "updated": False, "item": entry}
+
+# -------------------------
+# Repo selection and state persistence helpers
+# -------------------------
+
+REPO_STATE_KEYS = [
+    "product_vision",
+    "product_goals",
+    "product_backlog",
+    "definition_of_done",
+    "sprint_goal",
+    "sprint_backlog",
+    "impediment_log",
+    "retro_actions",
+    "decision_log",
+]
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _configured_repo_root(tool_context=None) -> Path:
+    """
+    Determine which repository directory to operate in.
+    Preference order:
+    - tool_context.state['repo']['local_path'] if present
+    - current project root (fallback)
+    """
+    try:
+        if tool_context and getattr(tool_context, "state", None):
+            repo_cfg = tool_context.state.get("repo", {}) or {}
+            p = repo_cfg.get("local_path")
+            if p:
+                return Path(p).expanduser().resolve()
+    except Exception:
+        pass
+    return _project_root()
+
+
+def _state_file_path(repo_root: Path) -> Path:
+    return (repo_root / ".hc" / "state.json").resolve()
+
+
+def save_state_to_repo(tool_context=None) -> Dict[str, Any]:
+    """
+    Persist selected scrum state keys into the configured repo under .hc/state.json.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    try:
+        repo_root.mkdir(parents=True, exist_ok=True)
+        state_dir = repo_root / ".hc"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        snapshot = {k: tool_context.state.get(k) for k in REPO_STATE_KEYS}
+        _state_file_path(repo_root).write_text(json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8")
+        return {"status": "ok", "path": str(_state_file_path(repo_root))}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def load_state_from_repo(tool_context=None) -> Dict[str, Any]:
+    """
+    Load previously persisted scrum state from .hc/state.json into session.state (upsert/merge).
+    """
+    repo_root = _configured_repo_root(tool_context)
+    fp = _state_file_path(repo_root)
+    if not fp.exists():
+        return {"status": "error", "message": f"State file not found: {fp}"}
+    try:
+        data = json.loads(fp.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {"status": "error", "message": "Invalid state format in state.json"}
+        for k, v in data.items():
+            tool_context.state[k] = v
+        return {"status": "ok", "loaded_keys": list(data.keys())}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def configure_github_repo(repo_url: str, local_path: str = "", default_branch: str = "main", tool_context=None) -> Dict[str, Any]:
+    """
+    Configure the GitHub repository used for persistence and tooling.
+    - repo_url: SSH or HTTPS URL
+    - local_path: optional existing checkout or desired clone path. If empty, will use project_root/source/state_repo
+    - default_branch: branch used for pushes/releases by default
+    This will clone the repo if local_path does not exist.
+    """
+    proj_root = _project_root()
+    target_dir = Path(local_path).expanduser() if local_path else (proj_root / "source" / "state_repo")
+    target_dir = target_dir.resolve()
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    # If the directory is not a git repo, attempt clone
+    if not (target_dir / ".git").exists():
+        # Best effort: clone
+        try:
+            result = _run(["git", "clone", repo_url, str(target_dir)], cwd=str(proj_root))
+            if result.get("status") == "error":
+                return {"status": "error", "message": f"Clone failed: {result.get('stderr') or result.get('message')}", "details": result}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
+    # Save config into session.state
+    repo_cfg = {
+        "url": repo_url,
+        "local_path": str(target_dir),
+        "default_branch": default_branch,
+    }
+    tool_context.state["repo"] = repo_cfg
+    return {"status": "ok", "repo": repo_cfg}
+
+
+def configure_github_app(app_id: str, private_key: str, installation_id: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Configure and authenticate using a GitHub App installation.
+    - app_id: The ID of the GitHub App
+    - private_key: The content of the App's private key (.pem)
+    - installation_id: The installation ID for the target repository/org
+    This tool generates an installation token and stores it in session.state['github_token'].
+    """
+    # 1. Create a JWT for the GitHub App
+    now = int(time.time())
+    payload = {
+        "iat": now - 60,
+        "exp": now + (10 * 60),
+        "iss": app_id,
+    }
+    try:
+        encoded_jwt = jwt.encode(payload, private_key, algorithm="RS256")
+    except Exception as e:
+        return {"status": "error", "message": f"JWT encoding failed: {e}"}
+
+    # 2. Get an installation access token
+    headers = {
+        "Authorization": f"Bearer {encoded_jwt}",
+        "Accept": "application/vnd.github+json",
+    }
+    url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
+    try:
+        resp = requests.post(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        token_data = resp.json()
+        token = token_data.get("token")
+        if not token:
+            return {"status": "error", "message": "Failed to retrieve token from GitHub API"}
+
+        # Store in state
+        tool_context.state["github_app"] = {
+            "app_id": app_id,
+            "private_key": private_key,
+            "installation_id": installation_id,
+            "expires_at": token_data.get("expires_at"),
+        }
+        tool_context.state["github_token"] = token
+        return {"status": "ok", "message": "GitHub App authenticated successfully", "expires_at": token_data.get("expires_at")}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to get installation token: {e}"}
+
+
+def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
+    """
+    Copy the docs/ directory from the current project into the configured target repo,
+    and create a product-specific README.md.
+    Then performs an initial commit and push.
+    - overwrite: If True, existing files in the target will be replaced.
+    """
+    proj_root = _project_root()
+    repo_root = _configured_repo_root(tool_context)
+    if repo_root == proj_root:
+        return {"status": "error", "message": "The configured target repository is the same as the project root. Seeding is not allowed here."}
+
+    # Ensure target exists
+    repo_root.mkdir(parents=True, exist_ok=True)
+    files_seeded = []
+
+    try:
+        # Create/Update README.md
+        dst_readme = repo_root / "README.md"
+        if not dst_readme.exists() or overwrite:
+            # Try to build a README from session.state
+            vision = tool_context.state.get("product_vision", "").strip()
+            goals = tool_context.state.get("product_goals", [])
+            
+            content = ""
+            if vision:
+                content = f"# Product Vision\n\n{vision}\n"
+            else:
+                content = "# Project README\n\nWelcome to your new project repository.\n"
+            
+            if goals:
+                content += "\n## Product Goals\n"
+                for g in goals:
+                    content += f"- {g}\n"
+            
+            content += "\n## Documentation\nSee [docs/README.md](docs/README.md) for details on the repository structure.\n"
+            
+            dst_readme.write_text(content, encoding="utf-8")
+            files_seeded.append("README.md")
+
+        # Copy docs/ directory
+        src_docs = proj_root / "docs"
+        dst_docs = repo_root / "docs"
+        if src_docs.exists():
+            if not dst_docs.exists():
+                shutil.copytree(src_docs, dst_docs)
+                files_seeded.append("docs/")
+            elif overwrite:
+                # Merge docs/ or clear and copy
+                shutil.rmtree(dst_docs)
+                shutil.copytree(src_docs, dst_docs)
+                files_seeded.append("docs/ (overwritten)")
+
+        # Initial commit and push
+        if files_seeded:
+            push_res = git_push(
+                branch="main", # default to main for seeding
+                commit_message="chore: initial seed of README and docs",
+                add_all=True,
+                tool_context=tool_context
+            )
+            return {"status": "ok", "seeded": files_seeded, "push": push_res}
+
+        return {"status": "ok", "message": "No new files seeded.", "seeded": []}
+    except Exception as e:
+        return {"status": "error", "message": f"Seeding failed: {e}"}
+
+
+def repo_status(tool_context=None) -> Dict[str, Any]:
+    """
+    Return detected repo configuration and quick diagnostics.
+    """
+    cfg = (tool_context.state.get("repo") if tool_context and getattr(tool_context, "state", None) else None) or {}
+    root = _configured_repo_root(tool_context)
+    diagnostics = {
+        "exists": root.exists(),
+        "git_dir": (root / ".git").exists(),
+    }
+
+    # Check identity
+    token = tool_context.state.get("github_token")
+    if token:
+        diagnostics["auth_method"] = "GitHub App (Token)"
+        # Identify who we are
+        who = _run(["gh", "api", "user"], cwd=str(root), tool_context=tool_context)
+        if who.get("status") == "ok":
+            try:
+                user_data = json.loads(who["stdout"])
+                diagnostics["identity"] = user_data.get("login")
+            except Exception:
+                pass
+    else:
+        diagnostics["auth_method"] = "Personal Account (gh CLI)"
+        # Try gh auth status (non-fatal)
+        gh = _run(["gh", "auth", "status"], cwd=str(root), tool_context=tool_context)
+        diagnostics["gh_auth_ok"] = (gh.get("returncode") == 0)
+
+    return {"status": "ok", "config": cfg, "repo_root": str(root), "diagnostics": diagnostics}
+
+
+# -------------------------
+# Git/GitHub integration
+# -------------------------
+
+def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Run a shell command non-interactively and capture output.
+    Injects GH_TOKEN if present in session.state.
+    """
+    env = os.environ.copy()
+    if tool_context and getattr(tool_context, "state", None):
+        token = tool_context.state.get("github_token")
+        if token:
+            env["GH_TOKEN"] = token
+            env["GITHUB_TOKEN"] = token
+            # Also configure git to use the token for HTTPS
+            # (only if we have a repo config with an HTTPS URL)
+            repo_cfg = tool_context.state.get("repo", {})
+            if repo_cfg.get("url", "").startswith("https://"):
+                _ = subprocess.run(
+                    ["git", "config", "http.https://github.com/.extraheader", f"AUTHORIZATION: basic {token}"],
+                    cwd=cwd or str(_project_root()),
+                    env=env,
+                    capture_output=True
+                )
+
+    try:
+        p = subprocess.run(
+            cmd,
+            cwd=cwd or str(_project_root()),
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+        return {
+            "status": "ok" if p.returncode == 0 else "error",
+            "returncode": p.returncode,
+            "stdout": p.stdout.strip(),
+            "stderr": p.stderr.strip(),
+            "cmd": cmd,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e), "cmd": cmd}
+
+
+def git_push(branch: str, commit_message: str = "chore: update", add_all: bool = True, tool_context=None) -> Dict[str, Any]:
+    """
+    Stage changes (optionally), commit, and push the current working tree to the given branch.
+    Non-interactive; returns command outputs.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+
+    # Ensure branch exists locally
+    _ = _run(["git", "checkout", "-B", branch], cwd=repo_root)
+
+    if add_all:
+        r1 = _run(["git", "add", "-A"], cwd=repo_root)
+        if r1.get("status") == "error":
+            return r1
+    r2 = _run(["git", "commit", "-m", commit_message], cwd=repo_root)
+    # Allow empty commit to ensure branch gets pushed
+    if r2.get("returncode") != 0:
+        # Try creating an empty commit when nothing to commit
+        if "nothing to commit" in (r2.get("stderr") or "") + (r2.get("stdout") or ""):
+            r2 = _run(["git", "commit", "--allow-empty", "-m", commit_message], cwd=repo_root)
+        # If still failing, continue to push in case branch update is desired
+    r3 = _run(["git", "push", "-u", "origin", branch], cwd=repo_root)
+
+    return {"status": "ok" if r3.get("status") == "ok" else "error", "steps": {"checkout": _, "add": r1 if add_all else None, "commit": r2, "push": r3}}
+
+
+def gh_pr_create(title: str, body: str = "", base: str = "main", head: str | None = None, draft: bool = False, tool_context=None) -> Dict[str, Any]:
+    """
+    Create a Pull Request using `gh` CLI. Assumes authentication is set up.
+    - base: target branch (e.g., main)
+    - head: source branch (defaults to current if None)
+    - draft: open PR as draft
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    cmd = ["gh", "pr", "create", "--base", base, "--title", title]
+    if body:
+        cmd += ["--body", body]
+    if head:
+        cmd += ["--head", head]
+    if draft:
+        cmd += ["--draft"]
+    r = _run(cmd, cwd=repo_root)
+    return r
+
+
+def gh_release_create(tag: str, title: str | None = None, notes: str | None = None, generate_notes: bool = False, draft: bool = False, prerelease: bool = False, tool_context=None) -> Dict[str, Any]:
+    """
+    Create a GitHub release using `gh release create`.
+    - tag: version tag (e.g., v0.1.0)
+    - title: optional release title
+    - notes: optional release notes text
+    - generate_notes: if True, let GitHub auto-generate notes
+    - draft/prerelease flags supported
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    cmd = ["gh", "release", "create", tag]
+    if title:
+        cmd += ["--title", title]
+    if notes:
+        cmd += ["--notes", notes]
+    if generate_notes:
+        cmd += ["--generate-notes"]
+    if draft:
+        cmd += ["--draft"]
+    if prerelease:
+        cmd += ["--prerelease"]
+    r = _run(cmd, cwd=repo_root)
+    return r
+
+# -------------------------
+# Documentation from templates
+# -------------------------
+
+def write_file(path: str, content: str, overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
+    """
+    Write content to a repository-relative file path.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    abs_path = (repo_root / path).resolve()
+    try:
+        abs_path.parent.mkdir(parents=True, exist_ok=True)
+        if abs_path.exists() and not overwrite:
+            return {"status": "error", "message": f"File exists: {path}"}
+        abs_path.write_text(content, encoding="utf-8")
+        return {"status": "ok", "path": str(abs_path)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def create_from_template(template_path: str, destination_path: str, substitutions_json: str = "{}", overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
+    """
+    Create a documentation file from a template under docs/.
+    - template_path: path relative to repo root (e.g., docs/requirements/TEMPLATE-PRD.md)
+    - destination_path: output file path relative to repo root
+    - substitutions_json: JSON dict of placeholder -> value. Placeholders formatted as <KEY> in template.
+    - overwrite: whether to overwrite existing file
+    """
+    repo_root = _configured_repo_root(tool_context)
+    src = (repo_root / template_path).resolve()
+    dst = (repo_root / destination_path).resolve()
+    try:
+        if not src.exists():
+            return {"status": "error", "message": f"Template not found: {template_path}"}
+        raw = src.read_text(encoding="utf-8")
+        try:
+            subs: Dict[str, Any] = json.loads(substitutions_json or "{}")
+        except json.JSONDecodeError as e:
+            return {"status": "error", "message": f"Invalid JSON: {e}"}
+        text = raw
+        for k, v in subs.items():
+            text = text.replace(f"<{k}>", str(v))
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if dst.exists() and not overwrite:
+            return {"status": "error", "message": f"File exists: {destination_path}"}
+        dst.write_text(text, encoding="utf-8")
+        return {"status": "ok", "path": str(dst)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

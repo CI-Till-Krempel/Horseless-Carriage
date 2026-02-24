@@ -4,14 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
-      <change afterPath="$PROJECT_DIR$/agents/__init__.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/agents/agent.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/Horseless-Carriage.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/Horseless-Carriage.iml" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup">
+      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docker-compose.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -61,6 +60,7 @@
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "junie.application.models",
     "to.speed.mode.migration.done": "true",
     "vue.rearranger.settings.migration": "true"
   }
@@ -88,7 +88,8 @@
       <option name="presentableId" value="Default" />
       <updated>1771592552726</updated>
       <workItem from="1771592553774" duration="2000" />
-      <workItem from="1771925524607" duration="3464000" />
+      <workItem from="1771925524607" duration="4149000" />
+      <workItem from="1771939517531" duration="1984000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -98,7 +99,15 @@
       <option name="project" value="LOCAL" />
       <updated>1771594284096</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup">
+      <option name="closed" value="true" />
+      <created>1771929253766</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1771929253766</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -106,6 +115,8 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Add .idea to .gitignore; enhance README with detailed setup and usage instructions" />
-    <option name="LAST_COMMIT_MESSAGE" value="Add .idea to .gitignore; enhance README with detailed setup and usage instructions" />
+    <MESSAGE value="Refactor agent imports, enhance `litellm.yaml` with Gemini models, and update Docker setup for optional local LLM support." />
+    <MESSAGE value="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup" />
+    <option name="LAST_COMMIT_MESSAGE" value="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup" />
   </component>
 </project>
