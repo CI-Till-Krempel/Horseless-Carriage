@@ -1,27 +1,51 @@
 model_list:
+  # -----------------------------
+  # ACTIVE NOW: Gemini deployments
+  # -----------------------------
   - model_name: scrum-orchestrator
     litellm_params:
-      model: openai/gpt-4o-mini
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: scrum-po
     litellm_params:
-      model: openai/gpt-4o
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: scrum-sm
     litellm_params:
-      model: openai/gpt-4o-mini
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: scrum-dev
     litellm_params:
-      model: anthropic/claude-3-5-sonnet-20240620
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: scrum-qa
     litellm_params:
-      model: anthropic/claude-3-haiku-20240307
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
 
   - model_name: scrum-arch
     litellm_params:
-      model: openai/gpt-4o
+      model: gemini/gemini-2.5-pro
+      api_key: os.environ/GOOGLE_API_KEY
 
+  # -----------------------------------------
+  # READY FOR LATER: Local LLMs via Ollama
+  # (uncomment when you add ollama service)
+  # -----------------------------------------
+  # - model_name: local-dev
+  #   litellm_params:
+  #     model: ollama/llama3.1
+  #     api_base: http://ollama:11434
+  #
+  # - model_name: local-fast
+  #   litellm_params:
+  #     model: ollama/qwen2.5
+  #     api_base: http://ollama:11434
+
+# Optional: master_key für Auth auf dem Proxy
 # general_settings:
-#   master_key: "MY_LITELLM_MASTER_KEY"
+#   master_key: os.environ/LITELLM_MASTER_KEY

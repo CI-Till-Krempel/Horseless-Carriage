@@ -55,7 +55,7 @@ The repo includes a Docker Compose setup for a local LiteLLM proxy that exposes 
 
 Start the proxy:
 
-bash docker compose up
+docker compose up
 
 - Proxy listens on: `http://localhost:4000`
 - Model aliases are defined in `litellm.yaml` (e.g. `scrum-orchestrator`, `scrum-po`, `scrum-dev`, ...)

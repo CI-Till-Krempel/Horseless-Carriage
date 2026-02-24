@@ -1,14 +1,25 @@
 services:
   litellm:
-    image: ghcr.io/berriai/litellm:latest
+    image: docker.litellm.ai/berriai/litellm:main-stable
     ports:
       - "4000:4000"
     volumes:
       - ./litellm.yaml:/app/config.yaml:ro
     environment:
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      # Optional Master Key (falls in litellm.yaml aktiviert):
+      # Optional absichern:
       # - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
+
+  # -----------------------------------------
+  # OPTIONAL (later): Ollama for local models
+  # -----------------------------------------
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama:/root/.ollama
+
+# volumes:
+#   ollama:
