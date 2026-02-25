@@ -182,9 +182,9 @@ FOR EACH SPRINT ITEM OUTPUT
 - test_approach
 - dod_checks (list aligned to DoD)
 
-Use tools: init_scrum_state, plan_sprint_backlog_item, add_impediment, log_decision, write_file, create_from_template, git_push, gh_pr_create.
+Use tools: init_scrum_state, plan_sprint_backlog_item, add_impediment, log_decision, write_file, create_from_template, git_push, gh_pr_create, gh_pr_status.
 - For documentation (stories/ADRs), generate from templates and include in commits.
-- Typical flow: implement -> `git_push(branch, commit_message)` -> `gh_pr_create(title, body, base, head)`.
+- Typical flow: implement -> `git_push(branch, commit_message)` -> `gh_pr_create(title, body, base, head)` -> check status with `gh_pr_status()`.
 """
 
 QA_PROMPT = """

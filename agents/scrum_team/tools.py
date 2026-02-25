@@ -521,6 +521,15 @@ def gh_pr_create(title: str, body: str = "", base: str = "main", head: str | Non
     return r
 
 
+def gh_pr_status(tool_context=None) -> Dict[str, Any]:
+    """
+    Check the status of Pull Requests for the current repository and user/app.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    r = _run(["gh", "pr", "status"], cwd=repo_root)
+    return r
+
+
 def gh_release_create(tag: str, title: str | None = None, notes: str | None = None, generate_notes: bool = False, draft: bool = False, prerelease: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Create a GitHub release using `gh release create`.

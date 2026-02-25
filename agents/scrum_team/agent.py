@@ -23,6 +23,7 @@ from .tools import (
     plan_sprint_backlog_item,
     git_push,
     gh_pr_create,
+    gh_pr_status,
     gh_release_create,
     write_file,
     create_from_template,
@@ -102,6 +103,7 @@ dev_team = LlmAgent(
         create_from_template,
         git_push,
         gh_pr_create,
+        gh_pr_status,
     ],
 )
 
@@ -138,6 +140,7 @@ root_agent = LlmAgent(
         load_state_from_repo,
         git_push,
         gh_pr_create,
+        gh_pr_status,
         gh_release_create,
         write_file,
         create_from_template,
