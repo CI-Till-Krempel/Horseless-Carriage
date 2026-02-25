@@ -530,6 +530,68 @@ def gh_pr_status(tool_context=None) -> Dict[str, Any]:
     return r
 
 
+def gh_pr_checks(pr_id: str | int | None = None, watch: bool = False, interval: int = 10, tool_context=None) -> Dict[str, Any]:
+    """
+    Check if the PR checks (CI) are passing.
+    - pr_id: optional PR number, URL, or branch. If None, uses current branch.
+    - watch: if True, waits until all checks finish (blocking).
+    - interval: refresh interval in seconds for watch mode.
+    Returns status: "ok" (passing or no checks), "pending", or "error" (failing).
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    cmd = ["gh", "pr", "checks"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    
+    # Check if we should watch the checks
+    if watch:
+        cmd.append("--watch")
+        if interval:
+            cmd.append("--interval")
+            cmd.append(str(interval))
+    
+    cmd.append("--json")
+    cmd.append("state,bucket")
+
+    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    
+    # If command failed, check why. 
+    # gh pr checks returns non-zero if checks are failing or pending.
+    # Exit code 8 means checks pending.
+    
+    if r.get("status") == "error":
+        stderr = r.get("stderr", "")
+        stdout = r.get("stdout", "")
+        # No checks case
+        if "no checks reported" in stderr.lower() or "no checks reported" in stdout.lower():
+            return {"status": "ok", "passing": True, "message": "No checks defined.", "details": r}
+        
+        # Pending case (exit code 8)
+        if r.get("returncode") == 8:
+            return {"status": "pending", "passing": False, "message": "Checks are pending.", "details": r}
+            
+        return {"status": "error", "passing": False, "message": "Checks are failing or another error occurred.", "details": r}
+
+    # If status is "ok", it means gh command succeeded.
+    # We should still parse JSON to be sure.
+    try:
+        checks = json.loads(r["stdout"])
+        if not checks:
+            return {"status": "ok", "passing": True, "message": "No checks found.", "details": r}
+        
+        all_passing = all(c.get("bucket") == "pass" for c in checks)
+        if all_passing:
+            return {"status": "ok", "passing": True, "message": "All checks passing.", "checks": checks}
+        else:
+            # Check if any are pending in the list
+            if any(c.get("bucket") == "pending" for c in checks):
+                return {"status": "pending", "passing": False, "message": "Some checks are pending.", "checks": checks}
+            return {"status": "error", "passing": False, "message": "Some checks failed.", "checks": checks}
+    except Exception as e:
+        # Fallback if JSON parsing fails but command succeeded
+        return {"status": "ok", "passing": True, "message": f"Checks command succeeded but output parsing failed: {e}", "details": r}
+
+
 def gh_release_create(tag: str, title: str | None = None, notes: str | None = None, generate_notes: bool = False, draft: bool = False, prerelease: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Create a GitHub release using `gh release create`.
@@ -676,8 +738,8 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     estimates = s.get("story_estimates", {})
     if estimates:
         report += "\n## Story Estimates (Tokens)\n"
-        for story, estimate in estimates.items():
-            report += f"- {story}: {estimate}\n"
+        for story_id, estimate in estimates.items():
+            report += f"- {story_id}: {estimate}\n"
 
     s["sprint_report"] = report
     _ = save_state_to_repo(tool_context)

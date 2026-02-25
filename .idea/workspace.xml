@@ -4,10 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup">
-      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add `gh_pr_status` tool for checking pull request status and update related workflows">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools.py" afterDir="false" />
@@ -89,7 +87,7 @@
       <updated>1771592552726</updated>
       <workItem from="1771592553774" duration="2000" />
       <workItem from="1771925524607" duration="4149000" />
-      <workItem from="1771939517531" duration="1984000" />
+      <workItem from="1771939517531" duration="17432000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -107,7 +105,31 @@
       <option name="project" value="LOCAL" />
       <updated>1771929253766</updated>
     </task>
-    <option name="localTasksCounter" value="3" />
+    <task id="LOCAL-00003" summary="Add GitHub config, issue/pr templates, state persistence, and documentation scaffolding">
+      <option name="closed" value="true" />
+      <created>1771944647526</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1771944647526</updated>
+    </task>
+    <task id="LOCAL-00004" summary="Implement budgeting and sprint reporting tools in Scrum Team agents">
+      <option name="closed" value="true" />
+      <created>1772022713358</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1772022713358</updated>
+    </task>
+    <task id="LOCAL-00005" summary="Add `gh_pr_status` tool for checking pull request status and update related workflows">
+      <option name="closed" value="true" />
+      <created>1772023206877</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1772023206877</updated>
+    </task>
+    <option name="localTasksCounter" value="6" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -117,6 +139,11 @@
     <MESSAGE value="Add .idea to .gitignore; enhance README with detailed setup and usage instructions" />
     <MESSAGE value="Refactor agent imports, enhance `litellm.yaml` with Gemini models, and update Docker setup for optional local LLM support." />
     <MESSAGE value="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup" />
-    <option name="LAST_COMMIT_MESSAGE" value="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup" />
+    <MESSAGE value="Add GitHub configuration, issue/PR templates, and comprehensive docs workspace" />
+    <MESSAGE value="Add GitHub templates, project configuration, and documentation skeleton-&#10;&#10;" />
+    <MESSAGE value="Add GitHub config, issue/pr templates, state persistence, and documentation scaffolding" />
+    <MESSAGE value="Implement budgeting and sprint reporting tools in Scrum Team agents" />
+    <MESSAGE value="Add `gh_pr_status` tool for checking pull request status and update related workflows" />
+    <option name="LAST_COMMIT_MESSAGE" value="Add `gh_pr_status` tool for checking pull request status and update related workflows" />
   </component>
 </project>

@@ -24,6 +24,7 @@ from .tools import (
     git_push,
     gh_pr_create,
     gh_pr_status,
+    gh_pr_checks,
     gh_release_create,
     write_file,
     create_from_template,
@@ -86,6 +87,8 @@ scrum_master = LlmAgent(
         update_budgets,
         get_budget_status,
         log_token_usage,
+        gh_pr_status,
+        gh_pr_checks,
     ],
 )
 
@@ -104,6 +107,7 @@ dev_team = LlmAgent(
         git_push,
         gh_pr_create,
         gh_pr_status,
+        gh_pr_checks,
     ],
 )
 
@@ -141,6 +145,7 @@ root_agent = LlmAgent(
         git_push,
         gh_pr_create,
         gh_pr_status,
+        gh_pr_checks,
         gh_release_create,
         write_file,
         create_from_template,
