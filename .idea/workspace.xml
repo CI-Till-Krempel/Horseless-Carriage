@@ -4,11 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add `gh_pr_status` tool for checking pull request status and update related workflows">
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add `gh_pr_checks` tool to verify PR CI status, update prompts, and enhance workflow integration">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -87,7 +88,7 @@
       <updated>1771592552726</updated>
       <workItem from="1771592553774" duration="2000" />
       <workItem from="1771925524607" duration="4149000" />
-      <workItem from="1771939517531" duration="17432000" />
+      <workItem from="1771939517531" duration="20607000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -129,7 +130,15 @@
       <option name="project" value="LOCAL" />
       <updated>1772023206877</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL-00006" summary="Add `gh_pr_checks` tool to verify PR CI status, update prompts, and enhance workflow integration">
+      <option name="closed" value="true" />
+      <created>1772030033918</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1772030033918</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -144,6 +153,7 @@
     <MESSAGE value="Add GitHub config, issue/pr templates, state persistence, and documentation scaffolding" />
     <MESSAGE value="Implement budgeting and sprint reporting tools in Scrum Team agents" />
     <MESSAGE value="Add `gh_pr_status` tool for checking pull request status and update related workflows" />
-    <option name="LAST_COMMIT_MESSAGE" value="Add `gh_pr_status` tool for checking pull request status and update related workflows" />
+    <MESSAGE value="Add `gh_pr_checks` tool to verify PR CI status, update prompts, and enhance workflow integration" />
+    <option name="LAST_COMMIT_MESSAGE" value="Add `gh_pr_checks` tool to verify PR CI status, update prompts, and enhance workflow integration" />
   </component>
 </project>

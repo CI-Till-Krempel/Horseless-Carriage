@@ -47,5 +47,6 @@ model_list:
   #     api_base: http://ollama:11434
 
 # Optional: master_key für Auth auf dem Proxy
-# general_settings:
+general_settings:
+  num_retries: 3
 #   master_key: os.environ/LITELLM_MASTER_KEY

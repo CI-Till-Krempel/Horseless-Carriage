@@ -539,16 +539,25 @@ def gh_pr_checks(pr_id: str | int | None = None, watch: bool = False, interval: 
     Returns status: "ok" (passing or no checks), "pending", or "error" (failing).
     """
     repo_root = str(_configured_repo_root(tool_context))
+
+    # If watch is True, we first wait using `gh pr checks --watch`
+    # and then we call it again with --json to get the results.
+    if watch:
+        watch_cmd = ["gh", "pr", "checks"]
+        if pr_id:
+            watch_cmd.append(str(pr_id))
+        watch_cmd.append("--watch")
+        if interval:
+            watch_cmd.append("--interval")
+            watch_cmd.append(str(interval))
+        
+        # We don't use --json with --watch as they are incompatible
+        _ = _run(watch_cmd, cwd=repo_root, tool_context=tool_context)
+        # After watch finishes, we proceed to get JSON results.
+
     cmd = ["gh", "pr", "checks"]
     if pr_id:
         cmd.append(str(pr_id))
-    
-    # Check if we should watch the checks
-    if watch:
-        cmd.append("--watch")
-        if interval:
-            cmd.append("--interval")
-            cmd.append(str(interval))
     
     cmd.append("--json")
     cmd.append("state,bucket")

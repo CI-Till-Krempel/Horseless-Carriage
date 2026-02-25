@@ -1,8 +1,12 @@
 # agents/scrum_team/agent.py
 import os
+from typing import Optional, Union, Dict, Any
 
 import litellm
-from google.adk.agents.llm_agent import LlmAgent
+from google.genai import types
+from google.adk.agents.llm_agent import LlmAgent, CallbackContext
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
 from google.adk.models.lite_llm import LiteLlm
 
 from .prompts import (
@@ -48,6 +52,9 @@ if os.getenv("LITELLM_PROXY_API_BASE"):
     # LiteLLM reads base/key from env:
     # LITELLM_PROXY_API_BASE, LITELLM_PROXY_API_KEY
 
+# Set global num_retries to handle transient 429 errors from providers
+litellm.num_retries = 3
+
 def M(alias: str) -> LiteLlm:
     """
     Convenience helper to create a LiteLlm model reference.
@@ -55,12 +62,55 @@ def M(alias: str) -> LiteLlm:
     """
     return LiteLlm(model=alias)
 
+# --- Budget Enforcement Callbacks ---
+
+def enforce_budget_callback(callback_context: CallbackContext) -> Optional[types.Content]:
+    """
+    BeforeAgentCallback: Checks if the team is over budget before allowing an agent to start.
+    """
+    state = callback_context.state
+    budgets = state.get("budgets", {})
+    usage = state.get("token_usage", {})
+    
+    total_budget = budgets.get("total", 0)
+    total_usage = usage.get("total", 0)
+    
+    if total_budget > 0 and total_usage >= total_budget:
+        msg = (
+            f"🚫 [BUDGET EXCEEDED] Total token budget ({total_budget}) reached. "
+            f"Current usage: {total_usage}. Agent execution halted. "
+            "Please trigger a Sprint Review/Retrospective or increase the budget via `update_budgets`."
+        )
+        return types.Content(role="model", parts=[types.Part(text=msg)])
+    return None
+
+def check_model_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+    """
+    BeforeModelCallback: Checks budget before each individual LLM call.
+    """
+    state = callback_context.state
+    budgets = state.get("budgets", {})
+    usage = state.get("token_usage", {})
+    
+    total_budget = budgets.get("total", 0)
+    total_usage = usage.get("total", 0)
+
+    if total_budget > 0 and total_usage >= total_budget:
+        msg = f"🚫 [MODEL BLOCKED] Budget exceeded ({total_usage}/{total_budget})."
+        return LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text=msg)]),
+            model_version=llm_request.model or "unknown"
+        )
+    return None
+
 # --- Sub agents (role specialists) ---
 product_owner = LlmAgent(
     name="ProductOwner",
     model=M("scrum-po"),
     description="Owns product vision/goals, backlog ordering, acceptance criteria, scope tradeoffs.",
     instruction=PO_PROMPT,
+    before_agent_callback=enforce_budget_callback,
+    before_model_callback=check_model_budget_callback,
     tools=[
         init_scrum_state,
         upsert_backlog_item,
@@ -79,6 +129,8 @@ scrum_master = LlmAgent(
     model=M("scrum-sm"),
     description="Facilitates Scrum events, removes impediments, improves process, tracks actions.",
     instruction=SM_PROMPT,
+    before_agent_callback=enforce_budget_callback,
+    before_model_callback=check_model_budget_callback,
     tools=[
         init_scrum_state,
         add_impediment,
@@ -97,6 +149,8 @@ dev_team = LlmAgent(
     model=M("scrum-dev"),
     description="Plans/estimates/implements stories, owns technical decisions, ensures DoD, creates sprint plan.",
     instruction=DEV_PROMPT,
+    before_agent_callback=enforce_budget_callback,
+    before_model_callback=check_model_budget_callback,
     tools=[
         init_scrum_state,
         plan_sprint_backlog_item,
@@ -116,6 +170,8 @@ qa_agent = LlmAgent(
     model=M("scrum-qa"),
     description="Improves test strategy and quality signals; proposes test cases and automation.",
     instruction=QA_PROMPT,
+    before_agent_callback=enforce_budget_callback,
+    before_model_callback=check_model_budget_callback,
     tools=[init_scrum_state, add_impediment, log_decision],
 )
 
@@ -124,6 +180,8 @@ architect = LlmAgent(
     model=M("scrum-arch"),
     description="Identifies architectural risks, proposes tradeoffs, writes ADR-like notes.",
     instruction=ARCH_PROMPT,
+    before_agent_callback=enforce_budget_callback,
+    before_model_callback=check_model_budget_callback,
     tools=[init_scrum_state, log_decision],
 )
 
@@ -133,6 +191,8 @@ root_agent = LlmAgent(
     model=M("scrum-orchestrator"),
     description="Routes requests within Scrum team and maintains shared artifacts in session.state and the configured GitHub repo.",
     instruction=ORCHESTRATOR_PROMPT,
+    before_agent_callback=enforce_budget_callback,
+    before_model_callback=check_model_budget_callback,
     tools=[
         init_scrum_state,
         log_decision,

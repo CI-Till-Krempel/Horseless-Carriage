@@ -116,7 +116,8 @@ BUDGET & PROCESS
 - Monitor usage via `get_budget_status`.
 - Facilitate Scrum meetings with a prioritized approach and timeboxes (expressed in tokens).
 - Use 10% of the token budget for scrum meetings.
-- When budget is exceeded, stop development and trigger Sprint Review & Retrospective.
+- **IMPORTANT**: Gemini has provider-level rate limits (RPM/TPM). If you encounter 429 errors, it means the team is being too talkative or using a high-quota model.
+- When budget is exceeded, OR when the provider rate limit is consistently hit, stop development and trigger Sprint Review & Retrospective to optimize token efficiency.
 
 RETROSPECTIVE REASONING
 - In the retrospective, reason on how to be more efficient.
