@@ -32,6 +32,11 @@ from .tools import (
     repo_status,
     save_state_to_repo,
     load_state_from_repo,
+    update_budgets,
+    get_budget_status,
+    log_token_usage,
+    create_sprint_report,
+    create_release_pr,
 )
 
 # --- LiteLLM Proxy wiring ---
@@ -62,6 +67,8 @@ product_owner = LlmAgent(
         create_from_template,
         write_file,
         gh_release_create,
+        create_sprint_report,
+        create_release_pr,
     ],
 )
 
@@ -70,7 +77,15 @@ scrum_master = LlmAgent(
     model=M("scrum-sm"),
     description="Facilitates Scrum events, removes impediments, improves process, tracks actions.",
     instruction=SM_PROMPT,
-    tools=[init_scrum_state, add_impediment, add_retro_action, log_decision],
+    tools=[
+        init_scrum_state,
+        add_impediment,
+        add_retro_action,
+        log_decision,
+        update_budgets,
+        get_budget_status,
+        log_token_usage,
+    ],
 )
 
 dev_team = LlmAgent(
@@ -126,6 +141,11 @@ root_agent = LlmAgent(
         gh_release_create,
         write_file,
         create_from_template,
+        update_budgets,
+        get_budget_status,
+        log_token_usage,
+        create_sprint_report,
+        create_release_pr,
     ],
     sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect],
 )

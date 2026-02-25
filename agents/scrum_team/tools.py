@@ -36,6 +36,10 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("impediment_log", [])           # list[dict]
     s.setdefault("retro_actions", [])            # list[dict]
     s.setdefault("decision_log", [])             # list[dict]
+    s.setdefault("sprint_report", "")
+    s.setdefault("budgets", {"total": 0, "agents": {}})
+    s.setdefault("token_usage", {"total": 0, "agents": {}})
+    s.setdefault("story_estimates", {})
 
     # Try to load from repo if present
     try:
@@ -136,13 +140,19 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
     Add/update an item in sprint_backlog with implementation plan fields:
       approach: str
       tasks: list[str]
-      estimate: str | number
+      estimate: str | number (in tokens)
       risks: list[str]
       test_approach: str
       dod_checks: list[str]
     """
     s = tool_context.state
     sprint: List[Dict[str, Any]] = list(s.get("sprint_backlog", []))
+
+    # Also update story_estimates
+    estimates = s.get("story_estimates", {})
+    if "estimate" in plan:
+        estimates[title_or_id] = plan["estimate"]
+        s["story_estimates"] = estimates
 
     key = title_or_id
     for i, x in enumerate(sprint):
@@ -172,6 +182,10 @@ REPO_STATE_KEYS = [
     "impediment_log",
     "retro_actions",
     "decision_log",
+    "sprint_report",
+    "budgets",
+    "token_usage",
+    "story_estimates",
 ]
 
 
@@ -580,3 +594,99 @@ def create_from_template(template_path: str, destination_path: str, substitution
         return {"status": "ok", "path": str(dst)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+# -------------------------
+# Sprint and Budget Management
+# -------------------------
+
+def update_budgets(total: int = None, agent_budgets: Dict[str, int] = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Update the total and per-agent token budgets.
+    """
+    s = tool_context.state
+    budgets = s.get("budgets", {"total": 0, "agents": {}})
+    if total is not None:
+        budgets["total"] = total
+    if agent_budgets:
+        budgets["agents"].update(agent_budgets)
+    s["budgets"] = budgets
+    _ = save_state_to_repo(tool_context)
+    return {"status": "ok", "budgets": budgets}
+
+def get_budget_status(tool_context=None) -> Dict[str, Any]:
+    """
+    Return the current budget usage and status.
+    """
+    s = tool_context.state
+    budgets = s.get("budgets", {"total": 0, "agents": {}})
+    usage = s.get("token_usage", {"total": 0, "agents": {}})
+    
+    status = {
+        "budgets": budgets,
+        "usage": usage,
+        "remaining_total": budgets["total"] - usage["total"],
+        "is_over_budget": usage["total"] >= budgets["total"] if budgets["total"] > 0 else False
+    }
+    return {"status": "ok", "budget_status": status}
+
+def log_token_usage(agent_name: str, tokens: int, tool_context=None) -> Dict[str, Any]:
+    """
+    Manually log token usage for an agent (e.g. after a meeting or if automatic tracking is missing).
+    """
+    s = tool_context.state
+    usage = s.get("token_usage", {"total": 0, "agents": {}})
+    
+    usage["total"] += tokens
+    usage["agents"][agent_name] = usage["agents"].get(agent_name, 0) + tokens
+    
+    s["token_usage"] = usage
+    _ = save_state_to_repo(tool_context)
+    return {"status": "ok", "usage": usage}
+
+def create_sprint_report(summary: str, accomplishments: List[str], tool_context=None) -> Dict[str, Any]:
+    """
+    Create a management summary report as the sprint review.
+    Persists it to session.state and saves it to a file in the repo.
+    """
+    s = tool_context.state
+    usage = s.get("token_usage", {"total": 0, "agents": {}})
+    retro_actions = s.get("retro_actions", [])
+    
+    report = f"# Sprint Review Report\n\n## Summary\n{summary}\n\n## Accomplishments\n"
+    for a in accomplishments:
+        report += f"- {a}\n"
+    
+    report += f"\n## Token Usage\n- Total: {usage['total']}\n"
+    for agent, agent_usage in usage.get("agents", {}).items():
+        report += f"  - {agent}: {agent_usage}\n"
+    
+    report += "\n## Retrospective Actions (including efficiency improvements)\n"
+    for action in retro_actions:
+        report += f"- {action.get('action')} (Owner: {action.get('owner')}, Status: {action.get('status')})\n"
+
+    estimates = s.get("story_estimates", {})
+    if estimates:
+        report += "\n## Story Estimates (Tokens)\n"
+        for story, estimate in estimates.items():
+            report += f"- {story}: {estimate}\n"
+
+    s["sprint_report"] = report
+    _ = save_state_to_repo(tool_context)
+    
+    # Also write to repo
+    res = write_file("docs/reports/SPRINT-REPORT-LATEST.md", report, overwrite=True, tool_context=tool_context)
+    
+    return {"status": "ok", "report": report, "file_save": res}
+
+def create_release_pr(title: str, body: str, branch: str = "release/increment", tool_context=None) -> Dict[str, Any]:
+    """
+    Create a pull request for the increment of the release, containing all changes.
+    """
+    # First, push current changes to the release branch
+    push_res = git_push(branch=branch, commit_message=f"release: {title}", add_all=True, tool_context=tool_context)
+    if push_res.get("status") == "error":
+        return push_res
+    
+    # Then create the PR
+    pr_res = gh_pr_create(title=title, body=body, base="main", head=branch, tool_context=tool_context)
+    return {"status": "ok", "push": push_res, "pr": pr_res}
