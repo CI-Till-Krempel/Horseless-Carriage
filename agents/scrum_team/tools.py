@@ -27,6 +27,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     """
     s = tool_context.state
 
+    # Initialize defaults
     s.setdefault("product_vision", "")
     s.setdefault("product_goals", [])
     s.setdefault("product_backlog", [])          # list[dict]
@@ -41,7 +42,53 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("token_usage", {"total": 0, "agents": {}})
     s.setdefault("story_estimates", {})
 
-    # Try to load from repo if present
+    # 1. Load from environment variables (overrides defaults, but not repo state)
+    env_token_budget = os.environ.get("SPRINT_TOKEN_BUDGET")
+    if env_token_budget:
+        try:
+            s["budgets"]["total"] = int(env_token_budget)
+        except ValueError:
+            pass
+    
+    env_usd_budget = os.environ.get("SPRINT_USD_BUDGET")
+    if env_usd_budget:
+        try:
+            s["budgets"]["total_usd"] = float(env_usd_budget)
+        except ValueError:
+            pass
+
+    env_repo_url = os.environ.get("GITHUB_REPO_URL")
+    if env_repo_url:
+        repo_cfg = s.get("repo", {}) or {}
+        repo_cfg.setdefault("url", env_repo_url)
+        repo_cfg.setdefault("local_path", os.environ.get("GITHUB_REPO_LOCAL_PATH", ""))
+        repo_cfg.setdefault("default_branch", os.environ.get("GITHUB_REPO_BRANCH", "main"))
+        s["repo"] = repo_cfg
+
+    # 1.1 Load GitHub App credentials from environment
+    app_id = os.environ.get("GITHUB_APP_ID")
+    private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
+    inst_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
+    
+    if app_id and private_key and inst_id:
+        # Check if already configured to avoid redundant token requests
+        app_cfg = s.get("github_app", {})
+        
+        # Normalize the key for comparison
+        clean_key = _normalize_private_key(private_key)
+        
+        # We don't store the private_key in state anymore for security.
+        # We check against the environment variable or if the token is missing.
+        if (app_cfg.get("app_id") != str(app_id) or 
+            app_cfg.get("installation_id") != str(inst_id) or
+            not s.get("github_token")):
+            
+            res = configure_github_app(app_id, clean_key, inst_id, tool_context=tool_context)
+            if res.get("status") == "error":
+                # Log error in state to make it visible to user/orchestrator
+                s["last_auto_auth_error"] = res.get("message")
+
+    # 2. Try to load from repo if present (overrides everything else)
     try:
         repo_root = _configured_repo_root(tool_context)
         fp = _state_file_path(repo_root)
@@ -283,6 +330,43 @@ def configure_github_repo(repo_url: str, local_path: str = "", default_branch: s
     return {"status": "ok", "repo": repo_cfg}
 
 
+def _normalize_private_key(key: str) -> str:
+    """
+    Robustly normalize a PEM private key from various formats.
+    """
+    if not key:
+        return ""
+    
+    # 1. Handle escaped newlines (e.g. from .env parsing)
+    clean = key.replace("\\n", "\n").replace("\\r", "").strip()
+    
+    # 2. If it's a smashed single line but has PEM headers, try to restore structure
+    if "-----BEGIN" in clean and "\n" not in clean:
+        # Common headers
+        headers = [
+            "-----BEGIN RSA PRIVATE KEY-----",
+            "-----BEGIN PRIVATE KEY-----",
+            "-----BEGIN ANY PRIVATE KEY-----",
+            "-----BEGIN OPENSSH PRIVATE KEY-----"
+        ]
+        footers = [
+            "-----END RSA PRIVATE KEY-----",
+            "-----END PRIVATE KEY-----",
+            "-----END ANY PRIVATE KEY-----",
+            "-----END OPENSSH PRIVATE KEY-----"
+        ]
+        
+        for h in headers:
+            if h in clean:
+                clean = clean.replace(h, h + "\n")
+        for f in footers:
+            if f in clean:
+                clean = clean.replace(f, "\n" + f)
+
+    # 3. Ensure it ends with exactly one newline
+    return clean.strip() + "\n"
+
+
 def configure_github_app(app_id: str, private_key: str, installation_id: str, tool_context=None) -> Dict[str, Any]:
     """
     Configure and authenticate using a GitHub App installation.
@@ -291,17 +375,20 @@ def configure_github_app(app_id: str, private_key: str, installation_id: str, to
     - installation_id: The installation ID for the target repository/org
     This tool generates an installation token and stores it in session.state['github_token'].
     """
+    # 0. Robust key normalization
+    clean_key = _normalize_private_key(private_key)
+
     # 1. Create a JWT for the GitHub App
     now = int(time.time())
     payload = {
         "iat": now - 60,
         "exp": now + (10 * 60),
-        "iss": app_id,
+        "iss": str(app_id), # Ensure it's a string
     }
     try:
-        encoded_jwt = jwt.encode(payload, private_key, algorithm="RS256")
+        encoded_jwt = jwt.encode(payload, clean_key, algorithm="RS256")
     except Exception as e:
-        return {"status": "error", "message": f"JWT encoding failed: {e}"}
+        return {"status": "error", "message": f"JWT encoding failed. Check if your GITHUB_APP_PRIVATE_KEY is a valid RSA private key. Error: {e}"}
 
     # 2. Get an installation access token
     headers = {
@@ -317,11 +404,11 @@ def configure_github_app(app_id: str, private_key: str, installation_id: str, to
         if not token:
             return {"status": "error", "message": "Failed to retrieve token from GitHub API"}
 
-        # Store in state
+        # Store in state (excluding private_key for security). 
+        # This is session-only and NOT persisted to repo state.json.
         tool_context.state["github_app"] = {
-            "app_id": app_id,
-            "private_key": private_key,
-            "installation_id": installation_id,
+            "app_id": str(app_id),
+            "installation_id": str(installation_id),
             "expires_at": token_data.get("expires_at"),
         }
         tool_context.state["github_token"] = token
@@ -416,7 +503,7 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         if not key:
             return {"status": "error", "message": "No key returned from LiteLLM proxy."}
         
-        # Store in state
+        # Store in state (Session-only, NOT persisted to repo state.json)
         keys = tool_context.state.get("litellm_keys", {})
         keys[agent_name] = key
         tool_context.state["litellm_keys"] = keys
@@ -519,6 +606,8 @@ def repo_status(tool_context=None) -> Dict[str, Any]:
                 pass
     else:
         diagnostics["auth_method"] = "Personal Account (gh CLI)"
+        if tool_context.state.get("last_auto_auth_error"):
+            diagnostics["auto_auth_error"] = tool_context.state.get("last_auto_auth_error")
         # Try gh auth status (non-fatal)
         gh = _run(["gh", "auth", "status"], cwd=str(root), tool_context=tool_context)
         diagnostics["gh_auth_ok"] = (gh.get("returncode") == 0)
@@ -541,16 +630,16 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
         if token:
             env["GH_TOKEN"] = token
             env["GITHUB_TOKEN"] = token
-            # Also configure git to use the token for HTTPS
-            # (only if we have a repo config with an HTTPS URL)
-            repo_cfg = tool_context.state.get("repo", {})
-            if repo_cfg.get("url", "").startswith("https://"):
-                _ = subprocess.run(
-                    ["git", "config", "http.https://github.com/.extraheader", f"AUTHORIZATION: basic {token}"],
-                    cwd=cwd or str(_project_root()),
-                    env=env,
-                    capture_output=True
-                )
+            # Ensure git uses the token for HTTPS
+            # We configure it globally for the process context if needed, 
+            # but usually setting the env var is enough for gh and modern git.
+            # To be extra safe for all git operations:
+            _ = subprocess.run(
+                ["git", "config", "--global", "http.https://github.com/.extraheader", f"AUTHORIZATION: basic {token}"],
+                cwd=cwd or str(_project_root()),
+                env=env,
+                capture_output=True
+            )
 
         # Set git user name/email based on current agent if available
         agent_name = getattr(tool_context, "agent_name", None)

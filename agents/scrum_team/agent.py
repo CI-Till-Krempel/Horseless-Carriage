@@ -2,6 +2,9 @@
 import os
 from typing import Optional, Union, Dict, Any
 
+from dotenv import load_dotenv
+load_dotenv() # Load .env variables
+
 import litellm
 from google.genai import types
 from google.adk.agents.llm_agent import LlmAgent, CallbackContext
@@ -128,6 +131,27 @@ def check_model_budget_callback(callback_context: CallbackContext, llm_request: 
         )
     return None
 
+def update_token_usage_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    """
+    AfterModelCallback: Automatically updates the token usage in session state.
+    """
+    if not llm_response.usage_metadata:
+        return None
+    
+    state = callback_context.state
+    agent_name = callback_context.agent_name
+    
+    usage = state.get("token_usage", {"total": 0, "agents": {}})
+    new_tokens = llm_response.usage_metadata.total_token_count or 0
+    
+    if new_tokens > 0:
+        usage["total"] = usage.get("total", 0) + new_tokens
+        usage["agents"] = usage.get("agents", {})
+        usage["agents"][agent_name] = usage["agents"].get(agent_name, 0) + new_tokens
+        state["token_usage"] = usage
+    
+    return None
+
 # --- Sub agents (role specialists) ---
 product_owner = LlmAgent(
     name="ProductOwner",
@@ -136,6 +160,7 @@ product_owner = LlmAgent(
     instruction=PO_PROMPT,
     before_agent_callback=enforce_budget_callback,
     before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
+    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         upsert_backlog_item,
@@ -156,6 +181,7 @@ scrum_master = LlmAgent(
     instruction=SM_PROMPT,
     before_agent_callback=enforce_budget_callback,
     before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
+    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         add_impediment,
@@ -178,6 +204,7 @@ dev_team = LlmAgent(
     instruction=DEV_PROMPT,
     before_agent_callback=enforce_budget_callback,
     before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
+    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         plan_sprint_backlog_item,
@@ -202,6 +229,7 @@ qa_agent = LlmAgent(
     instruction=QA_PROMPT,
     before_agent_callback=enforce_budget_callback,
     before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
+    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         add_impediment,
@@ -218,11 +246,13 @@ architect = LlmAgent(
     instruction=ARCH_PROMPT,
     before_agent_callback=enforce_budget_callback,
     before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
+    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         log_decision,
         gh_pr_comment,
         gh_pr_review,
+        write_file,
     ],
 )
 
@@ -234,6 +264,7 @@ root_agent = LlmAgent(
     instruction=ORCHESTRATOR_PROMPT,
     before_agent_callback=enforce_budget_callback,
     before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
+    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         log_decision,

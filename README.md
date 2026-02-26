@@ -38,15 +38,18 @@ bash pip install -r requirements.txt
 
 ### 3) Configure environment variables
 
-Copy `.env.example` to `.env` and fill in at least one provider key that matches the models you intend to use:
+Copy `.env.example` to `.env` and fill in at least one provider key that matches the models you intend to use.
 
-Use placeholders (don’t commit real secrets):
+#### Personal Account (Default)
+To use your personal GitHub account for agent actions, simply run `gh auth login` on your host machine.
 
-env OPENAI_API_KEY="<your_openai_key>" 
-ANTHROPIC_API_KEY="<your_anthropic_key>" 
-GOOGLE_API_KEY="<your_google_key>"
-LITELLM_PROXY_API_BASE="http://localhost:4000" 
-LITELLM_PROXY_API_KEY="<any_value_or_master_key>"
+#### GitHub App Identity (Recommended)
+To have agents act as a dedicated identity, set these in your `.env`:
+- `GITHUB_APP_ID`: The ID of your GitHub App.
+- `GITHUB_APP_PRIVATE_KEY`: The full content of your `.pem` private key.
+- `GITHUB_APP_INSTALLATION_ID`: The ID from the installation URL.
+
+The agents will automatically use these to authenticate.
 
 
 ## Running the LiteLLM proxy (recommended)
@@ -145,15 +148,20 @@ graph TD
     GH -- Persists State --> StateFile[.hc/state.json]
 ```
 
+## Budget Management
+
+The system implements a **dual-layer budgeting strategy** to ensure both operational safety and financial control. This approach leverages LiteLLM's native financial enforcement while providing local, high-fidelity control over the logical "Sprint Budget" in tokens.
+
 ### 1. Token Budget (ADK Layer)
 - **Unit**: Total tokens (e.g., 1,000,000).
 - **Enforcement**: Hard-blocked locally by the ADK framework via callbacks (`enforce_budget_callback` and `check_model_budget_callback`).
-- **Purpose**: Prevents long-running loops or runaway agent conversations.
+- **Automatic Tracking**: The system automatically tracks token usage after every LLM call and attributes it to the specific agent role.
+- **Purpose**: Prevents long-running loops or runaway agent conversations. LiteLLM natively supports rate limits (tokens per minute) but does not provide a hard-stop for a *total cumulative token quota* across an entire sprint. Local enforcement provides immediate, zero-latency feedback and allows for a pure "logical" work limit.
 
 ### 2. USD Budget (LiteLLM Layer)
 - **Unit**: US Dollars (e.g., $0.50).
 - **Enforcement**: Hard-blocked by the LiteLLM Proxy.
-- **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via the `scrum-sprint-budget` object.
+- **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via the `scrum-sprint-budget` object. LiteLLM is the authority on costs and provider-level pricing. By setting a `max_budget` on the `scrum-sprint-budget` object, we ensure that the team never exceeds a hard financial limit, regardless of the token count.
 - **Tools**: `update_budgets(total_usd=0.50)`, `create_litellm_virtual_key()`.
 
 ### Monitoring Usage

@@ -16,21 +16,25 @@ ITERATION MODE (Sprints)
 - A Release Pull Request (`create_release_pr`) must be created for the increment.
 
 BUDGET MANAGEMENT
-- LiteLLM budgets are defined for the team (`budgets` in state). We use two layers of enforcement:
-  1. Token Budget (`total`): Local enforcement by the ADK framework.
-  2. USD Budget (`total_usd`): Hard enforcement and visibility in the LiteLLM Proxy.
+- LiteLLM budgets are defined for the team (`budgets` in state). We use a **dual-layer enforcement strategy**:
+  1. **Token Budget (`total`)**: Logical sprint quota. Enforced locally by the ADK framework for immediate feedback and to prevent runaway conversations. LiteLLM tracks tokens but doesn't natively enforce lifetime cumulative token quotas for keys/budgets.
+  2. **USD Budget (`total_usd`)**: Financial guardrail. Hard enforcement by the LiteLLM Proxy. This is the source of truth for financial spend and provider-level costs.
 - Track per-agent contribution to the budget (`token_usage` in state).
 - Monitor budget via `get_budget_status`.
 - TRIGGER SPRINT REVIEW: Every time the token budget has passed (usage >= budget), initiate a sprint review and retrospective.
 - Scrum meetings (planning, daily, review, retro) should be allocated 10% of the token budget.
 
 SETUP WIZARD (run proactively until configured)
+- Non-Interactive Setup: The user can pre-configure the team via environment variables in `.env`:
+  - `GITHUB_REPO_URL`, `GITHUB_REPO_BRANCH`, `GITHUB_REPO_LOCAL_PATH`
+  - `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` (for GitHub App identity)
+  - `SPRINT_TOKEN_BUDGET`, `SPRINT_USD_BUDGET`
 - Check repo configuration via `repo_status`.
-- If missing or invalid, ask user for:
+- If settings are missing from state and environment, ask user for:
   - repo_url (SSH is preferred for personal auth; HTTPS for App auth),
   - local_path for clone (optional; suggest a sensible default),
   - default_branch (default: main).
-- Explain Identity options:
+- Explain Identity options (if not already configured via `.env`):
   - Personal Account: uses `gh auth login` on the host. PRs/commits show as the human user.
   - GitHub App: requires `app_id`, `private_key` (.pem), and `installation_id`. PRs/commits show as the App.
 - If user chooses GitHub App:
