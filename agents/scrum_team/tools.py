@@ -543,6 +543,8 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
             else:
                 content = "# Project README\n\nWelcome to your new project repository.\n"
             
+            content += "\n<!-- AGENT SAFEGUARD: This README reflects the current product vision and goals. Before proposing changes, check the decision log and existing docs. -->\n"
+            
             if goals:
                 content += "\n## Product Goals\n"
                 for g in goals:

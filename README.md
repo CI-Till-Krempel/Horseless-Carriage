@@ -173,8 +173,21 @@ When using a **GitHub App**, the team uses a single technical identity for authe
 1. **Git Commits**: Every commit is attributed to the specific agent role (e.g., `Architect`) via `GIT_AUTHOR` and `GIT_COMMITTER` environment variables.
 2. **PR Comments and Reviews**: New tools `gh_pr_comment` and `gh_pr_review` automatically prefix messages with the agent's role (e.g., `**Architect:** ...`), ensuring clear visibility in the PR discussion even when using a shared App token.
 
-### Iteration Workflow
-When a budget is exceeded, the agents will automatically halt. The Scrum Master should then trigger a **Sprint Review** and **Retrospective** to analyze efficiency before the budget is reset or increased for the next increment.
+### Recovering from a LiteLLM Database Wipe
+
+If you clear the LiteLLM database (e.g., via `docker compose down -v`), your old virtual keys will become invalid. 
+
+1. **Temporary Auth**: Update `LITELLM_PROXY_API_KEY` in your `.env` to match your `LITELLM_MASTER_KEY`. This allows the Orchestrator to start.
+2. **Run Orchestrator**: Run the `ScrumOrchestrator`. It will detect the missing keys and re-initialize the agents, creating new virtual keys in the fresh database.
+3. **Update .env**: After initialization, you can generate a new general-purpose virtual key via the Admin UI or by copying one of the agent keys and update your `.env` for better tracking.
+
+---
+
+### Identity
+All agent roles (PO, SM, Dev, etc.) have distinct identities.
+- **Git Commits**: Attributed to the specific role (e.g., "DevTeam").
+- **GitHub PRs**: Comments and reviews are prefixed with the agent's role (e.g., `**Architect:** ...`).
+- **LiteLLM Spend**: Each agent uses its own virtual key, allowing you to track spend per agent in the Admin UI.
 
 ## GitHub Integration
 

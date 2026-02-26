@@ -4,14 +4,14 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add GitHub interaction tools (`gh_pr_comment`, `gh_pr_review`), extend agent prompts, and enhance role attribution in workflows.">
-      <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add environment-based configuration for GitHub App and budgets, enhance logging, update callbacks for token usage tracking, and refine README setup instructions.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/architecture/TEMPLATE-ADR.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/architecture/TEMPLATE-ADR.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/requirements/TEMPLATE-PRD.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/requirements/TEMPLATE-PRD.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docs/stories/TEMPLATE-USER-STORY.md" beforeDir="false" afterPath="$PROJECT_DIR$/docs/stories/TEMPLATE-USER-STORY.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -90,7 +90,7 @@
       <updated>1771592552726</updated>
       <workItem from="1771592553774" duration="2000" />
       <workItem from="1771925524607" duration="4149000" />
-      <workItem from="1771939517531" duration="37186000" />
+      <workItem from="1771939517531" duration="38963000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -172,7 +172,15 @@
       <option name="project" value="LOCAL" />
       <updated>1772104834955</updated>
     </task>
-    <option name="localTasksCounter" value="11" />
+    <task id="LOCAL-00011" summary="Add environment-based configuration for GitHub App and budgets, enhance logging, update callbacks for token usage tracking, and refine README setup instructions.">
+      <option name="closed" value="true" />
+      <created>1772117818986</created>
+      <option name="number" value="00011" />
+      <option name="presentableId" value="LOCAL-00011" />
+      <option name="project" value="LOCAL" />
+      <updated>1772117818986</updated>
+    </task>
+    <option name="localTasksCounter" value="12" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -193,8 +201,9 @@
     <MESSAGE value="Introduce dual-layer budget management, enhance Scrum workflows, and update README with architecture and usage details." />
     <MESSAGE value="Add agent-specific GitHub identity management and PR interaction tools (`gh_pr_comment`, `gh_pr_review`), update Scrum workflows, and enhance README with usage details." />
     <MESSAGE value="Add GitHub interaction tools (`gh_pr_comment`, `gh_pr_review`), extend agent prompts, and enhance role attribution in workflows." />
-    <MESSAGE value="Add environment-driven setup for Scrum workflows (`GITHUB_REPO_URL`, `SPRINT_TOKEN_BUDGET`), enhance state management, and update `.env.example`." />
     <MESSAGE value="Add environment-based defaults for budgets, enhance budget tracking, update README with budgeting details, and improve agent callbacks for token usage tracking." />
-    <option name="LAST_COMMIT_MESSAGE" value="Add environment-based defaults for budgets, enhance budget tracking, update README with budgeting details, and improve agent callbacks for token usage tracking." />
+    <MESSAGE value="Add environment-driven setup for Scrum workflows (`GITHUB_REPO_URL`, `SPRINT_TOKEN_BUDGET`), enhance state management, and update `.env.example`." />
+    <MESSAGE value="Add environment-based configuration for GitHub App and budgets, enhance logging, update callbacks for token usage tracking, and refine README setup instructions." />
+    <option name="LAST_COMMIT_MESSAGE" value="Add environment-based configuration for GitHub App and budgets, enhance logging, update callbacks for token usage tracking, and refine README setup instructions." />
   </component>
 </project>

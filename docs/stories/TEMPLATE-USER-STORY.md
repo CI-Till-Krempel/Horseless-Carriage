@@ -1,5 +1,8 @@
 # User Story
 
+<!-- AGENT SAFEGUARD: Do NOT implement or fill out this template file directly. -->
+<!-- This is a blueprint. Always create a new file (e.g., US-0001-My-Story.md) for actual content. -->
+
 - Story ID: US-XXXX
 - Title: <short story title>
 - Status: Draft | Ready | In Progress | Done | Rejected

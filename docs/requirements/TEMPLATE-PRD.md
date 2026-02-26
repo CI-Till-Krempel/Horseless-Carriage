@@ -1,5 +1,8 @@
 # Product Requirements Document (PRD)
 
+<!-- AGENT SAFEGUARD: Do NOT implement or fill out this template file directly. -->
+<!-- This is a blueprint. Always create a new file (e.g., PRD-My-Feature.md) for actual content. -->
+
 - Product/Feature: <name>
 - Owner: <name>
 - Status: Draft | In Review | Approved | Deprecated
