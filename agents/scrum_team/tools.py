@@ -94,6 +94,9 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
         fp = _state_file_path(repo_root)
         if fp.exists():
             _ = load_state_from_repo(tool_context)
+        
+        # 3. Load stories from docs/stories/*.md (Markdown is the source of truth for requirements)
+        _ = sync_stories_from_markdown(tool_context)
     except Exception:
         pass
 
@@ -117,6 +120,7 @@ def log_decision(title: str, decision: str, rationale: str, owner: str, tool_con
 def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     Add or update a product backlog item by id (preferred) or by title.
+    Automatically updates the corresponding Markdown file in docs/stories/.
     """
     s = tool_context.state
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))
@@ -129,17 +133,26 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     def matches(x: Dict[str, Any]) -> bool:
         return (item_id and x.get("id") == item_id) or (title and x.get("title") == title)
 
+    updated_item = None
     for i, x in enumerate(backlog):
         if matches(x):
             backlog[i] = {**x, **item}
             s["product_backlog"] = backlog
-            _ = save_state_to_repo(tool_context)
-            return {"status": "ok", "updated": True, "item": backlog[i]}
+            updated_item = backlog[i]
+            break
 
-    backlog.append(item)
-    s["product_backlog"] = backlog
+    if not updated_item:
+        backlog.append(item)
+        s["product_backlog"] = backlog
+        updated_item = item
+
+    # Save to repo state.json
     _ = save_state_to_repo(tool_context)
-    return {"status": "ok", "updated": False, "item": item}
+    
+    # Update Markdown story file
+    _ = _update_story_markdown(updated_item, tool_context)
+    
+    return {"status": "ok", "updated": (updated_item != item), "item": updated_item}
 
 def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str, Any]:
     """
@@ -191,6 +204,7 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
       risks: list[str]
       test_approach: str
       dod_checks: list[str]
+    Automatically updates the corresponding Markdown file in docs/stories/.
     """
     s = tool_context.state
     sprint: List[Dict[str, Any]] = list(s.get("sprint_backlog", []))
@@ -201,19 +215,27 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
         estimates[title_or_id] = plan["estimate"]
         s["story_estimates"] = estimates
 
+    updated_item = None
     key = title_or_id
     for i, x in enumerate(sprint):
         if x.get("id") == key or x.get("title") == key:
             sprint[i] = {**x, **plan}
             s["sprint_backlog"] = sprint
-            _ = save_state_to_repo(tool_context)
-            return {"status": "ok", "updated": True, "item": sprint[i]}
+            updated_item = sprint[i]
+            break
 
-    entry = {"title": key, **plan}
-    sprint.append(entry)
-    s["sprint_backlog"] = sprint
+    if not updated_item:
+        entry = {"title": key, **plan}
+        sprint.append(entry)
+        s["sprint_backlog"] = sprint
+        updated_item = entry
+
     _ = save_state_to_repo(tool_context)
-    return {"status": "ok", "updated": False, "item": entry}
+    
+    # Also update Markdown story file with plan details
+    _ = _update_story_markdown(updated_item, tool_context)
+    
+    return {"status": "ok", "updated": (updated_item != ({"title": key, **plan})), "item": updated_item}
 
 # -------------------------
 # Repo selection and state persistence helpers
@@ -235,6 +257,167 @@ REPO_STATE_KEYS = [
     "story_estimates",
 ]
 
+
+def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
+    """
+    Scan docs/stories/*.md and update product_backlog and sprint_backlog in state.
+    Markdown files are the source of truth for story content.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    stories_dir = repo_root / "docs" / "stories"
+    if not stories_dir.exists():
+        return {"status": "ok", "message": "No stories directory found."}
+
+    s = tool_context.state
+    backlog = list(s.get("product_backlog", []))
+    sprint_backlog = list(s.get("sprint_backlog", []))
+    
+    found_stories = []
+    
+    for fp in stories_dir.glob("*.md"):
+        if fp.name.startswith("TEMPLATE-") or fp.name == "README.md":
+            continue
+            
+        content = fp.read_text(encoding="utf-8")
+        story_data = _parse_story_markdown(content)
+        if not story_data.get("title"):
+             continue
+             
+        found_stories.append(story_data)
+        
+        # Upsert in product_backlog
+        match_idx = -1
+        for i, item in enumerate(backlog):
+            if (story_data.get("id") and item.get("id") == story_data["id"]) or \
+               (story_data.get("title") and item.get("title") == story_data["title"]):
+                match_idx = i
+                break
+        
+        if match_idx >= 0:
+            backlog[match_idx] = {**backlog[match_idx], **story_data}
+        else:
+            backlog.append(story_data)
+            
+        # If status is "In Progress" or "Done", ensure it's in sprint_backlog too
+        if story_data.get("status") in ["In Progress", "Done"]:
+             sprint_idx = -1
+             for i, item in enumerate(sprint_backlog):
+                 if (story_data.get("id") and item.get("id") == story_data["id"]) or \
+                    (story_data.get("title") and item.get("title") == story_data["title"]):
+                     sprint_idx = i
+                     break
+             if sprint_idx >= 0:
+                 sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **story_data}
+             else:
+                 sprint_backlog.append(story_data)
+
+    s["product_backlog"] = backlog
+    s["sprint_backlog"] = sprint_backlog
+    return {"status": "ok", "synced": len(found_stories)}
+
+def _parse_story_markdown(content: str) -> Dict[str, Any]:
+    """
+    Roughly parse a story Markdown file back into a dictionary.
+    """
+    data = {}
+    lines = content.splitlines()
+    for line in lines:
+        if line.strip().startswith("- Story ID:"):
+            data["id"] = line.split(":", 1)[1].strip()
+        elif line.strip().startswith("- Title:"):
+            data["title"] = line.split(":", 1)[1].strip()
+        elif line.strip().startswith("- Status:"):
+            data["status"] = line.split(":", 1)[1].strip()
+        elif line.strip().startswith("- Priority:"):
+            data["priority"] = line.split(":", 1)[1].strip()
+        elif line.startswith("## As a"):
+            data["user_story"] = line.strip("#").strip()
+            
+    # Parse Acceptance Criteria
+    if "## Acceptance Criteria" in content:
+        parts = content.split("## Acceptance Criteria")
+        if len(parts) > 1:
+            ac_section = parts[1].split("##")[0].strip()
+            ac_lines = [l.strip("- ").strip() for l in ac_section.splitlines() if l.strip().startswith("-")]
+            if ac_lines:
+                data["acceptance_criteria"] = ac_lines
+                
+    return data
+
+def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
+    """
+    Generate/Update a Markdown file for a story from its dictionary representation.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    item_id = item.get("id", "US-XXXX")
+    title = item.get("title", "Untitled")
+    filename = f"{item_id}-{title.replace(' ', '-').replace('/', '-')}.md"
+    story_path = repo_root / "docs" / "stories" / filename
+    
+    template_path = repo_root / "docs" / "stories" / "TEMPLATE-USER-STORY.md"
+    if not template_path.exists():
+        # Fallback to local project template if not in repo
+        template_path = _project_root() / "docs" / "stories" / "TEMPLATE-USER-STORY.md"
+        
+    if not template_path.exists():
+        return {"status": "error", "message": "Template not found."}
+        
+    template_content = template_path.read_text(encoding="utf-8")
+    
+    status = item.get("status", "Draft")
+    priority = item.get("priority", "Must")
+    user_story = item.get("user_story", "As a <role>, I want <capability>, so that <benefit>.")
+    
+    ac = item.get("acceptance_criteria", [])
+    if isinstance(ac, list):
+        ac_text = "\n".join([f"- {line}" for line in ac])
+    else:
+        ac_text = str(ac)
+        
+    notes = item.get("value_hypothesis", "") or item.get("rationale", "")
+    if item.get("dependencies"):
+        notes += f"\n- Dependencies: {item.get('dependencies')}"
+        
+    test_approach = item.get("test_approach", "")
+    if item.get("tasks"):
+        test_approach += "\n\n### Tasks\n" + "\n".join([f"- {t}" for t in item.get("tasks", [])])
+
+    content = template_content
+    content = content.replace("US-XXXX", item_id)
+    content = content.replace("<short story title>", title)
+    content = content.replace("Draft | Ready | In Progress | Done | Rejected", status)
+    content = content.replace("Must | Should | Could | Won't", priority)
+    content = content.replace("<name>", item.get("owner", "Scrum Team"))
+    from datetime import datetime
+    content = content.replace("<YYYY-MM-DD>", datetime.now().strftime("%Y-%m-%d"))
+    content = content.replace("As a <role>, I want <capability>, so that <benefit>.", user_story)
+    
+    # Simple replacement of sections
+    if "## Acceptance Criteria" in content:
+        parts = content.split("## Acceptance Criteria")
+        header = parts[0]
+        rest = parts[1].split("##", 1)
+        next_section = "##" + rest[1] if len(rest) > 1 else ""
+        content = header + "## Acceptance Criteria\n" + ac_text + "\n\n" + next_section
+
+    if "## Notes" in content:
+        parts = content.split("## Notes")
+        header = parts[0]
+        rest = parts[1].split("##", 1)
+        next_section = "##" + rest[1] if len(rest) > 1 else ""
+        content = header + "## Notes\n" + notes + "\n\n" + next_section
+
+    if "## Test Approach" in content:
+        parts = content.split("## Test Approach")
+        header = parts[0]
+        content = header + "## Test Approach\n" + test_approach + "\n"
+
+    try:
+        story_path.parent.mkdir(parents=True, exist_ok=True)
+        story_path.write_text(content, encoding="utf-8")
+        return {"status": "ok", "path": str(story_path)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
