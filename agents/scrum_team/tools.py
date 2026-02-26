@@ -552,6 +552,14 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
                     capture_output=True
                 )
 
+        # Set git user name/email based on current agent if available
+        agent_name = getattr(tool_context, "agent_name", None)
+        if agent_name:
+            env["GIT_AUTHOR_NAME"] = agent_name
+            env["GIT_AUTHOR_EMAIL"] = f"{agent_name.lower().replace(' ', '_')}@horseless-carriage.local"
+            env["GIT_COMMITTER_NAME"] = agent_name
+            env["GIT_COMMITTER_EMAIL"] = f"{agent_name.lower().replace(' ', '_')}@horseless-carriage.local"
+
     try:
         p = subprocess.run(
             cmd,
@@ -876,6 +884,57 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
     # Then create the PR
     pr_res = gh_pr_create(title=title, body=body, base="main", head=branch, tool_context=tool_context)
     return {"status": "ok", "push": push_res, "pr": pr_res}
+
+def gh_pr_comment(body: str, pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Add a comment to a Pull Request.
+    - body: the comment text.
+    - pr_id: optional PR number, URL, or branch. If None, uses current branch.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    
+    # Prefix with agent role if available
+    agent_name = getattr(tool_context, "agent_name", None)
+    prefix = f"**{agent_name}:** " if agent_name else ""
+    full_body = prefix + body
+    
+    cmd = ["gh", "pr", "comment"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd.extend(["--body", full_body])
+    
+    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    return r
+
+def gh_pr_review(body: str, event: str = "COMMENT", pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Add a review to a Pull Request.
+    - body: the review body text.
+    - event: the review action (COMMENT, APPROVE, REQUEST_CHANGES).
+    - pr_id: optional PR number, URL, or branch. If None, uses current branch.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    
+    # Prefix with agent role if available
+    agent_name = getattr(tool_context, "agent_name", None)
+    prefix = f"**{agent_name}:** " if agent_name else ""
+    full_body = prefix + body
+    
+    cmd = ["gh", "pr", "review"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    
+    cmd.extend(["--body", full_body])
+    
+    if event.upper() == "APPROVE":
+        cmd.append("--approve")
+    elif event.upper() == "REQUEST_CHANGES":
+        cmd.append("--request-changes")
+    else:
+        cmd.append("--comment")
+        
+    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    return r
 
 def gh_pr_check_logs(pr_id: str | int | None = None, check_name: str | None = None, tool_context=None) -> Dict[str, Any]:
     """

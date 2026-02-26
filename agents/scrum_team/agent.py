@@ -29,6 +29,8 @@ from .tools import (
     gh_pr_create,
     gh_pr_status,
     gh_pr_checks,
+    gh_pr_comment,
+    gh_pr_review,
     gh_release_create,
     write_file,
     create_from_template,
@@ -164,6 +166,8 @@ scrum_master = LlmAgent(
         log_token_usage,
         gh_pr_status,
         gh_pr_checks,
+        gh_pr_comment,
+        gh_pr_review,
     ],
 )
 
@@ -185,6 +189,8 @@ dev_team = LlmAgent(
         gh_pr_create,
         gh_pr_status,
         gh_pr_checks,
+        gh_pr_comment,
+        gh_pr_review,
         gh_pr_check_logs,
     ],
 )
@@ -196,7 +202,13 @@ qa_agent = LlmAgent(
     instruction=QA_PROMPT,
     before_agent_callback=enforce_budget_callback,
     before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
-    tools=[init_scrum_state, add_impediment, log_decision],
+    tools=[
+        init_scrum_state,
+        add_impediment,
+        log_decision,
+        gh_pr_comment,
+        gh_pr_review,
+    ],
 )
 
 architect = LlmAgent(
@@ -206,7 +218,12 @@ architect = LlmAgent(
     instruction=ARCH_PROMPT,
     before_agent_callback=enforce_budget_callback,
     before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
-    tools=[init_scrum_state, log_decision],
+    tools=[
+        init_scrum_state,
+        log_decision,
+        gh_pr_comment,
+        gh_pr_review,
+    ],
 )
 
 # --- Root orchestrator (delegates to sub_agents) ---
@@ -230,8 +247,9 @@ root_agent = LlmAgent(
         gh_pr_create,
         gh_pr_status,
         gh_pr_checks,
+        gh_pr_comment,
+        gh_pr_review,
         gh_pr_check_logs,
-        gh_release_create,
         write_file,
         create_from_template,
         update_budgets,

@@ -149,7 +149,6 @@ graph TD
 - **Unit**: Total tokens (e.g., 1,000,000).
 - **Enforcement**: Hard-blocked locally by the ADK framework via callbacks (`enforce_budget_callback` and `check_model_budget_callback`).
 - **Purpose**: Prevents long-running loops or runaway agent conversations.
-- **Tools**: `update_budgets(total=1000000)`, `get_budget_status()`.
 
 ### 2. USD Budget (LiteLLM Layer)
 - **Unit**: US Dollars (e.g., $0.50).
@@ -160,6 +159,11 @@ graph TD
 ### Monitoring Usage
 - **Sprint Report**: At the end of each sprint, the Product Owner generates a `SPRINT-REPORT-LATEST.md` which includes a detailed breakdown of token usage per agent and total USD spend.
 - **Admin UI**: Log in to `http://localhost:4000/ui/` to see real-time cost tracking and budget status for the `scrum-sprint-budget`.
+
+## Agent Identity in GitHub
+When using a **GitHub App**, the team uses a single technical identity for authentication. However, the system automatically distinguishes between agent roles:
+1. **Git Commits**: Every commit is attributed to the specific agent role (e.g., `Architect`) via `GIT_AUTHOR` and `GIT_COMMITTER` environment variables.
+2. **PR Comments and Reviews**: New tools `gh_pr_comment` and `gh_pr_review` automatically prefix messages with the agent's role (e.g., `**Architect:** ...`), ensuring clear visibility in the PR discussion even when using a shared App token.
 
 ### Iteration Workflow
 When a budget is exceeded, the agents will automatically halt. The Scrum Master should then trigger a **Sprint Review** and **Retrospective** to analyze efficiency before the budget is reset or increased for the next increment.
