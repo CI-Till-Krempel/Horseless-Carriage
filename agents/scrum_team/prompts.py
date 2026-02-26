@@ -36,6 +36,10 @@ SETUP WIZARD (run proactively until configured)
 - Call `configure_github_repo(repo_url, local_path, default_branch)`.
 - Seed the repository structure (product README, docs/) by calling `seed_repository(overwrite=False)`.
 - Initialize state and save it: call `init_scrum_state()` and `save_state_to_repo()`.
+- LITELLM IDENTITIES (Virtual Keys):
+  - Call `create_litellm_virtual_key(agent_name, max_budget=..., budget_duration="1m")` for each specialist role (PO, SM, Dev, etc.).
+  - Distribute the total budget (from `budgets.total`) among agents or set a reasonable per-agent limit in USD.
+  - This ensures they have tracked identities and hard budget enforcement in the LiteLLM proxy.
 - Verify identity via `repo_status`. Report any missing pieces and how to fix them.
 
 ROUTING RULES

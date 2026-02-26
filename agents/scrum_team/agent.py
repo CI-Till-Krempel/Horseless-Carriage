@@ -43,6 +43,7 @@ from .tools import (
     log_token_usage,
     create_sprint_report,
     create_release_pr,
+    create_litellm_virtual_key,
 )
 
 # --- LiteLLM Proxy wiring ---
@@ -51,6 +52,27 @@ if os.getenv("LITELLM_PROXY_API_BASE"):
     litellm.use_litellm_proxy = True
     # LiteLLM reads base/key from env:
     # LITELLM_PROXY_API_BASE, LITELLM_PROXY_API_KEY
+
+def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
+    """
+    BeforeModelCallback: Injects agent-specific LiteLLM key if available in state.
+    """
+    state = callback_context.state
+    agent_name = callback_context.agent_name
+    keys = state.get("litellm_keys", {})
+    agent_key = keys.get(agent_name)
+    
+    if agent_key:
+        # LiteLLM acompletion respects api_key in kwargs. 
+        # ADK's LiteLlm model passes its _additional_args to acompletion.
+        # Since we can't easily modify _additional_args of the model instance per request,
+        # and LiteLlm.generate_content_async doesn't look at llm_request for the api_key,
+        # we have to set the global litellm.api_key for this request.
+        # Since ADK runs sequentially, this is mostly safe.
+        litellm.api_key = agent_key
+    else:
+        # Fallback to the proxy's main key if no agent-specific key
+        litellm.api_key = os.getenv("LITELLM_PROXY_API_KEY")
 
 # Set global num_retries to handle transient 429 errors from providers
 litellm.num_retries = 3
@@ -110,7 +132,7 @@ product_owner = LlmAgent(
     description="Owns product vision/goals, backlog ordering, acceptance criteria, scope tradeoffs.",
     instruction=PO_PROMPT,
     before_agent_callback=enforce_budget_callback,
-    before_model_callback=check_model_budget_callback,
+    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
     tools=[
         init_scrum_state,
         upsert_backlog_item,
@@ -130,7 +152,7 @@ scrum_master = LlmAgent(
     description="Facilitates Scrum events, removes impediments, improves process, tracks actions.",
     instruction=SM_PROMPT,
     before_agent_callback=enforce_budget_callback,
-    before_model_callback=check_model_budget_callback,
+    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
     tools=[
         init_scrum_state,
         add_impediment,
@@ -150,7 +172,7 @@ dev_team = LlmAgent(
     description="Plans/estimates/implements stories, owns technical decisions, ensures DoD, creates sprint plan.",
     instruction=DEV_PROMPT,
     before_agent_callback=enforce_budget_callback,
-    before_model_callback=check_model_budget_callback,
+    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
     tools=[
         init_scrum_state,
         plan_sprint_backlog_item,
@@ -171,7 +193,7 @@ qa_agent = LlmAgent(
     description="Improves test strategy and quality signals; proposes test cases and automation.",
     instruction=QA_PROMPT,
     before_agent_callback=enforce_budget_callback,
-    before_model_callback=check_model_budget_callback,
+    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
     tools=[init_scrum_state, add_impediment, log_decision],
 )
 
@@ -181,7 +203,7 @@ architect = LlmAgent(
     description="Identifies architectural risks, proposes tradeoffs, writes ADR-like notes.",
     instruction=ARCH_PROMPT,
     before_agent_callback=enforce_budget_callback,
-    before_model_callback=check_model_budget_callback,
+    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
     tools=[init_scrum_state, log_decision],
 )
 
@@ -192,7 +214,7 @@ root_agent = LlmAgent(
     description="Routes requests within Scrum team and maintains shared artifacts in session.state and the configured GitHub repo.",
     instruction=ORCHESTRATOR_PROMPT,
     before_agent_callback=enforce_budget_callback,
-    before_model_callback=check_model_budget_callback,
+    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
     tools=[
         init_scrum_state,
         log_decision,
@@ -214,6 +236,7 @@ root_agent = LlmAgent(
         log_token_usage,
         create_sprint_report,
         create_release_pr,
+        create_litellm_virtual_key,
     ],
     sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect],
 )

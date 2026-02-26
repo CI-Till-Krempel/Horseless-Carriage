@@ -49,4 +49,4 @@ model_list:
 # Optional: master_key für Auth auf dem Proxy
 general_settings:
   num_retries: 3
-#   master_key: os.environ/LITELLM_MASTER_KEY
+  master_key: os.environ/LITELLM_MASTER_KEY

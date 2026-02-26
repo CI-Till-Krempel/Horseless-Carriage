@@ -1,4 +1,15 @@
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=llm_user
+      - POSTGRES_PASSWORD=llm_password
+      - POSTGRES_DB=litellm_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
     ports:
@@ -7,9 +18,11 @@ services:
       - ./litellm.yaml:/app/config.yaml:ro
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      # Optional absichern:
-      # - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - DATABASE_URL=${DATABASE_URL}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
+    depends_on:
+      - db
 
   # -----------------------------------------
   # OPTIONAL (later): Ollama for local models
@@ -21,5 +34,5 @@ services:
   #   volumes:
   #     - ollama:/root/.ollama
 
-# volumes:
-#   ollama:
+volumes:
+  postgres_data:

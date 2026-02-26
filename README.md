@@ -51,14 +51,23 @@ LITELLM_PROXY_API_KEY="<any_value_or_master_key>"
 
 ## Running the LiteLLM proxy (recommended)
 
-The repo includes a Docker Compose setup for a local LiteLLM proxy that exposes a single endpoint and routes to different providers/models via aliases in `litellm.yaml`.
+The repo includes a Docker Compose setup for a local LiteLLM proxy that exposes a single endpoint and routes to different providers/models via aliases in `litellm.yaml`. It uses a PostgreSQL database for persistent authentication and budget tracking.
 
 Start the proxy:
 
-docker compose up
+```bash
+docker compose up -d
+```
 
 - Proxy listens on: `http://localhost:4000`
-- Model aliases are defined in `litellm.yaml` (e.g. `scrum-orchestrator`, `scrum-po`, `scrum-dev`, ...)
+- Admin UI: `http://localhost:4000/ui/` (Login with `LITELLM_MASTER_KEY` from `.env`)
+- Model aliases: defined in `litellm.yaml` (e.g. `scrum-orchestrator`, `scrum-po`, ...)
+
+### LiteLLM Identities (Virtual Keys)
+When the database is connected, LiteLLM expects "Virtual Keys" (starting with `sk-`) for model requests. 
+1. The Orchestrator setup wizard will automatically generate these keys for each agent role if configured.
+2. You can manage keys, users, and teams via the Admin UI.
+3. Your main `LITELLM_PROXY_API_KEY` in `.env` should be a valid Virtual Key generated from the proxy.
 
 ## Using the Scrum team agent
 
@@ -72,6 +81,32 @@ Exactly how you *run* the agent depends on the host app / runner you plug it int
 
 - If `LITELLM_PROXY_API_BASE` is set, the agents assume “proxy mode” and use LiteLLM via the proxy endpoint.
 - Keep your `.env` local and never commit real API keys.
+
+## GitHub Integration
+
+The agents can interact with GitHub using either a **Personal Account** (via the `gh` CLI) or a **GitHub App** (for a dedicated "Agent" identity).
+
+### Option 1: Personal Account
+This is the simplest setup. Ensure the `gh` CLI is installed and authenticated on your host machine:
+```bash
+gh auth login
+```
+
+### Option 2: GitHub App (Recommended for Agents)
+To have the agents act as a distinct entity in your **Workspace Repo** (e.g., Kronograf), follow this simplified setup:
+
+1.  **Create**: Go to **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**.
+    *   **Name**: `Horseless-Carriage-Agent`
+    *   **Webhook**: Uncheck "Active".
+2.  **Permissions**: Under **Permissions & events** → **Repository permissions**:
+    *   `Contents` & `Pull requests`: **Read & write**.
+    *   `Metadata`: **Read-only**.
+3.  **Install**: Go to **Install App** in the sidebar and install it **ONLY** on your **Target Workspace Repository**.
+4.  **Credentials**: 
+    *   Copy the **App ID** from the General page.
+    *   Copy the **Installation ID** from the URL after installing (e.g., `.../installations/12345678`).
+    *   Click **Generate a private key**, and keep the `.pem` file content ready.
+5.  **Configure**: Provide these 3 items to the `ScrumOrchestrator` Setup Wizard. It will handle the rest!
 
 ## Repository documentation structure
 

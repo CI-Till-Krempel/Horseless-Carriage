@@ -330,6 +330,58 @@ def configure_github_app(app_id: str, private_key: str, installation_id: str, to
         return {"status": "error", "message": f"Failed to get installation token: {e}"}
 
 
+def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget_duration: str = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Create a LiteLLM Virtual Key for a specific agent with an optional budget.
+    Requires LITELLM_MASTER_KEY to be set in environment and the proxy to be running.
+    - max_budget: optional maximum budget in USD for this key.
+    - budget_duration: optional duration for the budget (e.g., "1h", "1d", "1m").
+    """
+    master_key = os.environ.get("LITELLM_MASTER_KEY")
+    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE", "http://localhost:4000")
+    
+    if not master_key:
+        return {"status": "error", "message": "LITELLM_MASTER_KEY not found in environment."}
+    
+    url = f"{proxy_base}/key/generate"
+    headers = {
+        "Authorization": f"Bearer {master_key}",
+        "Content-Type": "application/json"
+    }
+    
+    # Map agent name to relevant models or allow all if generic
+    models = ["scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", "scrum-arch", "scrum-orchestrator"]
+    
+    data = {
+        "models": models,
+        "metadata": {"agent": agent_name},
+        "key_alias": f"key-{agent_name.lower()}"
+    }
+    
+    if max_budget is not None:
+        data["max_budget"] = max_budget
+    if budget_duration:
+        data["budget_duration"] = budget_duration
+    
+    try:
+        resp = requests.post(url, headers=headers, json=data, timeout=10)
+        resp.raise_for_status()
+        res = resp.json()
+        key = res.get("key")
+        
+        if not key:
+            return {"status": "error", "message": "No key returned from LiteLLM proxy."}
+        
+        # Store in state
+        keys = tool_context.state.get("litellm_keys", {})
+        keys[agent_name] = key
+        tool_context.state["litellm_keys"] = keys
+        
+        return {"status": "ok", "agent": agent_name, "key": key, "max_budget": max_budget, "budget_duration": budget_duration}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to generate LiteLLM key: {e}"}
+
+
 def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Copy the docs/ directory from the current project into the configured target repo,
