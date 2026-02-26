@@ -43,6 +43,7 @@ from .tools import (
     log_token_usage,
     create_sprint_report,
     create_release_pr,
+    gh_pr_check_logs,
     create_litellm_virtual_key,
 )
 
@@ -184,6 +185,7 @@ dev_team = LlmAgent(
         gh_pr_create,
         gh_pr_status,
         gh_pr_checks,
+        gh_pr_check_logs,
     ],
 )
 
@@ -228,6 +230,7 @@ root_agent = LlmAgent(
         gh_pr_create,
         gh_pr_status,
         gh_pr_checks,
+        gh_pr_check_logs,
         gh_release_create,
         write_file,
         create_from_template,

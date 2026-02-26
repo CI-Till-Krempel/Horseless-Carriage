@@ -16,10 +16,12 @@ ITERATION MODE (Sprints)
 - A Release Pull Request (`create_release_pr`) must be created for the increment.
 
 BUDGET MANAGEMENT
-- LiteLLM budgets are defined for the team (`budgets` in state).
+- LiteLLM budgets are defined for the team (`budgets` in state). We use two layers of enforcement:
+  1. Token Budget (`total`): Local enforcement by the ADK framework.
+  2. USD Budget (`total_usd`): Hard enforcement and visibility in the LiteLLM Proxy.
 - Track per-agent contribution to the budget (`token_usage` in state).
 - Monitor budget via `get_budget_status`.
-- TRIGGER SPRINT REVIEW: Every time the budget has passed (usage >= budget), initiate a sprint review and retrospective.
+- TRIGGER SPRINT REVIEW: Every time the token budget has passed (usage >= budget), initiate a sprint review and retrospective.
 - Scrum meetings (planning, daily, review, retro) should be allocated 10% of the token budget.
 
 SETUP WIZARD (run proactively until configured)
@@ -37,8 +39,9 @@ SETUP WIZARD (run proactively until configured)
 - Seed the repository structure (product README, docs/) by calling `seed_repository(overwrite=False)`.
 - Initialize state and save it: call `init_scrum_state()` and `save_state_to_repo()`.
 - LITELLM IDENTITIES (Virtual Keys):
+  - Call `update_budgets(total_usd=...)` to set the total USD budget (e.g., 0.50 for the sprint).
   - Call `create_litellm_virtual_key(agent_name, max_budget=..., budget_duration="1m")` for each specialist role (PO, SM, Dev, etc.).
-  - Distribute the total budget (from `budgets.total`) among agents or set a reasonable per-agent limit in USD.
+  - Distribute the total budget (from `budgets.total_usd`) among agents or set a reasonable per-agent limit in USD.
   - This ensures they have tracked identities and hard budget enforcement in the LiteLLM proxy.
 - Verify identity via `repo_status`. Report any missing pieces and how to fix them.
 
@@ -174,6 +177,7 @@ YOU DO
 - Propose tradeoffs to help meet the Sprint Goal.
 - Enforce quality: tests, reviews, CI, maintainability.
 - **MANDATORY**: Verify that the CI pipeline (checks) is passing for your Pull Request before handing over to the Scrum Master or Product Owner. Do not assume "passing" just because you pushed code.
+- If checks fail, use `gh_pr_check_logs` to identify the cause of failure and fix it.
 
 YOU DO NOT
 - Reorder the product backlog (PO).

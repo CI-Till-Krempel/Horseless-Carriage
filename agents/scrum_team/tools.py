@@ -343,19 +343,63 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     if not master_key:
         return {"status": "error", "message": "LITELLM_MASTER_KEY not found in environment."}
     
+    # 1. Ensure a Shared Budget exists in LiteLLM for visibility
+    # We use a fixed ID for the sprint budget to group agents
+    budget_id = "scrum-sprint-budget"
+    
+    # Best-effort creation of the budget object in LiteLLM
+    try:
+        # Check if budget exists first
+        get_resp = requests.get(
+            f"{proxy_base}/budget/info?budget_id={budget_id}",
+            headers={"Authorization": f"Bearer {master_key}"},
+            timeout=5
+        )
+        
+        # Determine target budget
+        total_budget_usd = tool_context.state.get("budgets", {}).get("total_usd") or 10.0
+        
+        if get_resp.status_code == 200:
+            # Update existing budget
+            requests.post(
+                f"{proxy_base}/budget/update",
+                headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
+                json={
+                    "budget_id": budget_id,
+                    "max_budget": total_budget_usd
+                },
+                timeout=5
+            )
+        else:
+            # Create new budget
+            requests.post(
+                f"{proxy_base}/budget/new",
+                headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
+                json={
+                    "budget_id": budget_id,
+                    "max_budget": total_budget_usd,
+                    "budget_duration": "30d"
+                },
+                timeout=5
+            )
+    except Exception:
+        pass # Might fail if proxy is down or busy
+    
+    # 2. Generate the Key
     url = f"{proxy_base}/key/generate"
     headers = {
         "Authorization": f"Bearer {master_key}",
         "Content-Type": "application/json"
     }
     
-    # Map agent name to relevant models or allow all if generic
+    # Map agent name to relevant models
     models = ["scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", "scrum-arch", "scrum-orchestrator"]
     
     data = {
         "models": models,
         "metadata": {"agent": agent_name},
-        "key_alias": f"key-{agent_name.lower()}"
+        "key_alias": f"key-{agent_name.lower()}",
+        "budget_id": budget_id # Link key to the budget object for visibility
     }
     
     if max_budget is not None:
@@ -377,7 +421,7 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         keys[agent_name] = key
         tool_context.state["litellm_keys"] = keys
         
-        return {"status": "ok", "agent": agent_name, "key": key, "max_budget": max_budget, "budget_duration": budget_duration}
+        return {"status": "ok", "agent": agent_name, "key": key, "max_budget": max_budget, "budget_duration": budget_duration, "budget_id": budget_id}
     except Exception as e:
         return {"status": "error", "message": f"Failed to generate LiteLLM key: {e}"}
 
@@ -731,14 +775,18 @@ def create_from_template(template_path: str, destination_path: str, substitution
 # Sprint and Budget Management
 # -------------------------
 
-def update_budgets(total: int = None, agent_budgets: Dict[str, int] = None, tool_context=None) -> Dict[str, Any]:
+def update_budgets(total: int = None, total_usd: float = None, agent_budgets: Dict[str, int] = None, tool_context=None) -> Dict[str, Any]:
     """
     Update the total and per-agent token budgets.
+    - total: token budget
+    - total_usd: USD budget for LiteLLM proxy
     """
     s = tool_context.state
     budgets = s.get("budgets", {"total": 0, "agents": {}})
     if total is not None:
         budgets["total"] = total
+    if total_usd is not None:
+        budgets["total_usd"] = total_usd
     if agent_budgets:
         budgets["agents"].update(agent_budgets)
     s["budgets"] = budgets
@@ -756,8 +804,9 @@ def get_budget_status(tool_context=None) -> Dict[str, Any]:
     status = {
         "budgets": budgets,
         "usage": usage,
-        "remaining_total": budgets["total"] - usage["total"],
-        "is_over_budget": usage["total"] >= budgets["total"] if budgets["total"] > 0 else False
+        "remaining_total_tokens": budgets.get("total", 0) - usage.get("total", 0),
+        "total_usd": budgets.get("total_usd"),
+        "is_over_budget_tokens": usage.get("total", 0) >= budgets.get("total", 0) if budgets.get("total", 0) > 0 else False
     }
     return {"status": "ok", "budget_status": status}
 
@@ -781,6 +830,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     Persists it to session.state and saves it to a file in the repo.
     """
     s = tool_context.state
+    budgets = s.get("budgets", {"total": 0, "agents": {}})
     usage = s.get("token_usage", {"total": 0, "agents": {}})
     retro_actions = s.get("retro_actions", [])
     
@@ -788,7 +838,11 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     for a in accomplishments:
         report += f"- {a}\n"
     
-    report += f"\n## Token Usage\n- Total: {usage['total']}\n"
+    report += f"\n## Budget and Usage\n- Token Budget: {budgets.get('total', 0)}\n- Token Usage: {usage['total']}\n"
+    if budgets.get("total_usd"):
+        report += f"- USD Budget (LiteLLM): ${budgets.get('total_usd'):.2f}\n"
+    
+    report += "\n### Per-Agent Token Usage\n"
     for agent, agent_usage in usage.get("agents", {}).items():
         report += f"  - {agent}: {agent_usage}\n"
     
@@ -822,3 +876,65 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
     # Then create the PR
     pr_res = gh_pr_create(title=title, body=body, base="main", head=branch, tool_context=tool_context)
     return {"status": "ok", "push": push_res, "pr": pr_res}
+
+def gh_pr_check_logs(pr_id: str | int | None = None, check_name: str | None = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Fetch logs for a specific PR check (GitHub Action/Workflow).
+    - pr_id: optional PR number, URL, or branch. If None, uses current branch.
+    - check_name: optional substring to filter by check name.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+
+    # 1. Get check list with links
+    cmd = ["gh", "pr", "checks"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd.extend(["--json", "name,link,state,bucket"])
+
+    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    if r.get("status") == "error":
+        return r
+
+    try:
+        checks = json.loads(r["stdout"])
+        if not checks:
+            return {"status": "error", "message": "No checks found for this PR."}
+
+        # 2. Filter by check_name if provided
+        target_check = None
+        if check_name:
+            for c in checks:
+                if check_name.lower() in c.get("name", "").lower():
+                    target_check = c
+                    break
+            if not target_check:
+                return {"status": "error", "message": f"No check found matching '{check_name}'. Available: {[c.get('name') for c in checks]}"}
+        else:
+            # If no name, pick the first failing one, or just the first one
+            failing = [c for c in checks if c.get("bucket") == "fail"]
+            target_check = failing[0] if failing else checks[0]
+
+        # 3. Extract Run ID from link
+        # Example link: https://github.com/OWNER/REPO/actions/runs/12345678/job/98765432
+        link = target_check.get("link", "")
+        if "/actions/runs/" not in link:
+            return {"status": "error", "message": f"Could not find GitHub Actions Run ID in link: {link}"}
+
+        parts = link.split("/actions/runs/")
+        run_id = parts[1].split("/")[0]
+
+        # 4. Fetch logs using `gh run view <run_id> --log`
+        log_cmd = ["gh", "run", "view", run_id, "--log"]
+        log_res = _run(log_cmd, cwd=repo_root, tool_context=tool_context)
+        
+        return {
+            "status": "ok" if log_res.get("status") == "ok" else "error",
+            "check_name": target_check.get("name"),
+            "state": target_check.get("state"),
+            "run_id": run_id,
+            "logs": log_res.get("stdout", ""),
+            "stderr": log_res.get("stderr", "")
+        }
+
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to parse or fetch logs: {e}", "details": r}

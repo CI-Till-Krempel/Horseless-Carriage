@@ -82,6 +82,88 @@ Exactly how you *run* the agent depends on the host app / runner you plug it int
 - If `LITELLM_PROXY_API_BASE` is set, the agents assume “proxy mode” and use LiteLLM via the proxy endpoint.
 - Keep your `.env` local and never commit real API keys.
 
+## Budget Management
+
+The system implements a **dual-layer budgeting strategy** to ensure both operational safety and financial control.
+
+## Architecture
+
+The following diagram describes the interaction between the user, the ADK framework, the Scrum agents, and the supporting infrastructure (LiteLLM & GitHub).
+
+```mermaid
+graph TD
+    User([Human User]) -- Prompts/Feedback --> Orchestrator
+    
+    subgraph ADK_Framework [ADK Framework]
+        Orchestrator[Scrum Orchestrator]
+        
+        subgraph Agents [Specialist Agents]
+            PO[Product Owner]
+            SM[Scrum Master]
+            Dev[Dev Team]
+            QA[QA Agent]
+            Arch[Architect]
+        end
+        
+        Orchestrator -- Delegates --> Agents
+        
+        subgraph Callbacks [Hard Guardrails]
+            EnforceBudget[Enforce Budget Callback]
+            InjectKey[Inject LiteLLM Key Callback]
+        end
+        
+        subgraph Tools [Toolbox]
+            GitTools[Git/GH CLI Tools]
+            ScrumTools[Scrum State Tools]
+            DocTools[Template/Doc Tools]
+            BudgetTools[Budgeting Tools]
+        end
+    end
+    
+    Orchestrator -.-> Callbacks
+    Agents -.-> Callbacks
+    Agents --> Tools
+    Orchestrator --> Tools
+    
+    subgraph Infrastructure [Supporting Infrastructure]
+        LiteLLM[LiteLLM Proxy]
+        DB[(PostgreSQL)]
+        LiteLLM --- DB
+    end
+    
+    subgraph External [External Systems & Storage]
+        GH[GitHub Repository]
+        FS[Local Filesystem]
+    end
+    
+    Callbacks -- API Keys/Usage --> LiteLLM
+    LiteLLM -- Routed Requests --> Models[LLM Providers: Gemini, OpenAI, etc.]
+    
+    Tools -- Pushes/PRs/State --> GH
+    Tools -- Writes Docs/Reports --> FS
+    
+    GH -- Persists State --> StateFile[.hc/state.json]
+```
+
+### 1. Token Budget (ADK Layer)
+- **Unit**: Total tokens (e.g., 1,000,000).
+- **Enforcement**: Hard-blocked locally by the ADK framework via callbacks (`enforce_budget_callback` and `check_model_budget_callback`).
+- **Purpose**: Prevents long-running loops or runaway agent conversations.
+- **Tools**: `update_budgets(total=1000000)`, `get_budget_status()`.
+
+### 2. USD Budget (LiteLLM Layer)
+- **Unit**: US Dollars (e.g., $0.50).
+- **Enforcement**: Hard-blocked by the LiteLLM Proxy.
+- **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via the `scrum-sprint-budget` object.
+- **Tools**: `update_budgets(total_usd=0.50)`, `create_litellm_virtual_key()`.
+
+### Monitoring Usage
+- **Sprint Report**: At the end of each sprint, the Product Owner generates a `SPRINT-REPORT-LATEST.md` which includes a detailed breakdown of token usage per agent and total USD spend.
+- **Admin UI**: Log in to `http://localhost:4000/ui/` to see real-time cost tracking and budget status for the `scrum-sprint-budget`.
+
+### Iteration Workflow
+When a budget is exceeded, the agents will automatically halt. The Scrum Master should then trigger a **Sprint Review** and **Retrospective** to analyze efficiency before the budget is reset or increased for the next increment.
+
 ## GitHub Integration
 
 The agents can interact with GitHub using either a **Personal Account** (via the `gh` CLI) or a **GitHub App** (for a dedicated "Agent" identity).

@@ -4,14 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Introduce budget enforcement callbacks, enhance agent functionality, and improve PR checks">
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add persistent authentication, budget tracking, and GitHub app integration to LiteLLM proxy, enhance README and agent workflows">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docker-compose.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -90,7 +88,7 @@
       <updated>1771592552726</updated>
       <workItem from="1771592553774" duration="2000" />
       <workItem from="1771925524607" duration="4149000" />
-      <workItem from="1771939517531" duration="23197000" />
+      <workItem from="1771939517531" duration="27833000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -148,7 +146,15 @@
       <option name="project" value="LOCAL" />
       <updated>1772033716128</updated>
     </task>
-    <option name="localTasksCounter" value="8" />
+    <task id="LOCAL-00008" summary="Add persistent authentication, budget tracking, and GitHub app integration to LiteLLM proxy, enhance README and agent workflows">
+      <option name="closed" value="true" />
+      <created>1772094260782</created>
+      <option name="number" value="00008" />
+      <option name="presentableId" value="LOCAL-00008" />
+      <option name="project" value="LOCAL" />
+      <updated>1772094260782</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -165,6 +171,7 @@
     <MESSAGE value="Add `gh_pr_status` tool for checking pull request status and update related workflows" />
     <MESSAGE value="Add `gh_pr_checks` tool to verify PR CI status, update prompts, and enhance workflow integration" />
     <MESSAGE value="Introduce budget enforcement callbacks, enhance agent functionality, and improve PR checks" />
-    <option name="LAST_COMMIT_MESSAGE" value="Introduce budget enforcement callbacks, enhance agent functionality, and improve PR checks" />
+    <MESSAGE value="Add persistent authentication, budget tracking, and GitHub app integration to LiteLLM proxy, enhance README and agent workflows" />
+    <option name="LAST_COMMIT_MESSAGE" value="Add persistent authentication, budget tracking, and GitHub app integration to LiteLLM proxy, enhance README and agent workflows" />
   </component>
 </project>
