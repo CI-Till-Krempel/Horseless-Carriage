@@ -9,7 +9,6 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.lite_llm import LiteLlm
 
-from .helpers import get_process_overhead_percentage
 from .prompts import (
     ORCHESTRATOR_PROMPT,
     PO_PROMPT,
@@ -69,7 +68,7 @@ from .tools.budget import (
     recommend_sprint_budget,
     optimize_process_for_budget,
 )
-from .state import ScrumState, Budgets, TokenUsage
+from .state import ScrumState
 
 # --- LiteLLM Proxy wiring ---
 # If LITELLM_PROXY_API_BASE is set, we assume proxy mode.
@@ -84,28 +83,15 @@ def get_model_name(role: str) -> str:
     """Gets the model name for a given role from environment variables."""
     return os.getenv(f"SCRUM_{role.upper()}_MODEL", f"scrum-{role}")
 
-def get_scrum_state(context_state) -> ScrumState:
-    """Constructs a ScrumState object from the context state."""
-    sprint_backlog = context_state.get("sprint_backlog", {})
-    if isinstance(sprint_backlog, list):
-        sprint_backlog = {item.get("title", f"item_{i}"): item for i, item in enumerate(sprint_backlog)}
-
-    return ScrumState(
-        budgets=Budgets(**context_state.get("budgets", {})),
-        token_usage=TokenUsage(**context_state.get("token_usage", {})),
-        litellm_keys=context_state.get("litellm_keys", {}),
-        backlog=context_state.get("backlog", {}),
-        epics=context_state.get("epics", {}),
-        retrospective_actions=context_state.get("retrospective_actions", []),
-        sprint_backlog=sprint_backlog,
-        sprint_report_kpis=context_state.get("sprint_report_kpis", {}),
-    )
+def get_process_overhead_percentage() -> float:
+    """Gets the process overhead percentage from environment variables."""
+    return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
 
 def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
     BeforeModelCallback: Injects agent-specific LiteLLM key if available in state.
     """
-    state = get_scrum_state(callback_context.state)
+    state = ScrumState.parse_obj(callback_context.state)
     agent_name = callback_context.agent_name
     agent_key = state.litellm_keys.get(agent_name)
     
@@ -120,7 +106,7 @@ def enforce_budget_callback(callback_context: CallbackContext) -> Optional[types
     """
     BeforeAgentCallback: Checks if the team is over budget before allowing an agent to start.
     """
-    state = get_scrum_state(callback_context.state)
+    state = ScrumState.parse_obj(callback_context.state)
     
     if state.budgets.total > 0 and state.token_usage.total >= state.budgets.total:
         msg = (
@@ -135,7 +121,7 @@ def check_model_budget_callback(callback_context: CallbackContext, llm_request: 
     """
     BeforeModelCallback: Checks budget before each individual LLM call.
     """
-    state = get_scrum_state(callback_context.state)
+    state = ScrumState.parse_obj(callback_context.state)
 
     if state.budgets.total > 0 and state.token_usage.total >= state.budgets.total:
         msg = f"🚫 [MODEL BLOCKED] Budget exceeded ({state.token_usage.total}/{state.budgets.total})."
@@ -152,7 +138,7 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
     if not llm_response.usage_metadata:
         return None
     
-    state = get_scrum_state(callback_context.state)
+    state = ScrumState.parse_obj(callback_context.state)
     agent_name = callback_context.agent_name
     
     new_tokens = llm_response.usage_metadata.total_token_count or 0
@@ -160,10 +146,8 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
     if new_tokens > 0:
         state.token_usage.total += new_tokens
         state.token_usage.agents[agent_name] = state.token_usage.agents.get(agent_name, 0) + new_tokens
-        
-        # Update the state object with the new usage values
-        callback_context.state["token_usage"] = state.token_usage.dict()
-
+        callback_context.state.update(state.dict())
+    
     return None
 
 # --- Common Agent Configuration ---

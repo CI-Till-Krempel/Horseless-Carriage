@@ -4,7 +4,7 @@ import os
 import requests
 from typing import Any, Dict, List
 from .base import _state_file_path, _configured_repo_root
-from ..helpers import get_process_overhead_percentage
+from ..agent import get_process_overhead_percentage
 
 def update_budgets(total: int = None, total_usd: float = None, agent_budgets: Dict[str, int] = None, tool_context=None) -> Dict[str, Any]:
     """

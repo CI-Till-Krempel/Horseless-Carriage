@@ -12,12 +12,9 @@ def _configured_repo_root(tool_context=None) -> Path:
     """
     Determine which repository directory to operate in.
     Preference order:
-    - STATE_REPO_PATH environment variable
     - tool_context.state['repo']['local_path'] if present
     - current project root (fallback)
     """
-    if os.getenv("STATE_REPO_PATH"):
-        return Path(os.getenv("STATE_REPO_PATH")).expanduser().resolve()
     try:
         if tool_context and getattr(tool_context, "state", None):
             repo_cfg = tool_context.state.get("repo", {}) or {}

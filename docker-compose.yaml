@@ -24,6 +24,29 @@ services:
     depends_on:
       - db
 
+  agent:
+    build:
+      context: .
+      dockerfile: agent.Dockerfile
+    volumes:
+      # Mount the agent's source code as read-only
+      - ./agents:/app/agents:ro
+      # Mount the state repository as read-write
+      - type: bind
+        source: ${STATE_REPO_PATH}
+        target: /app/state_repo
+    environment:
+      - STATE_REPO_PATH=/app/state_repo
+      - LITELLM_PROXY_API_BASE=http://litellm:4000
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    depends_on:
+      - litellm
+    # Keep the container running and allow for interactive sessions
+    stdin_open: true
+    tty: true
+
   # -----------------------------------------
   # OPTIONAL (later): Ollama for local models
   # -----------------------------------------

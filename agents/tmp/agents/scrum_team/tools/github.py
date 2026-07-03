@@ -8,21 +8,22 @@ def configure_github_repo(repo_url: str, local_path: str = "", default_branch: s
     """
     Configure the GitHub repository used for persistence and tooling.
     - repo_url: SSH or HTTPS URL
-    - local_path: optional existing checkout or desired clone path. If empty, will use the path from the STATE_REPO_PATH environment variable.
+    - local_path: optional existing checkout or desired clone path. If empty, will use project_root/source/state_repo
     - default_branch: branch used for pushes/releases by default
     This will clone the repo if local_path does not exist.
     """
     from pathlib import Path
     from .base import _project_root
-    
-    target_dir = _configured_repo_root(tool_context)
+    proj_root = _project_root()
+    target_dir = Path(local_path).expanduser() if local_path else (proj_root / "source" / "state_repo")
+    target_dir = target_dir.resolve()
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
     # If the directory is not a git repo, attempt clone
     if not (target_dir / ".git").exists():
         # Best effort: clone
         try:
-            result = _run(["git", "clone", repo_url, str(target_dir)], cwd=str(target_dir.parent))
+            result = _run(["git", "clone", repo_url, str(target_dir)], cwd=str(proj_root))
             if result.get("status") == "error":
                 return {"status": "error", "message": f"Clone failed: {result.get('stderr') or result.get('message')}", "details": result}
         except Exception as e:
