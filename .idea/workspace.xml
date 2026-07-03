@@ -4,10 +4,37 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add safeguards for template usage, update README with recovery instructions, and refine agent prompts for existing work checks and content alignment">
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Sync state with Markdown as source of truth for stories, refine backlog operations, and enhance story management workflows.">
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/state.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_budget.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_docs.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_github.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_quality.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_scrum.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_workflow.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/quality.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tools/workflow.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/source/state_repo/.hc/state.json" beforeDir="false" afterPath="$PROJECT_DIR$/source/state_repo/.hc/state.json" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/source/state_repo/docs/ROADMAP.md" beforeDir="false" afterPath="$PROJECT_DIR$/source/state_repo/docs/ROADMAP.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/source/state_repo/docs/stories/TASK-8-Create-`gh_pr_checks`-Tool-for-Scrum-Master.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/source/state_repo/docs/stories/US-XXXX-Project-Creation-and-Management.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/source/state_repo/docs/stories/US-XXXX-Task-Management-within-Projects.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/source/state_repo/docs/stories/US-XXXX-User-Authentication.md" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -15,7 +42,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="507" />
+    <option name="cachedIndexableFilesCount" value="719" />
     <option name="fileBasedEmbeddingIndicesEnabled" value="true" />
   </component>
   <component name="FileTemplateManagerImpl">
@@ -33,10 +60,72 @@
     <commands />
     <urls />
   </component>
+  <component name="NextEditCompletionFeaturesState">
+    <decayedCancelled>
+      <entry key="MS100" value="1.0" />
+      <entry key="MS500" value="1.0" />
+      <entry key="S2" value="1.0" />
+      <entry key="S5" value="1.0" />
+      <entry key="S10" value="1.0" />
+      <entry key="S30" value="1.0" />
+      <entry key="S60" value="1.0" />
+      <entry key="M2" value="1.0" />
+      <entry key="M5" value="1.0" />
+      <entry key="M10" value="1.0" />
+      <entry key="M15" value="1.0" />
+      <entry key="M30" value="1.0" />
+      <entry key="H1" value="1.0" />
+      <entry key="H2" value="1.0" />
+      <entry key="H4" value="1.0" />
+      <entry key="D1" value="1.0" />
+      <entry key="W1" value="1.0" />
+    </decayedCancelled>
+    <decayedSelected>
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="0.0" />
+      <entry key="S2" value="0.0" />
+      <entry key="S5" value="0.0" />
+      <entry key="S10" value="0.0" />
+      <entry key="S30" value="0.0" />
+      <entry key="S60" value="0.0" />
+      <entry key="M2" value="0.0" />
+      <entry key="M5" value="0.0" />
+      <entry key="M10" value="0.0" />
+      <entry key="M15" value="0.0" />
+      <entry key="M30" value="0.0" />
+      <entry key="H1" value="0.0" />
+      <entry key="H2" value="0.0" />
+      <entry key="H4" value="0.0" />
+      <entry key="D1" value="0.0" />
+      <entry key="W1" value="0.0" />
+    </decayedSelected>
+    <decayedShown>
+      <entry key="MS100" value="0.0" />
+      <entry key="MS500" value="1.4855651339815602E-125" />
+      <entry key="S2" value="6.208303282054379E-32" />
+      <entry key="S5" value="3.289949031274158E-13" />
+      <entry key="S10" value="5.735807729757124E-7" />
+      <entry key="S30" value="0.008308670346295007" />
+      <entry key="S60" value="0.09115190807819114" />
+      <entry key="M2" value="0.30191374277795163" />
+      <entry key="M5" value="0.6193742598224785" />
+      <entry key="M10" value="0.787003341684442" />
+      <entry key="M15" value="0.8524149362629881" />
+      <entry key="M30" value="0.923263199885595" />
+      <entry key="H1" value="0.9608658594650946" />
+      <entry key="H2" value="0.9802376545843843" />
+      <entry key="H4" value="0.990069520076436" />
+      <entry key="D1" value="0.9983380299344362" />
+      <entry key="W1" value="0.9997624064198372" />
+    </decayedShown>
+  </component>
   <component name="ProjectColorInfo">{
   &quot;associatedIndex&quot;: 1
 }</component>
   <component name="ProjectId" id="39w1vuiWbQLDBkSd2mYgb0sNHYD" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="2" id="Add" />
+  </component>
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
@@ -50,6 +139,7 @@
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
     "ai.playground.ignore.import.keys.banner.in.settings": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
     "git-widget-placeholder": "main",
     "junie.onboarding.icon.badge.shown": "true",
@@ -72,8 +162,8 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-js-predefined-d6986cc7102b-9b0f141eb926-JavaScript-PY-253.31033.139" />
-        <option value="bundled-python-sdk-2653e85de345-6d6dccd035ac-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-253.31033.139" />
+        <option value="bundled-js-predefined-d6986cc7102b-31caf2ab9e3c-JavaScript-PY-261.25134.203" />
+        <option value="bundled-python-sdk-245168a56dbd-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.25134.203" />
       </set>
     </attachedChunks>
   </component>
@@ -86,7 +176,10 @@
       <updated>1771592552726</updated>
       <workItem from="1771592553774" duration="2000" />
       <workItem from="1771925524607" duration="4149000" />
-      <workItem from="1771939517531" duration="40030000" />
+      <workItem from="1771939517531" duration="62702000" />
+      <workItem from="1772628830918" duration="13882000" />
+      <workItem from="1774608676423" duration="724000" />
+      <workItem from="1782904538747" duration="7663000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -184,7 +277,15 @@
       <option name="project" value="LOCAL" />
       <updated>1772119468994</updated>
     </task>
-    <option name="localTasksCounter" value="13" />
+    <task id="LOCAL-00013" summary="Sync state with Markdown as source of truth for stories, refine backlog operations, and enhance story management workflows.">
+      <option name="closed" value="true" />
+      <created>1772120579145</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1772120579145</updated>
+    </task>
+    <option name="localTasksCounter" value="14" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -209,6 +310,7 @@
     <MESSAGE value="Add environment-driven setup for Scrum workflows (`GITHUB_REPO_URL`, `SPRINT_TOKEN_BUDGET`), enhance state management, and update `.env.example`." />
     <MESSAGE value="Add environment-based configuration for GitHub App and budgets, enhance logging, update callbacks for token usage tracking, and refine README setup instructions." />
     <MESSAGE value="Add safeguards for template usage, update README with recovery instructions, and refine agent prompts for existing work checks and content alignment" />
-    <option name="LAST_COMMIT_MESSAGE" value="Add safeguards for template usage, update README with recovery instructions, and refine agent prompts for existing work checks and content alignment" />
+    <MESSAGE value="Sync state with Markdown as source of truth for stories, refine backlog operations, and enhance story management workflows." />
+    <option name="LAST_COMMIT_MESSAGE" value="Sync state with Markdown as source of truth for stories, refine backlog operations, and enhance story management workflows." />
   </component>
 </project>

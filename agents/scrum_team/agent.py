@@ -2,9 +2,6 @@
 import os
 from typing import Optional, Union, Dict, Any
 
-from dotenv import load_dotenv
-load_dotenv() # Load .env variables
-
 import litellm
 from google.genai import types
 from google.adk.agents.llm_agent import LlmAgent, CallbackContext
@@ -19,11 +16,15 @@ from .prompts import (
     DEV_PROMPT,
     QA_PROMPT,
     ARCH_PROMPT,
+    QUALITY_GUARDIAN_PROMPT,
 )
 from .tools import (
     init_scrum_state,
     log_decision,
-    upsert_backlog_item,
+    upsert_story,
+    upsert_epic,
+    update_roadmap,
+    plan_backlog_item,
     set_priority,
     add_impediment,
     add_retro_action,
@@ -50,45 +51,54 @@ from .tools import (
     create_release_pr,
     gh_pr_check_logs,
     create_litellm_virtual_key,
+    read_doc,
+    upsert_prd,
+    upsert_srs,
 )
+from .tools.quality import (
+    calculate_kpis,
+    update_sprint_report as update_sprint_report_with_kpis,
+)
+from .tools.workflow import (
+    generate_workflow_diagram,
+    gather_workflow_improvement_proposals,
+)
+from .tools.budget import (
+    calculate_cost_breakdown,
+    recommend_sprint_budget,
+    optimize_process_for_budget,
+)
+from .state import ScrumState
 
 # --- LiteLLM Proxy wiring ---
 # If LITELLM_PROXY_API_BASE is set, we assume proxy mode.
 if os.getenv("LITELLM_PROXY_API_BASE"):
     litellm.use_litellm_proxy = True
+    # Security hardening: Restrict proxy access to localhost
+    litellm.allowed_ips = ["127.0.0.1"]
     # LiteLLM reads base/key from env:
     # LITELLM_PROXY_API_BASE, LITELLM_PROXY_API_KEY
+
+def get_model_name(role: str) -> str:
+    """Gets the model name for a given role from environment variables."""
+    return os.getenv(f"SCRUM_{role.upper()}_MODEL", f"scrum-{role}")
+
+def get_process_overhead_percentage() -> float:
+    """Gets the process overhead percentage from environment variables."""
+    return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
 
 def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
     BeforeModelCallback: Injects agent-specific LiteLLM key if available in state.
     """
-    state = callback_context.state
+    state = ScrumState.parse_obj(callback_context.state)
     agent_name = callback_context.agent_name
-    keys = state.get("litellm_keys", {})
-    agent_key = keys.get(agent_name)
+    agent_key = state.litellm_keys.get(agent_name)
     
     if agent_key:
-        # LiteLLM acompletion respects api_key in kwargs. 
-        # ADK's LiteLlm model passes its _additional_args to acompletion.
-        # Since we can't easily modify _additional_args of the model instance per request,
-        # and LiteLlm.generate_content_async doesn't look at llm_request for the api_key,
-        # we have to set the global litellm.api_key for this request.
-        # Since ADK runs sequentially, this is mostly safe.
         litellm.api_key = agent_key
     else:
-        # Fallback to the proxy's main key if no agent-specific key
         litellm.api_key = os.getenv("LITELLM_PROXY_API_KEY")
-
-# Set global num_retries to handle transient 429 errors from providers
-litellm.num_retries = 3
-
-def M(alias: str) -> LiteLlm:
-    """
-    Convenience helper to create a LiteLlm model reference.
-    Use aliases from litellm.yaml when proxy mode is enabled.
-    """
-    return LiteLlm(model=alias)
 
 # --- Budget Enforcement Callbacks ---
 
@@ -96,17 +106,12 @@ def enforce_budget_callback(callback_context: CallbackContext) -> Optional[types
     """
     BeforeAgentCallback: Checks if the team is over budget before allowing an agent to start.
     """
-    state = callback_context.state
-    budgets = state.get("budgets", {})
-    usage = state.get("token_usage", {})
+    state = ScrumState.parse_obj(callback_context.state)
     
-    total_budget = budgets.get("total", 0)
-    total_usage = usage.get("total", 0)
-    
-    if total_budget > 0 and total_usage >= total_budget:
+    if state.budgets.total > 0 and state.token_usage.total >= state.budgets.total:
         msg = (
-            f"🚫 [BUDGET EXCEEDED] Total token budget ({total_budget}) reached. "
-            f"Current usage: {total_usage}. Agent execution halted. "
+            f"🚫 [BUDGET EXCEEDED] Total token budget ({state.budgets.total}) reached. "
+            f"Current usage: {state.token_usage.total}. Agent execution halted. "
             "Please trigger a Sprint Review/Retrospective or increase the budget via `update_budgets`."
         )
         return types.Content(role="model", parts=[types.Part(text=msg)])
@@ -116,15 +121,10 @@ def check_model_budget_callback(callback_context: CallbackContext, llm_request: 
     """
     BeforeModelCallback: Checks budget before each individual LLM call.
     """
-    state = callback_context.state
-    budgets = state.get("budgets", {})
-    usage = state.get("token_usage", {})
-    
-    total_budget = budgets.get("total", 0)
-    total_usage = usage.get("total", 0)
+    state = ScrumState.parse_obj(callback_context.state)
 
-    if total_budget > 0 and total_usage >= total_budget:
-        msg = f"🚫 [MODEL BLOCKED] Budget exceeded ({total_usage}/{total_budget})."
+    if state.budgets.total > 0 and state.token_usage.total >= state.budgets.total:
+        msg = f"🚫 [MODEL BLOCKED] Budget exceeded ({state.token_usage.total}/{state.budgets.total})."
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -138,50 +138,55 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
     if not llm_response.usage_metadata:
         return None
     
-    state = callback_context.state
+    state = ScrumState.parse_obj(callback_context.state)
     agent_name = callback_context.agent_name
     
-    usage = state.get("token_usage", {"total": 0, "agents": {}})
     new_tokens = llm_response.usage_metadata.total_token_count or 0
     
     if new_tokens > 0:
-        usage["total"] = usage.get("total", 0) + new_tokens
-        usage["agents"] = usage.get("agents", {})
-        usage["agents"][agent_name] = usage["agents"].get(agent_name, 0) + new_tokens
-        state["token_usage"] = usage
+        state.token_usage.total += new_tokens
+        state.token_usage.agents[agent_name] = state.token_usage.agents.get(agent_name, 0) + new_tokens
+        callback_context.state.update(state.dict())
     
     return None
+
+# --- Common Agent Configuration ---
+COMMON_AGENT_CALLBACKS = {
+    "before_agent_callback": enforce_budget_callback,
+    "before_model_callback": [inject_litellm_key_callback, check_model_budget_callback],
+    "after_model_callback": update_token_usage_callback,
+}
 
 # --- Sub agents (role specialists) ---
 product_owner = LlmAgent(
     name="ProductOwner",
-    model=M("scrum-po"),
+    model=LiteLlm(get_model_name("po")),
     description="Owns product vision/goals, backlog ordering, acceptance criteria, scope tradeoffs.",
     instruction=PO_PROMPT,
-    before_agent_callback=enforce_budget_callback,
-    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
-    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
-        upsert_backlog_item,
+        upsert_story,
+        upsert_epic,
+        update_roadmap,
+        plan_backlog_item,
         set_priority,
         log_decision,
         create_from_template,
-        write_file,
         gh_release_create,
         create_sprint_report,
         create_release_pr,
+        read_doc,
+        upsert_prd,
+        upsert_srs,
     ],
+    **COMMON_AGENT_CALLBACKS,
 )
 
 scrum_master = LlmAgent(
     name="ScrumMaster",
-    model=M("scrum-sm"),
+    model=LiteLlm(get_model_name("sm")),
     description="Facilitates Scrum events, removes impediments, improves process, tracks actions.",
     instruction=SM_PROMPT,
-    before_agent_callback=enforce_budget_callback,
-    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
-    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         add_impediment,
@@ -194,17 +199,20 @@ scrum_master = LlmAgent(
         gh_pr_checks,
         gh_pr_comment,
         gh_pr_review,
+        generate_workflow_diagram,
+        gather_workflow_improvement_proposals,
+        calculate_cost_breakdown,
+        recommend_sprint_budget,
+        optimize_process_for_budget,
     ],
+    **COMMON_AGENT_CALLBACKS,
 )
 
 dev_team = LlmAgent(
     name="DevTeam",
-    model=M("scrum-dev"),
+    model=LiteLlm(get_model_name("dev")),
     description="Plans/estimates/implements stories, owns technical decisions, ensures DoD, creates sprint plan.",
     instruction=DEV_PROMPT,
-    before_agent_callback=enforce_budget_callback,
-    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
-    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         plan_sprint_backlog_item,
@@ -220,16 +228,14 @@ dev_team = LlmAgent(
         gh_pr_review,
         gh_pr_check_logs,
     ],
+    **COMMON_AGENT_CALLBACKS,
 )
 
 qa_agent = LlmAgent(
     name="QA",
-    model=M("scrum-qa"),
+    model=LiteLlm(get_model_name("qa")),
     description="Improves test strategy and quality signals; proposes test cases and automation.",
     instruction=QA_PROMPT,
-    before_agent_callback=enforce_budget_callback,
-    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
-    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         add_impediment,
@@ -237,16 +243,14 @@ qa_agent = LlmAgent(
         gh_pr_comment,
         gh_pr_review,
     ],
+    **COMMON_AGENT_CALLBACKS,
 )
 
 architect = LlmAgent(
     name="Architect",
-    model=M("scrum-arch"),
+    model=LiteLlm(get_model_name("arch")),
     description="Identifies architectural risks, proposes tradeoffs, writes ADR-like notes.",
     instruction=ARCH_PROMPT,
-    before_agent_callback=enforce_budget_callback,
-    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
-    after_model_callback=update_token_usage_callback,
     tools=[
         init_scrum_state,
         log_decision,
@@ -254,18 +258,29 @@ architect = LlmAgent(
         gh_pr_review,
         write_file,
     ],
+    **COMMON_AGENT_CALLBACKS,
+)
+
+quality_guardian = LlmAgent(
+    name="QualityGuardian",
+    model=LiteLlm(get_model_name("quality")),
+    description="Objectively assess and report on team effectiveness, result quality, maintainability, and security KPIs.",
+    instruction=QUALITY_GUARDIAN_PROMPT,
+    tools=[
+        calculate_kpis,
+        update_sprint_report_with_kpis,
+    ],
+    **COMMON_AGENT_CALLBACKS,
 )
 
 # --- Root orchestrator (delegates to sub_agents) ---
 root_agent = LlmAgent(
     name="ScrumOrchestrator",
-    model=M("scrum-orchestrator"),
+    model=LiteLlm(get_model_name("orchestrator")),
     description="Routes requests within Scrum team and maintains shared artifacts in session.state and the configured GitHub repo.",
     instruction=ORCHESTRATOR_PROMPT,
-    before_agent_callback=enforce_budget_callback,
-    before_model_callback=[inject_litellm_key_callback, check_model_budget_callback],
-    after_model_callback=update_token_usage_callback,
     tools=[
+        # General state, setup, and high-level management tools
         init_scrum_state,
         log_decision,
         configure_github_repo,
@@ -274,21 +289,11 @@ root_agent = LlmAgent(
         repo_status,
         save_state_to_repo,
         load_state_from_repo,
-        git_push,
-        gh_pr_create,
-        gh_pr_status,
-        gh_pr_checks,
-        gh_pr_comment,
-        gh_pr_review,
-        gh_pr_check_logs,
-        write_file,
-        create_from_template,
+        create_litellm_virtual_key,
         update_budgets,
         get_budget_status,
         log_token_usage,
-        create_sprint_report,
-        create_release_pr,
-        create_litellm_virtual_key,
     ],
-    sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect],
+    sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian],
+    **COMMON_AGENT_CALLBACKS,
 )
