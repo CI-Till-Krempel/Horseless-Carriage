@@ -3,8 +3,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 
 class Budgets(BaseModel):
-    total: float = 0.0
-    agents: Dict[str, float] = Field(default_factory=dict)
+    total_usd: float = 0.0
 
 class TokenUsage(BaseModel):
     total: int = 0

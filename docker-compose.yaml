@@ -41,6 +41,9 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_APP_ID=${GITHUB_APP_ID}
+      - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
+      - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
     depends_on:
       - litellm
     # Keep the container running and allow for interactive sessions

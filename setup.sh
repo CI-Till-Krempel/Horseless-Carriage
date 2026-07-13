@@ -3,37 +3,36 @@
 # Setup script for the Horseless Carriage project.
 #
 # This script will:
-# 1. Create a Python virtual environment.
-# 2. Install required dependencies.
+# 1. Check for Docker and Docker Compose.
+# 2. Guide the user through GitHub CLI setup if needed.
 # 3. Set up the .env file.
-# 4. Start the LiteLLM Docker container.
+# 4. Start the database and LiteLLM containers.
 #
 
 set -e
 
 echo "--- Running Horseless Carriage Setup ---"
 
-# Check for Python 3
-if ! command -v python3 &> /dev/null
-then
-    echo "ERROR: python3 could not be found. Please install Python 3."
+# 1. Check for Docker and Docker Compose
+if ! command -v docker &> /dev/null; then
+    echo "ERROR: 'docker' command not found. Please install Docker."
     exit 1
 fi
 
-# 1. Create virtual environment if it doesn't exist
-if [ ! -d ".venv" ]; then
-    echo "Creating Python virtual environment in ./.venv..."
-    python3 -m venv .venv
-else
-    echo "Virtual environment ./.venv already exists."
+if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+    echo "ERROR: 'docker-compose' or 'docker compose' command not found. Please install Docker Compose."
+    exit 1
 fi
 
-# Activate virtual environment for this script's context
-source .venv/bin/activate
-
-# 2. Install dependencies
-echo "Installing dependencies from requirements.txt..."
-pip install -r requirements.txt
+# 2. Guide the user through GitHub CLI setup
+if ! command -v gh &> /dev/null; then
+    echo "WARNING: 'gh' command not found."
+    echo "The GitHub CLI is recommended for the best experience."
+    echo "Please visit https://cli.github.com/ to install it."
+elif ! gh auth status &> /dev/null; then
+    echo "WARNING: gh CLI is not authenticated."
+    echo "Please run 'gh auth login' to authenticate with your GitHub account."
+fi
 
 # 3. Set up .env file
 if [ ! -f ".env" ]; then
@@ -44,16 +43,9 @@ else
     echo ".env file already exists."
 fi
 
-# 4. Start LiteLLM proxy via Docker
-if ! command -v docker &> /dev/null
-then
-    echo "WARNING: 'docker' command not found. Cannot start the LiteLLM proxy."
-    echo "Please install Docker and run 'docker compose up -d' manually."
-    exit 0
-fi
-
-echo "Starting LiteLLM proxy via Docker Compose..."
-docker compose up -d
+# 4. Start the database and LiteLLM containers
+echo "Starting database and LiteLLM containers via Docker Compose..."
+docker compose up -d db litellm
 
 echo ""
 echo "--- Setup Complete ---"

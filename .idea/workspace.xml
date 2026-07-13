@@ -4,40 +4,16 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="feat: Enhance Scrum Master capabilities and project analysis&#10;&#10;This commit introduces significant enhancements to the Scrum Master agent and the overall project analysis capabilities.&#10;&#10;Key changes include:&#10;&#10;- **New Quality Guardian Agent:** A new agent, `QualityGuardian`, has been added to track and report on quality KPIs, including team effectiveness, result quality, maintainability, and security.&#10;- **Workflow Documentation:** The Scrum Master can now generate a UML diagram of the current workflow and gather proposals for improvements.&#10;- **Enhanced Budget Management:** The Scrum Master can now provide a cost breakdown of roles, recommend a sprint budget, and optimize the process based on the budget. The process overhead for improvements is now configurable.&#10;- **Security Hardening:** The `litellm` integration has been hardened by restricting proxy access to localhost and pinning the version to `1.34.3` or higher to address a known supply chain security incident.&#10;- **Pydantic State Management:** The agent's state is now managed using Pydantic models, providing type safety and a more structured approach.&#10;- **Comprehensive Testing:** A testing framework has been established with tests for all agents and tools, ensuring the quality and correctness of the agent's behavior.&#10;&#10;These changes improve the project's quality, maintainability, and security, and provide better insights into the development process.">
-      <change afterPath="$PROJECT_DIR$/PREFLIGHT.md" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/agent.Dockerfile" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/agents/scrum_team/helpers.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/doctor.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/entrypoint.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/run.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/setup.sh" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Refactor project structure, add Scrum Team agents, enhance workflows, update tools and state management.&#10;&#10;Key changes:&#10;- Restructure directories and move templates from `docs/` to `spec-templates/`.&#10;- Introduce the `Scrum Team` agents with the `root_agent` delegating tasks to sub-agents.&#10;- Add tools for state, budget, backlog, GitHub integration, and quality management.&#10;- Improve agent prompts and safeguards for template usage.&#10;- Establish tests for agent functionality, tools, and callbacks.">
       <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_workflow.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_workflow.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/state.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/state.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/workflow.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/workflow.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/docker-compose.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/ROADMAP.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/ROADMAP.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/architecture/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/architecture/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/architecture/TEMPLATE-ADR.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/architecture/TEMPLATE-ADR.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/requirements/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/requirements/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/requirements/TEMPLATE-PRD.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/requirements/TEMPLATE-PRD.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/requirements/TEMPLATE-SRS.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/requirements/TEMPLATE-SRS.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/stories/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/stories/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/stories/TEMPLATE-USER-STORY.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/stories/TEMPLATE-USER-STORY.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/workflows/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/workflows/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docs/workflows/TEMPLATE-AGENT-WORKFLOW.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/workflows/TEMPLATE-AGENT-WORKFLOW.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/entrypoint.sh" beforeDir="false" afterPath="$PROJECT_DIR$/entrypoint.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/setup.sh" beforeDir="false" afterPath="$PROJECT_DIR$/setup.sh" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -45,7 +21,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="1512" />
+    <option name="cachedIndexableFilesCount" value="89" />
     <option name="fileBasedEmbeddingIndicesEnabled" value="true" />
   </component>
   <component name="FileTemplateManagerImpl">
@@ -67,61 +43,61 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.7644129254931618" />
-      <entry key="MS500" value="3.510011532353085" />
-      <entry key="S2" value="4.520666366684116" />
-      <entry key="S5" value="4.797157568098978" />
-      <entry key="S10" value="4.896607507285275" />
-      <entry key="S30" value="4.965261718792841" />
-      <entry key="S60" value="5.0185977473530246" />
-      <entry key="M2" value="5.708803577368416" />
-      <entry key="M5" value="14.037238270298051" />
-      <entry key="M10" value="42.38223209095513" />
-      <entry key="M15" value="71.6679120425124" />
-      <entry key="M30" value="139.95839446906476" />
-      <entry key="H1" value="239.49056860600209" />
-      <entry key="H2" value="358.05351660106555" />
-      <entry key="H4" value="458.79962585938796" />
-      <entry key="D1" value="579.0019190681232" />
-      <entry key="W1" value="604.5114511246326" />
+      <entry key="MS100" value="1.3699969240608696" />
+      <entry key="MS500" value="3.223680945891624" />
+      <entry key="S2" value="5.989943183115023" />
+      <entry key="S5" value="7.427112724331137" />
+      <entry key="S10" value="8.121651638615887" />
+      <entry key="S30" value="8.682414562023293" />
+      <entry key="S60" value="8.837776636335239" />
+      <entry key="M2" value="8.918006548326193" />
+      <entry key="M5" value="9.01113709521104" />
+      <entry key="M10" value="11.360388983048233" />
+      <entry key="M15" value="19.48954667646845" />
+      <entry key="M30" value="62.56714832193874" />
+      <entry key="H1" value="157.16734275579486" />
+      <entry key="H2" value="290.6319356916584" />
+      <entry key="H4" value="415.90250289393197" />
+      <entry key="D1" value="576.5331782228832" />
+      <entry key="W1" value="611.786174950754" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
       <entry key="MS500" value="0.0" />
-      <entry key="S2" value="9.493533406668553E-265" />
-      <entry key="S5" value="2.4602041864401855E-106" />
-      <entry key="S10" value="1.5685038050484655E-53" />
-      <entry key="S30" value="2.5039105632941208E-18" />
-      <entry key="S60" value="1.6381759478126534E-9" />
-      <entry key="M2" value="5.6217138515387434E-5" />
-      <entry key="M5" value="0.049273242688704616" />
-      <entry key="M10" value="0.5309219585966027" />
-      <entry key="M15" value="1.1872979027309132" />
-      <entry key="M30" value="2.727929634131954" />
-      <entry key="H1" value="4.437596461601771" />
-      <entry key="H2" value="6.046300278468053" />
-      <entry key="H4" value="7.276992964871369" />
-      <entry key="D1" value="8.668575488401194" />
-      <entry key="W1" value="8.951405463243638" />
+      <entry key="S2" value="0.0" />
+      <entry key="S5" value="1.7821172903040512E-256" />
+      <entry key="S10" value="1.334959658683459E-128" />
+      <entry key="S30" value="2.3729012626758967E-43" />
+      <entry key="S60" value="5.0430232772723085E-22" />
+      <entry key="M2" value="3.119133404198282E-11" />
+      <entry key="M5" value="1.5498056141714802E-4" />
+      <entry key="M10" value="0.029775820013974903" />
+      <entry key="M15" value="0.17395959817420006" />
+      <entry key="M30" value="1.0441851468980898" />
+      <entry key="H1" value="2.745490721747829" />
+      <entry key="H2" value="4.7558242685090075" />
+      <entry key="H4" value="6.453866809837781" />
+      <entry key="D1" value="8.496872002764825" />
+      <entry key="W1" value="8.925858388324013" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.7247902346595734" />
-      <entry key="MS500" value="3.495270536637379" />
-      <entry key="S2" value="4.5159571351485965" />
-      <entry key="S5" value="4.795161050379489" />
-      <entry key="S10" value="4.895588927874539" />
-      <entry key="S30" value="4.964917510865285" />
-      <entry key="S60" value="5.018423552336493" />
-      <entry key="M2" value="5.7087568583039054" />
-      <entry key="M5" value="14.086180562032206" />
-      <entry key="M10" value="42.91193467201914" />
-      <entry key="M15" value="72.85349944216102" />
-      <entry key="M30" value="142.68443313095946" />
-      <entry key="H1" value="243.92665136454147" />
-      <entry key="H2" value="364.0988024441419" />
-      <entry key="H4" value="466.0760152728806" />
-      <entry key="D1" value="587.6699985900593" />
-      <entry key="W1" value="613.4626469644227" />
+      <entry key="MS100" value="1.3305642539199" />
+      <entry key="MS500" value="3.2043231077386487" />
+      <entry key="S2" value="5.980340282682937" />
+      <entry key="S5" value="7.42216613671255" />
+      <entry key="S10" value="8.11889767512409" />
+      <entry key="S30" value="8.681419250170196" />
+      <entry key="S60" value="8.83726814410147" />
+      <entry key="M2" value="8.917749494479477" />
+      <entry key="M5" value="9.011187526319139" />
+      <entry key="M10" value="11.39004454656445" />
+      <entry key="M15" value="19.663221050787925" />
+      <entry key="M30" value="63.61059233488452" />
+      <entry key="H1" value="159.91188830547867" />
+      <entry key="H2" value="295.3869577067326" />
+      <entry key="H4" value="422.3558322563181" />
+      <entry key="D1" value="585.0295637220689" />
+      <entry key="W1" value="620.7118242623113" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -135,28 +111,28 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent"><![CDATA[{
-  "keyToString": {
-    "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "RunOnceActivity.MCP Project settings loaded": "true",
-    "RunOnceActivity.ShowReadmeOnStart": "true",
-    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
-    "RunOnceActivity.git.unshallow": "true",
-    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "ai.playground.ignore.import.keys.banner.in.settings": "true",
-    "codeWithMe.voiceChat.enabledByDefault": "false",
-    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
-    "git-widget-placeholder": "tests__budgets__reports",
-    "junie.onboarding.icon.badge.shown": "true",
-    "node.js.detected.package.eslint": "true",
-    "node.js.selected.package.eslint": "(autodetect)",
-    "node.js.selected.package.tslint": "(autodetect)",
-    "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "junie.application.models",
-    "to.speed.mode.migration.done": "true",
-    "vue.rearranger.settings.migration": "true"
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.MCP Project settings loaded&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
+    &quot;ai.playground.ignore.import.keys.banner.in.settings&quot;: &quot;true&quot;,
+    &quot;codeWithMe.voiceChat.enabledByDefault&quot;: &quot;false&quot;,
+    &quot;com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;tests__budgets__reports&quot;,
+    &quot;junie.onboarding.icon.badge.shown&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;project.propVCSSupport.DirectoryMappings&quot;,
+    &quot;to.speed.mode.migration.done&quot;: &quot;true&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
   }
-}]]></component>
+}</component>
   <component name="RecapSpentCounter">
     <option name="endsOfQuotaMs" value="1772434816937" />
     <option name="spentUsd" value="0.061040696" />
@@ -167,8 +143,8 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-js-predefined-d6986cc7102b-31caf2ab9e3c-JavaScript-PY-261.25134.203" />
-        <option value="bundled-python-sdk-245168a56dbd-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.25134.203" />
+        <option value="bundled-js-predefined-d6986cc7102b-31caf2ab9e3c-JavaScript-PY-261.26222.68" />
+        <option value="bundled-python-sdk-50341a9f1f9c-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.26222.68" />
       </set>
     </attachedChunks>
   </component>
@@ -184,7 +160,10 @@
       <workItem from="1771939517531" duration="62702000" />
       <workItem from="1772628830918" duration="13882000" />
       <workItem from="1774608676423" duration="724000" />
-      <workItem from="1782904538747" duration="20204000" />
+      <workItem from="1782904538747" duration="21128000" />
+      <workItem from="1783323390020" duration="14857000" />
+      <workItem from="1783591344439" duration="1440000" />
+      <workItem from="1783681596188" duration="1467000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -298,7 +277,15 @@
       <option name="project" value="LOCAL" />
       <updated>1783078540330</updated>
     </task>
-    <option name="localTasksCounter" value="15" />
+    <task id="LOCAL-00015" summary="Refactor project structure, add Scrum Team agents, enhance workflows, update tools and state management.&#10;&#10;Key changes:&#10;- Restructure directories and move templates from `docs/` to `spec-templates/`.&#10;- Introduce the `Scrum Team` agents with the `root_agent` delegating tasks to sub-agents.&#10;- Add tools for state, budget, backlog, GitHub integration, and quality management.&#10;- Improve agent prompts and safeguards for template usage.&#10;- Establish tests for agent functionality, tools, and callbacks.">
+      <option name="closed" value="true" />
+      <created>1783090953738</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1783090953738</updated>
+    </task>
+    <option name="localTasksCounter" value="16" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -325,6 +312,7 @@
     <MESSAGE value="Add safeguards for template usage, update README with recovery instructions, and refine agent prompts for existing work checks and content alignment" />
     <MESSAGE value="Sync state with Markdown as source of truth for stories, refine backlog operations, and enhance story management workflows." />
     <MESSAGE value="feat: Enhance Scrum Master capabilities and project analysis&#10;&#10;This commit introduces significant enhancements to the Scrum Master agent and the overall project analysis capabilities.&#10;&#10;Key changes include:&#10;&#10;- **New Quality Guardian Agent:** A new agent, `QualityGuardian`, has been added to track and report on quality KPIs, including team effectiveness, result quality, maintainability, and security.&#10;- **Workflow Documentation:** The Scrum Master can now generate a UML diagram of the current workflow and gather proposals for improvements.&#10;- **Enhanced Budget Management:** The Scrum Master can now provide a cost breakdown of roles, recommend a sprint budget, and optimize the process based on the budget. The process overhead for improvements is now configurable.&#10;- **Security Hardening:** The `litellm` integration has been hardened by restricting proxy access to localhost and pinning the version to `1.34.3` or higher to address a known supply chain security incident.&#10;- **Pydantic State Management:** The agent's state is now managed using Pydantic models, providing type safety and a more structured approach.&#10;- **Comprehensive Testing:** A testing framework has been established with tests for all agents and tools, ensuring the quality and correctness of the agent's behavior.&#10;&#10;These changes improve the project's quality, maintainability, and security, and provide better insights into the development process." />
-    <option name="LAST_COMMIT_MESSAGE" value="feat: Enhance Scrum Master capabilities and project analysis&#10;&#10;This commit introduces significant enhancements to the Scrum Master agent and the overall project analysis capabilities.&#10;&#10;Key changes include:&#10;&#10;- **New Quality Guardian Agent:** A new agent, `QualityGuardian`, has been added to track and report on quality KPIs, including team effectiveness, result quality, maintainability, and security.&#10;- **Workflow Documentation:** The Scrum Master can now generate a UML diagram of the current workflow and gather proposals for improvements.&#10;- **Enhanced Budget Management:** The Scrum Master can now provide a cost breakdown of roles, recommend a sprint budget, and optimize the process based on the budget. The process overhead for improvements is now configurable.&#10;- **Security Hardening:** The `litellm` integration has been hardened by restricting proxy access to localhost and pinning the version to `1.34.3` or higher to address a known supply chain security incident.&#10;- **Pydantic State Management:** The agent's state is now managed using Pydantic models, providing type safety and a more structured approach.&#10;- **Comprehensive Testing:** A testing framework has been established with tests for all agents and tools, ensuring the quality and correctness of the agent's behavior.&#10;&#10;These changes improve the project's quality, maintainability, and security, and provide better insights into the development process." />
+    <MESSAGE value="Refactor project structure, add Scrum Team agents, enhance workflows, update tools and state management.&#10;&#10;Key changes:&#10;- Restructure directories and move templates from `docs/` to `spec-templates/`.&#10;- Introduce the `Scrum Team` agents with the `root_agent` delegating tasks to sub-agents.&#10;- Add tools for state, budget, backlog, GitHub integration, and quality management.&#10;- Improve agent prompts and safeguards for template usage.&#10;- Establish tests for agent functionality, tools, and callbacks." />
+    <option name="LAST_COMMIT_MESSAGE" value="Refactor project structure, add Scrum Team agents, enhance workflows, update tools and state management.&#10;&#10;Key changes:&#10;- Restructure directories and move templates from `docs/` to `spec-templates/`.&#10;- Introduce the `Scrum Team` agents with the `root_agent` delegating tasks to sub-agents.&#10;- Add tools for state, budget, backlog, GitHub integration, and quality management.&#10;- Improve agent prompts and safeguards for template usage.&#10;- Establish tests for agent functionality, tools, and callbacks." />
   </component>
 </project>

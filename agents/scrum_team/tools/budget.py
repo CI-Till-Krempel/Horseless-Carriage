@@ -6,21 +6,16 @@ from typing import Any, Dict, List
 from .base import _state_file_path, _configured_repo_root
 from ..helpers import get_process_overhead_percentage
 
-def update_budgets(total: int = None, total_usd: float = None, agent_budgets: Dict[str, int] = None, tool_context=None) -> Dict[str, Any]:
+def update_budgets(total_usd: float = None, tool_context=None) -> Dict[str, Any]:
     """
-    Update the total and per-agent token budgets.
-    - total: token budget
+    Update the total USD budget for the sprint.
     - total_usd: USD budget for LiteLLM proxy
     """
     from .scrum import save_state_to_repo
     s = tool_context.state
-    budgets = s.get("budgets", {"total": 0, "agents": {}})
-    if total is not None:
-        budgets["total"] = total
+    budgets = s.get("budgets", {})
     if total_usd is not None:
         budgets["total_usd"] = total_usd
-    if agent_budgets:
-        budgets["agents"].update(agent_budgets)
     s["budgets"] = budgets
     save_state_to_repo(tool_context)
     return {"status": "ok", "budgets": budgets}
@@ -30,15 +25,13 @@ def get_budget_status(tool_context=None) -> Dict[str, Any]:
     Return the current budget usage and status.
     """
     s = tool_context.state
-    budgets = s.get("budgets", {"total": 0, "agents": {}})
+    budgets = s.get("budgets", {})
     usage = s.get("token_usage", {"total": 0, "agents": {}})
     
     status = {
         "budgets": budgets,
         "usage": usage,
-        "remaining_total_tokens": budgets.get("total", 0) - usage.get("total", 0),
         "total_usd": budgets.get("total_usd"),
-        "is_over_budget_tokens": usage.get("total", 0) >= budgets.get("total", 0) if budgets.get("total", 0) > 0 else False
     }
     return {"status": "ok", "budget_status": status}
 
@@ -155,7 +148,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     for item in accomplishments:
         report += f"- {item}\n"
         
-    report += f"\n## Budget and Usage\n- Token Budget: {budgets.get('total', 0)}\n- Token Usage: {usage['total']}\n"
+    report += f"\n## Budget and Usage\n"
     if budgets.get("total_usd"):
         report += f"- USD Budget (LiteLLM): ${budgets.get('total_usd'):.2f}\n"
     
@@ -178,7 +171,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             report += f"- {title}: {estimate}\n"
             
     s["sprint_report"] = report
-    path = "spec-templates/reports/SPRINT-REPORT-LATEST.md"
+    path = "docs/reports/SPRINT-REPORT-LATEST.md"
     write_file(path, report, overwrite=True, tool_context=tool_context)
     
     return {"status": "ok", "report": report, "path": path}
@@ -205,18 +198,18 @@ def recommend_sprint_budget(tool_context=None) -> Dict[str, Any]:
     Recommends a sprint budget based on historical data.
     """
     # In a real implementation, this would analyze historical data to provide a more accurate recommendation.
-    return {"status": "ok", "recommended_budget": 100000}
+    return {"status": "ok", "recommended_budget": 10.0}
 
 def optimize_process_for_budget(tool_context=None) -> Dict[str, Any]:
     """
     Optimizes the amount of overhead spent on process based on the sprint budget.
     """
     s = tool_context.state
-    budgets = s.get("budgets", {"total": 0})
+    budgets = s.get("budgets", {})
     
     process_overhead_percentage = get_process_overhead_percentage()
     
-    if budgets.get("total", 0) * (process_overhead_percentage / 100) < 20000:
+    if budgets.get("total_usd", 0) * (process_overhead_percentage / 100) < 2:
         # Lightweight process for small budgets
         process_optimizations = [
             "Reduced number of meetings",

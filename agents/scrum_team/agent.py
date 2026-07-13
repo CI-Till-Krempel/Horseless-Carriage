@@ -1,5 +1,6 @@
 # agents/scrum_team/agent.py
 import os
+import requests
 from typing import Optional, Union, Dict, Any
 
 import litellm
@@ -116,33 +117,50 @@ def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: 
 
 # --- Budget Enforcement Callbacks ---
 
-def enforce_budget_callback(callback_context: CallbackContext) -> Optional[types.Content]:
+def check_cost_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
     """
-    BeforeAgentCallback: Checks if the team is over budget before allowing an agent to start.
+    BeforeModelCallback: Checks if the team is over budget before allowing an agent to start.
+    This is a real-time check against the LiteLLM proxy.
     """
     state = get_scrum_state(callback_context.state)
+    budget_limit = state.budgets.total_usd
     
-    if state.budgets.total > 0 and state.token_usage.total >= state.budgets.total:
-        msg = (
-            f"🚫 [BUDGET EXCEEDED] Total token budget ({state.budgets.total}) reached. "
-            f"Current usage: {state.token_usage.total}. Agent execution halted. "
-            "Please trigger a Sprint Review/Retrospective or increase the budget via `update_budgets`."
-        )
-        return types.Content(role="model", parts=[types.Part(text=msg)])
-    return None
+    if budget_limit <= 0:
+        return None
 
-def check_model_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
-    """
-    BeforeModelCallback: Checks budget before each individual LLM call.
-    """
-    state = get_scrum_state(callback_context.state)
+    master_key = os.environ.get("LITELLM_MASTER_KEY")
+    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE")
+    budget_id = "scrum-sprint-budget"
 
-    if state.budgets.total > 0 and state.token_usage.total >= state.budgets.total:
-        msg = f"🚫 [MODEL BLOCKED] Budget exceeded ({state.token_usage.total}/{state.budgets.total})."
-        return LlmResponse(
-            content=types.Content(role="model", parts=[types.Part(text=msg)]),
-            model_version=llm_request.model or "unknown"
+    if not master_key or not proxy_base:
+        return None
+
+    try:
+        response = requests.get(
+            f"{proxy_base}/budget/info?budget_id={budget_id}",
+            headers={"Authorization": f"Bearer {master_key}"},
+            timeout=5
         )
+        response.raise_for_status()
+        budget_info = response.json()
+        current_spend = budget_info.get("spend", 0.0)
+
+        if current_spend >= budget_limit:
+            msg = (
+                f"🚫 [BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
+                f"Current spend: ${current_spend:.2f}. Agent execution halted."
+            )
+            return LlmResponse(
+                content=types.Content(role="model", parts=[types.Part(text=msg)]),
+                model_version=llm_request.model or "unknown"
+            )
+    except requests.RequestException as e:
+        # If the proxy is down, we can't check the budget, so we'll allow the call to proceed.
+        # This is a trade-off between availability and strict budget enforcement.
+        # In a production system, you might want to handle this differently.
+        print(f"Warning: Could not check budget status. {e}")
+        pass
+
     return None
 
 def update_token_usage_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
@@ -168,8 +186,7 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
 
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
-    "before_agent_callback": enforce_budget_callback,
-    "before_model_callback": [inject_litellm_key_callback, check_model_budget_callback],
+    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
     "after_model_callback": update_token_usage_callback,
 }
 
