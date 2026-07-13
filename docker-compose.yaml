@@ -35,6 +35,8 @@ services:
       - type: bind
         source: ${STATE_REPO_PATH}
         target: /app/state_repo
+      # Mount the sessions directory to persist conversation history
+      - ./sessions:/app/sessions
     environment:
       - STATE_REPO_PATH=/app/state_repo
       - LITELLM_PROXY_API_BASE=http://litellm:4000
@@ -44,11 +46,13 @@ services:
       - GITHUB_APP_ID=${GITHUB_APP_ID}
       - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
       - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
+      - SESSION_ID=${SESSION_ID}
     depends_on:
       - litellm
     # Keep the container running and allow for interactive sessions
     stdin_open: true
     tty: true
+    command: adk run --session_service_uri sqlite:////tmp/adk_sessions.db --verbose agents
 
   # -----------------------------------------
   # OPTIONAL (later): Ollama for local models

@@ -5,7 +5,7 @@
 # This script will:
 # 1. Load environment variables from .env.
 # 2. Check for the existence of the state repository path.
-# 3. Build and run the agent container using Docker Compose.
+# 3. Build and run the agent container with session management and logging.
 #
 
 set -e
@@ -34,14 +34,24 @@ echo "  LiteLLM UI: http://localhost:4000/ui"
 echo ""
 
 # 3. Build and run the agent container
-#    The `-d` flag will be passed to `docker compose up` if the first argument is "daemon"
+SESSION_FILE="sessions/${SESSION_ID}.json"
+CMD_ARGS="--session_service_uri sqlite:////tmp/adk_sessions.db --verbose agents"
+
+if [ -f "$SESSION_FILE" ]; then
+    echo "Resuming session from $SESSION_FILE..."
+    CMD_ARGS="--resume $SESSION_FILE $CMD_ARGS"
+else
+    echo "Starting a new session: $SESSION_ID"
+fi
+
+# The `-d` flag will be passed to `docker compose up` if the first argument is "daemon"
 if [ "$1" == "daemon" ]; then
     shift
-    docker compose up -d --build agent "$@"
+    docker compose up -d --build agent
     echo "Agent container started in daemon mode."
     echo "To view logs, run: docker compose logs -f agent"
 else
     echo "Running agent in interactive mode. Press Ctrl+C to exit."
     # Use `docker compose run` for interactive sessions
-    docker compose run --rm --build agent
+    docker compose run --rm --build agent adk run $CMD_ARGS
 fi

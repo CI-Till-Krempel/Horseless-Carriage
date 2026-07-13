@@ -1,10 +1,11 @@
 # agents/scrum_team/tools/workflow.py
-from ..state import ScrumState
+from typing import List, Dict, Any
 
-def generate_workflow_diagram(state: ScrumState) -> str:
+def generate_workflow_diagram(tool_context=None) -> Dict[str, Any]:
     """
     Generates a PlantUML diagram of the current workflow.
     """
+    from .docs import write_file
     plantuml_code = """
 @startuml
 title Current Workflow
@@ -70,11 +71,9 @@ stop
 
 @enduml
 """
-    with open("spec-templates/workflow.puml", "w") as f:
-        f.write(plantuml_code)
-    return "Workflow diagram generated at spec-templates/workflow.puml"
+    return write_file("specs/workflow.puml", plantuml_code, overwrite=True, tool_context=tool_context)
 
-def gather_workflow_improvement_proposals(state: ScrumState) -> list:
+def gather_workflow_improvement_proposals(tool_context=None) -> List[str]:
     """
     Gathers proposals for workflow improvements.
     """

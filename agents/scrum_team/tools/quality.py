@@ -1,7 +1,8 @@
 # agents/scrum_team/tools/quality.py
 from ..state import ScrumState
+from typing import Dict, Any
 
-def calculate_kpis(state: ScrumState) -> dict:
+def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     """
     Calculates and returns a dictionary of quality KPIs.
     """
@@ -31,12 +32,13 @@ def calculate_kpis(state: ScrumState) -> dict:
         },
     }
 
-def update_sprint_report(kpis: dict, state: ScrumState) -> ScrumState:
+def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     Adds the KPI dashboard to the sprint report.
     """
     # In a real implementation, this would format the KPIs into a nice
     # dashboard and append it to the sprint report.
     # For now, we'll just store the KPIs in the state.
-    state.sprint_report_kpis = kpis
-    return state
+    if tool_context and hasattr(tool_context, "state"):
+        tool_context.state["sprint_report_kpis"] = kpis
+    return {"status": "ok", "kpis": kpis}

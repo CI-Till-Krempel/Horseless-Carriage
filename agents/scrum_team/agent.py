@@ -87,20 +87,20 @@ def get_model_name(role: str) -> str:
 
 def get_scrum_state(context_state) -> ScrumState:
     """Constructs a ScrumState object from the context state."""
-    sprint_backlog = context_state.get("sprint_backlog", {})
-    if isinstance(sprint_backlog, list):
-        sprint_backlog = {item.get("title", f"item_{i}"): item for i, item in enumerate(sprint_backlog)}
-
-    return ScrumState(
-        budgets=Budgets(**context_state.get("budgets", {})),
-        token_usage=TokenUsage(**context_state.get("token_usage", {})),
-        litellm_keys=context_state.get("litellm_keys", {}),
-        backlog=context_state.get("backlog", {}),
-        epics=context_state.get("epics", {}),
-        retrospective_actions=context_state.get("retrospective_actions", []),
-        sprint_backlog=sprint_backlog,
-        sprint_report_kpis=context_state.get("sprint_report_kpis", {}),
-    )
+    # Ensure all required keys exist in context_state for ScrumState validation
+    # This is a bit defensive but helps if context_state is partially initialized
+    data = context_state.copy()
+    
+    # Map sub-models
+    budgets_data = data.get("budgets") or {}
+    token_usage_data = data.get("token_usage") or {}
+    
+    if isinstance(budgets_data, dict):
+        data["budgets"] = Budgets(**budgets_data)
+    if isinstance(token_usage_data, dict):
+        data["token_usage"] = TokenUsage(**token_usage_data)
+        
+    return ScrumState(**data)
 
 def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
@@ -180,7 +180,7 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
         state.token_usage.agents[agent_name] = state.token_usage.agents.get(agent_name, 0) + new_tokens
         
         # Update the state object with the new usage values
-        callback_context.state["token_usage"] = state.token_usage.dict()
+        callback_context.state["token_usage"] = state.token_usage.model_dump()
 
     return None
 

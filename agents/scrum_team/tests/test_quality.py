@@ -2,11 +2,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from ..tools.quality import (
+from agents.scrum_team.tools.quality import (
     calculate_kpis,
     update_sprint_report,
 )
-from ..state import ScrumState
+from agents.scrum_team.state import ScrumState
 
 
 class TestQualityTools(unittest.TestCase):
@@ -15,8 +15,9 @@ class TestQualityTools(unittest.TestCase):
         Acceptance Criteria:
         - KPIs are calculated and returned as a dictionary.
         """
-        state = ScrumState()
-        kpis = calculate_kpis(state)
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        kpis = calculate_kpis()
         self.assertIsInstance(kpis, dict)
         self.assertIn("team_effectiveness", kpis)
         self.assertIn("result_quality", kpis)
@@ -28,15 +29,16 @@ class TestQualityTools(unittest.TestCase):
         Acceptance Criteria:
         - The sprint report is updated with the KPI dashboard.
         """
-        state = ScrumState()
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
         kpis = {
             "team_effectiveness": {
                 "say_do_ratio": 0.8,
                 "commitment_reliability": 1.0,
             }
         }
-        state = update_sprint_report(kpis, state)
-        self.assertEqual(state.sprint_report_kpis, kpis)
+        update_sprint_report(kpis=kpis, tool_context=tool_context)
+        self.assertEqual(tool_context.state["sprint_report_kpis"], kpis)
 
 
 if __name__ == "__main__":

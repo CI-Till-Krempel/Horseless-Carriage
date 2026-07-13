@@ -2,44 +2,50 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from ..tools.docs import (
+from agents.scrum_team.tools.docs import (
     read_doc,
     upsert_prd,
     upsert_srs,
 )
-from ..state import ScrumState
+from agents.scrum_team.state import ScrumState
 
 
 class TestDocsTools(unittest.TestCase):
-    @patch("builtins.open", new_callable=unittest.mock.mock_open, read_data="This is a test document.")
-    def test_read_doc(self, mock_open):
+    @patch("pathlib.Path.exists")
+    @patch("pathlib.Path.read_text")
+    def test_read_doc(self, mock_read_text, mock_exists):
         """
         Acceptance Criteria:
         - A document is read from the file system.
         """
-        state = ScrumState()
-        content = read_doc("test.md", state)
-        self.assertEqual(content, "This is a test document.")
+        mock_exists.return_value = True
+        mock_read_text.return_value = "This is a test document."
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        content = read_doc("spec-templates/test.md", tool_context=tool_context)
+        self.assertEqual(content["content"], "This is a test document.")
 
-    @patch("builtins.open", new_callable=unittest.mock.mock_open)
-    def test_upsert_prd(self, mock_open):
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_upsert_prd(self, mock_write_file):
         """
         Acceptance Criteria:
         - A PRD is created or updated.
         """
-        state = ScrumState()
-        upsert_prd("This is a PRD.", state)
-        mock_open().write.assert_called_with("This is a PRD.")
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        upsert_prd("This is a PRD.", "test.md", tool_context=tool_context)
+        mock_write_file.assert_called_with("specs/requirements/PRD-test.md", "This is a PRD.", overwrite=True, tool_context=tool_context)
 
-    @patch("builtins.open", new_callable=unittest.mock.mock_open)
-    def test_upsert_srs(self, mock_open):
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_upsert_srs(self, mock_write_file):
         """
         Acceptance Criteria:
         - An SRS is created or updated.
         """
-        state = ScrumState()
-        upsert_srs("This is an SRS.", state)
-        mock_open().write.assert_called_with("This is an SRS.")
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        upsert_srs("This is an SRS.", "test.md", tool_context=tool_context)
+        mock_write_file.assert_called_with("specs/requirements/SRS-test.md", "This is an SRS.", overwrite=True, tool_context=tool_context)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# agents/scrum_team/tools/spec-templates.py
+# agents/scrum_team/tools/docs.py
 from __future__ import annotations
 import json
 from typing import Any, Dict
@@ -26,21 +26,28 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
 
 def read_doc(path: str, tool_context=None) -> Dict[str, Any]:
     """
-    Read any file within the /spec-templates folder of the repository.
+    Read any file within the /spec-templates folder of the main project or the /specs folder of the state repo.
     """
+    proj_root = _project_root()
     repo_root = _configured_repo_root(tool_context)
     
-    # Enforce spec-templates/ prefix
     clean_path = path.lstrip("/")
-    if not clean_path.startswith("spec-templates/"):
-        return {"status": "error", "message": f"Access denied. Path '{path}' must be within the 'spec-templates/' directory."}
-        
-    full_path = (repo_root / clean_path).resolve()
     
-    # Safety: ensure the path is within repo_root/spec-templates
-    docs_root = (repo_root / "spec-templates").resolve()
-    if not str(full_path).startswith(str(docs_root)):
-        return {"status": "error", "message": f"Path '{path}' is outside the 'spec-templates/' directory."}
+    # Determine the correct root directory based on the path
+    if clean_path.startswith("spec-templates/"):
+        base_root = proj_root
+        allowed_root = (proj_root / "spec-templates").resolve()
+    elif clean_path.startswith("specs/"):
+        base_root = repo_root
+        allowed_root = (repo_root / "specs").resolve()
+    else:
+        return {"status": "error", "message": f"Access denied. Path '{path}' must be within 'spec-templates/' or 'specs/'."}
+        
+    full_path = (base_root / clean_path).resolve()
+    
+    # Safety: ensure the path is within the allowed root
+    if not str(full_path).startswith(str(allowed_root)):
+        return {"status": "error", "message": f"Path '{path}' is outside the allowed directory."}
         
     if not full_path.exists():
         return {"status": "error", "message": f"File '{path}' not found."}
@@ -53,7 +60,7 @@ def read_doc(path: str, tool_context=None) -> Dict[str, Any]:
 
 def upsert_prd(content: str, filename: str, tool_context=None) -> Dict[str, Any]:
     """
-    Create or update a Product Requirements Document (PRD) in spec-templates/requirements/.
+    Create or update a Product Requirements Document (PRD) in specs/requirements/.
     - filename: e.g. "PRD-Auth-MVP.md"
     """
     if not filename.endswith(".md"):
@@ -61,12 +68,12 @@ def upsert_prd(content: str, filename: str, tool_context=None) -> Dict[str, Any]
     if not filename.startswith("PRD-"):
         filename = "PRD-" + filename
         
-    path = f"spec-templates/requirements/{filename}"
+    path = f"specs/requirements/{filename}"
     return write_file(path, content, overwrite=True, tool_context=tool_context)
 
 def upsert_srs(content: str, filename: str, tool_context=None) -> Dict[str, Any]:
     """
-    Create or update a Software Requirements Specification (SRS) in spec-templates/requirements/.
+    Create or update a Software Requirements Specification (SRS) in specs/requirements/.
     - filename: e.g. "SRS-Auth-Backend.md"
     """
     if not filename.endswith(".md"):
@@ -74,25 +81,24 @@ def upsert_srs(content: str, filename: str, tool_context=None) -> Dict[str, Any]
     if not filename.startswith("SRS-"):
         filename = "SRS-" + filename
         
-    path = f"spec-templates/requirements/{filename}"
+    path = f"specs/requirements/{filename}"
     return write_file(path, content, overwrite=True, tool_context=tool_context)
 
 def create_from_template(template_path: str, destination_path: str, substitutions_json: str = "{}", overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Create a documentation file from a template under spec-templates/.
-    - template_path: path relative to repo root (e.g., spec-templates/requirements/TEMPLATE-PRD.md)
-    - destination_path: output file path relative to repo root
+    - template_path: path relative to project root (e.g., spec-templates/requirements/TEMPLATE-PRD.md)
+    - destination_path: output file path relative to state repo root (e.g., specs/requirements/PRD-Auth-MVP.md)
     - substitutions_json: JSON dict of placeholder -> value. Placeholders formatted as <KEY> in template.
     - overwrite: whether to overwrite existing file
     """
+    proj_root = _project_root()
     repo_root = _configured_repo_root(tool_context)
-    src = (repo_root / template_path).resolve()
+    
+    src = (proj_root / template_path).resolve()
     dst = (repo_root / destination_path).resolve()
+    
     try:
-        if not src.exists():
-            # Fallback to local project template if not in repo
-            src = (_project_root() / template_path).resolve()
-            
         if not src.exists():
             return {"status": "error", "message": f"Template not found: {template_path}"}
             
@@ -104,27 +110,22 @@ def create_from_template(template_path: str, destination_path: str, substitution
         text = raw
         for k, v in subs.items():
             text = text.replace(f"<{k}>", str(v))
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if dst.exists() and not overwrite:
-            return {"status": "error", "message": f"File exists: {destination_path}"}
-        dst.write_text(text, encoding="utf-8")
-        return {"status": "ok", "path": str(dst)}
+        
+        return write_file(destination_path, text, overwrite=overwrite, tool_context=tool_context)
+
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
-    Copy the spec-templates/ directory from the current project into the configured target repo,
-    and create a product-specific README.md.
+    Creates a specs/ directory and a README.md in the configured target repo.
     Then performs an initial commit and push.
     - overwrite: If True, existing files in the target will be replaced.
     """
-    import shutil
     from .github import git_push
     
-    proj_root = _project_root()
     repo_root = _configured_repo_root(tool_context)
-    if repo_root == proj_root:
+    if repo_root == _project_root():
         return {"status": "error", "message": "The configured target repository is the same as the project root. Seeding is not allowed here."}
 
     # Ensure target exists
@@ -135,46 +136,31 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
         # Create/Update README.md
         dst_readme = repo_root / "README.md"
         if not dst_readme.exists() or overwrite:
-            # Try to build a README from session.state
             vision = tool_context.state.get("product_vision", "").strip()
             goals = tool_context.state.get("product_goals", [])
             
-            content = ""
-            if vision:
-                content = f"# Product Vision\n\n{vision}\n"
-            else:
-                content = "# Project README\n\nWelcome to your new project repository.\n"
-            
-            content += "\n<!-- AGENT SAFEGUARD: This README reflects the current product vision and goals. Before proposing changes, check the decision log and existing spec-templates. -->\n"
+            content = f"# Product Vision\n\n{vision}\n" if vision else "# Project README\n\nWelcome to your new project repository.\n"
             
             if goals:
                 content += "\n## Product Goals\n"
                 for g in goals:
                     content += f"- {g}\n"
             
-            content += "\n## Documentation\nSee [spec-templates/README.md](spec-templates/README.md) for details on the repository structure.\n"
-            
             dst_readme.write_text(content, encoding="utf-8")
             files_seeded.append("README.md")
 
-        # Copy spec-templates/ directory
-        src_docs = proj_root / "spec-templates"
-        dst_docs = repo_root / "spec-templates"
-        if src_docs.exists():
-            if not dst_docs.exists():
-                shutil.copytree(src_docs, dst_docs)
-                files_seeded.append("spec-templates/")
-            elif overwrite:
-                # Merge spec-templates/ or clear and copy
-                shutil.rmtree(dst_docs)
-                shutil.copytree(src_docs, dst_docs)
-                files_seeded.append("spec-templates/ (overwritten)")
+        # Create specs/ directory
+        specs_dir = repo_root / "specs"
+        if not specs_dir.exists():
+            specs_dir.mkdir()
+            (specs_dir / ".gitkeep").touch()
+            files_seeded.append("specs/")
 
         # Initial commit and push
         if files_seeded:
             push_res = git_push(
                 branch="main", # default to main for seeding
-                commit_message="chore: initial seed of README and spec-templates",
+                commit_message="chore: initial seed of README and specs directory",
                 add_all=True,
                 tool_context=tool_context
             )

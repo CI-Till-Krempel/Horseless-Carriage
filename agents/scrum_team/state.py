@@ -1,6 +1,6 @@
 # agents/scrum_team/state.py
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 class Budgets(BaseModel):
     total_usd: float = 0.0
@@ -10,12 +10,18 @@ class TokenUsage(BaseModel):
     agents: Dict[str, int] = Field(default_factory=dict)
 
 class ScrumState(BaseModel):
+    product_vision: str = ""
+    product_goals: List[str] = Field(default_factory=list)
+    product_backlog: List[Dict] = Field(default_factory=list)
+    definition_of_done: List[str] = Field(default_factory=list)
+    sprint_goal: str = ""
+    sprint_backlog: List[Dict] = Field(default_factory=list)
+    impediment_log: List[Dict] = Field(default_factory=list)
+    retro_actions: List[Dict] = Field(default_factory=list)
+    decision_log: List[Dict] = Field(default_factory=list)
+    sprint_report: str = ""
     budgets: Budgets = Field(default_factory=Budgets)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
     litellm_keys: Dict[str, str] = Field(default_factory=dict)
-    backlog: Dict[str, Dict] = Field(default_factory=dict)
-    epics: Dict[str, Dict] = Field(default_factory=dict)
-    retrospective_actions: List[str] = Field(default_factory=list)
-    sprint_backlog: Dict[str, Dict] = Field(default_factory=dict)
+    story_estimates: Dict[str, Any] = Field(default_factory=dict)
     sprint_report_kpis: Dict = Field(default_factory=dict)
-    # Add other state variables here as needed

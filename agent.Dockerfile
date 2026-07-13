@@ -1,13 +1,9 @@
-# Use an official Python runtime as a parent image
-FROM python:3.11-slim
+# --- Base Stage ---
+FROM python:3.11-slim AS base
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Add the pip bin directory to the PATH, which is where pip installs executables
-ENV PATH="/usr/local/bin:${PATH}"
-
-# Install git and gh CLI
+# Install system dependencies
 RUN apt-get update && apt-get install -y git curl
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
@@ -15,19 +11,41 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get update \
     && apt-get install gh -y
 
-# Copy the requirements file into the container at /app
-COPY requirements.txt .
+# Set the PATH for pip executables
+ENV PATH="/root/.local/bin:${PATH}"
 
-# Install any needed packages specified in requirements.txt
+# Copy and install Python dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the agent source code and entrypoint script
+
+# --- Test Stage ---
+FROM base AS test
+
+# Set the PYTHONPATH to the project root
+ENV PYTHONPATH="/app"
+
+# Install test-specific dependencies
+RUN pip install pytest pytest-cov
+
+# Copy source code and tests
+COPY . .
+
+# Default command to run tests with coverage
+CMD ["pytest", "--cov=agents", "agents/scrum_team/tests"]
+
+
+# --- Final Stage (Production) ---
+FROM base AS final
+
+# Copy only the necessary application code from the base stage
+COPY --from=base /app /app
 COPY ./agents ./agents
+COPY auth_github.py .
 COPY entrypoint.sh .
 
-# Set the entrypoint to our script
+# Set the entrypoint for the production container
 ENTRYPOINT ["sh", "entrypoint.sh"]
 
-# The command to run when the container starts, which is passed to the entrypoint
-# Use a writable directory for the ADK's internal session database
+# The command to run when the container starts will be provided by docker-compose
 CMD ["adk", "run", "--session_service_uri", "sqlite:////tmp/adk_sessions.db", "agents"]
