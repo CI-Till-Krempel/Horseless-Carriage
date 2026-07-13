@@ -1,10 +1,5 @@
-# agents/scrum_team/tools.py
-"""
-Decomposition proxy for scrum team tools.
-All tools are now organized by topic in the `tools/` subdirectory.
-"""
-from .tools import (
-    # Scrum state and logic
+# agents/scrum_team/tools/__init__.py
+from .scrum import (
     init_scrum_state,
     save_state_to_repo,
     load_state_from_repo,
@@ -12,8 +7,8 @@ from .tools import (
     add_impediment,
     add_retro_action,
     plan_sprint_backlog_item,
-    
-    # Requirements management
+)
+from .requirements import (
     upsert_story,
     upsert_epic,
     update_roadmap,
@@ -21,8 +16,8 @@ from .tools import (
     upsert_backlog_item,
     set_priority,
     sync_stories_from_markdown,
-    
-    # GitHub and Git interactions
+)
+from .github import (
     configure_github_repo,
     configure_github_app,
     git_push,
@@ -35,19 +30,26 @@ from .tools import (
     gh_pr_review,
     gh_pr_check_logs,
     repo_status,
-    
-    # Documentation and templates
+)
+from .docs import (
     write_file,
     read_doc,
     upsert_prd,
     upsert_srs,
     create_from_template,
     seed_repository,
-    
-    # Budgeting and identities
+)
+from .budget import (
     update_budgets,
     get_budget_status,
     log_token_usage,
     create_litellm_virtual_key,
     create_sprint_report,
+    calculate_cost_breakdown,
+    recommend_sprint_budget,
+    optimize_process_for_budget,
+)
+from .workflow import (
+    generate_workflow_diagram,
+    gather_workflow_improvement_proposals,
 )

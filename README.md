@@ -14,6 +14,10 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 - `docker-compose.yaml` — runs a local LiteLLM proxy on port `4000` using `litellm.yaml`.
 - `.env.example` — environment variables for provider keys + LiteLLM proxy configuration.
 - `requirements.txt` — Python dependencies.
+- `setup.sh` — setup script for the project.
+- `run.py` — run script for the ADK agent.
+- `doctor.sh` — a script to validate your setup.
+- `PREFLIGHT.md` — a pre-flight checklist to ensure your environment is correctly set up.
 
 ## How it works (high level)
 
@@ -28,49 +32,45 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 
 ## Setup
 
-### 1) Create and activate a virtualenv
-
-bash python -m venv .venv source .venv/bin/activate
-
-### 2) Install dependencies
-
-bash pip install -r requirements.txt
-
-### 3) Configure environment variables
-
-Copy `.env.example` to `.env` and fill in at least one provider key that matches the models you intend to use.
-
-#### Personal Account (Default)
-To use your personal GitHub account for agent actions, simply run `gh auth login` on your host machine.
-
-#### GitHub App Identity (Recommended)
-To have agents act as a dedicated identity, set these in your `.env`:
-- `GITHUB_APP_ID`: The ID of your GitHub App.
-- `GITHUB_APP_PRIVATE_KEY`: The full content of your `.pem` private key.
-- `GITHUB_APP_INSTALLATION_ID`: The ID from the installation URL.
-
-The agents will automatically use these to authenticate.
-
-
-## Running the LiteLLM proxy (recommended)
-
-The repo includes a Docker Compose setup for a local LiteLLM proxy that exposes a single endpoint and routes to different providers/models via aliases in `litellm.yaml`. It uses a PostgreSQL database for persistent authentication and budget tracking.
-
-Start the proxy:
+Run the setup script:
 
 ```bash
-docker compose up -d
+./setup.sh
 ```
 
-- Proxy listens on: `http://localhost:4000`
-- Admin UI: `http://localhost:4000/ui/` (Login with `LITELLM_MASTER_KEY` from `.env`)
-- Model aliases: defined in `litellm.yaml` (e.g. `scrum-orchestrator`, `scrum-po`, ...)
+This will:
+1. Create a Python virtual environment.
+2. Install required dependencies.
+3. Set up the .env file.
+4. Start the LiteLLM Docker container.
 
-### LiteLLM Identities (Virtual Keys)
-When the database is connected, LiteLLM expects "Virtual Keys" (starting with `sk-`) for model requests. 
-1. The Orchestrator setup wizard will automatically generate these keys for each agent role if configured.
-2. You can manage keys, users, and teams via the Admin UI.
-3. Your main `LITELLM_PROXY_API_KEY` in `.env` should be a valid Virtual Key generated from the proxy.
+Before running the agent, it is recommended to run the doctor script to validate your setup:
+
+```bash
+./doctor.sh
+```
+
+For a more detailed guide, see the [PREFLIGHT.md](PREFLIGHT.md) checklist.
+
+## How to Run the ADK Agent
+
+Run the agent using the `run.py` script:
+
+```bash
+python3 run.py
+```
+
+This will:
+1. Ensure the virtual environment exists.
+2. Run the ADK agent using the correct Python interpreter.
+
+Once the agent is running, you can interact with it by typing messages in the console. For example:
+
+```
+What is the current status of the project?
+```
+
+The agent will respond with the current status of the project, including the backlog, sprint backlog, and any impediments.
 
 ## Using the Scrum team agent
 
@@ -171,7 +171,7 @@ The system implements a **dual-layer budgeting strategy** to ensure both operati
 ## Agent Identity in GitHub
 When using a **GitHub App**, the team uses a single technical identity for authentication. However, the system automatically distinguishes between agent roles:
 1. **Git Commits**: Every commit is attributed to the specific agent role (e.g., `Architect`) via `GIT_AUTHOR` and `GIT_COMMITTER` environment variables.
-2. **PR Comments and Reviews**: New tools `gh_pr_comment` and `gh_pr_review` automatically prefix messages with the agent's role (e.g., `**Architect:** ...`), ensuring clear visibility in the PR discussion even when using a shared App token.
+2. **PR Comments and Reviews**: New tools `gh_pr_comment` and `gh_pr_review` automatically prefix messages with the agent's role (e.g., `**Architect:** ...`), ensuring clear visibility in the PR discussion even.
 
 ### Recovering from a LiteLLM Database Wipe
 
@@ -270,4 +270,3 @@ Authentication and configuration
 Security notes
 - Store tokens only locally in `.env` or a secure secret manager
 - For GitHub Actions secrets, add them in the repository settings under Secrets and variables → Actions (e.g., `OPENAI_API_KEY` if runners need it)
-

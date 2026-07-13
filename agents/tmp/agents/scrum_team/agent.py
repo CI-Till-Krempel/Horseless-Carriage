@@ -1,6 +1,5 @@
 # agents/scrum_team/agent.py
 import os
-import requests
 from typing import Optional, Union, Dict, Any
 
 import litellm
@@ -10,7 +9,6 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.lite_llm import LiteLlm
 
-from .helpers import get_process_overhead_percentage
 from .prompts import (
     ORCHESTRATOR_PROMPT,
     PO_PROMPT,
@@ -70,7 +68,7 @@ from .tools.budget import (
     recommend_sprint_budget,
     optimize_process_for_budget,
 )
-from .state import ScrumState, Budgets, TokenUsage
+from .state import ScrumState
 
 # --- LiteLLM Proxy wiring ---
 # If LITELLM_PROXY_API_BASE is set, we assume proxy mode.
@@ -85,28 +83,15 @@ def get_model_name(role: str) -> str:
     """Gets the model name for a given role from environment variables."""
     return os.getenv(f"SCRUM_{role.upper()}_MODEL", f"scrum-{role}")
 
-def get_scrum_state(context_state) -> ScrumState:
-    """Constructs a ScrumState object from the context state."""
-    # Ensure all required keys exist in context_state for ScrumState validation
-    # This is a bit defensive but helps if context_state is partially initialized
-    data = context_state.copy()
-    
-    # Map sub-models
-    budgets_data = data.get("budgets") or {}
-    token_usage_data = data.get("token_usage") or {}
-    
-    if isinstance(budgets_data, dict):
-        data["budgets"] = Budgets(**budgets_data)
-    if isinstance(token_usage_data, dict):
-        data["token_usage"] = TokenUsage(**token_usage_data)
-        
-    return ScrumState(**data)
+def get_process_overhead_percentage() -> float:
+    """Gets the process overhead percentage from environment variables."""
+    return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
 
 def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
     BeforeModelCallback: Injects agent-specific LiteLLM key if available in state.
     """
-    state = get_scrum_state(callback_context.state)
+    state = ScrumState.parse_obj(callback_context.state)
     agent_name = callback_context.agent_name
     agent_key = state.litellm_keys.get(agent_name)
     
@@ -117,50 +102,33 @@ def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: 
 
 # --- Budget Enforcement Callbacks ---
 
-def check_cost_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+def enforce_budget_callback(callback_context: CallbackContext) -> Optional[types.Content]:
     """
-    BeforeModelCallback: Checks if the team is over budget before allowing an agent to start.
-    This is a real-time check against the LiteLLM proxy.
+    BeforeAgentCallback: Checks if the team is over budget before allowing an agent to start.
     """
-    state = get_scrum_state(callback_context.state)
-    budget_limit = state.budgets.total_usd
+    state = ScrumState.parse_obj(callback_context.state)
     
-    if budget_limit <= 0:
-        return None
-
-    master_key = os.environ.get("LITELLM_MASTER_KEY")
-    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE")
-    budget_id = "scrum-sprint-budget"
-
-    if not master_key or not proxy_base:
-        return None
-
-    try:
-        response = requests.get(
-            f"{proxy_base}/budget/info?budget_id={budget_id}",
-            headers={"Authorization": f"Bearer {master_key}"},
-            timeout=5
+    if state.budgets.total > 0 and state.token_usage.total >= state.budgets.total:
+        msg = (
+            f"🚫 [BUDGET EXCEEDED] Total token budget ({state.budgets.total}) reached. "
+            f"Current usage: {state.token_usage.total}. Agent execution halted. "
+            "Please trigger a Sprint Review/Retrospective or increase the budget via `update_budgets`."
         )
-        response.raise_for_status()
-        budget_info = response.json()
-        current_spend = budget_info.get("spend", 0.0)
+        return types.Content(role="model", parts=[types.Part(text=msg)])
+    return None
 
-        if current_spend >= budget_limit:
-            msg = (
-                f"🚫 [BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
-                f"Current spend: ${current_spend:.2f}. Agent execution halted."
-            )
-            return LlmResponse(
-                content=types.Content(role="model", parts=[types.Part(text=msg)]),
-                model_version=llm_request.model or "unknown"
-            )
-    except requests.RequestException as e:
-        # If the proxy is down, we can't check the budget, so we'll allow the call to proceed.
-        # This is a trade-off between availability and strict budget enforcement.
-        # In a production system, you might want to handle this differently.
-        print(f"Warning: Could not check budget status. {e}")
-        pass
+def check_model_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
+    """
+    BeforeModelCallback: Checks budget before each individual LLM call.
+    """
+    state = ScrumState.parse_obj(callback_context.state)
 
+    if state.budgets.total > 0 and state.token_usage.total >= state.budgets.total:
+        msg = f"🚫 [MODEL BLOCKED] Budget exceeded ({state.token_usage.total}/{state.budgets.total})."
+        return LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text=msg)]),
+            model_version=llm_request.model or "unknown"
+        )
     return None
 
 def update_token_usage_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
@@ -170,7 +138,7 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
     if not llm_response.usage_metadata:
         return None
     
-    state = get_scrum_state(callback_context.state)
+    state = ScrumState.parse_obj(callback_context.state)
     agent_name = callback_context.agent_name
     
     new_tokens = llm_response.usage_metadata.total_token_count or 0
@@ -178,15 +146,14 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
     if new_tokens > 0:
         state.token_usage.total += new_tokens
         state.token_usage.agents[agent_name] = state.token_usage.agents.get(agent_name, 0) + new_tokens
-        
-        # Update the state object with the new usage values
-        callback_context.state["token_usage"] = state.token_usage.model_dump()
-
+        callback_context.state.update(state.dict())
+    
     return None
 
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
-    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
+    "before_agent_callback": enforce_budget_callback,
+    "before_model_callback": [inject_litellm_key_callback, check_model_budget_callback],
     "after_model_callback": update_token_usage_callback,
 }
 
