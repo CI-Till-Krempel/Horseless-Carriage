@@ -87,9 +87,41 @@ def get_model_name(role: str) -> str:
 
 def get_scrum_state(context_state) -> ScrumState:
     """Constructs a ScrumState object from the context state."""
-    # Ensure all required keys exist in context_state for ScrumState validation
-    # This is a bit defensive but helps if context_state is partially initialized
-    data = context_state.copy()
+    if context_state is None:
+        return ScrumState()
+
+    if isinstance(context_state, ScrumState):
+        return context_state
+
+    # Try various ways to get a dictionary representation
+    data = {}
+    if hasattr(context_state, "to_dict") and callable(context_state.to_dict):
+        try:
+            data = context_state.to_dict()
+        except Exception:
+            data = {}
+    
+    if not data:
+        if hasattr(context_state, "model_dump") and callable(context_state.model_dump):
+            data = context_state.model_dump()
+        elif hasattr(context_state, "dict") and callable(context_state.dict):
+            data = context_state.dict()
+        elif hasattr(context_state, "copy") and callable(context_state.copy):
+            data = context_state.copy()
+        elif hasattr(context_state, "items") and callable(context_state.items):
+            data = dict(context_state.items())
+        else:
+            # Fallback for ADK State object which might not have .copy()
+            try:
+                data = dict(context_state)
+            except (TypeError, ValueError, KeyError):
+                data = {}
+                try:
+                    # If context_state is iterable, try to build a dict
+                    for k in context_state:
+                        data[k] = context_state[k]
+                except Exception:
+                    pass
     
     # Map sub-models
     budgets_data = data.get("budgets") or {}
@@ -180,7 +212,13 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
         state.token_usage.agents[agent_name] = state.token_usage.agents.get(agent_name, 0) + new_tokens
         
         # Update the state object with the new usage values
-        callback_context.state["token_usage"] = state.token_usage.model_dump()
+        try:
+            callback_context.state["token_usage"] = state.token_usage.model_dump()
+        except (TypeError, KeyError):
+            try:
+                setattr(callback_context.state, "token_usage", state.token_usage.model_dump())
+            except Exception:
+                pass
 
     return None
 

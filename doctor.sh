@@ -45,7 +45,21 @@ if [ -z "$STATE_REPO_PATH" ]; then
     exit 1
 fi
 
-# 3. Check if the STATE_REPO_PATH directory exists
+# 3. Check GitHub configuration
+if [ -z "$GITHUB_REPO_URL" ]; then
+    echo "WARNING: GITHUB_REPO_URL is not set in .env. The agent might not know which repository to use."
+fi
+
+if [ -n "$GITHUB_TOKEN" ]; then
+    echo "GitHub Authentication: Using Personal Access Token."
+elif [ -n "$GITHUB_APP_ID" ] && [ -n "$GITHUB_APP_PRIVATE_KEY" ] && [ -n "$GITHUB_APP_INSTALLATION_ID" ]; then
+    echo "GitHub Authentication: Using GitHub App."
+else
+    echo "WARNING: No GitHub authentication method fully configured in .env."
+    echo "Please set either GITHUB_TOKEN or (GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID)."
+fi
+
+# 4. Check if the STATE_REPO_PATH directory exists
 if [ ! -d "$STATE_REPO_PATH" ]; then
     echo "ERROR: The directory specified by STATE_REPO_PATH does not exist: $STATE_REPO_PATH"
     echo "Please create this directory before running the agent."

@@ -31,7 +31,7 @@ BUDGET MANAGEMENT
 
 SETUP WIZARD (run proactively until configured)
 - Non-Interactive Setup: The user can pre-configure the team via environment variables in `.env`:
-  - `GITHUB_REPO_URL`, `GITHUB_REPO_BRANCH`, `GITHUB_REPO_LOCAL_PATH`
+  - `GITHUB_REPO_URL`, `GITHUB_REPO_BRANCH`, `STATE_REPO_PATH`
   - `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` (for GitHub App identity)
   - `SPRINT_TOKEN_BUDGET`, `SPRINT_USD_BUDGET`
   - `PROCESS_OVERHEAD_PERCENTAGE`

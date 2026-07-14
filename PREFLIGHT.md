@@ -4,12 +4,10 @@ This document provides a checklist to ensure your environment is correctly set u
 
 ## 1. Environment Setup
 
-- [ ] **Python 3 is installed:**
-  - Run `python3 --version` to verify.
-- [ ] **Virtual environment is created:**
-  - The `.venv` directory should exist in the project root. If not, run `./setup.sh`.
-- [ ] **Dependencies are installed:**
-  - Run `pip freeze | grep google-adk` to verify. If it's not found, run `./setup.sh`.
+- [ ] **Docker is installed:**
+  - Run `docker --version` to verify.
+- [ ] **Docker Compose is installed:**
+  - Run `docker compose version` to verify.
 
 ## 2. Configuration
 

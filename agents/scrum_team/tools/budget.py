@@ -171,7 +171,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             report += f"- {title}: {estimate}\n"
             
     s["sprint_report"] = report
-    path = "docs/reports/SPRINT-REPORT-LATEST.md"
+    path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(path, report, overwrite=True, tool_context=tool_context)
     
     return {"status": "ok", "report": report, "path": path}

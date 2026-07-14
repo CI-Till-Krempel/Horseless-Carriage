@@ -1,5 +1,6 @@
 # agents/scrum_team/tools/github.py
 from __future__ import annotations
+import os
 import json
 from typing import Any, Dict
 from .base import _configured_repo_root, _run
@@ -278,9 +279,19 @@ def repo_status(tool_context=None) -> Dict[str, Any]:
     """
     cfg = (tool_context.state.get("repo") if tool_context and getattr(tool_context, "state", None) else None) or {}
     root = _configured_repo_root(tool_context)
+    
+    # Check environment configuration
+    env_cfg = {
+        "url": os.environ.get("GITHUB_REPO_URL"),
+        "branch": os.environ.get("GITHUB_REPO_BRANCH"),
+        "state_repo_path": os.environ.get("STATE_REPO_PATH"),
+    }
+    
     diagnostics = {
         "exists": root.exists(),
         "git_dir": (root / ".git").exists(),
+        "configured_in_state": bool(cfg),
+        "env_repo_url_present": bool(env_cfg["url"]),
     }
 
     # Check identity
@@ -303,4 +314,4 @@ def repo_status(tool_context=None) -> Dict[str, Any]:
         gh = _run(["gh", "auth", "status"], cwd=str(root), tool_context=tool_context)
         diagnostics["gh_auth_ok"] = (gh.get("returncode") == 0)
 
-    return {"status": "ok", "config": cfg, "repo_root": str(root), "diagnostics": diagnostics}
+    return {"status": "ok", "config": cfg, "env_config": env_cfg, "repo_root": str(root), "diagnostics": diagnostics}

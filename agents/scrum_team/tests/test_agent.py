@@ -28,6 +28,7 @@ class TestAgent(unittest.TestCase):
     def test_budget_callbacks(self):
         # Create a mock callback context
         mock_context = MagicMock()
+        mock_context.agent_name = "TestAgent"
         mock_context.state = ScrumState().model_dump()
 
         # Test check_cost_budget_callback

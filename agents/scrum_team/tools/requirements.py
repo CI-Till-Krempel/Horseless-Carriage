@@ -20,15 +20,21 @@ def upsert_epic(epic: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
 
 def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = None, tool_context=None) -> Dict[str, Any]:
     """
-    Requirements Management: Update the product roadmap (spec-templates/ROADMAP.md) for a specific version.
+    Requirements Management: Update the product roadmap (specs/ROADMAP.md) for a specific version.
     """
     from .scrum import save_state_to_repo
     from .docs import seed_repository
     repo_root = _configured_repo_root(tool_context)
-    roadmap_path = repo_root / "spec-templates" / "ROADMAP.md"
+    roadmap_path = repo_root / "specs" / "ROADMAP.md"
     
     if not roadmap_path.exists():
-        seed_repository(overwrite=False, tool_context=tool_context)
+        # Try to initialize from template
+        template_path = _project_root() / "spec-templates" / "ROADMAP.md"
+        if template_path.exists():
+            roadmap_path.parent.mkdir(parents=True, exist_ok=True)
+            roadmap_path.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            seed_repository(overwrite=False, tool_context=tool_context)
     
     if not roadmap_path.exists():
         return {"status": "error", "message": "ROADMAP.md not found and could not be seeded."}
@@ -161,10 +167,10 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
 
 def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
     """
-    Scan spec-templates/stories/*.md and update state.
+    Scan specs/stories/*.md and update state.
     """
     repo_root = _configured_repo_root(tool_context)
-    stories_dir = repo_root / "spec-templates" / "stories"
+    stories_dir = repo_root / "specs" / "stories"
     if not stories_dir.exists():
         return {"status": "ok", "message": "No stories directory found."}
     s = tool_context.state
@@ -233,7 +239,7 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     item_id = item.get("id", "US-XXXX")
     title = item.get("title", "Untitled")
     filename = f"{item_id}-{title.replace(' ', '-').replace('/', '-')}.md"
-    story_path = repo_root / "spec-templates" / "stories" / filename
+    story_path = repo_root / "specs" / "stories" / filename
     template_path = repo_root / "spec-templates" / "stories" / "TEMPLATE-USER-STORY.md"
     if not template_path.exists():
         template_path = _project_root() / "spec-templates" / "stories" / "TEMPLATE-USER-STORY.md"

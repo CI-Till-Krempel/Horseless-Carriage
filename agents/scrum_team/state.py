@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any
 
 class Budgets(BaseModel):
+    total: int = 0
     total_usd: float = 0.0
 
 class TokenUsage(BaseModel):
@@ -10,6 +11,7 @@ class TokenUsage(BaseModel):
     agents: Dict[str, int] = Field(default_factory=dict)
 
 class ScrumState(BaseModel):
+    version: str = "1.0.0"
     product_vision: str = ""
     product_goals: List[str] = Field(default_factory=list)
     product_backlog: List[Dict] = Field(default_factory=list)

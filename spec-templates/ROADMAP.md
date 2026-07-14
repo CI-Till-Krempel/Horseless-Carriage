@@ -3,7 +3,7 @@
 Use this living roadmap to plan releases and track user stories across states. It doubles as a lightweight task board and a release planning tool.
 
 ## How to use
-- Story IDs should match files in `docs/stories/` (e.g., `ST-001` corresponds to `docs/stories/ST-001-some-title.md`).
+- Story IDs should match files in `specs/stories/` (e.g., `ST-001` corresponds to `specs/stories/ST-001-some-title.md`).
 - Move story references between states as work progresses.
 - Keep titles short; full details live in the story file.
 - For each planned version, list goals and the set of stories targeted for that release.
@@ -88,14 +88,14 @@ Track broader themes/epics that span multiple versions. Link constituent stories
 Group story references by planned version for quick scanning.
 
 - v0.1
-  - [ST-001] Your first story title — docs/stories/ST-001-your-first-story.md
-  - [ST-002] Your second story title — docs/stories/ST-002-your-second-story.md
-  - [ST-003] Another story title — docs/stories/ST-003-another-story.md
+  - [ST-001] Your first story title — specs/stories/ST-001-your-first-story.md
+  - [ST-002] Your second story title — specs/stories/ST-002-your-second-story.md
+  - [ST-003] Another story title — specs/stories/ST-003-another-story.md
 - v0.2
-  - [ST-010] Some enhancement — docs/stories/ST-010-some-enhancement.md
-  - [ST-011] Another enhancement — docs/stories/ST-011-another-enhancement.md
+  - [ST-010] Some enhancement — specs/stories/ST-010-some-enhancement.md
+  - [ST-011] Another enhancement — specs/stories/ST-011-another-enhancement.md
 - Unplanned
-  - [ST-100] Future idea — docs/stories/ST-100-future-idea.md
-  - [ST-101] Another idea — docs/stories/ST-101-another-idea.md
+  - [ST-100] Future idea — specs/stories/ST-100-future-idea.md
+  - [ST-101] Another idea — specs/stories/ST-101-another-idea.md
 
 Replace placeholders with your actual story IDs and titles. Keep this file updated in the same PRs that move work forward.
