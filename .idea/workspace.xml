@@ -4,20 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add unit tests for budget API callbacks, improve logging setup, enhance configuration management, and update scripts for session handling and environmental defaults.">
-      <change afterPath="$PROJECT_DIR$/spec-templates/stories/TEMPLATE-EPIC.md" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agent.Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/agent.Dockerfile" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_state_robustness.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_state_robustness.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/__init__.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docker-compose.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/spec-templates/ROADMAP.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/ROADMAP.md" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -46,61 +39,61 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.2747875454006863" />
-      <entry key="MS500" value="2.7085253208354407" />
-      <entry key="S2" value="3.5938462386963326" />
-      <entry key="S5" value="3.8293362891437273" />
-      <entry key="S10" value="3.91323310116688" />
-      <entry key="S30" value="3.970752213578798" />
-      <entry key="S60" value="3.9854248504655745" />
-      <entry key="M2" value="4.126066781403918" />
-      <entry key="M5" value="15.734094832254303" />
-      <entry key="M10" value="64.22830352554142" />
-      <entry key="M15" value="117.78144703307608" />
-      <entry key="M30" value="254.92616098835225" />
-      <entry key="H1" value="485.1017130790952" />
-      <entry key="H2" value="868.4378294207797" />
-      <entry key="H4" value="1319.7174324637424" />
-      <entry key="D1" value="2609.927849576188" />
-      <entry key="W1" value="3381.097743332988" />
+      <entry key="MS100" value="1.4210953547970526" />
+      <entry key="MS500" value="3.9201786926103224" />
+      <entry key="S2" value="11.99418515343427" />
+      <entry key="S5" value="25.294568876560827" />
+      <entry key="S10" value="42.782281067826275" />
+      <entry key="S30" value="91.37704183535753" />
+      <entry key="S60" value="125.32485434902244" />
+      <entry key="M2" value="150.95569587595537" />
+      <entry key="M5" value="178.13361359569726" />
+      <entry key="M10" value="226.33410760801988" />
+      <entry key="M15" value="280.4458319753336" />
+      <entry key="M30" value="434.18597726701614" />
+      <entry key="H1" value="694.4615199523506" />
+      <entry key="H2" value="1114.502027492839" />
+      <entry key="H4" value="1624.5900908159006" />
+      <entry key="D1" value="3036.455405930016" />
+      <entry key="W1" value="3855.350975184586" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
       <entry key="MS500" value="0.0" />
-      <entry key="S2" value="0.0" />
-      <entry key="S5" value="0.0" />
-      <entry key="S10" value="0.0" />
-      <entry key="S30" value="0.0" />
-      <entry key="S60" value="0.0" />
-      <entry key="M2" value="2.8096740675742564E-280" />
-      <entry key="M5" value="3.7335848629002124E-112" />
-      <entry key="M10" value="4.621555036602353E-56" />
-      <entry key="M15" value="2.3320149393274745E-37" />
-      <entry key="M30" value="1.2089796131591156E-18" />
-      <entry key="H1" value="2.9542055756890432E-9" />
-      <entry key="H2" value="1.56004154929872E-4" />
-      <entry key="H4" value="0.036963678293511375" />
-      <entry key="D1" value="3.5940568297239843" />
-      <entry key="W1" value="7.893470184767899" />
+      <entry key="S2" value="3.341905336392845E-241" />
+      <entry key="S5" value="6.450563539981452E-97" />
+      <entry key="S10" value="8.031540039109183E-49" />
+      <entry key="S30" value="9.295361327623971E-17" />
+      <entry key="S60" value="9.641245421429678E-9" />
+      <entry key="M2" value="9.818984377943404E-5" />
+      <entry key="M5" value="0.02493599071887849" />
+      <entry key="M10" value="0.1579113381580891" />
+      <entry key="M15" value="0.2921520081710386" />
+      <entry key="M30" value="0.5405108770145497" />
+      <entry key="H1" value="0.7351944502191974" />
+      <entry key="H2" value="0.8575559312564542" />
+      <entry key="H4" value="0.9585481106607675" />
+      <entry key="D1" value="4.506320094225208" />
+      <entry key="W1" value="8.867895935137783" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.2397536860778129" />
-      <entry key="MS500" value="2.6923915583929827" />
-      <entry key="S2" value="3.5883105676880596" />
-      <entry key="S5" value="3.82695940673585" />
-      <entry key="S10" value="3.91201557616217" />
-      <entry key="S30" value="3.970339714111883" />
-      <entry key="S60" value="3.985217752019452" />
-      <entry key="M2" value="4.125960012005067" />
-      <entry key="M5" value="15.733947836489193" />
-      <entry key="M10" value="64.22801115357714" />
-      <entry key="M15" value="117.78108814812154" />
-      <entry key="M30" value="254.92576511234708" />
-      <entry key="H1" value="485.1013140827741" />
-      <entry key="H2" value="868.4376052909588" />
-      <entry key="H4" value="1319.75409549475" />
-      <entry key="D1" value="2613.5216103846183" />
-      <entry key="W1" value="3388.991013146511" />
+      <entry key="MS100" value="1.3850767088789424" />
+      <entry key="MS500" value="3.901432883983558" />
+      <entry key="S2" value="11.979313343933779" />
+      <entry key="S5" value="25.281823089212075" />
+      <entry key="S10" value="42.77143572463703" />
+      <entry key="S30" value="91.36931058050342" />
+      <entry key="S60" value="125.31956092010209" />
+      <entry key="M2" value="150.9526067097722" />
+      <entry key="M5" value="178.15701937985534" />
+      <entry key="M10" value="226.4909875299029" />
+      <entry key="M15" value="280.7370999142902" />
+      <entry key="M30" value="434.7257799669429" />
+      <entry key="H1" value="695.1961342138236" />
+      <entry key="H2" value="1115.359100315197" />
+      <entry key="H4" value="1625.5482749313194" />
+      <entry key="D1" value="3040.9614189056892" />
+      <entry key="W1" value="3864.2186688640554" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -172,7 +165,7 @@
       <workItem from="1782904538747" duration="21128000" />
       <workItem from="1783323390020" duration="14857000" />
       <workItem from="1783591344439" duration="1440000" />
-      <workItem from="1783681596188" duration="36022000" />
+      <workItem from="1783681596188" duration="38692000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -326,14 +319,21 @@
       <option name="project" value="LOCAL" />
       <updated>1784029805274</updated>
     </task>
-    <option name="localTasksCounter" value="20" />
+    <task id="LOCAL-00020" summary="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows.">
+      <option name="closed" value="true" />
+      <created>1784035208682</created>
+      <option name="number" value="00020" />
+      <option name="presentableId" value="LOCAL-00020" />
+      <option name="project" value="LOCAL" />
+      <updated>1784035208682</updated>
+    </task>
+    <option name="localTasksCounter" value="21" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Refactor agent imports, enhance `litellm.yaml` with Gemini models, and update Docker setup for optional local LLM support." />
     <MESSAGE value="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup" />
     <MESSAGE value="Add GitHub configuration, issue/PR templates, and comprehensive docs workspace" />
     <MESSAGE value="Add GitHub templates, project configuration, and documentation skeleton-&#10;&#10;" />
@@ -358,6 +358,7 @@
     <MESSAGE value="Fixed setup and environment variables that were not available." />
     <MESSAGE value="Remove Scrum Team agents, tools, and related modules." />
     <MESSAGE value="Add unit tests for budget API callbacks, improve logging setup, enhance configuration management, and update scripts for session handling and environmental defaults." />
-    <option name="LAST_COMMIT_MESSAGE" value="Add unit tests for budget API callbacks, improve logging setup, enhance configuration management, and update scripts for session handling and environmental defaults." />
+    <MESSAGE value="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows." />
+    <option name="LAST_COMMIT_MESSAGE" value="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows." />
   </component>
 </project>

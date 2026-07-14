@@ -139,6 +139,7 @@ from .tools import (
     list_docs,
     upsert_prd,
     upsert_srs,
+    upsert_adr,
 )
 from .tools.quality import (
     calculate_kpis,
@@ -339,6 +340,7 @@ product_owner = LlmAgent(
         list_docs,
         upsert_prd,
         upsert_srs,
+        upsert_adr,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
@@ -390,6 +392,7 @@ dev_team = LlmAgent(
         gh_pr_comment,
         gh_pr_review,
         gh_pr_check_logs,
+        upsert_adr,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
@@ -420,6 +423,7 @@ architect = LlmAgent(
         gh_pr_comment,
         gh_pr_review,
         write_file,
+        upsert_adr,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
@@ -458,6 +462,7 @@ root_agent = LlmAgent(
         log_token_usage,
         read_doc,
         list_docs,
+        upsert_adr,
     ],
     sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian],
     **COMMON_AGENT_CALLBACKS,

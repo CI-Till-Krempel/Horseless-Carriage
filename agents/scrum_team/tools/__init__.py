@@ -38,6 +38,7 @@ from .docs import (
     list_docs,
     upsert_prd,
     upsert_srs,
+    upsert_adr,
     create_from_template,
     seed_repository,
 )

@@ -138,6 +138,16 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))
     item_id = item.get("id")
     title = item.get("title")
+    
+    # If ID is missing or is a placeholder, generate a new one
+    item_type = item.get("type", "User Story")
+    prefix = "EP" if item_type == "Epic" else "US"
+    placeholder = f"{prefix}-XXXX"
+    
+    if not item_id or item_id == placeholder:
+        item_id = _generate_next_id(prefix, tool_context)
+        item["id"] = item_id
+
     if not item_id and not title:
         return {"status": "error", "message": "Backlog item needs at least 'id' or 'title'."}
 
@@ -159,6 +169,33 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     save_state_to_repo(tool_context)
     _update_story_markdown(updated_item, tool_context)
     return {"status": "ok", "updated": (updated_item != item), "item": updated_item}
+
+def _generate_next_id(prefix: str, tool_context=None) -> str:
+    s = tool_context.state
+    backlog = s.get("product_backlog", [])
+    
+    max_num = 0
+    for item in backlog:
+        item_id = item.get("id", "")
+        if item_id.startswith(f"{prefix}-"):
+            try:
+                # Handle cases like EP-0001 or US-0042
+                num_str = item_id.split("-")[1]
+                # Only take the numeric part if there's more text (though IDs should ideally just be Prefix-Number)
+                numeric_part = ""
+                for char in num_str:
+                    if char.isdigit():
+                        numeric_part += char
+                    else:
+                        break
+                if numeric_part:
+                    num = int(numeric_part)
+                    if num > max_num:
+                        max_num = num
+            except (ValueError, IndexError):
+                continue
+    
+    return f"{prefix}-{max_num + 1:04d}"
 
 def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str, Any]:
     """
@@ -316,7 +353,11 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     id_placeholder = f"{id_prefix}-XXXX"
     title_placeholder = "<short epic title>" if is_epic else "<short story title>"
     
-    item_id = item.get("id", id_placeholder)
+    item_id = item.get("id")
+    if not item_id or item_id == id_placeholder:
+        item_id = _generate_next_id(id_prefix, tool_context)
+        item["id"] = item_id
+        
     title = item.get("title", "Untitled")
     filename = f"{item_id}-{title.replace(' ', '-').replace('/', '-')}.md"
     story_path = repo_root / "specs" / "stories" / filename
