@@ -7,43 +7,6 @@ from typing import Optional, Union, Dict, Any
 
 import litellm
 
-# --- Monkey patch for OpenAI APIError incompatibility in high version environments ---
-try:
-    import openai
-    import httpx
-    
-    _original_apierror_init = openai.APIError.__init__
-    
-    def _patched_apierror_init(self, message, request=None, *, body=None, **kwargs):
-        # The new signature is (self, message, request, *, body)
-        # But LiteLLM might pass (self, message, status_code, response, ...)
-        
-        # If the first non-self arg is not a string, or if we have extra args
-        real_message = message
-        real_request = request
-        real_body = body
-        
-        if not isinstance(real_request, httpx.Request):
-            # Probably status_code or something else from an old LiteLLM call
-            real_request = httpx.Request("GET", "http://localhost") # Mock request
-            
-        if "response" in kwargs:
-            # LiteLLM often passes 'response'
-            if real_body is None:
-                real_body = kwargs.pop("response")
-            else:
-                kwargs.pop("response")
-        
-        # Strip other incompatible kwargs
-        kwargs.pop("status_code", None)
-        
-        return _original_apierror_init(self, real_message, real_request, body=real_body)
-
-    openai.APIError.__init__ = _patched_apierror_init
-    logging.getLogger("scrum-team").info("Applied monkey-patch for openai.APIError")
-except Exception as e:
-    logging.getLogger("scrum-team").warning(f"Failed to apply monkey-patch for openai.APIError: {e}")
-
 # --- Logging Setup ---
 def _setup_logging():
     log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -86,6 +49,92 @@ def _setup_logging():
     root_logger.info(f"Logging initialized. Console level: {log_level_str}, File: {log_file}")
 
 _setup_logging()
+logger = logging.getLogger("scrum-team")
+
+# --- Monkey patch for OpenAI and LiteLLM APIError incompatibility ---
+try:
+    import openai
+    import httpx
+    import litellm.exceptions
+    
+    # 1. Patch openai.APIError
+    _orig_openai_apierror_init = openai.APIError.__init__
+    def _patched_openai_apierror_init(self, message, request=None, *, body=None, **kwargs):
+        if not isinstance(request, httpx.Request):
+            request = httpx.Request("GET", "http://localhost")
+        kwargs.pop("response", None)
+        kwargs.pop("status_code", None)
+        return _orig_openai_apierror_init(self, message, request, body=body)
+    openai.APIError.__init__ = _patched_openai_apierror_init
+
+    # 2. Patch openai.APIConnectionError
+    _orig_openai_connerror_init = openai.APIConnectionError.__init__
+    def _patched_openai_connerror_init(self, *args, **kwargs):
+        if "request" not in kwargs and len(args) < 1: # It's kw-only in some versions
+            kwargs["request"] = httpx.Request("GET", "http://localhost")
+        kwargs.pop("response", None)
+        return _orig_openai_connerror_init(self, **kwargs) if not args else _orig_openai_connerror_init(self, *args, **kwargs)
+    openai.APIConnectionError.__init__ = _patched_openai_connerror_init
+
+    # 3. Patch litellm.exceptions.APIError
+    _orig_litellm_apierror_init = litellm.exceptions.APIError.__init__
+    def _patched_litellm_apierror_init(self, status_code=500, *args, **kwargs):
+        kwargs.pop("response", None)
+        if not isinstance(status_code, int):
+            return _orig_litellm_apierror_init(self, 500, status_code, *args, **kwargs)
+        return _orig_litellm_apierror_init(self, status_code, *args, **kwargs)
+    litellm.exceptions.APIError.__init__ = _patched_litellm_apierror_init
+
+    # 4. Patch litellm.exceptions.APIConnectionError
+    _orig_litellm_connerror_init = litellm.exceptions.APIConnectionError.__init__
+    def _patched_litellm_connerror_init(self, *args, **kwargs):
+        kwargs.pop("response", None)
+        return _orig_litellm_connerror_init(self, *args, **kwargs)
+    litellm.exceptions.APIConnectionError.__init__ = _patched_litellm_connerror_init
+
+    # 5. Patch LiteLLMClient.acompletion to handle Gemini safety blocks gracefully
+    import google.adk.models.lite_llm as adk_litellm
+    _orig_adk_acompletion = adk_litellm.LiteLLMClient.acompletion
+
+    async def _patched_adk_acompletion(self, *args, **kwargs):
+        try:
+            return await _orig_adk_acompletion(self, *args, **kwargs)
+        except Exception as e:
+            # Check for the specific 'no choices' error which usually indicates a safety block
+            if "no 'choices'" in str(e):
+                logger.warning(f"Detected Gemini safety block: {e}")
+                from litellm.utils import ModelResponse, Choices, Message
+                model_name = kwargs.get("model") or "unknown-gemini"
+                
+                blocked_msg = "⚠️ [SAFETY BLOCK] The request was blocked by Gemini's safety filters. Please try rephrasing your request or avoiding sensitive topics."
+                
+                response = ModelResponse(
+                    id="safety-block",
+                    choices=[Choices(
+                        finish_reason="safety", 
+                        index=0, 
+                        message=Message(content=blocked_msg)
+                    )],
+                    created=0,
+                    model=model_name,
+                    object="chat.completion"
+                )
+                
+                if kwargs.get("stream"):
+                    # Return an async iterable for streaming calls
+                    async def _async_gen():
+                        yield response
+                    return _async_gen()
+                
+                return response
+            raise e
+
+    adk_litellm.LiteLLMClient.acompletion = _patched_adk_acompletion
+
+    logger.info("Applied robust monkey-patches for OpenAI and LiteLLM exceptions and safety blocks")
+except Exception as e:
+    logger.warning(f"Failed to apply monkey-patches: {e}")
+
 from google.genai import types
 from google.adk.agents.llm_agent import LlmAgent, CallbackContext
 from google.adk.models.llm_request import LlmRequest
@@ -239,19 +288,53 @@ def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: 
 def check_cost_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
     """
     BeforeModelCallback: Checks if the team is over budget before allowing an agent to start.
-    This is a real-time check against the LiteLLM proxy.
+    This is a real-time check against the LiteLLM proxy for USD and local state for tokens.
     """
     state = get_scrum_state(callback_context.state)
-    budget_limit = state.budgets.total_usd
     
+    # 1. Check Token Budget (Local Guardrail)
+    token_limit = state.budgets.total
+    # Fallback to environment if state is missing/zero
+    if token_limit <= 0:
+        try:
+            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 1000000))
+        except (ValueError, TypeError):
+            token_limit = 1000000
+            
+    token_usage = state.token_usage.total
+    if token_limit > 0 and token_usage >= token_limit:
+        msg = (
+            f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
+            f"Current usage: {token_usage:,}. Agent execution halted."
+        )
+        return LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text=msg)]),
+            model_version=llm_request.model or "unknown"
+        )
+
+    # 2. Check USD Budget (Remote Guardrail via LiteLLM Proxy)
+    budget_limit = state.budgets.total_usd
+    # Fallback to environment if state is missing/zero
     if budget_limit <= 0:
-        return None
+        try:
+            budget_limit = float(os.environ.get("SPRINT_USD_BUDGET", 10.0))
+        except (ValueError, TypeError):
+            budget_limit = 10.0
+
+    if budget_limit <= 0:
+        # If still 0, something is wrong with configuration
+        msg = "❌ [CONFIGURATION ERROR] No USD budget limit set for the sprint. Agent execution halted for safety."
+        return LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text=msg)]),
+            model_version=llm_request.model or "unknown"
+        )
 
     master_key = os.environ.get("LITELLM_MASTER_KEY")
     proxy_base = os.environ.get("LITELLM_PROXY_API_BASE")
     budget_id = "scrum-sprint-budget"
 
     if not master_key or not proxy_base:
+        # Local check only if proxy is unavailable
         return None
 
     try:
@@ -269,7 +352,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
 
         if current_spend >= budget_limit:
             msg = (
-                f"🚫 [BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
+                f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
                 f"Current spend: ${current_spend:.2f}. Agent execution halted."
             )
             return LlmResponse(

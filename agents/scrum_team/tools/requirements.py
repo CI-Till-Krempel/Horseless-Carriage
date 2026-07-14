@@ -33,7 +33,7 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
         template_path = _project_root() / "spec-templates" / "ROADMAP.md"
         if template_path.exists():
             roadmap_path.parent.mkdir(parents=True, exist_ok=True)
-            content = template_path.read_text(encoding="utf-8")
+            content = template_path.read_text(encoding="utf-8", errors="replace")
             
             # Clean up example stories and placeholders from template
             cleaned_lines = []
@@ -49,7 +49,7 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
     if not roadmap_path.exists():
         return {"status": "error", "message": "ROADMAP.md not found and could not be seeded."}
 
-    content = roadmap_path.read_text(encoding="utf-8")
+    content = roadmap_path.read_text(encoding="utf-8", errors="replace")
     lines = content.splitlines()
     new_lines = []
     
@@ -227,7 +227,7 @@ def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
     for fp in stories_dir.glob("*.md"):
         if fp.name.startswith("TEMPLATE-") or fp.name == "README.md":
             continue
-        content = fp.read_text(encoding="utf-8")
+        content = fp.read_text(encoding="utf-8", errors="replace")
         story_data = _parse_story_markdown(content)
         if not story_data.get("title"):
              continue
@@ -275,7 +275,7 @@ def sync_requirements_from_markdown(tool_context=None) -> Dict[str, Any]:
     # In the future, we could look for the 'latest' or a specifically named one
     prds.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     primary_prd = prds[0]
-    content = primary_prd.read_text(encoding="utf-8")
+    content = primary_prd.read_text(encoding="utf-8", errors="replace")
     
     # Basic parsing for vision and goals
     vision = ""
@@ -369,7 +369,7 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     if not template_path.exists():
         return {"status": "error", "message": f"Template {template_name} not found."}
         
-    template_content = template_path.read_text(encoding="utf-8")
+    template_content = template_path.read_text(encoding="utf-8", errors="replace")
     status = item.get("status", "Draft")
     priority = item.get("priority", "Must")
     

@@ -63,7 +63,7 @@ services:
     # Keep the container running and allow for interactive sessions
     stdin_open: true
     tty: true
-    command: adk run --session_service_uri sqlite:////app/sessions/adk_sessions.db --log_level ${LOG_LEVEL:-info} --save_session --session_id /app/sessions/${SESSION_ID:-my-sprint} agents
+    command: ["/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh"]
 
   # -----------------------------------------
   # OPTIONAL (later): Ollama for local models

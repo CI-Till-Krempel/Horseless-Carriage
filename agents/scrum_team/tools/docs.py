@@ -54,7 +54,7 @@ def read_doc(path: str, tool_context=None) -> Dict[str, Any]:
         return {"status": "error", "message": f"File '{path}' not found."}
         
     try:
-        content = full_path.read_text(encoding="utf-8")
+        content = full_path.read_text(encoding="utf-8", errors="replace")
         return {"status": "ok", "content": content, "path": str(full_path)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -131,7 +131,7 @@ def upsert_adr(title: str, context: str, decision: str, consequences: str, adr_i
     if not template_path.exists():
          return {"status": "error", "message": "ADR template not found."}
     
-    content = template_path.read_text(encoding="utf-8")
+    content = template_path.read_text(encoding="utf-8", errors="replace")
     content = content.replace("ADR-XXXX", adr_id)
     content = content.replace("<short title>", title)
     content = content.replace("Proposed | Accepted | Rejected | Superseded by ADR-YYYY | Deprecated", status)
@@ -207,7 +207,7 @@ def create_from_template(template_path: str, destination_path: str, substitution
         if not src.exists():
             return {"status": "error", "message": f"Template not found: {template_path}"}
             
-        raw = src.read_text(encoding="utf-8")
+        raw = src.read_text(encoding="utf-8", errors="replace")
         try:
             subs: Dict[str, Any] = json.loads(substitutions_json or "{}")
         except json.JSONDecodeError as e:

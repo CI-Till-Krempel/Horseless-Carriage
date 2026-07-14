@@ -33,18 +33,6 @@ echo ""
 echo "  LiteLLM UI: http://localhost:4000/ui"
 echo ""
 
-# 3. Build and run the agent container
-SESSION_FILE="sessions/${SESSION_ID}.session.json"
-LOG_LEVEL_ARG=${LOG_LEVEL:-info}
-CMD_ARGS="--session_service_uri sqlite:////app/sessions/adk_sessions.db --log_level $LOG_LEVEL_ARG --save_session --session_id /app/sessions/$SESSION_ID agents"
-
-if [ -f "$SESSION_FILE" ]; then
-    echo "Resuming session from $SESSION_FILE..."
-    CMD_ARGS="--resume $SESSION_FILE $CMD_ARGS"
-else
-    echo "Starting a new session: $SESSION_ID"
-fi
-
 # The `-d` flag will be passed to `docker compose up` if the first argument is "daemon"
 if [ "$1" == "daemon" ]; then
     shift
@@ -54,5 +42,6 @@ if [ "$1" == "daemon" ]; then
 else
     echo "Running agent in interactive mode. Press Ctrl+C to exit."
     # Use `docker compose run` for interactive sessions
-    docker compose run --rm --build agent adk run $CMD_ARGS
+    # Resumption logic is handled internally by the container's run_agent.sh script
+    docker compose run --rm --build agent /bin/bash /app/agents/scrum_team/scripts/run_agent.sh "$@"
 fi

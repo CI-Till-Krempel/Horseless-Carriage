@@ -29,12 +29,22 @@ class TestAgent(unittest.TestCase):
         # Create a mock callback context
         mock_context = MagicMock()
         mock_context.agent_name = "TestAgent"
-        mock_context.state = ScrumState().model_dump()
+        state = ScrumState()
+        state.budgets.total = 1000
+        state.budgets.total_usd = 10.0
+        mock_context.state = state.model_dump()
 
         # Test check_cost_budget_callback
         mock_llm_request = MagicMock()
-        result = check_cost_budget_callback(mock_context, mock_llm_request)
-        self.assertIsNone(result)
+        # Mock requests.post to avoid actual API call and master key issues
+        with patch("requests.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = [{"spend": 0.0}]
+            mock_post.return_value = mock_response
+            
+            result = check_cost_budget_callback(mock_context, mock_llm_request)
+            self.assertIsNone(result)
 
         # Test update_token_usage_callback
         mock_llm_response = MagicMock()

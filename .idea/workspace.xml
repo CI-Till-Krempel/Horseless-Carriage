@@ -4,13 +4,24 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows.">
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation">
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/scripts/run_agent.sh" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_unicode_safety.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/sessions/test-session.session.json" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agent.Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/agent.Dockerfile" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/state.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/state.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker-compose.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/run.sh" beforeDir="false" afterPath="$PROJECT_DIR$/run.sh" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -39,61 +50,61 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.4210953547970526" />
-      <entry key="MS500" value="3.9201786926103224" />
-      <entry key="S2" value="11.99418515343427" />
-      <entry key="S5" value="25.294568876560827" />
-      <entry key="S10" value="42.782281067826275" />
-      <entry key="S30" value="91.37704183535753" />
-      <entry key="S60" value="125.32485434902244" />
-      <entry key="M2" value="150.95569587595537" />
-      <entry key="M5" value="178.13361359569726" />
-      <entry key="M10" value="226.33410760801988" />
-      <entry key="M15" value="280.4458319753336" />
-      <entry key="M30" value="434.18597726701614" />
-      <entry key="H1" value="694.4615199523506" />
-      <entry key="H2" value="1114.502027492839" />
-      <entry key="H4" value="1624.5900908159006" />
-      <entry key="D1" value="3036.455405930016" />
-      <entry key="W1" value="3855.350975184586" />
+      <entry key="MS100" value="2.30875837046223" />
+      <entry key="MS500" value="4.907529056539658" />
+      <entry key="S2" value="12.641326546472351" />
+      <entry key="S5" value="20.60303274232933" />
+      <entry key="S10" value="35.76452433444571" />
+      <entry key="S30" value="106.83106132010803" />
+      <entry key="S60" value="168.61855950530887" />
+      <entry key="M2" value="218.80585668056065" />
+      <entry key="M5" value="262.5528698750937" />
+      <entry key="M10" value="314.0652246501122" />
+      <entry key="M15" value="374.9156403748977" />
+      <entry key="M30" value="561.9471704856549" />
+      <entry key="H1" value="885.3128194755677" />
+      <entry key="H2" value="1385.2381441479397" />
+      <entry key="H4" value="2001.773867805387" />
+      <entry key="D1" value="3629.7542701319276" />
+      <entry key="W1" value="4530.301946065504" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
       <entry key="MS500" value="0.0" />
-      <entry key="S2" value="3.341905336392845E-241" />
-      <entry key="S5" value="6.450563539981452E-97" />
-      <entry key="S10" value="8.031540039109183E-49" />
-      <entry key="S30" value="9.295361327623971E-17" />
-      <entry key="S60" value="9.641245421429678E-9" />
-      <entry key="M2" value="9.818984377943404E-5" />
-      <entry key="M5" value="0.02493599071887849" />
-      <entry key="M10" value="0.1579113381580891" />
-      <entry key="M15" value="0.2921520081710386" />
-      <entry key="M30" value="0.5405108770145497" />
-      <entry key="H1" value="0.7351944502191974" />
-      <entry key="H2" value="0.8575559312564542" />
-      <entry key="H4" value="0.9585481106607675" />
-      <entry key="D1" value="4.506320094225208" />
-      <entry key="W1" value="8.867895935137783" />
+      <entry key="S2" value="0.0" />
+      <entry key="S5" value="0.0" />
+      <entry key="S10" value="3.012655390557478E-165" />
+      <entry key="S30" value="1.4442747509870455E-55" />
+      <entry key="S60" value="3.8003614972618087E-28" />
+      <entry key="M2" value="1.949451588847937E-14" />
+      <entry key="M5" value="3.2806883914286467E-6" />
+      <entry key="M10" value="0.0018112670679468037" />
+      <entry key="M15" value="0.014858957047499358" />
+      <entry key="M30" value="0.12189732174046763" />
+      <entry key="H1" value="0.3491379703369576" />
+      <entry key="H2" value="0.5909624499800188" />
+      <entry key="H4" value="0.7957243190286304" />
+      <entry key="D1" value="4.368645687856856" />
+      <entry key="W1" value="8.828675559447975" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.3850767088789424" />
-      <entry key="MS500" value="3.901432883983558" />
-      <entry key="S2" value="11.979313343933779" />
-      <entry key="S5" value="25.281823089212075" />
-      <entry key="S10" value="42.77143572463703" />
-      <entry key="S30" value="91.36931058050342" />
-      <entry key="S60" value="125.31956092010209" />
-      <entry key="M2" value="150.9526067097722" />
-      <entry key="M5" value="178.15701937985534" />
-      <entry key="M10" value="226.4909875299029" />
-      <entry key="M15" value="280.7370999142902" />
-      <entry key="M30" value="434.7257799669429" />
-      <entry key="H1" value="695.1961342138236" />
-      <entry key="H2" value="1115.359100315197" />
-      <entry key="H4" value="1625.5482749313194" />
-      <entry key="D1" value="3040.9614189056892" />
-      <entry key="W1" value="3864.2186688640554" />
+      <entry key="MS100" value="2.2761155360368144" />
+      <entry key="MS500" value="4.8924022828380505" />
+      <entry key="S2" value="12.62969535701577" />
+      <entry key="S5" value="20.594974715288636" />
+      <entry key="S10" value="35.7570476738698" />
+      <entry key="S30" value="106.82298302777541" />
+      <entry key="S60" value="168.61202381203412" />
+      <entry key="M2" value="218.80156202256626" />
+      <entry key="M5" value="262.55080034545836" />
+      <entry key="M10" value="314.0658109075325" />
+      <entry key="M15" value="374.92953199342963" />
+      <entry key="M30" value="562.068328627139" />
+      <entry key="H1" value="885.6613399427871" />
+      <entry key="H2" value="1385.8285850729444" />
+      <entry key="H4" value="2002.569190525427" />
+      <entry key="D1" value="3634.1226007280093" />
+      <entry key="W1" value="4539.130417764158" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -165,7 +176,7 @@
       <workItem from="1782904538747" duration="21128000" />
       <workItem from="1783323390020" duration="14857000" />
       <workItem from="1783591344439" duration="1440000" />
-      <workItem from="1783681596188" duration="38692000" />
+      <workItem from="1783681596188" duration="43288000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -327,14 +338,21 @@
       <option name="project" value="LOCAL" />
       <updated>1784035208682</updated>
     </task>
-    <option name="localTasksCounter" value="21" />
+    <task id="LOCAL-00021" summary="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation">
+      <option name="closed" value="true" />
+      <created>1784036588076</created>
+      <option name="number" value="00021" />
+      <option name="presentableId" value="LOCAL-00021" />
+      <option name="project" value="LOCAL" />
+      <updated>1784036588076</updated>
+    </task>
+    <option name="localTasksCounter" value="22" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Introduce entrypoint for ADK Dev UI, configure Gemini models, and refine project setup" />
     <MESSAGE value="Add GitHub configuration, issue/PR templates, and comprehensive docs workspace" />
     <MESSAGE value="Add GitHub templates, project configuration, and documentation skeleton-&#10;&#10;" />
     <MESSAGE value="Add GitHub config, issue/pr templates, state persistence, and documentation scaffolding" />
@@ -359,6 +377,7 @@
     <MESSAGE value="Remove Scrum Team agents, tools, and related modules." />
     <MESSAGE value="Add unit tests for budget API callbacks, improve logging setup, enhance configuration management, and update scripts for session handling and environmental defaults." />
     <MESSAGE value="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows." />
-    <option name="LAST_COMMIT_MESSAGE" value="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows." />
+    <MESSAGE value="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation" />
+    <option name="LAST_COMMIT_MESSAGE" value="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation" />
   </component>
 </project>

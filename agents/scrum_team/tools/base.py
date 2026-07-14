@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import subprocess
+import base64
 from pathlib import Path
 from typing import Any, Dict
 
@@ -48,13 +49,17 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
         if token:
             env["GH_TOKEN"] = token
             env["GITHUB_TOKEN"] = token
-            # Ensure git uses the token for HTTPS
-            subprocess.run(
-                ["git", "config", "--global", "http.https://github.com/.extraheader", f"AUTHORIZATION: basic {token}"],
-                cwd=cwd or str(_project_root()),
-                env=env,
-                capture_output=True
-            )
+            
+            # If it's a git command, inject authentication and SSH-to-HTTPS translation
+            if cmd and cmd[0] == "git":
+                auth_value = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+                git_overrides = [
+                    "-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {auth_value}",
+                    "-c", "url.https://github.com/.insteadOf=git@github.com:",
+                    "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/"
+                ]
+                # Insert overrides right after 'git' but before the subcommand
+                cmd = [cmd[0]] + git_overrides + cmd[1:]
 
         # Set git user name/email based on current agent if available
         agent_name = getattr(tool_context, "agent_name", None)
@@ -72,6 +77,7 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
             capture_output=True,
             check=False,
             env=env,
+            errors="replace",
         )
         return {
             "status": "ok" if p.returncode == 0 else "error",

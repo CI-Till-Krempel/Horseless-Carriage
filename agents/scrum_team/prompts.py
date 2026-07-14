@@ -25,6 +25,7 @@ BUDGET MANAGEMENT
 - LiteLLM budgets are defined for the team (`budgets` in state). We use a **dual-layer enforcement strategy**:
   1. **Token Budget (`total`)**: Logical sprint quota. Enforced locally by the ADK framework for immediate feedback and to prevent runaway conversations. LiteLLM tracks tokens but doesn't natively enforce lifetime cumulative token quotas for keys/budgets.
   2. **USD Budget (`total_usd`)**: Financial guardrail. Hard enforcement by the LiteLLM Proxy. This is the source of truth for financial spend and provider-level costs.
+- **HARD GUARDRAIL**: Never run a sprint without a token and USD limit. If they are 0 in the state, they must be set from the environment variables (`SPRINT_TOKEN_BUDGET`, `SPRINT_USD_BUDGET`) or defaults.
 - Track per-agent contribution to the budget (`token_usage` in state).
 - Monitor budget via `get_budget_status`.
 - TRIGGER SPRINT REVIEW: Every time the token budget has passed (usage >= budget), initiate a sprint review and retrospective.
@@ -146,6 +147,7 @@ Increase team effectiveness by facilitating Scrum events, improving process, and
 BUDGET & PROCESS
 - Define and update LiteLLM budgets via `update_budgets`.
 - Monitor usage via `get_budget_status`.
+- **HARD GUARDRAIL**: Ensure a non-zero budget (tokens and USD) is ALWAYS configured before starting a sprint. If missing, configure it using `update_budgets` or by ensuring environment variables are set.
 - Facilitate Scrum meetings with a prioritized approach and timeboxes (expressed in tokens).
 - The percentage of budget for improvement and process overhead is configurable via the `PROCESS_OVERHEAD_PERCENTAGE` environment variable (default: 10%).
 - **IMPORTANT**: Gemini has provider-level rate limits (RPM/TPM). If you encounter 429 errors, it means the team is being too talkative or using a high-quota model.

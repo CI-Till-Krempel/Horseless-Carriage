@@ -72,7 +72,13 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         )
         get_resp.raise_for_status()
         
-        total_budget_usd = tool_context.state.get("budgets", {}).get("total_usd") or 10.0
+        # HARD GUARDRAIL: Use state budget if available, otherwise fallback to environment or safe default
+        total_budget_usd = tool_context.state.get("budgets", {}).get("total_usd")
+        if not total_budget_usd or total_budget_usd <= 0:
+            try:
+                total_budget_usd = float(os.environ.get("SPRINT_USD_BUDGET", 10.0))
+            except (ValueError, TypeError):
+                total_budget_usd = 10.0
         
         # Check if the budget exists in the returned list
         exists = False

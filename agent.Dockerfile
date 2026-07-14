@@ -44,9 +44,10 @@ COPY ./agents ./agents
 COPY ./spec-templates ./spec-templates
 COPY auth_github.py .
 COPY entrypoint.sh .
+RUN chmod +x agents/scrum_team/scripts/run_agent.sh
 
 # Set the entrypoint for the production container
 ENTRYPOINT ["sh", "entrypoint.sh"]
 
 # The command to run when the container starts will be provided by docker-compose
-CMD ["adk", "run", "--session_service_uri", "sqlite:////tmp/adk_sessions.db", "agents"]
+CMD ["/bin/bash", "agents/scrum_team/scripts/run_agent.sh"]

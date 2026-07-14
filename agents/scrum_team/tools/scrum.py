@@ -28,6 +28,9 @@ REPO_STATE_KEYS = [
     "budgets",
     "token_usage",
     "story_estimates",
+    "litellm_keys",
+    "sprint_report_kpis",
+    "repo",
 ]
 
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
@@ -86,6 +89,14 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
             budgets["total_usd"] = float(env_usd_budget)
         except (ValueError, TypeError):
             pass
+    
+    # HARD GUARDRAIL: Never allow 0 budget if not explicitly intended (and even then, discourage it)
+    # Default to sensible values if still 0
+    if budgets.get("total", 0) <= 0:
+        budgets["total"] = 1000000  # Default 1M tokens
+    if budgets.get("total_usd", 0.0) <= 0.0:
+        budgets["total_usd"] = 10.0 # Default $10.00
+        
     s["budgets"] = budgets
 
     # Repo
@@ -153,7 +164,7 @@ def load_state_from_repo(tool_context=None) -> Dict[str, Any]:
     if not fp.exists():
         return {"status": "error", "message": f"State file not found: {fp}"}
     try:
-        data = json.loads(fp.read_text(encoding="utf-8"))
+        data = json.loads(fp.read_text(encoding="utf-8", errors="replace"))
         if not isinstance(data, dict):
             return {"status": "error", "message": "Invalid state format in state.json"}
         for k, v in data.items():
