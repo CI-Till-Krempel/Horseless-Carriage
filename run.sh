@@ -34,8 +34,9 @@ echo "  LiteLLM UI: http://localhost:4000/ui"
 echo ""
 
 # 3. Build and run the agent container
-SESSION_FILE="sessions/${SESSION_ID}.json"
-CMD_ARGS="--session_service_uri sqlite:////tmp/adk_sessions.db --verbose agents"
+SESSION_FILE="sessions/${SESSION_ID}.session.json"
+LOG_LEVEL_ARG=${LOG_LEVEL:-info}
+CMD_ARGS="--session_service_uri sqlite:////app/sessions/adk_sessions.db --log_level $LOG_LEVEL_ARG --save_session --session_id /app/sessions/$SESSION_ID agents"
 
 if [ -f "$SESSION_FILE" ]; then
     echo "Resuming session from $SESSION_FILE..."

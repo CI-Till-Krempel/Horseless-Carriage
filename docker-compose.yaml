@@ -53,12 +53,15 @@ services:
       - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET}
       - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE}
       - SESSION_ID=${SESSION_ID}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - GIT_USER_NAME=${GIT_USER_NAME}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL}
     depends_on:
       - litellm
     # Keep the container running and allow for interactive sessions
     stdin_open: true
     tty: true
-    command: adk run --session_service_uri sqlite:////tmp/adk_sessions.db --verbose agents
+    command: adk run --session_service_uri sqlite:////app/sessions/adk_sessions.db --log_level ${LOG_LEVEL:-info} --save_session --session_id /app/sessions/${SESSION_ID:-my-sprint} agents
 
   # -----------------------------------------
   # OPTIONAL (later): Ollama for local models

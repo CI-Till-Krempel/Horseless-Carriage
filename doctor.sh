@@ -45,6 +45,18 @@ if [ -z "$STATE_REPO_PATH" ]; then
     exit 1
 fi
 
+if [ -z "$GIT_USER_NAME" ]; then
+    echo "WARNING: GIT_USER_NAME is not set in .env. Defaulting to 'DevTeam'."
+fi
+
+if [ -z "$GIT_USER_EMAIL" ]; then
+    echo "WARNING: GIT_USER_EMAIL is not set in .env. Git commits may fail if not configured."
+fi
+
+if [ -z "$LOG_LEVEL" ]; then
+    echo "NOTE: LOG_LEVEL is not set in .env. Defaulting to 'info'."
+fi
+
 # 3. Check GitHub configuration
 if [ -z "$GITHUB_REPO_URL" ]; then
     echo "WARNING: GITHUB_REPO_URL is not set in .env. The agent might not know which repository to use."
@@ -59,11 +71,16 @@ else
     echo "Please set either GITHUB_TOKEN or (GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID)."
 fi
 
-# 4. Check if the STATE_REPO_PATH directory exists
+# 4. Check if the directories exist
 if [ ! -d "$STATE_REPO_PATH" ]; then
     echo "ERROR: The directory specified by STATE_REPO_PATH does not exist: $STATE_REPO_PATH"
     echo "Please create this directory before running the agent."
     exit 1
+fi
+
+if [ ! -d "sessions" ]; then
+    echo "NOTE: 'sessions' directory not found. Creating it..."
+    mkdir sessions
 fi
 
 # 4. Check gh CLI authentication (still useful for local development and setup)

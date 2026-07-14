@@ -1,9 +1,54 @@
 # agents/scrum_team/agent.py
 import os
 import requests
+import logging
+import sys
 from typing import Optional, Union, Dict, Any
 
 import litellm
+
+# --- Logging Setup ---
+def _setup_logging():
+    log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
+    
+    # Ensure sessions directory exists for the log file
+    log_file = os.path.join("/app/sessions", f"agent-{os.getenv('SESSION_ID', 'default')}.log")
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    
+    # Root logger configuration
+    root_logger = logging.getLogger()
+    # We set root logger to DEBUG to allow all logs to be captured by handlers
+    root_logger.setLevel(logging.DEBUG)
+    
+    # Function to set level for all stream handlers in a logger
+    def set_stream_handlers_level(logger, level):
+        for handler in logger.handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.setLevel(level)
+
+    log_level = getattr(logging, log_level_str, logging.INFO)
+
+    # Apply to root logger
+    set_stream_handlers_level(root_logger, log_level)
+
+    # Apply to all existing loggers (LiteLLM etc. often have their own handlers)
+    for name in logging.root.manager.loggerDict:
+        set_stream_handlers_level(logging.getLogger(name), log_level)
+
+    # Add file handler
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    root_logger.addHandler(fh)
+    
+    # LiteLLM specific logging
+    if log_level_str == "DEBUG":
+        litellm.set_verbose = True
+    
+    root_logger.info(f"Logging initialized. Console level: {log_level_str}, File: {log_file}")
+
+_setup_logging()
 from google.genai import types
 from google.adk.agents.llm_agent import LlmAgent, CallbackContext
 from google.adk.models.llm_request import LlmRequest
@@ -168,14 +213,17 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
         return None
 
     try:
-        response = requests.get(
-            f"{proxy_base}/budget/info?budget_id={budget_id}",
-            headers={"Authorization": f"Bearer {master_key}"},
+        response = requests.post(
+            f"{proxy_base}/budget/info",
+            headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
+            json={"budgets": [budget_id]},
             timeout=5
         )
         response.raise_for_status()
-        budget_info = response.json()
-        current_spend = budget_info.get("spend", 0.0)
+        budget_info_list = response.json()
+        current_spend = 0.0
+        if budget_info_list and isinstance(budget_info_list, list) and len(budget_info_list) > 0:
+            current_spend = budget_info_list[0].get("spend", 0.0)
 
         if current_spend >= budget_limit:
             msg = (
@@ -187,11 +235,11 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                 model_version=llm_request.model or "unknown"
             )
     except requests.RequestException as e:
-        # If the proxy is down, we can't check the budget, so we'll allow the call to proceed.
-        # This is a trade-off between availability and strict budget enforcement.
-        # In a production system, you might want to handle this differently.
-        print(f"Warning: Could not check budget status. {e}")
-        pass
+        msg = f"❌ [BUDGET ERROR] Could not verify budget status with LiteLLM proxy: {e}. Agent execution halted to prevent unmonitored spending."
+        return LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text=msg)]),
+            model_version=llm_request.model or "unknown"
+        )
 
     return None
 

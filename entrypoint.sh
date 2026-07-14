@@ -17,5 +17,13 @@ else
   echo "WARNING: No GitHub authentication credentials found. GitHub tools may fail."
 fi
 
+# --- Git Configuration ---
+if [ -n "$GIT_USER_NAME" ]; then
+  git config --global user.name "$GIT_USER_NAME"
+fi
+if [ -n "$GIT_USER_EMAIL" ]; then
+  git config --global user.email "$GIT_USER_EMAIL"
+fi
+
 # Execute the main command passed to the container
 exec "$@"

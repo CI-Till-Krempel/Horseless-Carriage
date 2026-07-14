@@ -64,16 +64,24 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     
     # 1. Ensure the shared budget object exists in LiteLLM
     try:
-        get_resp = requests.get(
-            f"{proxy_base}/budget/info?budget_id={budget_id}",
-            headers={"Authorization": f"Bearer {master_key}"},
+        get_resp = requests.post(
+            f"{proxy_base}/budget/info",
+            headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
+            json={"budgets": [budget_id]},
             timeout=5
         )
+        get_resp.raise_for_status()
         
         total_budget_usd = tool_context.state.get("budgets", {}).get("total_usd") or 10.0
         
-        if get_resp.status_code == 200:
-            requests.post(
+        # Check if the budget exists in the returned list
+        exists = False
+        budget_info_list = get_resp.json()
+        if budget_info_list and isinstance(budget_info_list, list) and len(budget_info_list) > 0:
+            exists = True
+        
+        if exists:
+            upd_resp = requests.post(
                 f"{proxy_base}/budget/update",
                 headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
                 json={
@@ -82,8 +90,9 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
                 },
                 timeout=5
             )
+            upd_resp.raise_for_status()
         else:
-            requests.post(
+            new_resp = requests.post(
                 f"{proxy_base}/budget/new",
                 headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
                 json={
@@ -93,8 +102,9 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
                 },
                 timeout=5
             )
-    except Exception:
-        pass 
+            new_resp.raise_for_status()
+    except Exception as e:
+        return {"status": "error", "message": f"Budget API error: {e}"}
     
     # 2. Generate the Key
     url = f"{proxy_base}/key/generate"

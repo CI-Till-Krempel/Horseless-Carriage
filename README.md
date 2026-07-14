@@ -92,10 +92,11 @@ The system uses Docker Compose for logging, which captures both orchestrator act
 
 ### Session Management
 Sessions are managed by the ADK framework to ensure continuity across restarts:
-- **Persistence**: Conversation history and agent state are stored in the `sessions/` directory as JSON files.
+- **Persistence**: Conversation history and agent state are stored in the `sessions/` directory as `.session.json` files.
 - **Session Identification**: Each run uses a `SESSION_ID` (defined in `.env`).
 - **Resuming**: The `run.sh` script automatically detects existing session files and uses the `--resume` flag to pick up where the team left off.
-- **Metadata**: A local SQLite database (`/tmp/adk_sessions.db` inside the container) tracks session lifecycle and metadata.
+- **Interruption**: You can stop the agent at any time (e.g., by pressing `Ctrl+C` in interactive mode). The framework will automatically save the session state to a file on exit.
+- **Metadata**: A shared SQLite database (`sessions/adk_sessions.db`) tracks session lifecycle and metadata, ensuring that even if the container is removed, the session history remains accessible.
 
 ## Testing
 

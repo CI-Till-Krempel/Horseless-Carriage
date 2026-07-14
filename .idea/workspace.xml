@@ -4,52 +4,16 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Refactor ScrumState model, improve state tools, and enhance state-based tests; add scripts for state validation and test orchestration; update Dockerfile with multi-stage build and testing stage.">
-      <change afterPath="$PROJECT_DIR$/.env.bak" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Remove Scrum Team agents, tools, and related modules.">
       <change beforePath="$PROJECT_DIR$/.env.example" beforeDir="false" afterPath="$PROJECT_DIR$/.env.example" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/PREFLIGHT.md" beforeDir="false" afterPath="$PROJECT_DIR$/PREFLIGHT.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/state.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/state.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_github.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_github.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_scrum.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_scrum.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/__init__.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/init.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/prompts.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/state.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tests/__init__.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tests/test_agent.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tests/test_budget.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tests/test_docs.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tests/test_github.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tests/test_quality.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tests/test_scrum.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tests/test_workflow.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/__init__.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/base.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/budget.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/docs.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/github.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/quality.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/requirements.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/scrum.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/tmp/agents/scrum_team/tools/workflow.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/check_state_repo.sh" beforeDir="false" afterPath="$PROJECT_DIR$/check_state_repo.sh" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/docker-compose.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yaml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/doctor.sh" beforeDir="false" afterPath="$PROJECT_DIR$/doctor.sh" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/spec-templates/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/README.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/spec-templates/ROADMAP.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/ROADMAP.md" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/spec-templates/workflows/TEMPLATE-AGENT-WORKFLOW.md" beforeDir="false" afterPath="$PROJECT_DIR$/spec-templates/workflows/TEMPLATE-AGENT-WORKFLOW.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/entrypoint.sh" beforeDir="false" afterPath="$PROJECT_DIR$/entrypoint.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/run.sh" beforeDir="false" afterPath="$PROJECT_DIR$/run.sh" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -78,23 +42,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.9605757754651538" />
-      <entry key="MS500" value="4.671921588856984" />
-      <entry key="S2" value="14.15737060803571" />
-      <entry key="S5" value="32.20239520023058" />
-      <entry key="S10" value="54.22033639348047" />
-      <entry key="S30" value="89.95166555960272" />
-      <entry key="S60" value="109.62856172073951" />
-      <entry key="M2" value="138.88987046806403" />
-      <entry key="M5" value="203.35827653369338" />
-      <entry key="M10" value="286.60930362006354" />
-      <entry key="M15" value="359.0398803727085" />
-      <entry key="M30" value="514.5116415699065" />
-      <entry key="H1" value="663.4988717516886" />
-      <entry key="H2" value="771.8793177936068" />
-      <entry key="H4" value="871.7099963067114" />
-      <entry key="D1" value="1643.8018361867444" />
-      <entry key="W1" value="2218.3354901715525" />
+      <entry key="MS100" value="1.645517751911585" />
+      <entry key="MS500" value="4.930052756338689" />
+      <entry key="S2" value="14.379504665942138" />
+      <entry key="S5" value="28.584528733658658" />
+      <entry key="S10" value="40.48070458932994" />
+      <entry key="S30" value="53.30112458657898" />
+      <entry key="S60" value="57.49724919947866" />
+      <entry key="M2" value="61.43642884147838" />
+      <entry key="M5" value="79.32591349816256" />
+      <entry key="M10" value="104.37285344863716" />
+      <entry key="M15" value="120.33528370281488" />
+      <entry key="M30" value="177.83531426355856" />
+      <entry key="H1" value="377.12256395148546" />
+      <entry key="H2" value="722.1411897840883" />
+      <entry key="H4" value="1084.4482661981458" />
+      <entry key="D1" value="2194.470350132824" />
+      <entry key="W1" value="2892.797185879495" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -104,35 +68,35 @@
       <entry key="S10" value="0.0" />
       <entry key="S30" value="0.0" />
       <entry key="S60" value="0.0" />
-      <entry key="M2" value="2.94235120773693E-245" />
-      <entry key="M5" value="3.8031324788223106E-98" />
-      <entry key="M10" value="4.664400601574065E-49" />
-      <entry key="M15" value="1.0891051304465776E-32" />
-      <entry key="M30" value="2.612691998864654E-16" />
-      <entry key="H1" value="4.3428550307928684E-8" />
-      <entry key="H2" value="5.981408653945755E-4" />
-      <entry key="H4" value="0.07237837636251022" />
-      <entry key="D1" value="4.019979907398965" />
-      <entry key="W1" value="8.02077610115348" />
+      <entry key="M2" value="1.2909641851798435E-268" />
+      <entry key="M5" value="1.7259544399755673E-107" />
+      <entry key="M10" value="9.936645116752894E-54" />
+      <entry key="M15" value="8.369491931947175E-36" />
+      <entry key="M30" value="7.24273942798078E-18" />
+      <entry key="H1" value="7.230738493988708E-9" />
+      <entry key="H2" value="2.440659171456583E-4" />
+      <entry key="H4" value="0.04623391467905434" />
+      <entry key="D1" value="3.7306329425688585" />
+      <entry key="W1" value="7.935639180976029" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.9013611086686482" />
-      <entry key="MS500" value="4.645570641559478" />
-      <entry key="S2" value="14.137410254597413" />
-      <entry key="S5" value="32.183709796106264" />
-      <entry key="S10" value="54.204445551725414" />
-      <entry key="S30" value="89.94276927173979" />
-      <entry key="S60" value="109.62308853935714" />
-      <entry key="M2" value="138.88639021103333" />
-      <entry key="M5" value="203.3562257240329" />
-      <entry key="M10" value="286.60779903032864" />
-      <entry key="M15" value="359.0385880171326" />
-      <entry key="M30" value="514.5106911554104" />
-      <entry key="H1" value="663.4982553138534" />
-      <entry key="H2" value="771.8795573297123" />
-      <entry key="H4" value="871.7821682096543" />
-      <entry key="D1" value="1647.8215341070547" />
-      <entry key="W1" value="2226.3560694065914" />
+      <entry key="MS100" value="1.6190388746688222" />
+      <entry key="MS500" value="4.910483037553692" />
+      <entry key="S2" value="14.363333669248584" />
+      <entry key="S5" value="28.57081555676644" />
+      <entry key="S10" value="40.47067026898015" />
+      <entry key="S30" value="53.29661251840181" />
+      <entry key="S60" value="57.49479937118994" />
+      <entry key="M2" value="61.4351104410174" />
+      <entry key="M5" value="79.3252314806325" />
+      <entry key="M10" value="104.37240952582026" />
+      <entry key="M15" value="120.33494216307795" />
+      <entry key="M30" value="177.8350356813887" />
+      <entry key="H1" value="377.1222230736362" />
+      <entry key="H2" value="722.1410904570605" />
+      <entry key="H4" value="1084.494236223202" />
+      <entry key="D1" value="2198.200692841777" />
+      <entry key="W1" value="2900.7326260146133" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -204,7 +168,7 @@
       <workItem from="1782904538747" duration="21128000" />
       <workItem from="1783323390020" duration="14857000" />
       <workItem from="1783591344439" duration="1440000" />
-      <workItem from="1783681596188" duration="25564000" />
+      <workItem from="1783681596188" duration="31232000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -342,7 +306,15 @@
       <option name="project" value="LOCAL" />
       <updated>1783946669307</updated>
     </task>
-    <option name="localTasksCounter" value="18" />
+    <task id="LOCAL-00018" summary="Remove Scrum Team agents, tools, and related modules.">
+      <option name="closed" value="true" />
+      <created>1784019519013</created>
+      <option name="number" value="00018" />
+      <option name="presentableId" value="LOCAL-00018" />
+      <option name="project" value="LOCAL" />
+      <updated>1784019519013</updated>
+    </task>
+    <option name="localTasksCounter" value="19" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -372,6 +344,8 @@
     <MESSAGE value="Refactor project structure, add Scrum Team agents, enhance workflows, update tools and state management.&#10;&#10;Key changes:&#10;- Restructure directories and move templates from `docs/` to `spec-templates/`.&#10;- Introduce the `Scrum Team` agents with the `root_agent` delegating tasks to sub-agents.&#10;- Add tools for state, budget, backlog, GitHub integration, and quality management.&#10;- Improve agent prompts and safeguards for template usage.&#10;- Establish tests for agent functionality, tools, and callbacks." />
     <MESSAGE value="eat: Containerize agent and implement real-time cost limits&#10;This commit introduces a complete architectural overhaul to improve security, reliability, and configuration management by containerizing the entire application stack. It also replaces the previous budgeting model with a single, strictly enforced, real-time cost limit.&#10;Key changes:&#10;•&#10;Docker-based Environment:&#10;◦&#10;The agent now runs in a dedicated Docker container, managed via docker-compose.yaml.&#10;◦&#10;This removes the need for a local Python virtual environment and simplifies setup, ensuring a consistent environment.&#10;◦&#10;The agent's source code is mounted as a read-only volume to prevent self-modification.&#10;◦&#10;The state repository path is now configured via STATE_REPO_PATH in the .env file and mounted as a writable volume, isolating agent state from the application code.&#10;•&#10;Flexible GitHub Authentication:&#10;◦&#10;An entrypoint.sh script now manages authentication within the container.&#10;◦&#10;Supports both a fine-grained GITHUB_TOKEN (preferred) and a GitHub App, selectable via environment variables.&#10;◦&#10;The gh CLI is now installed in the container to support this.&#10;•&#10;Real-Time Cost Enforcement:&#10;◦&#10;The budgeting system has been refactored to use a single SPRINT_USD_BUDGET.&#10;◦&#10;A new check_cost_budget_callback performs a synchronous, real-time check against the LiteLLM /budget/info endpoint before every LLM call.&#10;◦&#10;This provides a hard financial guardrail, preventing cost overruns due to reporting delays and eliminating the less reliable token-based limit.&#10;•&#10;Improved Setup and Tooling:&#10;◦&#10;The setup.sh and doctor.sh scripts have been updated to be Docker-aware, checking for Docker, .env configuration, and the state repo path.&#10;◦&#10;The run.sh script now orchestrates docker compose, simplifying the process of running the agent." />
     <MESSAGE value="Refactor ScrumState model, improve state tools, and enhance state-based tests; add scripts for state validation and test orchestration; update Dockerfile with multi-stage build and testing stage." />
-    <option name="LAST_COMMIT_MESSAGE" value="Refactor ScrumState model, improve state tools, and enhance state-based tests; add scripts for state validation and test orchestration; update Dockerfile with multi-stage build and testing stage." />
+    <MESSAGE value="Fixed setup and environment variables that were not available." />
+    <MESSAGE value="Remove Scrum Team agents, tools, and related modules." />
+    <option name="LAST_COMMIT_MESSAGE" value="Remove Scrum Team agents, tools, and related modules." />
   </component>
 </project>
