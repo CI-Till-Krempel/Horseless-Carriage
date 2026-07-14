@@ -1,7 +1,8 @@
 # agents/scrum_team/tools/docs.py
 from __future__ import annotations
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List
+from pathlib import Path
 from .base import _configured_repo_root, _project_root
 
 def write_file(path: str, content: str, overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
@@ -57,6 +58,34 @@ def read_doc(path: str, tool_context=None) -> Dict[str, Any]:
         return {"status": "ok", "content": content, "path": str(full_path)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+def list_docs(tool_context=None) -> Dict[str, Any]:
+    """
+    List all documentation files in specs/ and spec-templates/.
+    Useful for discovering PRDs, ADRs, and Stories.
+    """
+    proj_root = _project_root()
+    repo_root = _configured_repo_root(tool_context)
+    
+    results = {
+        "specs": [],
+        "spec-templates": []
+    }
+    
+    def scan(root: Path, results_list: List[str]):
+        if not root.exists():
+            return
+        for fp in root.rglob("*.md"):
+            try:
+                rel = fp.relative_to(root.parent)
+                results_list.append(str(rel))
+            except ValueError:
+                continue
+
+    scan(repo_root / "specs", results["specs"])
+    scan(proj_root / "spec-templates", results["spec-templates"])
+    
+    return {"status": "ok", "files": results}
 
 def upsert_prd(content: str, filename: str, tool_context=None) -> Dict[str, Any]:
     """
@@ -155,12 +184,24 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
             specs_dir.mkdir()
             (specs_dir / ".gitkeep").touch()
             files_seeded.append("specs/")
+            
+        # Copy spec-templates to target repo
+        templates_src = _project_root() / "spec-templates"
+        templates_dst = repo_root / "spec-templates"
+        if templates_src.exists():
+            import shutil
+            if templates_dst.exists() and overwrite:
+                shutil.rmtree(templates_dst)
+            
+            if not templates_dst.exists():
+                shutil.copytree(templates_src, templates_dst)
+                files_seeded.append("spec-templates/")
 
         # Initial commit and push
         if files_seeded:
             push_res = git_push(
                 branch="main", # default to main for seeding
-                commit_message="chore: initial seed of README and specs directory",
+                commit_message="chore: initial seed of README, specs and templates",
                 add_all=True,
                 tool_context=tool_context
             )

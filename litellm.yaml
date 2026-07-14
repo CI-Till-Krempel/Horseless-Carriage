@@ -6,36 +6,99 @@ model_list:
     litellm_params:
       model: gemini/gemini-1.5-pro
       api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_ONLY_HIGH
 
   - model_name: scrum-po
     litellm_params:
       model: gemini/gemini-1.5-pro
       api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_ONLY_HIGH
 
   - model_name: scrum-sm
     litellm_params:
       model: gemini/gemini-1.5-pro
       api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_ONLY_HIGH
 
   - model_name: scrum-dev
     litellm_params:
       model: gemini/gemini-1.5-pro
       api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_ONLY_HIGH
 
   - model_name: scrum-qa
     litellm_params:
       model: gemini/gemini-1.5-pro
       api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_ONLY_HIGH
 
   - model_name: scrum-arch
     litellm_params:
       model: gemini/gemini-1.5-pro
       api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_ONLY_HIGH
 
   - model_name: scrum-quality
     litellm_params:
       model: gemini/gemini-1.5-pro
       api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_ONLY_HIGH
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_ONLY_HIGH
 
   # -----------------------------------------
   # READY FOR LATER: Local LLMs via Ollama

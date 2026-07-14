@@ -7,6 +7,43 @@ from typing import Optional, Union, Dict, Any
 
 import litellm
 
+# --- Monkey patch for OpenAI APIError incompatibility in high version environments ---
+try:
+    import openai
+    import httpx
+    
+    _original_apierror_init = openai.APIError.__init__
+    
+    def _patched_apierror_init(self, message, request=None, *, body=None, **kwargs):
+        # The new signature is (self, message, request, *, body)
+        # But LiteLLM might pass (self, message, status_code, response, ...)
+        
+        # If the first non-self arg is not a string, or if we have extra args
+        real_message = message
+        real_request = request
+        real_body = body
+        
+        if not isinstance(real_request, httpx.Request):
+            # Probably status_code or something else from an old LiteLLM call
+            real_request = httpx.Request("GET", "http://localhost") # Mock request
+            
+        if "response" in kwargs:
+            # LiteLLM often passes 'response'
+            if real_body is None:
+                real_body = kwargs.pop("response")
+            else:
+                kwargs.pop("response")
+        
+        # Strip other incompatible kwargs
+        kwargs.pop("status_code", None)
+        
+        return _original_apierror_init(self, real_message, real_request, body=real_body)
+
+    openai.APIError.__init__ = _patched_apierror_init
+    logging.getLogger("scrum-team").info("Applied monkey-patch for openai.APIError")
+except Exception as e:
+    logging.getLogger("scrum-team").warning(f"Failed to apply monkey-patch for openai.APIError: {e}")
+
 # --- Logging Setup ---
 def _setup_logging():
     log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -99,6 +136,7 @@ from .tools import (
     gh_pr_check_logs,
     create_litellm_virtual_key,
     read_doc,
+    list_docs,
     upsert_prd,
     upsert_srs,
 )
@@ -176,6 +214,9 @@ def get_scrum_state(context_state) -> ScrumState:
         data["budgets"] = Budgets(**budgets_data)
     if isinstance(token_usage_data, dict):
         data["token_usage"] = TokenUsage(**token_usage_data)
+
+    # Filter out None values to allow Pydantic defaults to kick in
+    data = {k: v for k, v in data.items() if v is not None}
         
     return ScrumState(**data)
 
@@ -295,6 +336,7 @@ product_owner = LlmAgent(
         create_sprint_report,
         create_release_pr,
         read_doc,
+        list_docs,
         upsert_prd,
         upsert_srs,
     ],
@@ -338,6 +380,8 @@ dev_team = LlmAgent(
         add_impediment,
         log_decision,
         write_file,
+        read_doc,
+        list_docs,
         create_from_template,
         git_push,
         gh_pr_create,
@@ -412,6 +456,8 @@ root_agent = LlmAgent(
         update_budgets,
         get_budget_status,
         log_token_usage,
+        read_doc,
+        list_docs,
     ],
     sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian],
     **COMMON_AGENT_CALLBACKS,

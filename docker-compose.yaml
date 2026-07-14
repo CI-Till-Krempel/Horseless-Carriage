@@ -31,6 +31,7 @@ services:
     volumes:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro
+      - ./spec-templates:/app/spec-templates:ro
       # Mount the state repository as read-write
       - type: bind
         source: ${STATE_REPO_PATH}
@@ -38,7 +39,8 @@ services:
       # Mount the sessions directory to persist conversation history
       - ./sessions:/app/sessions
     environment:
-      - STATE_REPO_PATH=/app/state_repo
+      - STATE_REPO_PATH=${STATE_REPO_PATH}
+      - INTERNAL_STATE_REPO_PATH=/app/state_repo
       - LITELLM_PROXY_API_BASE=http://litellm:4000
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}

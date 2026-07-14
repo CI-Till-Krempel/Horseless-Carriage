@@ -21,24 +21,15 @@ Tip: If you prefer standard checkboxes only, use the Kanban tables below and kee
 
 ### v0.1 — MVP (target: YYYY-MM)
 Goals
-- Short goal statement for the release
 
-Stories
-- [ ] [ST-001] Your first story title
-- [ ] [ST-002] Your second story title
-- [ ] [ST-003] Another story title
+Stories:
 
 ### v0.2 — Next iteration (target: YYYY-MM)
 Goals
-- Short goal statement for the release
 
 Stories
-- [ ] [ST-010] Some enhancement
-- [ ] [ST-011] Another enhancement
 
 ### Backlog (unplanned)
-- [ ] [ST-100] Future idea
-- [ ] [ST-101] Another idea
 
 ---
 
@@ -50,8 +41,6 @@ Use either the per-version boards below or one global board; duplicate as needed
 
 | To Do | In Progress | In Review | Done |
 |------|-------------|-----------|------|
-| [ST-001] Your first story title | [ST-002] Your second story title |  |  |
-| [ST-003] Another story title |  |  |  |
 
 Notes
 - Update this table in PRs alongside code changes.
@@ -61,18 +50,11 @@ Notes
 
 | To Do | In Progress | In Review | Done |
 |------|-------------|-----------|------|
-| [ST-010] Some enhancement |  |  |  |
-| [ST-011] Another enhancement |  |  |  |
 
 ---
 
 ## Cross-cutting initiatives (optional)
 Track broader themes/epics that span multiple versions. Link constituent stories.
-
-- Initiative: Developer Experience
-  - Stories: [ST-020], [ST-021]
-- Initiative: Reliability
-  - Stories: [ST-030], [ST-031]
 
 ---
 
@@ -88,14 +70,7 @@ Track broader themes/epics that span multiple versions. Link constituent stories
 Group story references by planned version for quick scanning.
 
 - v0.1
-  - [ST-001] Your first story title — specs/stories/ST-001-your-first-story.md
-  - [ST-002] Your second story title — specs/stories/ST-002-your-second-story.md
-  - [ST-003] Another story title — specs/stories/ST-003-another-story.md
 - v0.2
-  - [ST-010] Some enhancement — specs/stories/ST-010-some-enhancement.md
-  - [ST-011] Another enhancement — specs/stories/ST-011-another-enhancement.md
 - Unplanned
-  - [ST-100] Future idea — specs/stories/ST-100-future-idea.md
-  - [ST-101] Another idea — specs/stories/ST-101-another-idea.md
 
 Replace placeholders with your actual story IDs and titles. Keep this file updated in the same PRs that move work forward.

@@ -12,12 +12,21 @@ def _configured_repo_root(tool_context=None) -> Path:
     """
     Determine which repository directory to operate in.
     Preference order:
-    - STATE_REPO_PATH environment variable
+    - INTERNAL_STATE_REPO_PATH environment variable (Docker mount point)
+    - STATE_REPO_PATH environment variable (User override)
     - tool_context.state['repo']['local_path'] if present
     - current project root (fallback)
     """
+    # 1. Internal path (highest priority for Docker environment)
+    internal_path = os.getenv("INTERNAL_STATE_REPO_PATH")
+    if internal_path:
+        return Path(internal_path).resolve()
+        
+    # 2. Public environment variable
     if os.getenv("STATE_REPO_PATH"):
         return Path(os.getenv("STATE_REPO_PATH")).expanduser().resolve()
+    
+    # 3. State-persisted path
     try:
         if tool_context and getattr(tool_context, "state", None):
             repo_cfg = tool_context.state.get("repo", {}) or {}

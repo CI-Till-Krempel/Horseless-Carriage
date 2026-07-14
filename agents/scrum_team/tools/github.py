@@ -285,6 +285,7 @@ def repo_status(tool_context=None) -> Dict[str, Any]:
         "url": os.environ.get("GITHUB_REPO_URL"),
         "branch": os.environ.get("GITHUB_REPO_BRANCH"),
         "state_repo_path": os.environ.get("STATE_REPO_PATH"),
+        "internal_mount": os.environ.get("INTERNAL_STATE_REPO_PATH"),
     }
     
     diagnostics = {
@@ -292,6 +293,7 @@ def repo_status(tool_context=None) -> Dict[str, Any]:
         "git_dir": (root / ".git").exists(),
         "configured_in_state": bool(cfg),
         "env_repo_url_present": bool(env_cfg["url"]),
+        "using_internal_mount": bool(env_cfg["internal_mount"]),
     }
 
     # Check identity

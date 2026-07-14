@@ -16,6 +16,7 @@ from .requirements import (
     upsert_backlog_item,
     set_priority,
     sync_stories_from_markdown,
+    sync_requirements_from_markdown,
 )
 from .github import (
     configure_github_repo,
@@ -34,6 +35,7 @@ from .github import (
 from .docs import (
     write_file,
     read_doc,
+    list_docs,
     upsert_prd,
     upsert_srs,
     create_from_template,

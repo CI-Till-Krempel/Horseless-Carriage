@@ -41,6 +41,7 @@ FROM base AS final
 # Copy only the necessary application code from the base stage
 COPY --from=base /app /app
 COPY ./agents ./agents
+COPY ./spec-templates ./spec-templates
 COPY auth_github.py .
 COPY entrypoint.sh .
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 from typing import Any, Dict, List
+from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root
 
 def upsert_story(story: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
@@ -32,7 +33,16 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
         template_path = _project_root() / "spec-templates" / "ROADMAP.md"
         if template_path.exists():
             roadmap_path.parent.mkdir(parents=True, exist_ok=True)
-            roadmap_path.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
+            content = template_path.read_text(encoding="utf-8")
+            
+            # Clean up example stories and placeholders from template
+            cleaned_lines = []
+            for line in content.splitlines():
+                if "[ST-" in line and ("<" in line or "Your first story" in line or "Some enhancement" in line or "Future idea" in line):
+                    continue
+                cleaned_lines.append(line)
+            
+            roadmap_path.write_text("\n".join(cleaned_lines), encoding="utf-8")
         else:
             seed_repository(overwrite=False, tool_context=tool_context)
     
@@ -210,12 +220,73 @@ def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
     s["sprint_backlog"] = sprint_backlog
     return {"status": "ok", "synced": len(found_stories)}
 
+def sync_requirements_from_markdown(tool_context=None) -> Dict[str, Any]:
+    """
+    Scan specs/requirements/PRD-*.md and update state (vision, goals).
+    """
+    repo_root = _configured_repo_root(tool_context)
+    req_dir = repo_root / "specs" / "requirements"
+    if not req_dir.exists():
+        return {"status": "ok", "message": "No requirements directory found."}
+    
+    s = tool_context.state
+    prds = list(req_dir.glob("PRD-*.md"))
+    if not prds:
+        return {"status": "ok", "message": "No PRDs found."}
+    
+    # Use the first PRD found as the primary source of truth for vision/goals
+    # In the future, we could look for the 'latest' or a specifically named one
+    prds.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    primary_prd = prds[0]
+    content = primary_prd.read_text(encoding="utf-8")
+    
+    # Basic parsing for vision and goals
+    vision = ""
+    goals = []
+    
+    lines = content.splitlines()
+    in_goals = False
+    
+    for line in lines:
+        l = line.strip()
+        if l.startswith("# "):
+            # Product Title might be here
+            pass
+        elif l.startswith("## ") and ("Summary" in l or "Vision" in l):
+            # Start of vision section
+            continue
+        elif l.startswith("## ") and "Goal" in l:
+            in_goals = True
+            continue
+        elif l.startswith("## "):
+            in_goals = False
+            
+        if in_goals and l.startswith("- "):
+            goal = l[2:].strip()
+            if goal and "<" not in goal: # Skip placeholders
+                goals.append(goal)
+        elif not in_goals and not l.startswith("#") and not l.startswith("---") and l:
+            # If we are in the first few non-header paragraphs, it might be the vision
+            if len(vision) < 500: # Limit vision size
+                 vision += l + " "
+
+    if vision:
+        s["product_vision"] = vision.strip()
+    if goals:
+        s["product_goals"] = goals
+        
+    return {"status": "ok", "vision_updated": bool(vision), "goals_updated": len(goals), "prd": primary_prd.name}
+
 def _parse_story_markdown(content: str) -> Dict[str, Any]:
     data = {}
     lines = content.splitlines()
     for line in lines:
         if line.strip().startswith("- Story ID:"):
             data["id"] = line.split(":", 1)[1].strip()
+            data["type"] = "User Story"
+        elif line.strip().startswith("- Epic ID:"):
+            data["id"] = line.split(":", 1)[1].strip()
+            data["type"] = "Epic"
         elif line.strip().startswith("- Title:"):
             data["title"] = line.split(":", 1)[1].strip()
         elif line.strip().startswith("- Status:"):
@@ -236,35 +307,61 @@ def _parse_story_markdown(content: str) -> Dict[str, Any]:
 def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     from datetime import datetime
     repo_root = _configured_repo_root(tool_context)
-    item_id = item.get("id", "US-XXXX")
+    
+    item_type = item.get("type", "User Story")
+    is_epic = item_type == "Epic"
+    
+    id_prefix = "EP" if is_epic else "US"
+    template_name = "TEMPLATE-EPIC.md" if is_epic else "TEMPLATE-USER-STORY.md"
+    id_placeholder = f"{id_prefix}-XXXX"
+    title_placeholder = "<short epic title>" if is_epic else "<short story title>"
+    
+    item_id = item.get("id", id_placeholder)
     title = item.get("title", "Untitled")
     filename = f"{item_id}-{title.replace(' ', '-').replace('/', '-')}.md"
     story_path = repo_root / "specs" / "stories" / filename
-    template_path = repo_root / "spec-templates" / "stories" / "TEMPLATE-USER-STORY.md"
+    
+    template_path = repo_root / "spec-templates" / "stories" / template_name
     if not template_path.exists():
-        template_path = _project_root() / "spec-templates" / "stories" / "TEMPLATE-USER-STORY.md"
+        template_path = _project_root() / "spec-templates" / "stories" / template_name
+    
     if not template_path.exists():
-        return {"status": "error", "message": "Template not found."}
+        return {"status": "error", "message": f"Template {template_name} not found."}
+        
     template_content = template_path.read_text(encoding="utf-8")
     status = item.get("status", "Draft")
     priority = item.get("priority", "Must")
-    user_story = item.get("user_story", "As a <role>, I want <capability>, so that <benefit>.")
+    
+    # User story text for stories, or overview for epics
+    user_story = item.get("user_story", "")
+    overview = item.get("overview", "") or item.get("description", "")
+    
+    if not user_story and not is_epic:
+         user_story = "As a <role>, I want <capability>, so that <benefit>."
+    
     ac = item.get("acceptance_criteria", [])
     ac_text = "\n".join([f"- {line}" for line in ac]) if isinstance(ac, list) else str(ac)
     notes = item.get("value_hypothesis", "") or item.get("rationale", "")
     if item.get("dependencies"):
         notes += f"\n- Dependencies: {item.get('dependencies')}"
+    
     test_approach = item.get("test_approach", "")
     if item.get("tasks"):
         test_approach += "\n\n### Tasks\n" + "\n".join([f"- {t}" for t in item.get("tasks", [])])
+    
     content = template_content
-    content = content.replace("US-XXXX", item_id)
-    content = content.replace("<short story title>", title)
+    content = content.replace(id_placeholder, item_id)
+    content = content.replace(title_placeholder, title)
     content = content.replace("Draft | Ready | In Progress | Done | Rejected", status)
     content = content.replace("Must | Should | Could | Won't", priority)
     content = content.replace("<name>", item.get("owner", "Scrum Team"))
     content = content.replace("<YYYY-MM-DD>", datetime.now().strftime("%Y-%m-%d"))
-    content = content.replace("As a <role>, I want <capability>, so that <benefit>.", user_story)
+    
+    if is_epic:
+        content = content.replace("<Describe the high-level business value and scope of this epic>", overview)
+    else:
+        content = content.replace("As a <role>, I want <capability>, so that <benefit>.", user_story)
+    
     if "## Acceptance Criteria" in content:
         parts = content.split("## Acceptance Criteria")
         header = parts[0]

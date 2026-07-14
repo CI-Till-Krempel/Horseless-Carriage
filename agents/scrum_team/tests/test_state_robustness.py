@@ -44,5 +44,19 @@ class TestStateRobustness(unittest.TestCase):
         state = get_scrum_state(None)
         self.assertIsInstance(state, ScrumState)
 
+    def test_get_scrum_state_with_none_values(self):
+        # This mimics the behavior causing Pydantic ValidationError
+        data = {
+            "version": None,
+            "product_vision": None,
+            "product_goals": None,
+            "definition_of_done": None,
+        }
+        state = get_scrum_state(data)
+        self.assertIsInstance(state, ScrumState)
+        self.assertEqual(state.version, "1.0.0")
+        self.assertEqual(state.product_vision, "")
+        self.assertEqual(state.product_goals, [])
+
 if __name__ == "__main__":
     unittest.main()

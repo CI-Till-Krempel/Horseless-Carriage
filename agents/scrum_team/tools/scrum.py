@@ -119,9 +119,11 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     if env_github_token and not s.get("github_token"):
         s["github_token"] = env_github_token
 
-    # 3. Load stories from spec-templates/stories/*.md
+    # 3. Load stories and requirements from Markdown
     try:
+        from .requirements import sync_stories_from_markdown, sync_requirements_from_markdown
         _ = sync_stories_from_markdown(tool_context)
+        _ = sync_requirements_from_markdown(tool_context)
     except Exception:
         pass
 
