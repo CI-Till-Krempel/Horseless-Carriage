@@ -54,9 +54,11 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
             if cmd and cmd[0] == "git":
                 auth_value = base64.b64encode(f"x-access-token:{token}".encode()).decode()
                 git_overrides = [
-                    "-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {auth_value}",
+                    "-c", f"http.https://github.com/.extraheader=AUTHORIZATION: Basic {auth_value}",
                     "-c", "url.https://github.com/.insteadOf=git@github.com:",
-                    "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/"
+                    "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/",
+                    "-c", "url.https://github.com/.pushInsteadOf=git@github.com:",
+                    "-c", "url.https://github.com/.pushInsteadOf=ssh://git@github.com/"
                 ]
                 # Insert overrides right after 'git' but before the subcommand
                 cmd = [cmd[0]] + git_overrides + cmd[1:]

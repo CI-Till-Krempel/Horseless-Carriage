@@ -31,6 +31,7 @@ REPO_STATE_KEYS = [
     "litellm_keys",
     "sprint_report_kpis",
     "repo",
+    "messages",
 ]
 
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:

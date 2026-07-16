@@ -395,6 +395,76 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
 
     return None
 
+# --- History Management Callbacks ---
+
+def history_management_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
+    """
+    BeforeModelCallback: Injects and synchronizes conversation history for the Orchestrator.
+    """
+    if callback_context.agent_name != "ScrumOrchestrator":
+        return
+
+    state = get_scrum_state(callback_context.state)
+    
+    # 1. Injection logic (only for the very first turn of a run)
+    if not llm_request.previous_interaction_id:
+        if state.messages:
+            history_contents = []
+            for msg in state.messages:
+                # Ensure we have a role and content
+                role = msg.get("role", "user")
+                content_text = msg.get("content", "")
+                if content_text:
+                    history_contents.append(types.Content(role=role, parts=[types.Part(text=content_text)]))
+            
+            if history_contents:
+                # Check if we already have the same messages at the start (avoiding duplicates on resume)
+                # This is a safety check.
+                llm_request.contents = history_contents + llm_request.contents
+                logger.info(f"Resumed {len(history_contents)} messages from conversation history.")
+
+    # 2. Sync state.messages with the current full contents to keep it fresh
+    new_history = []
+    for content in llm_request.contents:
+        text = "".join(p.text for p in content.parts if p.text)
+        if text:
+            new_history.append({"role": content.role, "content": text})
+    
+    if new_history:
+        try:
+            callback_context.state["messages"] = new_history
+        except (TypeError, KeyError):
+            try:
+                setattr(callback_context.state, "messages", new_history)
+            except Exception:
+                pass
+
+def history_management_after_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    """
+    AfterModelCallback: Saves the model response to the conversation history.
+    """
+    if callback_context.agent_name != "ScrumOrchestrator":
+        return None
+        
+    if not llm_response.content:
+        return None
+        
+    text = "".join(p.text for p in llm_response.content.parts if p.text)
+    if text:
+        state = get_scrum_state(callback_context.state)
+        history = list(state.messages)
+        # Avoid duplicate appending if called multiple times for the same response
+        if not history or history[-1].get("content") != text:
+            history.append({"role": "model", "content": text})
+            try:
+                callback_context.state["messages"] = history
+            except (TypeError, KeyError):
+                try:
+                    setattr(callback_context.state, "messages", history)
+                except Exception:
+                    pass
+    return None
+
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
@@ -548,5 +618,13 @@ root_agent = LlmAgent(
         upsert_adr,
     ],
     sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian],
-    **COMMON_AGENT_CALLBACKS,
+    before_model_callback=[
+        inject_litellm_key_callback, 
+        check_cost_budget_callback, 
+        history_management_callback
+    ],
+    after_model_callback=[
+        update_token_usage_callback, 
+        history_management_after_callback
+    ],
 )

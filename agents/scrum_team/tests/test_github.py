@@ -99,6 +99,7 @@ class TestGitHubTools(unittest.TestCase):
         mock_run.assert_called_with(
             ["gh", "release", "create", "v1.0.0", "--title", "Initial release"],
             cwd=unittest.mock.ANY,
+            tool_context=tool_context,
         )
 
     @patch("agents.scrum_team.tools.github._run")
@@ -114,6 +115,7 @@ class TestGitHubTools(unittest.TestCase):
         mock_run.assert_called_with(
             ["git", "push", "-u", "origin", "feature-branch"],
             cwd=unittest.mock.ANY,
+            tool_context=tool_context,
         )
 
     def test_repo_status(self):

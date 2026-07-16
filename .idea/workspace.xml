@@ -4,24 +4,15 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation">
-      <change afterPath="$PROJECT_DIR$/agents/scrum_team/scripts/run_agent.sh" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_unicode_safety.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/sessions/test-session.session.json" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add enhanced session handling, strengthen budget constraints, and improve UTF-8 safety.&#10;&#10;Key changes:&#10;- Introduced session resumption logic in `run_agent.sh` and integrated it with `docker-compose`.&#10;- Improved `ScrumState` model with fields for GitHub integration and error tracking.&#10;- Enhanced LiteLLM budget enforcement with guardrails for token and USD limits.&#10;- Refactored text reading methods to replace invalid UTF-8 sequences with U+FFFD. Added tests to ensure robustness with invalid encoding cases.&#10;- Updated Docker and run scripts for better error handling and multi-stage builds.">
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_history.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agent.Dockerfile" beforeDir="false" afterPath="$PROJECT_DIR$/agent.Dockerfile" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/state.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/state.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_github.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_github.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/docs.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/requirements.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/docker-compose.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/run.sh" beforeDir="false" afterPath="$PROJECT_DIR$/run.sh" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -29,7 +20,7 @@
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
   <component name="EmbeddingIndexingInfo">
-    <option name="cachedIndexableFilesCount" value="94" />
+    <option name="cachedIndexableFilesCount" value="85" />
     <option name="fileBasedEmbeddingIndicesEnabled" value="true" />
   </component>
   <component name="FileTemplateManagerImpl">
@@ -50,61 +41,61 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="2.30875837046223" />
-      <entry key="MS500" value="4.907529056539658" />
-      <entry key="S2" value="12.641326546472351" />
-      <entry key="S5" value="20.60303274232933" />
-      <entry key="S10" value="35.76452433444571" />
-      <entry key="S30" value="106.83106132010803" />
-      <entry key="S60" value="168.61855950530887" />
-      <entry key="M2" value="218.80585668056065" />
-      <entry key="M5" value="262.5528698750937" />
-      <entry key="M10" value="314.0652246501122" />
-      <entry key="M15" value="374.9156403748977" />
-      <entry key="M30" value="561.9471704856549" />
-      <entry key="H1" value="885.3128194755677" />
-      <entry key="H2" value="1385.2381441479397" />
-      <entry key="H4" value="2001.773867805387" />
-      <entry key="D1" value="3629.7542701319276" />
-      <entry key="W1" value="4530.301946065504" />
+      <entry key="MS100" value="1.3977355784599612" />
+      <entry key="MS500" value="4.258785425482635" />
+      <entry key="S2" value="13.45146514611374" />
+      <entry key="S5" value="24.581143092902934" />
+      <entry key="S10" value="38.73473507884488" />
+      <entry key="S30" value="77.37293310763154" />
+      <entry key="S60" value="101.05681786141936" />
+      <entry key="M2" value="117.43466126638654" />
+      <entry key="M5" value="129.20133570542154" />
+      <entry key="M10" value="133.49868997135658" />
+      <entry key="M15" value="134.97595082868085" />
+      <entry key="M30" value="136.47625611442697" />
+      <entry key="H1" value="137.2351733219155" />
+      <entry key="H2" value="137.6176084367414" />
+      <entry key="H4" value="139.29928217721817" />
+      <entry key="D1" value="1236.9582830105421" />
+      <entry key="W1" value="3978.2033665482604" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
       <entry key="MS500" value="0.0" />
       <entry key="S2" value="0.0" />
       <entry key="S5" value="0.0" />
-      <entry key="S10" value="3.012655390557478E-165" />
-      <entry key="S30" value="1.4442747509870455E-55" />
-      <entry key="S60" value="3.8003614972618087E-28" />
-      <entry key="M2" value="1.949451588847937E-14" />
-      <entry key="M5" value="3.2806883914286467E-6" />
-      <entry key="M10" value="0.0018112670679468037" />
-      <entry key="M15" value="0.014858957047499358" />
-      <entry key="M30" value="0.12189732174046763" />
-      <entry key="H1" value="0.3491379703369576" />
-      <entry key="H2" value="0.5909624499800188" />
-      <entry key="H4" value="0.7957243190286304" />
-      <entry key="D1" value="4.368645687856856" />
-      <entry key="W1" value="8.828675559447975" />
+      <entry key="S10" value="0.0" />
+      <entry key="S30" value="0.0" />
+      <entry key="S60" value="0.0" />
+      <entry key="M2" value="0.0" />
+      <entry key="M5" value="1.0675025152253102E-156" />
+      <entry key="M10" value="1.0332001331907034E-78" />
+      <entry key="M15" value="1.0220127229423053E-52" />
+      <entry key="M30" value="1.010946449097222E-26" />
+      <entry key="H1" value="1.0054583303125217E-13" />
+      <entry key="H2" value="3.1713442210676197E-7" />
+      <entry key="H4" value="5.829138572646308E-4" />
+      <entry key="D1" value="1.3116575037338247" />
+      <entry key="W1" value="7.434451496664146" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="2.2761155360368144" />
-      <entry key="MS500" value="4.8924022828380505" />
-      <entry key="S2" value="12.62969535701577" />
-      <entry key="S5" value="20.594974715288636" />
-      <entry key="S10" value="35.7570476738698" />
-      <entry key="S30" value="106.82298302777541" />
-      <entry key="S60" value="168.61202381203412" />
-      <entry key="M2" value="218.80156202256626" />
-      <entry key="M5" value="262.55080034545836" />
-      <entry key="M10" value="314.0658109075325" />
-      <entry key="M15" value="374.92953199342963" />
-      <entry key="M30" value="562.068328627139" />
-      <entry key="H1" value="885.6613399427871" />
-      <entry key="H2" value="1385.8285850729444" />
-      <entry key="H4" value="2002.569190525427" />
-      <entry key="D1" value="3634.1226007280093" />
-      <entry key="W1" value="4539.130417764158" />
+      <entry key="MS100" value="1.3641456504775071" />
+      <entry key="MS500" value="4.236827977992878" />
+      <entry key="S2" value="13.43498719629713" />
+      <entry key="S5" value="24.569012482150583" />
+      <entry key="S10" value="38.72518425305529" />
+      <entry key="S30" value="77.36653024268821" />
+      <entry key="S60" value="101.05260942681977" />
+      <entry key="M2" value="117.43220570116445" />
+      <entry key="M5" value="129.20025198524482" />
+      <entry key="M10" value="133.49812952885716" />
+      <entry key="M15" value="134.97557293793807" />
+      <entry key="M30" value="136.47606500362923" />
+      <entry key="H1" value="137.23507721864993" />
+      <entry key="H2" value="137.6175605641679" />
+      <entry key="H4" value="139.2998406637072" />
+      <entry key="D1" value="1238.2698416406283" />
+      <entry key="W1" value="3985.6376457067036" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -176,7 +167,7 @@
       <workItem from="1782904538747" duration="21128000" />
       <workItem from="1783323390020" duration="14857000" />
       <workItem from="1783591344439" duration="1440000" />
-      <workItem from="1783681596188" duration="43288000" />
+      <workItem from="1783681596188" duration="48421000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -346,14 +337,21 @@
       <option name="project" value="LOCAL" />
       <updated>1784036588076</updated>
     </task>
-    <option name="localTasksCounter" value="22" />
+    <task id="LOCAL-00022" summary="Add enhanced session handling, strengthen budget constraints, and improve UTF-8 safety.&#10;&#10;Key changes:&#10;- Introduced session resumption logic in `run_agent.sh` and integrated it with `docker-compose`.&#10;- Improved `ScrumState` model with fields for GitHub integration and error tracking.&#10;- Enhanced LiteLLM budget enforcement with guardrails for token and USD limits.&#10;- Refactored text reading methods to replace invalid UTF-8 sequences with U+FFFD. Added tests to ensure robustness with invalid encoding cases.&#10;- Updated Docker and run scripts for better error handling and multi-stage builds.">
+      <option name="closed" value="true" />
+      <created>1784041704384</created>
+      <option name="number" value="00022" />
+      <option name="presentableId" value="LOCAL-00022" />
+      <option name="project" value="LOCAL" />
+      <updated>1784041704384</updated>
+    </task>
+    <option name="localTasksCounter" value="23" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Add GitHub configuration, issue/PR templates, and comprehensive docs workspace" />
     <MESSAGE value="Add GitHub templates, project configuration, and documentation skeleton-&#10;&#10;" />
     <MESSAGE value="Add GitHub config, issue/pr templates, state persistence, and documentation scaffolding" />
     <MESSAGE value="Implement budgeting and sprint reporting tools in Scrum Team agents" />
@@ -378,6 +376,7 @@
     <MESSAGE value="Add unit tests for budget API callbacks, improve logging setup, enhance configuration management, and update scripts for session handling and environmental defaults." />
     <MESSAGE value="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows." />
     <MESSAGE value="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation" />
-    <option name="LAST_COMMIT_MESSAGE" value="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation" />
+    <MESSAGE value="Add enhanced session handling, strengthen budget constraints, and improve UTF-8 safety.&#10;&#10;Key changes:&#10;- Introduced session resumption logic in `run_agent.sh` and integrated it with `docker-compose`.&#10;- Improved `ScrumState` model with fields for GitHub integration and error tracking.&#10;- Enhanced LiteLLM budget enforcement with guardrails for token and USD limits.&#10;- Refactored text reading methods to replace invalid UTF-8 sequences with U+FFFD. Added tests to ensure robustness with invalid encoding cases.&#10;- Updated Docker and run scripts for better error handling and multi-stage builds." />
+    <option name="LAST_COMMIT_MESSAGE" value="Add enhanced session handling, strengthen budget constraints, and improve UTF-8 safety.&#10;&#10;Key changes:&#10;- Introduced session resumption logic in `run_agent.sh` and integrated it with `docker-compose`.&#10;- Improved `ScrumState` model with fields for GitHub integration and error tracking.&#10;- Enhanced LiteLLM budget enforcement with guardrails for token and USD limits.&#10;- Refactored text reading methods to replace invalid UTF-8 sequences with U+FFFD. Added tests to ensure robustness with invalid encoding cases.&#10;- Updated Docker and run scripts for better error handling and multi-stage builds." />
   </component>
 </project>
