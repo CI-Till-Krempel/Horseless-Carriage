@@ -2,7 +2,7 @@
 
 - Epic ID: EP-0001
 - Title: Multi-Agent Conversation Transcript Capture
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Scrum Master
 - Last Updated: 2026-07-16
