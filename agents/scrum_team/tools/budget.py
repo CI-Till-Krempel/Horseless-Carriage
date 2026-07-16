@@ -50,12 +50,12 @@ def log_token_usage(agent_name: str, tokens: int, tool_context=None) -> Dict[str
     save_state_to_repo(tool_context)
     return {"status": "ok", "usage": usage}
 
-def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget_duration: str = None, tool_context=None) -> Dict[str, Any]:
+def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget_duration: str = None, models: List[str] = None, tool_context=None) -> Dict[str, Any]:
     """
     Generate a LiteLLM Virtual Key for a specific agent role with an optional budget.
     """
     master_key = os.environ.get("LITELLM_MASTER_KEY")
-    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE", "http://localhost:4000")
+    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE", "http://litellm:4000")
     
     if not master_key:
         return {"status": "error", "message": "LITELLM_MASTER_KEY environment variable not set."}
@@ -119,7 +119,11 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         "Content-Type": "application/json"
     }
     
-    models = ["scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", "scrum-arch", "scrum-orchestrator"]
+    if models is None:
+        models = [
+            "scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", 
+            "scrum-arch", "scrum-orchestrator", "scrum-quality"
+        ]
     
     data = {
         "models": models,
@@ -135,6 +139,8 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     
     try:
         resp = requests.post(url, headers=headers, json=data, timeout=10)
+        if resp.status_code != 200:
+            return {"status": "error", "message": f"Failed to generate LiteLLM key: {resp.status_code} {resp.text}"}
         resp.raise_for_status()
         res = resp.json()
         key = res.get("key")

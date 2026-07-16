@@ -18,6 +18,12 @@ class TestIDGeneration(unittest.TestCase):
         if self.test_repo.exists():
             shutil.rmtree(self.test_repo)
         self.test_repo.mkdir(exist_ok=True)
+        
+        # Isolate from the real repository during tests
+        self.old_internal_path = os.environ.get("INTERNAL_STATE_REPO_PATH")
+        if "INTERNAL_STATE_REPO_PATH" in os.environ:
+            del os.environ["INTERNAL_STATE_REPO_PATH"]
+            
         os.environ["STATE_REPO_PATH"] = str(self.test_repo.absolute())
         
         self.tool_context = MagicMock()
@@ -29,6 +35,8 @@ class TestIDGeneration(unittest.TestCase):
             shutil.rmtree(self.test_repo)
         if "STATE_REPO_PATH" in os.environ:
             del os.environ["STATE_REPO_PATH"]
+        if self.old_internal_path:
+            os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
 
     def test_upsert_story_id_generation(self):
         # First story

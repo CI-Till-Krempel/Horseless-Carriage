@@ -209,8 +209,9 @@ from .state import ScrumState, Budgets, TokenUsage
 # If LITELLM_PROXY_API_BASE is set, we assume proxy mode.
 if os.getenv("LITELLM_PROXY_API_BASE"):
     litellm.use_litellm_proxy = True
-    # Security hardening: Restrict proxy access to localhost
-    litellm.allowed_ips = ["127.0.0.1"]
+    litellm.api_base = os.getenv("LITELLM_PROXY_API_BASE")
+    # Security hardening: Restrict proxy access
+    # litellm.allowed_ips = ["127.0.0.1"] # This is for the proxy server, not client.
     # LiteLLM reads base/key from env:
     # LITELLM_PROXY_API_BASE, LITELLM_PROXY_API_KEY
 

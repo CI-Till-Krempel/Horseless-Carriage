@@ -100,13 +100,24 @@ Sessions are managed by the ADK framework to ensure continuity across restarts:
 
 ## Testing
 
-To run the full test suite using Docker:
+### Unit and Integration Tests
+
+To run the complete test suite (both unit and integration tests) using Docker Compose:
 
 ```bash
 ./run_tests.sh
 ```
 
-This script builds the test stage of the Docker image and executes all tests using `pytest`.
+This script executes `pytest` inside the agent container, providing full network access to the LiteLLM and Database services. It includes coverage reporting for the `agents/` package.
+
+### Integration Testing
+
+The integration test suite (`test_llm_integration.py`) verifies the end-to-end connection between the agents and the LiteLLM Proxy. It ensures that:
+- **Key Generation**: Virtual keys are correctly created for different agent roles.
+- **Budget Association**: These keys are correctly linked to the shared `scrum-sprint-budget`.
+- **Proxy Routing**: LLM calls from agents are successfully routed through the LiteLLM Proxy.
+
+For integration tests to function, the `./run_tests.sh` script utilizes `docker compose run`, which automatically starts the necessary dependency containers (`litellm` and `db`) if they are not already active.
 
 ## State Repository
 

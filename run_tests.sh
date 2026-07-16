@@ -1,14 +1,18 @@
 #!/bin/bash
 #
-# This script builds the test stage of the Dockerfile and runs pytest.
+# This script runs all tests (unit and integration) using Docker Compose.
 #
 
 set -e
 
-echo "--- Building and Running Tests ---"
+echo "--- Running All Tests (Unit + Integration) ---"
 
-# Build the test image from the 'test' stage of the agent.Dockerfile
-docker build --target test -f agent.Dockerfile -t horseless-carriage-test .
+# Ensure the environment is set up (needed for docker-compose)
+if [ ! -f ".env" ]; then
+    echo "ERROR: .env file not found. Please create it (use .env.example as a template)."
+    exit 1
+fi
 
-# Run the tests using the built image
-docker run --rm horseless-carriage-test
+# Run pytest inside the agent container with access to LiteLLM and DB services
+# We override the default command to run pytest
+docker compose run --rm -e PYTHONPATH=/app agent pytest -v --cov=agents agents/scrum_team/tests

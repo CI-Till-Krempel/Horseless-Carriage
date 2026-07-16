@@ -4,15 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add enhanced session handling, strengthen budget constraints, and improve UTF-8 safety.&#10;&#10;Key changes:&#10;- Introduced session resumption logic in `run_agent.sh` and integrated it with `docker-compose`.&#10;- Improved `ScrumState` model with fields for GitHub integration and error tracking.&#10;- Enhanced LiteLLM budget enforcement with guardrails for token and USD limits.&#10;- Refactored text reading methods to replace invalid UTF-8 sequences with U+FFFD. Added tests to ensure robustness with invalid encoding cases.&#10;- Updated Docker and run scripts for better error handling and multi-stage builds.">
-      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_history.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add history management and enhance GitHub tooling.&#10;&#10;Key changes:&#10;- Introduced history synchronization callbacks for ScrumOrchestrator.&#10;- Enhanced `ScrumState` with a `messages` field for conversation tracking.&#10;- Added unit tests for history injection and saving workflows.&#10;- Updated GitHub tools to support `tool_context` in all `_run` calls.&#10;- Refined Git configuration for better SSH and HTTPS handling.">
+      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_litellm_integration.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/state.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/state.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_github.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_github.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/base.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/github.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/scrum.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -41,23 +37,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.3977355784599612" />
-      <entry key="MS500" value="4.258785425482635" />
-      <entry key="S2" value="13.45146514611374" />
-      <entry key="S5" value="24.581143092902934" />
-      <entry key="S10" value="38.73473507884488" />
-      <entry key="S30" value="77.37293310763154" />
-      <entry key="S60" value="101.05681786141936" />
-      <entry key="M2" value="117.43466126638654" />
-      <entry key="M5" value="129.20133570542154" />
-      <entry key="M10" value="133.49868997135658" />
-      <entry key="M15" value="134.97595082868085" />
-      <entry key="M30" value="136.47625611442697" />
-      <entry key="H1" value="137.2351733219155" />
-      <entry key="H2" value="137.6176084367414" />
-      <entry key="H4" value="139.29928217721817" />
-      <entry key="D1" value="1236.9582830105421" />
-      <entry key="W1" value="3978.2033665482604" />
+      <entry key="MS100" value="1.4032496542200548" />
+      <entry key="MS500" value="4.487848348752188" />
+      <entry key="S2" value="7.443031578908268" />
+      <entry key="S5" value="11.658623404140265" />
+      <entry key="S10" value="26.31435543484722" />
+      <entry key="S30" value="99.75281149011052" />
+      <entry key="S60" value="183.83623498296416" />
+      <entry key="M2" value="271.05603301291023" />
+      <entry key="M5" value="373.5090176503819" />
+      <entry key="M10" value="439.8540828025081" />
+      <entry key="M15" value="470.5347508528591" />
+      <entry key="M30" value="507.6233009549999" />
+      <entry key="H1" value="529.1372417765656" />
+      <entry key="H2" value="540.7563228219639" />
+      <entry key="H4" value="548.2402453443768" />
+      <entry key="D1" value="1644.9958047709315" />
+      <entry key="W1" value="4390.081664687626" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -68,34 +64,34 @@
       <entry key="S30" value="0.0" />
       <entry key="S60" value="0.0" />
       <entry key="M2" value="0.0" />
-      <entry key="M5" value="1.0675025152253102E-156" />
-      <entry key="M10" value="1.0332001331907034E-78" />
-      <entry key="M15" value="1.0220127229423053E-52" />
-      <entry key="M30" value="1.010946449097222E-26" />
-      <entry key="H1" value="1.0054583303125217E-13" />
-      <entry key="H2" value="3.1713442210676197E-7" />
-      <entry key="H4" value="5.829138572646308E-4" />
-      <entry key="D1" value="1.3116575037338247" />
-      <entry key="W1" value="7.434451496664146" />
+      <entry key="M5" value="2.235887444251157E-157" />
+      <entry key="M10" value="4.728517150493467E-79" />
+      <entry key="M15" value="6.0694589580894885E-53" />
+      <entry key="M30" value="7.790673243108891E-27" />
+      <entry key="H1" value="8.826479072003481E-14" />
+      <entry key="H2" value="2.9713587705805315E-7" />
+      <entry key="H4" value="5.642352756035395E-4" />
+      <entry key="D1" value="1.3045570934064457" />
+      <entry key="W1" value="7.428688827795728" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.3641456504775071" />
-      <entry key="MS500" value="4.236827977992878" />
-      <entry key="S2" value="13.43498719629713" />
-      <entry key="S5" value="24.569012482150583" />
-      <entry key="S10" value="38.72518425305529" />
-      <entry key="S30" value="77.36653024268821" />
-      <entry key="S60" value="101.05260942681977" />
-      <entry key="M2" value="117.43220570116445" />
-      <entry key="M5" value="129.20025198524482" />
-      <entry key="M10" value="133.49812952885716" />
-      <entry key="M15" value="134.97557293793807" />
-      <entry key="M30" value="136.47606500362923" />
-      <entry key="H1" value="137.23507721864993" />
-      <entry key="H2" value="137.6175605641679" />
-      <entry key="H4" value="139.2998406637072" />
-      <entry key="D1" value="1238.2698416406283" />
-      <entry key="W1" value="3985.6376457067036" />
+      <entry key="MS100" value="1.3663465336137783" />
+      <entry key="MS500" value="4.462806003801557" />
+      <entry key="S2" value="7.432291421192541" />
+      <entry key="S5" value="11.65230989980078" />
+      <entry key="S10" value="26.307903105928382" />
+      <entry key="S30" value="99.74507721686899" />
+      <entry key="S60" value="183.8291267551353" />
+      <entry key="M2" value="271.0507892696572" />
+      <entry key="M5" value="373.5061115004386" />
+      <entry key="M10" value="439.8523617936765" />
+      <entry key="M15" value="470.53352013988564" />
+      <entry key="M30" value="507.6226349719412" />
+      <entry key="H1" value="529.136894054342" />
+      <entry key="H2" value="540.7561452740096" />
+      <entry key="H4" value="548.240719332173" />
+      <entry key="D1" value="1646.3002523897649" />
+      <entry key="W1" value="4397.510179719033" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -167,7 +163,7 @@
       <workItem from="1782904538747" duration="21128000" />
       <workItem from="1783323390020" duration="14857000" />
       <workItem from="1783591344439" duration="1440000" />
-      <workItem from="1783681596188" duration="48421000" />
+      <workItem from="1783681596188" duration="49753000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -345,14 +341,21 @@
       <option name="project" value="LOCAL" />
       <updated>1784041704384</updated>
     </task>
-    <option name="localTasksCounter" value="23" />
+    <task id="LOCAL-00023" summary="Add history management and enhance GitHub tooling.&#10;&#10;Key changes:&#10;- Introduced history synchronization callbacks for ScrumOrchestrator.&#10;- Enhanced `ScrumState` with a `messages` field for conversation tracking.&#10;- Added unit tests for history injection and saving workflows.&#10;- Updated GitHub tools to support `tool_context` in all `_run` calls.&#10;- Refined Git configuration for better SSH and HTTPS handling.">
+      <option name="closed" value="true" />
+      <created>1784190257648</created>
+      <option name="number" value="00023" />
+      <option name="presentableId" value="LOCAL-00023" />
+      <option name="project" value="LOCAL" />
+      <updated>1784190257648</updated>
+    </task>
+    <option name="localTasksCounter" value="24" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Add GitHub templates, project configuration, and documentation skeleton-&#10;&#10;" />
     <MESSAGE value="Add GitHub config, issue/pr templates, state persistence, and documentation scaffolding" />
     <MESSAGE value="Implement budgeting and sprint reporting tools in Scrum Team agents" />
     <MESSAGE value="Add `gh_pr_status` tool for checking pull request status and update related workflows" />
@@ -377,6 +380,7 @@
     <MESSAGE value="Sync spec templates and roadmap management, enhance Markdown parsing, and improve state and story synchronization workflows." />
     <MESSAGE value="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation" />
     <MESSAGE value="Add enhanced session handling, strengthen budget constraints, and improve UTF-8 safety.&#10;&#10;Key changes:&#10;- Introduced session resumption logic in `run_agent.sh` and integrated it with `docker-compose`.&#10;- Improved `ScrumState` model with fields for GitHub integration and error tracking.&#10;- Enhanced LiteLLM budget enforcement with guardrails for token and USD limits.&#10;- Refactored text reading methods to replace invalid UTF-8 sequences with U+FFFD. Added tests to ensure robustness with invalid encoding cases.&#10;- Updated Docker and run scripts for better error handling and multi-stage builds." />
-    <option name="LAST_COMMIT_MESSAGE" value="Add enhanced session handling, strengthen budget constraints, and improve UTF-8 safety.&#10;&#10;Key changes:&#10;- Introduced session resumption logic in `run_agent.sh` and integrated it with `docker-compose`.&#10;- Improved `ScrumState` model with fields for GitHub integration and error tracking.&#10;- Enhanced LiteLLM budget enforcement with guardrails for token and USD limits.&#10;- Refactored text reading methods to replace invalid UTF-8 sequences with U+FFFD. Added tests to ensure robustness with invalid encoding cases.&#10;- Updated Docker and run scripts for better error handling and multi-stage builds." />
+    <MESSAGE value="Add history management and enhance GitHub tooling.&#10;&#10;Key changes:&#10;- Introduced history synchronization callbacks for ScrumOrchestrator.&#10;- Enhanced `ScrumState` with a `messages` field for conversation tracking.&#10;- Added unit tests for history injection and saving workflows.&#10;- Updated GitHub tools to support `tool_context` in all `_run` calls.&#10;- Refined Git configuration for better SSH and HTTPS handling." />
+    <option name="LAST_COMMIT_MESSAGE" value="Add history management and enhance GitHub tooling.&#10;&#10;Key changes:&#10;- Introduced history synchronization callbacks for ScrumOrchestrator.&#10;- Enhanced `ScrumState` with a `messages` field for conversation tracking.&#10;- Added unit tests for history injection and saving workflows.&#10;- Updated GitHub tools to support `tool_context` in all `_run` calls.&#10;- Refined Git configuration for better SSH and HTTPS handling." />
   </component>
 </project>
