@@ -26,7 +26,7 @@ Goals
 
 Stories:
 - [ ] [EP-0001] Multi-Agent Conversation Transcript Capture
-  - [ ] [US-0001] Capture Sub-Agent Turns in Conversation History
+  - [x] [US-0001] Capture Sub-Agent Turns in Conversation History
   - [ ] [US-0002] Persist Full Transcript to State Repo
   - [ ] [US-0003] Expose Transcript in Sprint Report
   - [ ] [US-0004] Trim Transcript for Token Budget
@@ -71,7 +71,7 @@ Stories:
 
 | To Do | In Progress | In Review | Done |
 |------|-------------|-----------|------|
-| EP-0001, US-0001–US-0004, EP-0002, US-0005–US-0008, EP-0003, US-0009–US-0011 | | | |
+| EP-0001, US-0002–US-0004, EP-0002, US-0005–US-0008, EP-0003, US-0009–US-0011 | | | US-0001 |
 
 Notes
 - Update this table in PRs alongside code changes.

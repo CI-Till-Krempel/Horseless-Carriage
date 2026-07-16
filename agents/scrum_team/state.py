@@ -32,3 +32,4 @@ class ScrumState(BaseModel):
     github_token: Optional[str] = None
     last_auto_auth_error: Optional[str] = None
     messages: List[Dict[str, Any]] = Field(default_factory=list)
+    transcript: List[Dict[str, Any]] = Field(default_factory=list)
