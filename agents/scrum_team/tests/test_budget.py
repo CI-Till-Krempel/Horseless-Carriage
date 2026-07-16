@@ -1,5 +1,6 @@
 # agents/scrum_team/tests/test_budget.py
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.tools.budget import (
@@ -101,6 +102,51 @@ class TestBudgetTools(unittest.TestCase):
         tool_context.state = ScrumState().model_dump()
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
         self.assertIn("Process Overhead: 15.0%", report["report"])
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_includes_transcript_excerpt(self, mock_write_file, mock_getenv, mock_repo_root):
+        """
+        Acceptance Criteria (US-0003):
+        - The report includes a link to the full transcript location and a
+          condensed, per-agent excerpt (most recent turn per agent), not
+          just a raw tail-N cut that could omit an earlier agent entirely.
+        """
+        mock_getenv.return_value = "15.0"
+        mock_repo_root.return_value = Path("/fake/repo")
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript"] = [
+            {"agent_name": "ProductOwner", "role": "model", "content": "Prioritized the backlog."},
+            {"agent_name": "DevTeam", "role": "model", "content": "Implemented the feature."},
+            {"agent_name": "DevTeam", "role": "model", "content": "Fixed a bug found in review."},
+        ]
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertIn("3 entries", report)
+        self.assertIn(".hc/state.json", report)
+        self.assertIn("Prioritized the backlog.", report)
+        # Only DevTeam's most recent entry should appear, not the superseded one.
+        self.assertIn("Fixed a bug found in review.", report)
+        self.assertNotIn("Implemented the feature.", report)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_handles_missing_transcript(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (US-0003 edge case):
+        - No transcript yet -> report generation still succeeds, noting
+          transcript unavailability rather than failing.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()  # transcript defaults to []
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertIn("No transcript available yet", report)
 
 
 if __name__ == "__main__":
