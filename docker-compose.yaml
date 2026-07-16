@@ -9,6 +9,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
 
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
@@ -23,11 +24,15 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on:
       - db
+    restart: unless-stopped
 
   agent:
     build:
       context: .
       dockerfile: agent.Dockerfile
+    ports:
+      # ADK web frontend (only listens when AGENT_MODE=web, the default)
+      - "8000:8000"
     volumes:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro
@@ -39,6 +44,7 @@ services:
       # Mount the sessions directory to persist conversation history
       - ./sessions:/app/sessions
     environment:
+      - AGENT_MODE=${AGENT_MODE:-web}
       - STATE_REPO_PATH=${STATE_REPO_PATH}
       - INTERNAL_STATE_REPO_PATH=/app/state_repo
       - LITELLM_PROXY_API_BASE=http://litellm:4000

@@ -4,11 +4,16 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add history management and enhance GitHub tooling.&#10;&#10;Key changes:&#10;- Introduced history synchronization callbacks for ScrumOrchestrator.&#10;- Enhanced `ScrumState` with a `messages` field for conversation tracking.&#10;- Added unit tests for history injection and saving workflows.&#10;- Updated GitHub tools to support `tool_context` in all `_run` calls.&#10;- Refined Git configuration for better SSH and HTTPS handling.">
-      <change afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_litellm_integration.py" afterDir="false" />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add integration tests for LiteLLM proxy and update `run_tests.sh` to support both unit and integration tests.&#10;&#10;Key changes:&#10;- Introduced `test_llm_integration.py` to validate LiteLLM proxy workflows, including key creation, budget association, and API calls.&#10;- Updated `run_tests.sh` to run tests using Docker Compose with proper service dependencies.&#10;- Added mock response configurations in `litellm.yaml` for integration testing.&#10;- Enhanced `create_litellm_virtual_key` to support dynamic models and improved error handling.&#10;- Improved test isolation in `test_id_generation.py`.&#10;- Updated README with detailed instructions for running tests.">
+      <change afterPath="$PROJECT_DIR$/.env.test" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/agents/scrum_team/agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/agent.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/budget.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/litellm.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/litellm.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/prompts.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/prompts.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/scripts/run_agent.sh" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/scripts/run_agent.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tests/test_agent.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker-compose.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/docker-compose.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/run.sh" beforeDir="false" afterPath="$PROJECT_DIR$/run.sh" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/run_tests.sh" beforeDir="false" afterPath="$PROJECT_DIR$/run_tests.sh" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -37,23 +42,23 @@
   </component>
   <component name="NextEditCompletionFeaturesState">
     <decayedCancelled>
-      <entry key="MS100" value="1.4032496542200548" />
-      <entry key="MS500" value="4.487848348752188" />
-      <entry key="S2" value="7.443031578908268" />
-      <entry key="S5" value="11.658623404140265" />
-      <entry key="S10" value="26.31435543484722" />
-      <entry key="S30" value="99.75281149011052" />
-      <entry key="S60" value="183.83623498296416" />
-      <entry key="M2" value="271.05603301291023" />
-      <entry key="M5" value="373.5090176503819" />
-      <entry key="M10" value="439.8540828025081" />
-      <entry key="M15" value="470.5347508528591" />
-      <entry key="M30" value="507.6233009549999" />
-      <entry key="H1" value="529.1372417765656" />
-      <entry key="H2" value="540.7563228219639" />
-      <entry key="H4" value="548.2402453443768" />
-      <entry key="D1" value="1644.9958047709315" />
-      <entry key="W1" value="4390.081664687626" />
+      <entry key="MS100" value="2.0813970097516314" />
+      <entry key="MS500" value="4.443900325683067" />
+      <entry key="S2" value="6.631363763875335" />
+      <entry key="S5" value="7.393006658534237" />
+      <entry key="S10" value="7.685445742112414" />
+      <entry key="S30" value="8.04357278407181" />
+      <entry key="S60" value="10.539597867170484" />
+      <entry key="M2" value="23.118859775728996" />
+      <entry key="M5" value="92.45147219937091" />
+      <entry key="M10" value="218.72046935074925" />
+      <entry key="M15" value="329.4048250114077" />
+      <entry key="M30" value="562.0070745800808" />
+      <entry key="H1" value="782.1923647319774" />
+      <entry key="H2" value="939.6634344350633" />
+      <entry key="H4" value="1035.9864230658964" />
+      <entry key="D1" value="2191.0633798233075" />
+      <entry key="W1" value="4964.344725172505" />
     </decayedCancelled>
     <decayedSelected>
       <entry key="MS100" value="0.0" />
@@ -64,34 +69,34 @@
       <entry key="S30" value="0.0" />
       <entry key="S60" value="0.0" />
       <entry key="M2" value="0.0" />
-      <entry key="M5" value="2.235887444251157E-157" />
-      <entry key="M10" value="4.728517150493467E-79" />
-      <entry key="M15" value="6.0694589580894885E-53" />
-      <entry key="M30" value="7.790673243108891E-27" />
-      <entry key="H1" value="8.826479072003481E-14" />
-      <entry key="H2" value="2.9713587705805315E-7" />
-      <entry key="H4" value="5.642352756035395E-4" />
-      <entry key="D1" value="1.3045570934064457" />
-      <entry key="W1" value="7.428688827795728" />
+      <entry key="M5" value="2.2187111357716357E-160" />
+      <entry key="M10" value="1.4895338652650867E-80" />
+      <entry key="M15" value="6.05387692747875E-54" />
+      <entry key="M30" value="2.4604627466146186E-27" />
+      <entry key="H1" value="4.960305190746409E-14" />
+      <entry key="H2" value="2.2274888769171137E-7" />
+      <entry key="H4" value="4.885291244633522E-4" />
+      <entry key="D1" value="1.2736051156931938" />
+      <entry key="W1" value="7.403249918341598" />
     </decayedSelected>
     <decayedShown>
-      <entry key="MS100" value="1.3663465336137783" />
-      <entry key="MS500" value="4.462806003801557" />
-      <entry key="S2" value="7.432291421192541" />
-      <entry key="S5" value="11.65230989980078" />
-      <entry key="S10" value="26.307903105928382" />
-      <entry key="S30" value="99.74507721686899" />
-      <entry key="S60" value="183.8291267551353" />
-      <entry key="M2" value="271.0507892696572" />
-      <entry key="M5" value="373.5061115004386" />
-      <entry key="M10" value="439.8523617936765" />
-      <entry key="M15" value="470.53352013988564" />
-      <entry key="M30" value="507.6226349719412" />
-      <entry key="H1" value="529.136894054342" />
-      <entry key="H2" value="540.7561452740096" />
-      <entry key="H4" value="548.240719332173" />
-      <entry key="D1" value="1646.3002523897649" />
-      <entry key="W1" value="4397.510179719033" />
+      <entry key="MS100" value="2.0186075301461033" />
+      <entry key="MS500" value="4.419248907927489" />
+      <entry key="S2" value="6.622401485247155" />
+      <entry key="S5" value="7.389026209258844" />
+      <entry key="S10" value="7.683379236661294" />
+      <entry key="S30" value="8.042850458845095" />
+      <entry key="S60" value="10.539103945815073" />
+      <entry key="M2" value="23.118303092942625" />
+      <entry key="M5" value="92.45065045292056" />
+      <entry key="M10" value="218.7195348759357" />
+      <entry key="M15" value="329.40390000212227" />
+      <entry key="M30" value="562.0062974764995" />
+      <entry key="H1" value="782.1918280781558" />
+      <entry key="H2" value="939.6631134886521" />
+      <entry key="H4" value="1035.9867348238558" />
+      <entry key="D1" value="2192.336860931794" />
+      <entry key="W1" value="4971.747799425041" />
     </decayedShown>
   </component>
   <component name="ProjectColorInfo">{
@@ -123,7 +128,7 @@
     "node.js.selected.package.eslint": "(autodetect)",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "ml.llm.LLMConfigurable",
+    "settings.editor.selected.configurable": "ml.llm.LLMThirdPartyAiProvidersConfigurable",
     "to.speed.mode.migration.done": "true",
     "vue.rearranger.settings.migration": "true"
   }
@@ -163,7 +168,7 @@
       <workItem from="1782904538747" duration="21128000" />
       <workItem from="1783323390020" duration="14857000" />
       <workItem from="1783591344439" duration="1440000" />
-      <workItem from="1783681596188" duration="49753000" />
+      <workItem from="1783681596188" duration="56756000" />
     </task>
     <task id="LOCAL-00001" summary="Add .idea to .gitignore; enhance README with detailed setup and usage instructions">
       <option name="closed" value="true" />
@@ -349,15 +354,21 @@
       <option name="project" value="LOCAL" />
       <updated>1784190257648</updated>
     </task>
-    <option name="localTasksCounter" value="24" />
+    <task id="LOCAL-00024" summary="Add integration tests for LiteLLM proxy and update `run_tests.sh` to support both unit and integration tests.&#10;&#10;Key changes:&#10;- Introduced `test_llm_integration.py` to validate LiteLLM proxy workflows, including key creation, budget association, and API calls.&#10;- Updated `run_tests.sh` to run tests using Docker Compose with proper service dependencies.&#10;- Added mock response configurations in `litellm.yaml` for integration testing.&#10;- Enhanced `create_litellm_virtual_key` to support dynamic models and improved error handling.&#10;- Improved test isolation in `test_id_generation.py`.&#10;- Updated README with detailed instructions for running tests.">
+      <option name="closed" value="true" />
+      <created>1784192301448</created>
+      <option name="number" value="00024" />
+      <option name="presentableId" value="LOCAL-00024" />
+      <option name="project" value="LOCAL" />
+      <updated>1784192301448</updated>
+    </task>
+    <option name="localTasksCounter" value="25" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
   </component>
   <component name="VcsManagerConfiguration">
-    <MESSAGE value="Add GitHub config, issue/pr templates, state persistence, and documentation scaffolding" />
-    <MESSAGE value="Implement budgeting and sprint reporting tools in Scrum Team agents" />
     <MESSAGE value="Add `gh_pr_status` tool for checking pull request status and update related workflows" />
     <MESSAGE value="Add `gh_pr_checks` tool to verify PR CI status, update prompts, and enhance workflow integration" />
     <MESSAGE value="Introduce budget enforcement callbacks, enhance agent functionality, and improve PR checks" />
@@ -381,6 +392,8 @@
     <MESSAGE value="Add automatic ID generation for Epics, User Stories, and ADRs; integrate `upsert_adr` tool across agents; and introduce unit tests for ID generation" />
     <MESSAGE value="Add enhanced session handling, strengthen budget constraints, and improve UTF-8 safety.&#10;&#10;Key changes:&#10;- Introduced session resumption logic in `run_agent.sh` and integrated it with `docker-compose`.&#10;- Improved `ScrumState` model with fields for GitHub integration and error tracking.&#10;- Enhanced LiteLLM budget enforcement with guardrails for token and USD limits.&#10;- Refactored text reading methods to replace invalid UTF-8 sequences with U+FFFD. Added tests to ensure robustness with invalid encoding cases.&#10;- Updated Docker and run scripts for better error handling and multi-stage builds." />
     <MESSAGE value="Add history management and enhance GitHub tooling.&#10;&#10;Key changes:&#10;- Introduced history synchronization callbacks for ScrumOrchestrator.&#10;- Enhanced `ScrumState` with a `messages` field for conversation tracking.&#10;- Added unit tests for history injection and saving workflows.&#10;- Updated GitHub tools to support `tool_context` in all `_run` calls.&#10;- Refined Git configuration for better SSH and HTTPS handling." />
-    <option name="LAST_COMMIT_MESSAGE" value="Add history management and enhance GitHub tooling.&#10;&#10;Key changes:&#10;- Introduced history synchronization callbacks for ScrumOrchestrator.&#10;- Enhanced `ScrumState` with a `messages` field for conversation tracking.&#10;- Added unit tests for history injection and saving workflows.&#10;- Updated GitHub tools to support `tool_context` in all `_run` calls.&#10;- Refined Git configuration for better SSH and HTTPS handling." />
+    <MESSAGE value="Add integration testing for LiteLLM proxy, enhance test script for Docker Compose, and refine Scrum tools.&#10;&#10;Key changes:&#10;- Introduced `test_litellm_integration.py` for end-to-end LiteLLM proxy validation.&#10;- Updated `run_tests.sh` to execute unit and integration tests using Docker Compose.&#10;- Enhanced `create_litellm_virtual_key` to support custom model lists.&#10;- Refined LiteLLM proxy configuration in `agent.py`.&#10;- Added mock model `scrum-test-mock` in `litellm.yaml`." />
+    <MESSAGE value="Add integration tests for LiteLLM proxy and update `run_tests.sh` to support both unit and integration tests.&#10;&#10;Key changes:&#10;- Introduced `test_llm_integration.py` to validate LiteLLM proxy workflows, including key creation, budget association, and API calls.&#10;- Updated `run_tests.sh` to run tests using Docker Compose with proper service dependencies.&#10;- Added mock response configurations in `litellm.yaml` for integration testing.&#10;- Enhanced `create_litellm_virtual_key` to support dynamic models and improved error handling.&#10;- Improved test isolation in `test_id_generation.py`.&#10;- Updated README with detailed instructions for running tests." />
+    <option name="LAST_COMMIT_MESSAGE" value="Add integration tests for LiteLLM proxy and update `run_tests.sh` to support both unit and integration tests.&#10;&#10;Key changes:&#10;- Introduced `test_llm_integration.py` to validate LiteLLM proxy workflows, including key creation, budget association, and API calls.&#10;- Updated `run_tests.sh` to run tests using Docker Compose with proper service dependencies.&#10;- Added mock response configurations in `litellm.yaml` for integration testing.&#10;- Enhanced `create_litellm_virtual_key` to support dynamic models and improved error handling.&#10;- Improved test isolation in `test_id_generation.py`.&#10;- Updated README with detailed instructions for running tests." />
   </component>
 </project>

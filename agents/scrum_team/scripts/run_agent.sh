@@ -9,9 +9,26 @@ SESSION_ID=${SESSION_ID:-my-sprint}
 SESSION_FILE="/app/sessions/${SESSION_ID}.session.json"
 DB_FILE="/app/sessions/adk_sessions.db"
 LOG_LEVEL_VAL=${LOG_LEVEL:-info}
+AGENT_MODE=${AGENT_MODE:-web}
+ADK_WEB_PORT=${ADK_WEB_PORT:-8000}
 
 # Ensure sessions directory exists (though it should be mounted)
 mkdir -p /app/sessions
+
+# AGENT_MODE=web (default): start the ADK dev web UI, backed by the same
+# persistent SQLite session store used by CLI mode.
+# AGENT_MODE=cli: fall back to the original interactive terminal session.
+# Note: the ADK web REPL and interactive CLI REPL each create their own
+# session on launch (the CLI's --session_id only names its save-file
+# snapshot, not the live session), so the two do not show "the same"
+# live session automatically.
+if [ "$AGENT_MODE" = "web" ]; then
+    echo "--- Starting ADK web frontend on port ${ADK_WEB_PORT} ---"
+    exec adk web --host 0.0.0.0 --port "${ADK_WEB_PORT}" \
+        --session_service_uri "sqlite:///${DB_FILE}" \
+        --log_level "${LOG_LEVEL_VAL}" \
+        agents
+fi
 
 # Base arguments for adk run
 # We use the persistent SQLite DB in /app/sessions to preserve event history

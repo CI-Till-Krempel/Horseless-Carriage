@@ -20,11 +20,23 @@ def _setup_logging():
     # We set root logger to DEBUG to allow all logs to be captured by handlers
     root_logger.setLevel(logging.DEBUG)
     
-    # Function to set level for all stream handlers in a logger
+    # Function to set level for all stream handlers in a logger and add noise filter
+    class ConsoleNoiseFilter(logging.Filter):
+        def filter(self, record):
+            # If we are in DEBUG mode globally, show everything
+            if log_level_str == "DEBUG":
+                return True
+            # Silence specific noisy loggers at INFO/DEBUG level on console
+            noisy_loggers = ["LiteLLM", "openai", "httpx", "urllib3", "google.adk"]
+            if any(record.name.startswith(n) for n in noisy_loggers):
+                return record.levelno >= logging.WARNING
+            return True
+
     def set_stream_handlers_level(logger, level):
         for handler in logger.handlers:
             if isinstance(handler, logging.StreamHandler):
                 handler.setLevel(level)
+                handler.addFilter(ConsoleNoiseFilter())
 
     log_level = getattr(logging, log_level_str, logging.INFO)
 
@@ -396,6 +408,46 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
 
     return None
 
+# --- Sprint Status Injection Callback ---
+
+def sprint_status_injection_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
+    """
+    BeforeModelCallback: Injects current sprint and budget status for the Orchestrator's first message.
+    """
+    if callback_context.agent_name != "ScrumOrchestrator":
+        return
+
+    # Only on the very first message of a run (no previous interaction)
+    if llm_request.previous_interaction_id:
+        return
+
+    state = get_scrum_state(callback_context.state)
+    
+    sprint_goal = state.sprint_goal or "Not yet defined"
+    
+    # Calculate backlog progress
+    backlog = state.sprint_backlog or []
+    total_items = len(backlog)
+    completed_items = len([i for i in backlog if i.get("status") in ["done", "completed", "closed"]])
+    
+    # Budget info
+    token_usage = state.token_usage.total
+    token_limit = state.budgets.total
+    usd_limit = state.budgets.total_usd
+    
+    # Identify active sprint status
+    status_summary = f"""
+[SYSTEM CONTEXT: CURRENT SPRINT & BUDGET STATUS]
+- Sprint Goal: {sprint_goal}
+- Sprint Backlog: {completed_items}/{total_items} items completed.
+- Token Usage: {token_usage:,} / {token_limit:,} tokens used.
+- USD Budget Limit: ${usd_limit:.2f}
+- Repository: {state.repo.get('url', 'Not configured')} ({state.repo.get('branch', 'N/A')})
+"""
+    # Inject as a system message at the beginning of the contents
+    llm_request.contents.insert(0, types.Content(role="system", parts=[types.Part(text=status_summary)]))
+    logger.info("Injected sprint and budget status context for Orchestrator.")
+
 # --- History Management Callbacks ---
 
 def history_management_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
@@ -622,6 +674,7 @@ root_agent = LlmAgent(
     before_model_callback=[
         inject_litellm_key_callback, 
         check_cost_budget_callback, 
+        sprint_status_injection_callback,
         history_management_callback
     ],
     after_model_callback=[

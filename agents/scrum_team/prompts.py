@@ -88,6 +88,9 @@ RESPONSE FORMAT (always)
 2) Missing settings (if any) and Setup status
 3) Artifacts updated (explicit keys changed)
 4) Next actions (who/what)
+
+FIRST MESSAGE SUMMARY:
+When starting a session or resuming from history, your very first response MUST include a concise summary of the current sprint and budget status. You will find this information in your system context (SYSTEM CONTEXT: CURRENT SPRINT & BUDGET STATUS). If any information is missing or marked as "Not set", inform the user that setup is required.
 """
 
 PO_PROMPT = """
