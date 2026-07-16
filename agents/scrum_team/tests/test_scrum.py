@@ -22,11 +22,17 @@ class TestScrumTools(unittest.TestCase):
         """
         Acceptance Criteria:
         - Calling init_scrum_state should return a new ScrumState object.
+        - The version should be initialized.
+        - GITHUB_TOKEN should be loaded from environment.
         """
-        tool_context = MagicMock()
-        tool_context.state = {}
-        init_scrum_state(tool_context=tool_context)
-        self.assertIn("product_vision", tool_context.state)
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "test_token"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {}
+            init_scrum_state(tool_context=tool_context)
+            self.assertIn("product_vision", tool_context.state)
+            self.assertIn("version", tool_context.state)
+            self.assertEqual(tool_context.state["version"], ScrumState().version)
+            self.assertEqual(tool_context.state["github_token"], "test_token")
 
     def test_upsert_story(self):
         """

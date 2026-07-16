@@ -1,7 +1,8 @@
 # agents/scrum_team/tools/docs.py
 from __future__ import annotations
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List
+from pathlib import Path
 from .base import _configured_repo_root, _project_root
 
 def write_file(path: str, content: str, overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
@@ -53,10 +54,38 @@ def read_doc(path: str, tool_context=None) -> Dict[str, Any]:
         return {"status": "error", "message": f"File '{path}' not found."}
         
     try:
-        content = full_path.read_text(encoding="utf-8")
+        content = full_path.read_text(encoding="utf-8", errors="replace")
         return {"status": "ok", "content": content, "path": str(full_path)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+def list_docs(tool_context=None) -> Dict[str, Any]:
+    """
+    List all documentation files in specs/ and spec-templates/.
+    Useful for discovering PRDs, ADRs, and Stories.
+    """
+    proj_root = _project_root()
+    repo_root = _configured_repo_root(tool_context)
+    
+    results = {
+        "specs": [],
+        "spec-templates": []
+    }
+    
+    def scan(root: Path, results_list: List[str]):
+        if not root.exists():
+            return
+        for fp in root.rglob("*.md"):
+            try:
+                rel = fp.relative_to(root.parent)
+                results_list.append(str(rel))
+            except ValueError:
+                continue
+
+    scan(repo_root / "specs", results["specs"])
+    scan(proj_root / "spec-templates", results["spec-templates"])
+    
+    return {"status": "ok", "files": results}
 
 def upsert_prd(content: str, filename: str, tool_context=None) -> Dict[str, Any]:
     """
@@ -84,6 +113,82 @@ def upsert_srs(content: str, filename: str, tool_context=None) -> Dict[str, Any]
     path = f"specs/requirements/{filename}"
     return write_file(path, content, overwrite=True, tool_context=tool_context)
 
+def upsert_adr(title: str, context: str, decision: str, consequences: str, adr_id: str = None, status: str = "Proposed", tool_context=None) -> Dict[str, Any]:
+    """
+    Architecture Management: Create or update an Architecture Decision Record (ADR) in specs/architecture/.
+    If adr_id is not provided, it will be automatically generated.
+    """
+    from datetime import datetime
+    repo_root = _configured_repo_root(tool_context)
+    
+    if not adr_id or adr_id == "ADR-XXXX":
+        adr_id = _generate_next_adr_id(tool_context)
+    
+    filename = f"{adr_id}-{title.replace(' ', '-').replace('/', '-')}.md"
+    path = f"specs/architecture/{filename}"
+    
+    template_path = _project_root() / "spec-templates" / "architecture" / "TEMPLATE-ADR.md"
+    if not template_path.exists():
+         return {"status": "error", "message": "ADR template not found."}
+    
+    content = template_path.read_text(encoding="utf-8", errors="replace")
+    content = content.replace("ADR-XXXX", adr_id)
+    content = content.replace("<short title>", title)
+    content = content.replace("Proposed | Accepted | Rejected | Superseded by ADR-YYYY | Deprecated", status)
+    content = content.replace("<YYYY-MM-DD>", datetime.now().strftime("%Y-%m-%d"))
+    content = content.replace("<names>", getattr(tool_context, "agent_name", "Architect") or "Architect")
+    
+    # Replace section content
+    if "## Context" in content:
+        parts = content.split("## Context")
+        header = parts[0]
+        rest = parts[1].split("##", 1)
+        next_section = "##" + rest[1] if len(rest) > 1 else ""
+        content = header + "## Context\n" + context + "\n\n" + next_section
+        
+    if "## Decision" in content:
+        parts = content.split("## Decision")
+        header = parts[0]
+        rest = parts[1].split("##", 1)
+        next_section = "##" + rest[1] if len(rest) > 1 else ""
+        content = header + "## Decision\n" + decision + "\n\n" + next_section
+        
+    if "## Consequences" in content:
+        parts = content.split("## Consequences")
+        header = parts[0]
+        rest = parts[1].split("##", 1)
+        next_section = "##" + rest[1] if len(rest) > 1 else ""
+        content = header + "## Consequences\n" + consequences + "\n\n" + next_section
+
+    return write_file(path, content, overwrite=True, tool_context=tool_context)
+
+def _generate_next_adr_id(tool_context=None) -> str:
+    repo_root = _configured_repo_root(tool_context)
+    adr_dir = repo_root / "specs" / "architecture"
+    
+    max_num = 0
+    if adr_dir.exists():
+        for fp in adr_dir.glob("ADR-*.md"):
+            try:
+                # ADR-0001-Title.md -> 0001
+                parts = fp.name.split("-")
+                if len(parts) > 1:
+                    num_str = parts[1]
+                    numeric_part = ""
+                    for char in num_str:
+                        if char.isdigit():
+                            numeric_part += char
+                        else:
+                            break
+                    if numeric_part:
+                        num = int(numeric_part)
+                        if num > max_num:
+                            max_num = num
+            except (ValueError, IndexError):
+                continue
+    
+    return f"ADR-{max_num + 1:04d}"
+
 def create_from_template(template_path: str, destination_path: str, substitutions_json: str = "{}", overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Create a documentation file from a template under spec-templates/.
@@ -102,7 +207,7 @@ def create_from_template(template_path: str, destination_path: str, substitution
         if not src.exists():
             return {"status": "error", "message": f"Template not found: {template_path}"}
             
-        raw = src.read_text(encoding="utf-8")
+        raw = src.read_text(encoding="utf-8", errors="replace")
         try:
             subs: Dict[str, Any] = json.loads(substitutions_json or "{}")
         except json.JSONDecodeError as e:
@@ -155,12 +260,24 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
             specs_dir.mkdir()
             (specs_dir / ".gitkeep").touch()
             files_seeded.append("specs/")
+            
+        # Copy spec-templates to target repo
+        templates_src = _project_root() / "spec-templates"
+        templates_dst = repo_root / "spec-templates"
+        if templates_src.exists():
+            import shutil
+            if templates_dst.exists() and overwrite:
+                shutil.rmtree(templates_dst)
+            
+            if not templates_dst.exists():
+                shutil.copytree(templates_src, templates_dst)
+                files_seeded.append("spec-templates/")
 
         # Initial commit and push
         if files_seeded:
             push_res = git_push(
                 branch="main", # default to main for seeding
-                commit_message="chore: initial seed of README and specs directory",
+                commit_message="chore: initial seed of README, specs and templates",
                 add_all=True,
                 tool_context=tool_context
             )

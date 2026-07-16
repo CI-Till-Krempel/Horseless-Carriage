@@ -9,6 +9,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
 
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
@@ -23,14 +24,19 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on:
       - db
+    restart: unless-stopped
 
   agent:
     build:
       context: .
       dockerfile: agent.Dockerfile
+    ports:
+      # ADK web frontend (only listens when AGENT_MODE=web, the default)
+      - "8000:8000"
     volumes:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro
+      - ./spec-templates:/app/spec-templates:ro
       # Mount the state repository as read-write
       - type: bind
         source: ${STATE_REPO_PATH}
@@ -38,21 +44,32 @@ services:
       # Mount the sessions directory to persist conversation history
       - ./sessions:/app/sessions
     environment:
-      - STATE_REPO_PATH=/app/state_repo
+      - AGENT_MODE=${AGENT_MODE:-web}
+      - STATE_REPO_PATH=${STATE_REPO_PATH}
+      - INTERNAL_STATE_REPO_PATH=/app/state_repo
       - LITELLM_PROXY_API_BASE=http://litellm:4000
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO_URL=${GITHUB_REPO_URL}
+      - GITHUB_REPO_BRANCH=${GITHUB_REPO_BRANCH}
       - GITHUB_APP_ID=${GITHUB_APP_ID}
       - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
       - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
+      - SPRINT_TOKEN_BUDGET=${SPRINT_TOKEN_BUDGET}
+      - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET}
+      - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE}
       - SESSION_ID=${SESSION_ID}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - GIT_USER_NAME=${GIT_USER_NAME}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL}
     depends_on:
       - litellm
     # Keep the container running and allow for interactive sessions
     stdin_open: true
     tty: true
-    command: adk run --session_service_uri sqlite:////tmp/adk_sessions.db --verbose agents
+    command: ["/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh"]
 
   # -----------------------------------------
   # OPTIONAL (later): Ollama for local models

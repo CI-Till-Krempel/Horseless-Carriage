@@ -10,6 +10,7 @@ from agents.scrum_team.tools.github import (
     gh_pr_review,
     gh_release_create,
     git_push,
+    repo_status,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -98,6 +99,7 @@ class TestGitHubTools(unittest.TestCase):
         mock_run.assert_called_with(
             ["gh", "release", "create", "v1.0.0", "--title", "Initial release"],
             cwd=unittest.mock.ANY,
+            tool_context=tool_context,
         )
 
     @patch("agents.scrum_team.tools.github._run")
@@ -113,7 +115,24 @@ class TestGitHubTools(unittest.TestCase):
         mock_run.assert_called_with(
             ["git", "push", "-u", "origin", "feature-branch"],
             cwd=unittest.mock.ANY,
+            tool_context=tool_context,
         )
+
+    def test_repo_status(self):
+        """
+        Acceptance Criteria:
+        - repo_status returns a dictionary with diagnostic information.
+        - The NameError: os is not defined is resolved.
+        - env_config is included in the output.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        with patch.dict("os.environ", {"GITHUB_REPO_URL": "test_url"}):
+            res = repo_status(tool_context=tool_context)
+            self.assertEqual(res["status"], "ok")
+            self.assertIn("diagnostics", res)
+            self.assertIn("env_repo_url_present", res["diagnostics"])
+            self.assertEqual(res["env_config"]["url"], "test_url")
 
 
 if __name__ == "__main__":

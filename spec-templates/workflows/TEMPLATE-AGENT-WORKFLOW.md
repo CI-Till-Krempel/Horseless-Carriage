@@ -22,7 +22,7 @@ For each step:
 - Name
 - Description
 - Tool(s) invoked and parameters
-- Expected output/artifacts (e.g., docs written to `docs/...`, backlog updates, ADRs)
+- Expected output/artifacts (e.g., docs written to `specs/...`, backlog updates, ADRs)
 
 ## 5. Error Handling & Recovery
 - Common failure modes and retries

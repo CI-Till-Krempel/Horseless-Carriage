@@ -14,6 +14,7 @@ DEFAULT_DOD = [
 ]
 
 REPO_STATE_KEYS = [
+    "version",
     "product_vision",
     "product_goals",
     "product_backlog",
@@ -27,6 +28,10 @@ REPO_STATE_KEYS = [
     "budgets",
     "token_usage",
     "story_estimates",
+    "litellm_keys",
+    "sprint_report_kpis",
+    "repo",
+    "messages",
 ]
 
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
@@ -38,8 +43,12 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     from .base import _normalize_private_key
     
     s = tool_context.state
+    
+    from ..state import ScrumState
+    default_version = ScrumState().version
 
     # Initialize defaults
+    s.setdefault("version", default_version)
     s.setdefault("product_vision", "")
     s.setdefault("product_goals", [])
     s.setdefault("product_backlog", [])
@@ -50,34 +59,57 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("retro_actions", [])
     s.setdefault("decision_log", [])
     s.setdefault("sprint_report", "")
-    s.setdefault("budgets", {"total": 0, "agents": {}})
+    s.setdefault("budgets", {"total": 0, "total_usd": 0.0, "agents": {}})
     s.setdefault("token_usage", {"total": 0, "agents": {}})
     s.setdefault("story_estimates", {})
 
-    # 1. Load from environment variables
+    # 1. Try to load from repo if present first, so environment can override
+    try:
+        repo_root = _configured_repo_root(tool_context)
+        fp = _state_file_path(repo_root)
+        if fp.exists():
+            _ = load_state_from_repo(tool_context)
+    except Exception:
+        pass
+
+    # 2. Load/Override from environment variables
+    # (Environment variables take precedence over persisted state for configuration)
+    
+    # Budgets
+    budgets = s.get("budgets", {}) or {}
     env_token_budget = os.environ.get("SPRINT_TOKEN_BUDGET")
     if env_token_budget:
         try:
-            s["budgets"]["total"] = int(env_token_budget)
-        except ValueError:
+            budgets["total"] = int(env_token_budget)
+        except (ValueError, TypeError):
             pass
     
     env_usd_budget = os.environ.get("SPRINT_USD_BUDGET")
     if env_usd_budget:
         try:
-            s["budgets"]["total_usd"] = float(env_usd_budget)
-        except ValueError:
+            budgets["total_usd"] = float(env_usd_budget)
+        except (ValueError, TypeError):
             pass
+    
+    # HARD GUARDRAIL: Never allow 0 budget if not explicitly intended (and even then, discourage it)
+    # Default to sensible values if still 0
+    if budgets.get("total", 0) <= 0:
+        budgets["total"] = 1000000  # Default 1M tokens
+    if budgets.get("total_usd", 0.0) <= 0.0:
+        budgets["total_usd"] = 10.0 # Default $10.00
+        
+    s["budgets"] = budgets
 
+    # Repo
     env_repo_url = os.environ.get("GITHUB_REPO_URL")
     if env_repo_url:
         repo_cfg = s.get("repo", {}) or {}
-        repo_cfg.setdefault("url", env_repo_url)
-        repo_cfg.setdefault("local_path", os.environ.get("GITHUB_REPO_LOCAL_PATH", ""))
-        repo_cfg.setdefault("default_branch", os.environ.get("GITHUB_REPO_BRANCH", "main"))
+        repo_cfg["url"] = env_repo_url
+        repo_cfg["local_path"] = os.environ.get("STATE_REPO_PATH") or repo_cfg.get("local_path") or ""
+        repo_cfg["default_branch"] = os.environ.get("GITHUB_REPO_BRANCH") or repo_cfg.get("default_branch") or "main"
         s["repo"] = repo_cfg
 
-    # 1.1 Load GitHub App credentials
+    # 2.1 Load GitHub App credentials
     app_id = os.environ.get("GITHUB_APP_ID")
     private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
     inst_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
@@ -93,16 +125,17 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
             res = configure_github_app(app_id, clean_key, inst_id, tool_context=tool_context)
             if res.get("status") == "error":
                 s["last_auto_auth_error"] = res.get("message")
+    
+    # 2.2 Fallback to GITHUB_TOKEN if provided and no app token set
+    env_github_token = os.environ.get("GITHUB_TOKEN")
+    if env_github_token and not s.get("github_token"):
+        s["github_token"] = env_github_token
 
-    # 2. Try to load from repo if present
+    # 3. Load stories and requirements from Markdown
     try:
-        repo_root = _configured_repo_root(tool_context)
-        fp = _state_file_path(repo_root)
-        if fp.exists():
-            _ = load_state_from_repo(tool_context)
-        
-        # 3. Load stories from spec-templates/stories/*.md
+        from .requirements import sync_stories_from_markdown, sync_requirements_from_markdown
         _ = sync_stories_from_markdown(tool_context)
+        _ = sync_requirements_from_markdown(tool_context)
     except Exception:
         pass
 
@@ -132,7 +165,7 @@ def load_state_from_repo(tool_context=None) -> Dict[str, Any]:
     if not fp.exists():
         return {"status": "error", "message": f"State file not found: {fp}"}
     try:
-        data = json.loads(fp.read_text(encoding="utf-8"))
+        data = json.loads(fp.read_text(encoding="utf-8", errors="replace"))
         if not isinstance(data, dict):
             return {"status": "error", "message": "Invalid state format in state.json"}
         for k, v in data.items():

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 import subprocess
+import base64
 from pathlib import Path
 from typing import Any, Dict
 
@@ -12,12 +13,21 @@ def _configured_repo_root(tool_context=None) -> Path:
     """
     Determine which repository directory to operate in.
     Preference order:
-    - STATE_REPO_PATH environment variable
+    - INTERNAL_STATE_REPO_PATH environment variable (Docker mount point)
+    - STATE_REPO_PATH environment variable (User override)
     - tool_context.state['repo']['local_path'] if present
     - current project root (fallback)
     """
+    # 1. Internal path (highest priority for Docker environment)
+    internal_path = os.getenv("INTERNAL_STATE_REPO_PATH")
+    if internal_path:
+        return Path(internal_path).resolve()
+        
+    # 2. Public environment variable
     if os.getenv("STATE_REPO_PATH"):
         return Path(os.getenv("STATE_REPO_PATH")).expanduser().resolve()
+    
+    # 3. State-persisted path
     try:
         if tool_context and getattr(tool_context, "state", None):
             repo_cfg = tool_context.state.get("repo", {}) or {}
@@ -39,13 +49,19 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
         if token:
             env["GH_TOKEN"] = token
             env["GITHUB_TOKEN"] = token
-            # Ensure git uses the token for HTTPS
-            subprocess.run(
-                ["git", "config", "--global", "http.https://github.com/.extraheader", f"AUTHORIZATION: basic {token}"],
-                cwd=cwd or str(_project_root()),
-                env=env,
-                capture_output=True
-            )
+            
+            # If it's a git command, inject authentication and SSH-to-HTTPS translation
+            if cmd and cmd[0] == "git":
+                auth_value = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+                git_overrides = [
+                    "-c", f"http.https://github.com/.extraheader=AUTHORIZATION: Basic {auth_value}",
+                    "-c", "url.https://github.com/.insteadOf=git@github.com:",
+                    "-c", "url.https://github.com/.insteadOf=ssh://git@github.com/",
+                    "-c", "url.https://github.com/.pushInsteadOf=git@github.com:",
+                    "-c", "url.https://github.com/.pushInsteadOf=ssh://git@github.com/"
+                ]
+                # Insert overrides right after 'git' but before the subcommand
+                cmd = [cmd[0]] + git_overrides + cmd[1:]
 
         # Set git user name/email based on current agent if available
         agent_name = getattr(tool_context, "agent_name", None)
@@ -63,6 +79,7 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
             capture_output=True,
             check=False,
             env=env,
+            errors="replace",
         )
         return {
             "status": "ok" if p.returncode == 0 else "error",

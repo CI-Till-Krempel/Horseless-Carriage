@@ -7,7 +7,7 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 - `agents/scrum_team/`
   - `agent.py` — defines the root orchestrator plus sub-agents (Product Owner, Scrum Master, Dev Team, QA, Architect) and wires them to models via LiteLLM.
   - `prompts.py` — role prompts and routing rules for the orchestrator.
-  - `tools.py` — lightweight “Scrum artifact” tools that read/write shared state (backlog, sprint backlog, impediments, retro actions, decision log, etc.).
+  - `tools/` — a package of lightweight “Scrum artifact” tools (backlog, github, budget, docs, etc.).
   - `__init__.py` — exports `root_agent`.
 
 - `litellm.yaml` — model aliases used by the agents (e.g., `scrum-po`, `scrum-dev`, etc.).
@@ -15,8 +15,10 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 - `.env.example` — environment variables for provider keys + LiteLLM proxy configuration.
 - `requirements.txt` — Python dependencies.
 - `setup.sh` — setup script for the project.
-- `run.py` — run script for the ADK agent.
+- `run.sh` — run script for the agent.
+- `run_tests.sh` — script to run tests.
 - `doctor.sh` — a script to validate your setup.
+- `check_state_repo.sh` — a script to validate the state repository.
 - `PREFLIGHT.md` — a pre-flight checklist to ensure your environment is correctly set up.
 
 ## How it works (high level)
@@ -39,10 +41,12 @@ Run the setup script:
 ```
 
 This will:
-1. Create a Python virtual environment.
-2. Install required dependencies.
-3. Set up the .env file.
-4. Start the LiteLLM Docker container.
+1. Check for Docker and Docker Compose.
+2. Guide you through GitHub CLI setup.
+3. Create a `.env` file from the template (if it doesn't exist).
+4. Start the database and LiteLLM containers.
+
+After running setup, please edit the `.env` file to add your specific API keys and configuration.
 
 Before running the agent, it is recommended to run the doctor script to validate your setup:
 
@@ -52,25 +56,101 @@ Before running the agent, it is recommended to run the doctor script to validate
 
 For a more detailed guide, see the [PREFLIGHT.md](PREFLIGHT.md) checklist.
 
-## How to Run the ADK Agent
+## Running the Agent
 
-Run the agent using the `run.py` script:
+Run the agent using the `run.sh` script:
 
 ```bash
-python3 run.py
+./run.sh
 ```
 
-This will:
-1. Ensure the virtual environment exists.
-2. Run the ADK agent using the correct Python interpreter.
+This script will:
+1. Load environment variables from `.env`.
+2. Check for the existence of the state repository path.
+3. Build and run the agent container in interactive mode.
 
-Once the agent is running, you can interact with it by typing messages in the console. For example:
+### Running in Daemon Mode
 
+To run the agent in the background:
+
+```bash
+./run.sh daemon
 ```
-What is the current status of the project?
+
+To view logs when running in daemon mode:
+
+```bash
+docker compose logs -f agent
 ```
 
-The agent will respond with the current status of the project, including the backlog, sprint backlog, and any impediments.
+## Logging & Session Management
+
+### Logging
+The system uses Docker Compose for logging, which captures both orchestrator activity and sub-agent delegations.
+- **View Real-time Logs**: `docker compose logs -f agent`
+- **Verbosity**: The agent runs in `--verbose` mode by default, providing detailed traces of tool calls, LLM interactions, and state transitions.
+
+### Session Management
+Sessions are managed by the ADK framework to ensure continuity across restarts:
+- **Persistence**: Conversation history and agent state are stored in the `sessions/` directory as `.session.json` files.
+- **Session Identification**: Each run uses a `SESSION_ID` (defined in `.env`).
+- **Resuming**: The `run.sh` script automatically detects existing session files and uses the `--resume` flag to pick up where the team left off.
+- **Interruption**: You can stop the agent at any time (e.g., by pressing `Ctrl+C` in interactive mode). The framework will automatically save the session state to a file on exit.
+- **Metadata**: A shared SQLite database (`sessions/adk_sessions.db`) tracks session lifecycle and metadata, ensuring that even if the container is removed, the session history remains accessible.
+
+## Testing
+
+### Unit and Integration Tests
+
+To run the complete test suite (both unit and integration tests) using Docker Compose:
+
+```bash
+./run_tests.sh
+```
+
+This script executes `pytest` inside the agent container, providing full network access to the LiteLLM and Database services. It includes coverage reporting for the `agents/` package.
+
+### Integration Testing
+
+The integration test suite (`test_llm_integration.py`) verifies the end-to-end connection between the agents and the LiteLLM Proxy. It ensures that:
+- **Key Generation**: Virtual keys are correctly created for different agent roles.
+- **Budget Association**: These keys are correctly linked to the shared `scrum-sprint-budget`.
+- **Proxy Routing**: LLM calls from agents are successfully routed through the LiteLLM Proxy.
+
+For integration tests to function, the `./run_tests.sh` script utilizes `docker compose run`, which automatically starts the necessary dependency containers (`litellm` and `db`) if they are not already active.
+
+## State Repository
+
+The **State Repository** is the team's "Source of Truth." It is a dedicated directory (ideally a Git repository) where the agents persist all project-related data.
+
+### Concept
+Unlike the session history (which is transient and internal), the State Repository contains human-readable artifacts and the official project state. This separation allows the agents to be ephemeral while the project remains permanent.
+
+### Structure
+- **`state.json`**: The internal machine-readable state of the Scrum artifacts (backlog, impediments, etc.).
+- **`specs/`**: A directory containing the actual generated documents (PRDs, ADRs, Stories) based on the templates in `spec-templates/`.
+
+### Usage
+- **Configuration**: Set the `STATE_REPO_PATH` in your `.env` file to point to your target repository.
+- **Persistence**: Tools used by the agents automatically commit changes to this repository (if configured) or write them directly to the filesystem.
+
+## Diagnostics & Maintenance
+
+### Doctor Script
+
+The `doctor.sh` script validates your local environment, ensuring Docker is running, the `.env` file is correctly configured, and the state repository path is accessible.
+
+```bash
+./doctor.sh
+```
+
+### State Repository Check
+
+The `check_state_repo.sh` script verifies that your state repository is in the expected state for the tools to work correctly. It checks for the correct directory structure and ensures no stray template files are present in the `specs` directory.
+
+```bash
+./check_state_repo.sh
+```
 
 ## Using the Scrum team agent
 
@@ -84,10 +164,6 @@ Exactly how you *run* the agent depends on the host app / runner you plug it int
 
 - If `LITELLM_PROXY_API_BASE` is set, the agents assume “proxy mode” and use LiteLLM via the proxy endpoint.
 - Keep your `.env` local and never commit real API keys.
-
-## Budget Management
-
-The system implements a **dual-layer budgeting strategy** to ensure both operational safety and financial control.
 
 ## Architecture
 
@@ -164,14 +240,57 @@ The system implements a **dual-layer budgeting strategy** to ensure both operati
 - **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via the `scrum-sprint-budget` object. LiteLLM is the authority on costs and provider-level pricing. By setting a `max_budget` on the `scrum-sprint-budget` object, we ensure that the team never exceeds a hard financial limit, regardless of the token count.
 - **Tools**: `update_budgets(total_usd=0.50)`, `create_litellm_virtual_key()`.
 
-### Monitoring Usage
-- **Sprint Report**: At the end of each sprint, the Product Owner generates a `SPRINT-REPORT-LATEST.md` which includes a detailed breakdown of token usage per agent and total USD spend.
-- **Admin UI**: Log in to `http://localhost:4000/ui/` to see real-time cost tracking and budget status for the `scrum-sprint-budget`.
+### Monitoring & Reporting
 
-## Agent Identity in GitHub
-When using a **GitHub App**, the team uses a single technical identity for authentication. However, the system automatically distinguishes between agent roles:
-1. **Git Commits**: Every commit is attributed to the specific agent role (e.g., `Architect`) via `GIT_AUTHOR` and `GIT_COMMITTER` environment variables.
-2. **PR Comments and Reviews**: New tools `gh_pr_comment` and `gh_pr_review` automatically prefix messages with the agent's role (e.g., `**Architect:** ...`), ensuring clear visibility in the PR discussion even.
+#### Quality KPIs
+The system tracks performance indicators to provide visibility into team health:
+- **Say-Do Ratio**: Compares planned vs. completed stories. A ratio of 1.0 means the team delivered exactly what was promised.
+- **Commitment Reliability**: Measures the accuracy of the team's estimates and delivery capability.
+- **Defect Escape Rate**: Percentage of defects found after a story is marked as "Done".
+- **Code Complexity**: A maintainability metric to ensure long-term velocity.
+- **Test Coverage**: The percentage of the codebase exercised by automated tests.
+- **Vulnerability Scan Results**: Tracks critical, high, medium, and low security findings.
+
+#### Sprint Report
+At the end of each sprint, the Product Owner generates a `SPRINT-REPORT-LATEST.md` which includes a detailed breakdown of token usage per agent, total USD spend, and quality metrics.
+
+Example report content:
+```markdown
+# Sprint Review Report
+
+## Summary
+Completed the core implementation of the GitHub integration and established the CI pipeline.
+
+## Accomplishments
+- Implemented `gh_pr_comment` and `gh_pr_review` tools.
+- Set up Docker-based test runner.
+- Integrated Quality KPI calculations into the workflow.
+
+## Budget and Usage
+- USD Budget (LiteLLM): $0.50
+- Process Overhead: 15%
+
+### Per-Agent Token Usage
+  - ProductOwner: 45,200
+  - DevTeam: 120,500
+  - ScrumMaster: 12,300
+
+## Quality Dashboard
+- Say-Do Ratio: 0.9
+- Test Coverage: 85%
+- Defect Escape Rate: 2%
+```
+
+#### Admin UI
+Log in to `http://localhost:4000/ui/` to see real-time cost tracking and budget status for the `scrum-sprint-budget`.
+
+## Agent Identity
+Whether using a personal account or a dedicated GitHub App, the system automatically distinguishes between agent roles to ensure clear ownership and traceability.
+
+### Role Attribution
+1. **Git Commits**: Every commit is attributed to the specific agent role (e.g., `Architect` or `DevTeam`) via `GIT_AUTHOR` and `GIT_COMMITTER` settings.
+2. **PR Comments and Reviews**: Tools like `gh_pr_comment` and `gh_pr_review` automatically prefix messages with the agent's role (e.g., `**Architect:** ...`), ensuring clear visibility in PR discussions.
+3. **LiteLLM Spend**: Each agent uses its own virtual key, allowing you to track spend per role in the LiteLLM Admin UI.
 
 ### Recovering from a LiteLLM Database Wipe
 
@@ -182,12 +301,6 @@ If you clear the LiteLLM database (e.g., via `docker compose down -v`), your old
 3. **Update .env**: After initialization, you can generate a new general-purpose virtual key via the Admin UI or by copying one of the agent keys and update your `.env` for better tracking.
 
 ---
-
-### Identity
-All agent roles (PO, SM, Dev, etc.) have distinct identities.
-- **Git Commits**: Attributed to the specific role (e.g., "DevTeam").
-- **GitHub PRs**: Comments and reviews are prefixed with the agent's role (e.g., `**Architect:** ...`).
-- **LiteLLM Spend**: Each agent uses its own virtual key, allowing you to track spend per agent in the Admin UI.
 
 ## GitHub Integration
 
@@ -217,21 +330,25 @@ To have the agents act as a distinct entity in your **Workspace Repo** (e.g., Kr
 
 ## Repository documentation structure
 
-This repo includes a first-class docs workspace under `docs/` to keep requirements, architecture, stories, and agentic workflows versioned with code:
+This project separates documentation templates from the actual specification artifacts:
 
-- `docs/requirements/`
-  - `README.md` — guidance and index
-  - `TEMPLATE-PRD.md` — Product Requirements Document template
-  - `TEMPLATE-SRS.md` — Software Requirements Specification template
-- `docs/architecture/`
-  - `README.md` — guidance and index
-  - `TEMPLATE-ADR.md` — Architecture Decision Record template
-- `docs/stories/`
-  - `README.md` — guidance and index
-  - `TEMPLATE-USER-STORY.md` — user story template
-- `docs/workflows/`
-  - `README.md` — guidance and index
-  - `TEMPLATE-AGENT-WORKFLOW.md` — agentic workflow/runbook template
+### 1. Specification Templates (`spec-templates/`)
+Stored in this repository, these provide the structure for Scrum artifacts.
+
+- `spec-templates/requirements/` — Product Requirements Document (PRD) and Software Requirements Specification (SRS) templates.
+- `spec-templates/architecture/` — Architecture Decision Record (ADR) templates.
+- `spec-templates/stories/` — User story templates.
+- `spec-templates/workflows/` — Agentic workflow and runbook templates.
+
+### 2. Specification Artifacts (`specs/`)
+Stored in your **target state repository** (configured via `STATE_REPO_PATH`), these are the actual documents generated and updated by the agents.
+
+- `specs/requirements/` — Active PRDs and SRS documents.
+- `specs/architecture/` — Architecture Decision Records (ADRs).
+- `specs/stories/` — Refined User Stories.
+- `specs/workflows/` — Agentic workflows and runbooks.
+- `specs/reports/` — Sprint review reports and budget status.
+- `specs/ROADMAP.md` — Product roadmap tracking releases and stories.
 
 Contribution rules
 - One artifact per file; keep them small and link related docs together

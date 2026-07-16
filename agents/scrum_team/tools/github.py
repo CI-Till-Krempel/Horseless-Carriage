@@ -1,5 +1,6 @@
 # agents/scrum_team/tools/github.py
 from __future__ import annotations
+import os
 import json
 from typing import Any, Dict
 from .base import _configured_repo_root, _run
@@ -22,7 +23,7 @@ def configure_github_repo(repo_url: str, local_path: str = "", default_branch: s
     if not (target_dir / ".git").exists():
         # Best effort: clone
         try:
-            result = _run(["git", "clone", repo_url, str(target_dir)], cwd=str(target_dir.parent))
+            result = _run(["git", "clone", repo_url, str(target_dir)], cwd=str(target_dir.parent), tool_context=tool_context)
             if result.get("status") == "error":
                 return {"status": "error", "message": f"Clone failed: {result.get('stderr') or result.get('message')}", "details": result}
         except Exception as e:
@@ -93,21 +94,21 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
     repo_root = str(_configured_repo_root(tool_context))
 
     # Ensure branch exists locally
-    _ = _run(["git", "checkout", "-B", branch], cwd=repo_root)
+    _ = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
 
     r1 = None
     if add_all:
-        r1 = _run(["git", "add", "-A"], cwd=repo_root)
+        r1 = _run(["git", "add", "-A"], cwd=repo_root, tool_context=tool_context)
         if r1.get("status") == "error":
             return r1
-    r2 = _run(["git", "commit", "-m", commit_message], cwd=repo_root)
+    r2 = _run(["git", "commit", "-m", commit_message], cwd=repo_root, tool_context=tool_context)
     # Allow empty commit to ensure branch gets pushed
     if r2.get("returncode") != 0:
         # Try creating an empty commit when nothing to commit
         if "nothing to commit" in (r2.get("stderr") or "") + (r2.get("stdout") or ""):
-            r2 = _run(["git", "commit", "--allow-empty", "-m", commit_message], cwd=repo_root)
+            r2 = _run(["git", "commit", "--allow-empty", "-m", commit_message], cwd=repo_root, tool_context=tool_context)
         # If still failing, continue to push in case branch update is desired
-    r3 = _run(["git", "push", "-u", "origin", branch], cwd=repo_root)
+    r3 = _run(["git", "push", "-u", "origin", branch], cwd=repo_root, tool_context=tool_context)
 
     return {"status": "ok" if r3.get("status") == "ok" else "error", "steps": {"checkout": _, "add": r1, "commit": r2, "push": r3}}
 
@@ -126,7 +127,7 @@ def gh_pr_create(title: str, body: str = "", base: str = "main", head: str | Non
         cmd += ["--head", head]
     if draft:
         cmd += ["--draft"]
-    r = _run(cmd, cwd=repo_root)
+    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
     return r
 
 def gh_pr_status(tool_context=None) -> Dict[str, Any]:
@@ -134,7 +135,7 @@ def gh_pr_status(tool_context=None) -> Dict[str, Any]:
     Check the status of Pull Requests for the current repository and user/app.
     """
     repo_root = str(_configured_repo_root(tool_context))
-    r = _run(["gh", "pr", "status"], cwd=repo_root)
+    r = _run(["gh", "pr", "status"], cwd=repo_root, tool_context=tool_context)
     return r
 
 def gh_pr_checks(pr_id: str | int | None = None, watch: bool = False, interval: int = 10, tool_context=None) -> Dict[str, Any]:
@@ -202,7 +203,7 @@ def gh_release_create(tag: str, title: str | None = None, notes: str | None = No
         cmd += ["--draft"]
     if prerelease:
         cmd += ["--prerelease"]
-    r = _run(cmd, cwd=repo_root)
+    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
     return r
 
 def create_release_pr(title: str, body: str, branch: str = "release/increment", tool_context=None) -> Dict[str, Any]:
@@ -278,9 +279,21 @@ def repo_status(tool_context=None) -> Dict[str, Any]:
     """
     cfg = (tool_context.state.get("repo") if tool_context and getattr(tool_context, "state", None) else None) or {}
     root = _configured_repo_root(tool_context)
+    
+    # Check environment configuration
+    env_cfg = {
+        "url": os.environ.get("GITHUB_REPO_URL"),
+        "branch": os.environ.get("GITHUB_REPO_BRANCH"),
+        "state_repo_path": os.environ.get("STATE_REPO_PATH"),
+        "internal_mount": os.environ.get("INTERNAL_STATE_REPO_PATH"),
+    }
+    
     diagnostics = {
         "exists": root.exists(),
         "git_dir": (root / ".git").exists(),
+        "configured_in_state": bool(cfg),
+        "env_repo_url_present": bool(env_cfg["url"]),
+        "using_internal_mount": bool(env_cfg["internal_mount"]),
     }
 
     # Check identity
@@ -303,4 +316,4 @@ def repo_status(tool_context=None) -> Dict[str, Any]:
         gh = _run(["gh", "auth", "status"], cwd=str(root), tool_context=tool_context)
         diagnostics["gh_auth_ok"] = (gh.get("returncode") == 0)
 
-    return {"status": "ok", "config": cfg, "repo_root": str(root), "diagnostics": diagnostics}
+    return {"status": "ok", "config": cfg, "env_config": env_cfg, "repo_root": str(root), "diagnostics": diagnostics}

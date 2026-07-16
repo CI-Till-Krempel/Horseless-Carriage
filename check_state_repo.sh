@@ -45,6 +45,35 @@ else
     echo "  [✔] No stray templates found in 'specs' directory."
 fi
 
+# 5. Validate state.json structure
+STATE_FILE="$STATE_REPO_PATH/.hc/state.json"
+if [ -f "$STATE_FILE" ]; then
+    echo "--- Validating state.json ---"
+    
+    # First attempt: Run via Docker to ensure all dependencies (pydantic) are present
+    if command -v docker >/dev/null 2>&1 && [ -f "docker-compose.yaml" ]; then
+        echo "Running validation via Docker..."
+        docker compose run --rm agent python3 agents/scrum_team/scripts/validate_state.py /app/state_repo/.hc/state.json
+        VALIDATION_EXIT_CODE=$?
+    elif command -v python3 >/dev/null 2>&1; then
+        echo "Running validation via local python3..."
+        python3 agents/scrum_team/scripts/validate_state.py "$STATE_FILE"
+        VALIDATION_EXIT_CODE=$?
+    else
+        echo "WARNING: Could not find Docker or python3 to validate state.json."
+        VALIDATION_EXIT_CODE=0
+    fi
+
+    if [ $VALIDATION_EXIT_CODE -ne 0 ]; then
+        echo "ERROR: state.json validation failed. Your state might be corrupted or outdated."
+        echo "If you recently updated the project, you might need to manually fix the state.json"
+        echo "or initialize a new one."
+        exit 1
+    fi
+else
+    echo "INFO: .hc/state.json not found. This is normal if the agent hasn't run yet."
+fi
+
 echo ""
 echo "--- State Repository Check Complete ---"
 echo "The state repository appears to be in a valid state."

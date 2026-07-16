@@ -50,12 +50,12 @@ def log_token_usage(agent_name: str, tokens: int, tool_context=None) -> Dict[str
     save_state_to_repo(tool_context)
     return {"status": "ok", "usage": usage}
 
-def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget_duration: str = None, tool_context=None) -> Dict[str, Any]:
+def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget_duration: str = None, models: List[str] = None, tool_context=None) -> Dict[str, Any]:
     """
     Generate a LiteLLM Virtual Key for a specific agent role with an optional budget.
     """
     master_key = os.environ.get("LITELLM_MASTER_KEY")
-    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE", "http://localhost:4000")
+    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE", "http://litellm:4000")
     
     if not master_key:
         return {"status": "error", "message": "LITELLM_MASTER_KEY environment variable not set."}
@@ -64,16 +64,30 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     
     # 1. Ensure the shared budget object exists in LiteLLM
     try:
-        get_resp = requests.get(
-            f"{proxy_base}/budget/info?budget_id={budget_id}",
-            headers={"Authorization": f"Bearer {master_key}"},
+        get_resp = requests.post(
+            f"{proxy_base}/budget/info",
+            headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
+            json={"budgets": [budget_id]},
             timeout=5
         )
+        get_resp.raise_for_status()
         
-        total_budget_usd = tool_context.state.get("budgets", {}).get("total_usd") or 10.0
+        # HARD GUARDRAIL: Use state budget if available, otherwise fallback to environment or safe default
+        total_budget_usd = tool_context.state.get("budgets", {}).get("total_usd")
+        if not total_budget_usd or total_budget_usd <= 0:
+            try:
+                total_budget_usd = float(os.environ.get("SPRINT_USD_BUDGET", 10.0))
+            except (ValueError, TypeError):
+                total_budget_usd = 10.0
         
-        if get_resp.status_code == 200:
-            requests.post(
+        # Check if the budget exists in the returned list
+        exists = False
+        budget_info_list = get_resp.json()
+        if budget_info_list and isinstance(budget_info_list, list) and len(budget_info_list) > 0:
+            exists = True
+        
+        if exists:
+            upd_resp = requests.post(
                 f"{proxy_base}/budget/update",
                 headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
                 json={
@@ -82,8 +96,9 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
                 },
                 timeout=5
             )
+            upd_resp.raise_for_status()
         else:
-            requests.post(
+            new_resp = requests.post(
                 f"{proxy_base}/budget/new",
                 headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
                 json={
@@ -93,8 +108,9 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
                 },
                 timeout=5
             )
-    except Exception:
-        pass 
+            new_resp.raise_for_status()
+    except Exception as e:
+        return {"status": "error", "message": f"Budget API error: {e}"}
     
     # 2. Generate the Key
     url = f"{proxy_base}/key/generate"
@@ -103,7 +119,11 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         "Content-Type": "application/json"
     }
     
-    models = ["scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", "scrum-arch", "scrum-orchestrator"]
+    if models is None:
+        models = [
+            "scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", 
+            "scrum-arch", "scrum-orchestrator", "scrum-quality"
+        ]
     
     data = {
         "models": models,
@@ -119,6 +139,8 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     
     try:
         resp = requests.post(url, headers=headers, json=data, timeout=10)
+        if resp.status_code != 200:
+            return {"status": "error", "message": f"Failed to generate LiteLLM key: {resp.status_code} {resp.text}"}
         resp.raise_for_status()
         res = resp.json()
         key = res.get("key")
@@ -171,7 +193,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             report += f"- {title}: {estimate}\n"
             
     s["sprint_report"] = report
-    path = "docs/reports/SPRINT-REPORT-LATEST.md"
+    path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(path, report, overwrite=True, tool_context=tool_context)
     
     return {"status": "ok", "report": report, "path": path}
