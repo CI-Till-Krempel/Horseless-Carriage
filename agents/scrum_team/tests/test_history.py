@@ -1,10 +1,12 @@
 # agents/scrum_team/tests/test_history.py
+import os
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from google.genai import types
 from agents.scrum_team.agent import (
     history_management_callback,
     history_management_after_callback,
+    _trim_transcript,
     product_owner,
     scrum_master,
     dev_team,
@@ -158,6 +160,48 @@ class TestHistoryManagement(unittest.TestCase):
         # attached, or capture would never fire in practice.
         for agent in [product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian]:
             self.assertIn(history_management_after_callback, agent.after_model_callback)
+
+    def test_trim_transcript_leaves_under_threshold_untouched(self):
+        transcript = [{"agent_name": "DevTeam", "role": "model", "content": f"entry {i}"} for i in range(5)]
+        result = _trim_transcript(transcript, max_entries=10)
+        self.assertEqual(result, transcript)
+
+    def test_trim_transcript_exact_threshold_no_off_by_one(self):
+        # US-0004 edge case: exactly at the threshold must not be trimmed.
+        transcript = [{"agent_name": "DevTeam", "role": "model", "content": f"entry {i}"} for i in range(10)]
+        result = _trim_transcript(transcript, max_entries=10)
+        self.assertEqual(result, transcript)
+        self.assertNotIn("omitted", str(result))
+
+    def test_trim_transcript_over_threshold_keeps_most_recent(self):
+        transcript = [{"agent_name": "DevTeam", "role": "model", "content": f"entry {i}"} for i in range(13)]
+        result = _trim_transcript(transcript, max_entries=10)
+
+        # Marker + 10 most recent retained entries.
+        self.assertEqual(len(result), 11)
+        self.assertEqual(result[0]["agent_name"], "system")
+        self.assertIn("3 earlier transcript entries omitted", result[0]["content"])
+        self.assertEqual([e["content"] for e in result[1:]], [f"entry {i}" for i in range(3, 13)])
+
+    def test_transcript_is_trimmed_during_capture(self):
+        # Integration through the actual callback: growth must be bounded as
+        # entries are appended turn by turn, not just in the helper directly.
+        state = ScrumState()
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        mock_context.state = state.model_dump()
+
+        with patch.dict(os.environ, {"TRANSCRIPT_MAX_ENTRIES": "3"}):
+            for i in range(6):
+                mock_response = MagicMock()
+                mock_response.content = types.Content(role="model", parts=[types.Part(text=f"turn {i}")])
+                history_management_after_callback(mock_context, mock_response)
+
+        transcript = mock_context.state["transcript"]
+        # Bounded to max_entries + 1 marker, never left to grow to 6.
+        self.assertLessEqual(len(transcript), 4)
+        # Most recent turns preserved over older ones.
+        self.assertEqual(transcript[-1]["content"], "turn 5")
 
 if __name__ == "__main__":
     unittest.main()

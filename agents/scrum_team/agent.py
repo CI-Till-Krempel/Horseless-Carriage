@@ -3,7 +3,7 @@ import os
 import requests
 import logging
 import sys
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Union, Dict, Any, List
 
 import litellm
 
@@ -450,6 +450,35 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
 
 # --- History Management Callbacks ---
 
+def _get_transcript_max_entries() -> int:
+    """Reads the configured max transcript entries, defaulting to 200."""
+    try:
+        return int(os.environ.get("TRANSCRIPT_MAX_ENTRIES", "200"))
+    except (ValueError, TypeError):
+        return 200
+
+def _trim_transcript(transcript: List[Dict[str, Any]], max_entries: Optional[int] = None) -> List[Dict[str, Any]]:
+    """
+    Bounds transcript growth so a long-running sprint can't blow the token
+    budget just by holding/replaying an ever-growing transcript in state.
+    Keeps the most recent `max_entries` entries, replacing the dropped
+    prefix with a single marker entry noting how many were omitted
+    (summarized, not silently dropped). A transcript exactly at the
+    threshold is left untouched.
+    """
+    if max_entries is None:
+        max_entries = _get_transcript_max_entries()
+    if max_entries <= 0 or len(transcript) <= max_entries:
+        return transcript
+
+    omitted_count = len(transcript) - max_entries
+    marker = {
+        "agent_name": "system",
+        "role": "system",
+        "content": f"[{omitted_count} earlier transcript entries omitted for token budget]",
+    }
+    return [marker] + transcript[-max_entries:]
+
 def history_management_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
     BeforeModelCallback: Injects and synchronizes conversation history for the Orchestrator.
@@ -514,6 +543,7 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
     # multi-step tool-calling turn gets its own entry.
     transcript = list(state.transcript)
     transcript.append({"agent_name": agent_name, "role": "model", "content": text})
+    transcript = _trim_transcript(transcript)
     try:
         callback_context.state["transcript"] = transcript
     except (TypeError, KeyError):

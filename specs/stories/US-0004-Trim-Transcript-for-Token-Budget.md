@@ -2,7 +2,7 @@
 
 - Story ID: US-0004
 - Title: Trim Transcript for Token Budget
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: ScrumOrchestrator
 - Last Updated: 2026-07-16
