@@ -156,6 +156,22 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     except Exception as e:
         return {"status": "error", "message": f"Failed to generate LiteLLM key: {e}"}
 
+def _summarize_transcript(transcript: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Condenses a transcript to one representative (most recent) entry per
+    agent, ordered by each agent's first appearance. A plain tail-N cut would
+    let one chatty agent crowd out every other agent's key contribution;
+    this guarantees every agent that spoke is represented.
+    """
+    order: List[str] = []
+    last_by_agent: Dict[str, Dict[str, Any]] = {}
+    for entry in transcript:
+        agent_name = entry.get("agent_name", "unknown")
+        if agent_name not in last_by_agent:
+            order.append(agent_name)
+        last_by_agent[agent_name] = entry
+    return [last_by_agent[name] for name in order]
+
 def create_sprint_report(summary: str, accomplishments: List[str], tool_context=None) -> Dict[str, Any]:
     """
     Generate a management summary report for the current sprint.
@@ -191,7 +207,32 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         report += "\n## Story Estimates (Tokens)\n"
         for title, estimate in estimates.items():
             report += f"- {title}: {estimate}\n"
-            
+
+    # Link to the persisted multi-agent transcript (see US-0001/US-0002),
+    # with a condensed per-agent excerpt so reviewers can trace which agent
+    # made which decision without reading the full, potentially long, log.
+    report += "\n## Conversation Transcript\n"
+    transcript = s.get("transcript", [])
+    if transcript:
+        repo_root = _configured_repo_root(tool_context)
+        full_path = _state_file_path(repo_root)
+        try:
+            transcript_location = str(full_path.relative_to(repo_root))
+        except ValueError:
+            transcript_location = str(full_path)
+        report += (
+            f"Full transcript ({len(transcript)} entries) persisted at "
+            f"`{transcript_location}` (`transcript` key).\n\n"
+        )
+        report += "Most recent contribution per agent:\n"
+        for entry in _summarize_transcript(transcript):
+            agent_name = entry.get("agent_name", "unknown")
+            content = entry.get("content", "")
+            excerpt = content if len(content) <= 200 else content[:200].rstrip() + "..."
+            report += f"- **{agent_name}**: {excerpt}\n"
+    else:
+        report += "No transcript available yet for this sprint.\n"
+
     s["sprint_report"] = report
     path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(path, report, overwrite=True, tool_context=tool_context)

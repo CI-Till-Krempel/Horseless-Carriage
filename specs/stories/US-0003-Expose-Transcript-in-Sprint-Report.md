@@ -2,7 +2,7 @@
 
 - Story ID: US-0003
 - Title: Expose Transcript in Sprint Report
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Quality Guardian
 - Last Updated: 2026-07-16
