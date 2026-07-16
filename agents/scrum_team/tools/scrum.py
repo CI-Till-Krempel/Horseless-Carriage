@@ -32,6 +32,7 @@ REPO_STATE_KEYS = [
     "sprint_report_kpis",
     "repo",
     "messages",
+    "transcript",
 ]
 
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
@@ -62,6 +63,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("budgets", {"total": 0, "total_usd": 0.0, "agents": {}})
     s.setdefault("token_usage", {"total": 0, "agents": {}})
     s.setdefault("story_estimates", {})
+    s.setdefault("transcript", [])
 
     # 1. Try to load from repo if present first, so environment can override
     try:

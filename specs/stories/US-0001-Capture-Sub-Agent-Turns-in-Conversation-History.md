@@ -2,7 +2,7 @@
 
 - Story ID: US-0001
 - Title: Capture Sub-Agent Turns in Conversation History
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Scrum Master
 - Last Updated: 2026-07-16

@@ -2,7 +2,7 @@
 
 - Story ID: US-0002
 - Title: Persist Full Transcript to State Repo
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Product Owner
 - Last Updated: 2026-07-16

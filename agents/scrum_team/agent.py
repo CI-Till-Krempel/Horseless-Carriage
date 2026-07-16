@@ -494,17 +494,37 @@ def history_management_callback(callback_context: CallbackContext, llm_request: 
 
 def history_management_after_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
     """
-    AfterModelCallback: Saves the model response to the conversation history.
+    AfterModelCallback: Appends every agent's turn to the shared multi-agent
+    transcript, and additionally saves the ScrumOrchestrator's own turns to
+    the flat resumable conversation history used for CLI/web session resume.
     """
-    if callback_context.agent_name != "ScrumOrchestrator":
-        return None
-        
     if not llm_response.content:
         return None
-        
+
     text = "".join(p.text for p in llm_response.content.parts if p.text)
-    if text:
-        state = get_scrum_state(callback_context.state)
+    if not text:
+        return None
+
+    state = get_scrum_state(callback_context.state)
+    agent_name = callback_context.agent_name
+
+    # Shared multi-agent transcript: every agent's turns are appended here,
+    # tagged by agent_name, so the full sprint conversation is auditable.
+    # Appending (rather than syncing/replacing) means each step of a
+    # multi-step tool-calling turn gets its own entry.
+    transcript = list(state.transcript)
+    transcript.append({"agent_name": agent_name, "role": "model", "content": text})
+    try:
+        callback_context.state["transcript"] = transcript
+    except (TypeError, KeyError):
+        try:
+            setattr(callback_context.state, "transcript", transcript)
+        except Exception:
+            pass
+
+    # Orchestrator-specific: keep the flat resumable `messages` history used
+    # to reconstruct the CLI/web session on resume. Unchanged from before.
+    if agent_name == "ScrumOrchestrator":
         history = list(state.messages)
         # Avoid duplicate appending if called multiple times for the same response
         if not history or history[-1].get("content") != text:
@@ -521,7 +541,7 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
-    "after_model_callback": update_token_usage_callback,
+    "after_model_callback": [update_token_usage_callback, history_management_after_callback],
 }
 
 # --- Sub agents (role specialists) ---
