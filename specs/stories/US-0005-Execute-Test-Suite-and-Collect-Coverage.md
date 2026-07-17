@@ -2,7 +2,7 @@
 
 - Story ID: US-0005
 - Title: Execute Test Suite and Collect Coverage
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Quality Guardian
 - Last Updated: 2026-07-16

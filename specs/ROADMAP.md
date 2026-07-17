@@ -31,7 +31,7 @@ Stories:
   - [x] [US-0003] Expose Transcript in Sprint Report
   - [x] [US-0004] Trim Transcript for Token Budget
 - [ ] [EP-0002] Real Test-Report and KPI Generation
-  - [ ] [US-0005] Execute Test Suite and Collect Coverage
+  - [x] [US-0005] Execute Test Suite and Collect Coverage
   - [ ] [US-0006] Compute Real Maintainability Metrics
   - [ ] [US-0007] Run Security Vulnerability Scan
   - [ ] [US-0008] Fail Gracefully When Test Tooling Unavailable
@@ -71,7 +71,7 @@ Stories:
 
 | To Do | In Progress | In Review | Done |
 |------|-------------|-----------|------|
-| EP-0002, US-0005–US-0008, EP-0003, US-0009–US-0011 | | | EP-0001, US-0001, US-0002, US-0003, US-0004 |
+| EP-0002, US-0006–US-0008, EP-0003, US-0009–US-0011 | | | EP-0001, US-0001, US-0002, US-0003, US-0004, US-0005 |
 
 Notes
 - Update this table in PRs alongside code changes.
