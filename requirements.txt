@@ -6,3 +6,4 @@ orjson
 pytest
 pytest-cov
 radon
+bandit

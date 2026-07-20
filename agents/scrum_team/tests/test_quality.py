@@ -1,4 +1,5 @@
 # agents/scrum_team/tests/test_quality.py
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -7,6 +8,7 @@ from agents.scrum_team.tools.quality import (
     update_sprint_report,
     _execute_test_suite_coverage,
     _compute_code_complexity,
+    _scan_security_vulnerabilities,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -18,7 +20,7 @@ class TestQualityTools(unittest.TestCase):
         Acceptance Criteria:
         - KPIs are calculated and returned as a dictionary.
         """
-        # First _run call is the pytest coverage run, second is radon.
+        # _run is called for pytest coverage, then radon, then bandit.
         mock_run.side_effect = [
             {
                 "status": "ok",
@@ -30,6 +32,12 @@ class TestQualityTools(unittest.TestCase):
                 "status": "ok",
                 "returncode": 0,
                 "stdout": "Average complexity: A (3.5)",
+                "stderr": "",
+            },
+            {
+                "status": "error",  # bandit exits non-zero when it finds issues
+                "returncode": 1,
+                "stdout": json.dumps({"metrics": {"_totals": {"SEVERITY.HIGH": 1, "SEVERITY.MEDIUM": 3, "SEVERITY.LOW": 5}}}),
                 "stderr": "",
             },
         ]
@@ -47,6 +55,11 @@ class TestQualityTools(unittest.TestCase):
         self.assertEqual(kpis["maintainability"]["tests_failed"], 0)
         self.assertEqual(kpis["maintainability"]["code_complexity"], 3.5)
         self.assertTrue(kpis["maintainability"]["code_complexity_available"])
+        self.assertTrue(kpis["security"]["vulnerability_scan_available"])
+        self.assertEqual(
+            kpis["security"]["vulnerability_scan_results"],
+            {"critical": 0, "high": 1, "medium": 3, "low": 5},
+        )
 
     @patch("agents.scrum_team.tools.quality._run")
     def test_execute_test_suite_coverage_parses_real_output(self, mock_run):
@@ -204,6 +217,98 @@ class TestQualityTools(unittest.TestCase):
         self.assertFalse(result["available"])
         self.assertIsNone(result["code_complexity"])
         self.assertEqual(result["note"], "no average complexity reported by radon")
+
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_scan_security_vulnerabilities_parses_real_output(self, mock_run):
+        """
+        Acceptance Criteria (US-0007):
+        - Vulnerabilities are gathered from an actual scanner (bandit) run,
+          and severity counts flow through into the KPI structure unchanged.
+        """
+        mock_run.return_value = {
+            "status": "error",  # bandit exits non-zero when it finds issues
+            "returncode": 1,
+            "stdout": json.dumps({
+                "metrics": {
+                    "_totals": {
+                        "SEVERITY.HIGH": 2,
+                        "SEVERITY.MEDIUM": 1,
+                        "SEVERITY.LOW": 4,
+                    }
+                }
+            }),
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            result = _scan_security_vulnerabilities(tool_context=tool_context)
+
+        self.assertTrue(result["available"])
+        self.assertEqual(
+            result["vulnerability_scan_results"],
+            {"critical": 0, "high": 2, "medium": 1, "low": 4},
+        )
+
+    def test_scan_security_vulnerabilities_unsupported_language(self):
+        """
+        Acceptance Criteria (US-0007 edge case):
+        - An unsupported language/toolchain reports "scan not performed"
+          rather than silently defaulting to zero findings.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="javascript"):
+            result = _scan_security_vulnerabilities(tool_context=tool_context)
+
+        self.assertFalse(result["available"])
+        self.assertIsNone(result["vulnerability_scan_results"])
+        self.assertIn("javascript", result["note"])
+
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_scan_security_vulnerabilities_tool_unavailable(self, mock_run):
+        """
+        bandit itself couldn't be executed (e.g. not installed) - must
+        report scan not performed rather than crash or fabricate a result.
+        """
+        mock_run.return_value = {
+            "status": "error",
+            "message": "[Errno 2] No such file or directory: 'bandit'",
+            "cmd": ["bandit", "-r"],
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            result = _scan_security_vulnerabilities(tool_context=tool_context)
+
+        self.assertFalse(result["available"])
+        self.assertIsNone(result["vulnerability_scan_results"])
+        self.assertIn("could not be executed", result["note"])
+
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_scan_security_vulnerabilities_unparsable_output(self, mock_run):
+        """
+        bandit ran but produced output that isn't valid JSON - must report
+        scan not performed, not zero findings.
+        """
+        mock_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": "not json",
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            result = _scan_security_vulnerabilities(tool_context=tool_context)
+
+        self.assertFalse(result["available"])
+        self.assertIsNone(result["vulnerability_scan_results"])
+        self.assertEqual(result["note"], "could not parse bandit output")
 
     def test_update_sprint_report(self):
         """

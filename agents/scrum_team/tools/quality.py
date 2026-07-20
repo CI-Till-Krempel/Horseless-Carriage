@@ -1,4 +1,5 @@
 # agents/scrum_team/tools/quality.py
+import json
 import os
 import re
 from ..state import ScrumState
@@ -126,6 +127,67 @@ def _compute_code_complexity(tool_context=None) -> Dict[str, Any]:
     }
 
 
+def _scan_security_vulnerabilities(tool_context=None) -> Dict[str, Any]:
+    """
+    Scans the target repo for security issues via bandit (Python only for
+    now) and reports its real severity counts, rather than fabricating
+    findings.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    language = _detect_primary_language(repo_root)
+
+    if language != "python":
+        return {
+            "available": False,
+            "vulnerability_scan_results": None,
+            "note": f"security scan not available for language: {language}",
+        }
+
+    result = _run(
+        ["bandit", "-r", str(repo_root), "-f", "json", "-q"],
+        cwd=str(repo_root),
+        tool_context=tool_context,
+    )
+
+    if result.get("status") == "error" and "returncode" not in result:
+        # bandit itself couldn't be started (e.g. not installed). Note this
+        # is distinct from bandit running and exiting non-zero because it
+        # found issues - that path still has JSON on stdout to parse below.
+        return {
+            "available": False,
+            "vulnerability_scan_results": None,
+            "note": f"bandit could not be executed: {result.get('message', 'unknown error')}",
+        }
+
+    stdout = result.get("stdout", "") or ""
+    try:
+        report = json.loads(stdout) if stdout else None
+    except ValueError:
+        report = None
+
+    if not isinstance(report, dict):
+        return {
+            "available": False,
+            "vulnerability_scan_results": None,
+            "note": "could not parse bandit output",
+        }
+
+    totals = report.get("metrics", {}).get("_totals", {})
+
+    return {
+        "available": True,
+        "vulnerability_scan_results": {
+            # bandit has no CRITICAL severity tier - real absence, not a
+            # fabricated default.
+            "critical": 0,
+            "high": int(totals.get("SEVERITY.HIGH", 0)),
+            "medium": int(totals.get("SEVERITY.MEDIUM", 0)),
+            "low": int(totals.get("SEVERITY.LOW", 0)),
+        },
+        "note": None,
+    }
+
+
 def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     """
     Calculates and returns a dictionary of quality KPIs.
@@ -133,10 +195,11 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     test_coverage/tests_run/tests_failed are derived from actually executing
     the target repo's test suite (US-0005). code_complexity is derived from
     a real static analysis tool (US-0006). vulnerability_scan_results is
-    still a placeholder pending US-0007.
+    derived from a real security scan (US-0007).
     """
     coverage_result = _execute_test_suite_coverage(tool_context)
     complexity_result = _compute_code_complexity(tool_context)
+    security_result = _scan_security_vulnerabilities(tool_context)
 
     maintainability = {
         "code_complexity": complexity_result["code_complexity"],
@@ -151,6 +214,13 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     if coverage_result["note"]:
         maintainability["test_coverage_note"] = coverage_result["note"]
 
+    security = {
+        "vulnerability_scan_available": security_result["available"],
+        "vulnerability_scan_results": security_result["vulnerability_scan_results"],
+    }
+    if security_result["note"]:
+        security["vulnerability_scan_note"] = security_result["note"]
+
     return {
         "team_effectiveness": {
             "say_do_ratio": 0.8,
@@ -161,14 +231,7 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
             "customer_satisfaction": 4.5,
         },
         "maintainability": maintainability,
-        "security": {
-            "vulnerability_scan_results": {
-                "critical": 0,
-                "high": 1,
-                "medium": 3,
-                "low": 5,
-            }
-        },
+        "security": security,
     }
 
 def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
