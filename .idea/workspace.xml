@@ -4,7 +4,11 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add integration tests for LiteLLM proxy and update `run_tests.sh` to support both unit and integration tests.&#10;&#10;Key changes:&#10;- Introduced `test_llm_integration.py` to validate LiteLLM proxy workflows, including key creation, budget association, and API calls.&#10;- Updated `run_tests.sh` to run tests using Docker Compose with proper service dependencies.&#10;- Added mock response configurations in `litellm.yaml` for integration testing.&#10;- Enhanced `create_litellm_virtual_key` to support dynamic models and improved error handling.&#10;- Improved test isolation in `test_id_generation.py`.&#10;- Updated README with detailed instructions for running tests." />
+    <list default="true" id="c0fb7e1d-1c72-436b-aa07-1b7d94370531" name="Changes" comment="Add integration tests for LiteLLM proxy and update `run_tests.sh` to support both unit and integration tests.&#10;&#10;Key changes:&#10;- Introduced `test_llm_integration.py` to validate LiteLLM proxy workflows, including key creation, budget association, and API calls.&#10;- Updated `run_tests.sh` to run tests using Docker Compose with proper service dependencies.&#10;- Added mock response configurations in `litellm.yaml` for integration testing.&#10;- Enhanced `create_litellm_virtual_key` to support dynamic models and improved error handling.&#10;- Improved test isolation in `test_id_generation.py`.&#10;- Updated README with detailed instructions for running tests.">
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/agents/scrum_team/tools/quality.py" beforeDir="false" afterPath="$PROJECT_DIR$/agents/scrum_team/tools/quality.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -111,7 +115,7 @@
     "ai.playground.ignore.import.keys.banner.in.settings": "true",
     "codeWithMe.voiceChat.enabledByDefault": "false",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
-    "git-widget-placeholder": "tests__budgets__reports",
+    "git-widget-placeholder": "feature/us-0006-compute-real-maintainability-metrics",
     "junie.onboarding.icon.badge.shown": "true",
     "last_opened_file_path": "/Users/tkrempel/PycharmProjects/Horseless-Carriage",
     "node.js.detected.package.eslint": "true",
