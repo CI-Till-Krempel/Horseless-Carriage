@@ -6,6 +6,7 @@ from agents.scrum_team.tools.quality import (
     calculate_kpis,
     update_sprint_report,
     _execute_test_suite_coverage,
+    _compute_code_complexity,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -17,15 +18,25 @@ class TestQualityTools(unittest.TestCase):
         Acceptance Criteria:
         - KPIs are calculated and returned as a dictionary.
         """
-        mock_run.return_value = {
-            "status": "ok",
-            "returncode": 0,
-            "stdout": "TOTAL 100 10 90%\n5 passed in 1.23s",
-            "stderr": "",
-        }
+        # First _run call is the pytest coverage run, second is radon.
+        mock_run.side_effect = [
+            {
+                "status": "ok",
+                "returncode": 0,
+                "stdout": "TOTAL 100 10 90%\n5 passed in 1.23s",
+                "stderr": "",
+            },
+            {
+                "status": "ok",
+                "returncode": 0,
+                "stdout": "Average complexity: A (3.5)",
+                "stderr": "",
+            },
+        ]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        kpis = calculate_kpis(tool_context=tool_context)
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            kpis = calculate_kpis(tool_context=tool_context)
         self.assertIsInstance(kpis, dict)
         self.assertIn("team_effectiveness", kpis)
         self.assertIn("result_quality", kpis)
@@ -34,6 +45,8 @@ class TestQualityTools(unittest.TestCase):
         self.assertEqual(kpis["maintainability"]["test_coverage"], 0.9)
         self.assertEqual(kpis["maintainability"]["tests_run"], 5)
         self.assertEqual(kpis["maintainability"]["tests_failed"], 0)
+        self.assertEqual(kpis["maintainability"]["code_complexity"], 3.5)
+        self.assertTrue(kpis["maintainability"]["code_complexity_available"])
 
     @patch("agents.scrum_team.tools.quality._run")
     def test_execute_test_suite_coverage_parses_real_output(self, mock_run):
@@ -106,6 +119,91 @@ class TestQualityTools(unittest.TestCase):
         self.assertFalse(result["available"])
         self.assertIsNone(result["test_coverage"])
         self.assertIn("could not be executed", result["note"])
+
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_compute_code_complexity_parses_real_output(self, mock_run):
+        """
+        Acceptance Criteria (US-0006):
+        - Complexity is computed via real static analysis (radon) and the
+          parsed value flows through unchanged.
+        """
+        mock_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": (
+                "mod.py\n"
+                "    F 1:0 foo - A (2)\n\n"
+                "Average complexity: A (4.25)"
+            ),
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            result = _compute_code_complexity(tool_context=tool_context)
+
+        self.assertTrue(result["available"])
+        self.assertEqual(result["code_complexity"], 4.25)
+
+    def test_compute_code_complexity_unsupported_language(self):
+        """
+        Acceptance Criteria (US-0006 edge case):
+        - An unsupported language/toolchain reports "not available" rather
+          than a fabricated number.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="javascript"):
+            result = _compute_code_complexity(tool_context=tool_context)
+
+        self.assertFalse(result["available"])
+        self.assertIsNone(result["code_complexity"])
+        self.assertIn("javascript", result["note"])
+
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_compute_code_complexity_tool_unavailable(self, mock_run):
+        """
+        radon itself couldn't be executed (e.g. not installed) - must
+        report unavailable rather than crash or fabricate a number.
+        """
+        mock_run.return_value = {
+            "status": "error",
+            "message": "[Errno 2] No such file or directory: 'radon'",
+            "cmd": ["radon", "cc"],
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            result = _compute_code_complexity(tool_context=tool_context)
+
+        self.assertFalse(result["available"])
+        self.assertIsNone(result["code_complexity"])
+        self.assertIn("could not be executed", result["note"])
+
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_compute_code_complexity_no_average_reported(self, mock_run):
+        """
+        radon ran but produced no "Average complexity" line (e.g. no
+        functions found) - must report unavailable, not a stale number.
+        """
+        mock_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            result = _compute_code_complexity(tool_context=tool_context)
+
+        self.assertFalse(result["available"])
+        self.assertIsNone(result["code_complexity"])
+        self.assertEqual(result["note"], "no average complexity reported by radon")
 
     def test_update_sprint_report(self):
         """
