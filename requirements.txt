@@ -5,3 +5,4 @@ PyJWT
 orjson
 pytest
 pytest-cov
+radon

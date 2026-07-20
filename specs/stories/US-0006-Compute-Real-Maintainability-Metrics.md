@@ -2,7 +2,7 @@
 
 - Story ID: US-0006
 - Title: Compute Real Maintainability Metrics
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Quality Guardian
 - Last Updated: 2026-07-16

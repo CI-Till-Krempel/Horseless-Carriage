@@ -1,4 +1,5 @@
 # agents/scrum_team/tools/quality.py
+import os
 import re
 from ..state import ScrumState
 from typing import Dict, Any
@@ -9,6 +10,8 @@ _PASSED_RE = re.compile(r"(\d+)\s+passed")
 _FAILED_RE = re.compile(r"(\d+)\s+failed")
 _ERROR_RE = re.compile(r"(\d+)\s+error")
 _NO_TESTS_RE = re.compile(r"no tests ran")
+_AVG_COMPLEXITY_RE = re.compile(r"Average complexity:\s+[A-F]\s+\(([\d.]+)\)")
+_LANGUAGE_SKIP_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__"}
 
 
 def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
@@ -64,23 +67,87 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
     }
 
 
+def _detect_primary_language(repo_root) -> str:
+    """
+    Best-effort detection of the target repo's primary language, used to
+    pick an appropriate static analysis tool. Only Python (via radon) is
+    supported today; anything else falls back to "unknown" so callers can
+    report "not available" instead of fabricating a number.
+    """
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in _LANGUAGE_SKIP_DIRS and not d.startswith(".")]
+        if any(f.endswith(".py") for f in filenames):
+            return "python"
+    return "unknown"
+
+
+def _compute_code_complexity(tool_context=None) -> Dict[str, Any]:
+    """
+    Computes the average cyclomatic complexity of the target repo via radon
+    (Python only for now), rather than a fixed constant.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    language = _detect_primary_language(repo_root)
+
+    if language != "python":
+        return {
+            "available": False,
+            "code_complexity": None,
+            "note": f"static analysis not available for language: {language}",
+        }
+
+    result = _run(
+        ["radon", "cc", str(repo_root), "--total-average"],
+        cwd=str(repo_root),
+        tool_context=tool_context,
+    )
+
+    if result.get("status") == "error" and "returncode" not in result:
+        # radon itself couldn't be started (e.g. not installed).
+        return {
+            "available": False,
+            "code_complexity": None,
+            "note": f"radon could not be executed: {result.get('message', 'unknown error')}",
+        }
+
+    stdout = result.get("stdout", "") or ""
+    match = _AVG_COMPLEXITY_RE.search(stdout)
+    if not match:
+        return {
+            "available": False,
+            "code_complexity": None,
+            "note": "no average complexity reported by radon",
+        }
+
+    return {
+        "available": True,
+        "code_complexity": float(match.group(1)),
+        "note": None,
+    }
+
+
 def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     """
     Calculates and returns a dictionary of quality KPIs.
 
     test_coverage/tests_run/tests_failed are derived from actually executing
-    the target repo's test suite (US-0005). code_complexity and
-    vulnerability_scan_results are still placeholders pending US-0006/US-0007.
+    the target repo's test suite (US-0005). code_complexity is derived from
+    a real static analysis tool (US-0006). vulnerability_scan_results is
+    still a placeholder pending US-0007.
     """
     coverage_result = _execute_test_suite_coverage(tool_context)
+    complexity_result = _compute_code_complexity(tool_context)
 
     maintainability = {
-        "code_complexity": 10,
+        "code_complexity": complexity_result["code_complexity"],
+        "code_complexity_available": complexity_result["available"],
         "test_coverage": coverage_result["test_coverage"],
         "test_coverage_available": coverage_result["available"],
         "tests_run": coverage_result["tests_run"],
         "tests_failed": coverage_result["tests_failed"],
     }
+    if complexity_result["note"]:
+        maintainability["code_complexity_note"] = complexity_result["note"]
     if coverage_result["note"]:
         maintainability["test_coverage_note"] = coverage_result["note"]
 
