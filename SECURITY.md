@@ -55,11 +55,39 @@ to `REPO_STATE_KEYS`.
   GitHub.** Treat anything written under `REPO_STATE_KEYS` as eventually public
   within your team/org, even if the repo is private.
 
+## Financial guardrails (not a secret, but a real spend-control review)
+
+`inject_litellm_key_callback` (`agents/scrum_team/agent.py`) falls back to
+`LITELLM_PROXY_API_KEY` when an agent has no per-agent virtual key yet — a key
+that isn't attached to the shared `scrum-sprint-budget` object and may not be
+budget-capped at all (the documented DB-wipe recovery flow briefly points it at
+the unbounded `LITELLM_MASTER_KEY`). Without a check, that would let a sub-agent
+spend real money with the USD budget check blind to it.
+
+`check_cost_budget_callback` closes this: every specialist agent is hard-blocked
+from making any LLM call at all until it has its own budget-attached virtual key.
+Only the Orchestrator is exempt, since it needs one bootstrap call to create
+everyone else's key in the first place — see the tests in `test_agent.py`
+(`test_check_cost_budget_callback_blocks_agent_without_virtual_key`,
+`test_check_cost_budget_callback_exempts_orchestrator_bootstrap`) for the exact
+boundary. See README.md ["Budget Management"](README.md#budget-management) and
+MANUAL.md §5 for user-facing detail.
+
 ## Known limitations (being upfront, not exhaustive)
 
 - No automated secret-scanning (e.g. gitleaks) runs in CI yet.
 - No signed commits / branch protection is enforced by default — see
   `config/github_config.yaml` for policy you can apply manually in GitHub repo
   settings.
+- If no LiteLLM proxy is configured at all (`LITELLM_MASTER_KEY`/
+  `LITELLM_PROXY_API_BASE` unset), the USD budget check and the virtual-key
+  guardrail both skip entirely — only the local token-count budget applies in
+  that mode. This isn't the documented/supported deployment (`docker-compose.yaml`
+  always runs LiteLLM), but it's a real gap if someone runs outside that setup.
+- The Orchestrator's own bootstrap call (needed to create the very first virtual
+  key) is inherently unscoped from LiteLLM's budget system — there's no way
+  around at least one initial call happening before any key exists. It's
+  protected only by the local token budget, not a USD cap, until its own key
+  (if any) is created.
 - This is a young project; the above reflects a basic review ahead of the first
   public release (`v0.1.0`), not a formal security audit.

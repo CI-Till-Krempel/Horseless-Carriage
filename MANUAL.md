@@ -113,10 +113,22 @@ Check live status any time with `get_budget_status`, or the LiteLLM admin UI at
 `http://localhost:4000/ui`. Per-agent spend is trackable there too, since each
 agent role gets its own virtual key.
 
+**No agent can spend on an unscoped key.** Every specialist agent is blocked from
+making any LLM call at all until it has its own `scrum-sprint-budget`-attached
+virtual key (`create_litellm_virtual_key`) — this is enforced in code
+(`check_cost_budget_callback`), not just a prompt instruction the model could skip.
+Only the Orchestrator is exempt, since it needs one bootstrap call to create
+everyone else's key in the first place. If you ever see a `🚫 [NO BUDGET-CAPPED
+KEY]` response, the fix is exactly what it says: create that agent's virtual key
+before delegating to it again.
+
 **If you wipe the LiteLLM database** (`docker compose down -v`), old virtual keys
 break. Recovery: temporarily set `LITELLM_PROXY_API_KEY` to your
 `LITELLM_MASTER_KEY` in `.env` so the Orchestrator can start, run it once to
 re-generate fresh virtual keys, then switch `.env` back to a real per-purpose key.
+The guardrail above means every *other* agent stays blocked during this window —
+only the Orchestrator's bootstrap call runs on the temporarily-unbounded key, and
+only for as long as it takes to recreate everyone's keys.
 
 ## 6. Trusting the numbers: real KPIs
 

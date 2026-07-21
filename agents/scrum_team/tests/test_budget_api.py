@@ -26,6 +26,9 @@ class TestBudgetAPI(unittest.TestCase):
 
         # Setup context
         mock_context = MagicMock()
+        # ScrumOrchestrator is exempt from the virtual-key gate (see
+        # test_agent.py) - this test is about the USD spend check itself.
+        mock_context.agent_name = "ScrumOrchestrator"
         mock_context.state = ScrumState().model_dump()
         mock_context.state["budgets"]["total_usd"] = 10.0
         mock_llm_request = MagicMock()
@@ -61,6 +64,7 @@ class TestBudgetAPI(unittest.TestCase):
 
         # Setup context
         mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
         mock_context.state = ScrumState().model_dump()
         mock_context.state["budgets"]["total_usd"] = 10.0
         mock_llm_request = MagicMock()

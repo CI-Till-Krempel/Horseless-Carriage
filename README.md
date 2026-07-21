@@ -251,8 +251,23 @@ The system implements a **dual-layer budgeting strategy** to ensure both operati
 
 ### 2. USD Budget (LiteLLM Layer)
 - **Unit**: US Dollars (e.g., $0.50).
-- **Enforcement**: Hard-blocked by the LiteLLM Proxy.
-- **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via the `scrum-sprint-budget` object. LiteLLM is the authority on costs and provider-level pricing. By setting a `max_budget` on the `scrum-sprint-budget` object, we ensure that the team never exceeds a hard financial limit, regardless of the token count.
+- **Enforcement**: Hard-blocked by the LiteLLM Proxy, plus a real-time pre-call check
+  against current spend on the shared `scrum-sprint-budget` object.
+- **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via
+  the `scrum-sprint-budget` object. LiteLLM is the authority on costs and
+  provider-level pricing. By setting a `max_budget` on the `scrum-sprint-budget`
+  object, we ensure that the team never exceeds a hard financial limit, regardless of
+  the token count.
+- **No unscoped fallback spend**: every specialist agent's calls are blocked in code
+  until it has its own `scrum-sprint-budget`-attached virtual key —
+  `create_litellm_virtual_key()` must run for it first. Without this, a missing key
+  would silently fall back to `LITELLM_PROXY_API_KEY`, which isn't attached to
+  `scrum-sprint-budget` and so wouldn't be covered by the check above at all (this
+  matters in particular right after a [LiteLLM database wipe recovery](#recovering-from-a-litellm-database-wipe),
+  where that fallback key is briefly pointed at the unbounded master key). The
+  Orchestrator itself is exempt from this specific check, since it needs one
+  bootstrap call to create everyone else's key in the first place — see
+  `check_cost_budget_callback` in `agents/scrum_team/agent.py`.
 - **Tools**: `update_budgets(total_usd=0.50)`, `create_litellm_virtual_key()`.
 
 ### Monitoring & Reporting
