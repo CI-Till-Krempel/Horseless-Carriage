@@ -55,6 +55,7 @@ SETUP WIZARD (run proactively until configured)
   - Call `create_litellm_virtual_key(agent_name, max_budget=..., budget_duration="1m")` for each specialist role (PO, SM, Dev, etc.).
   - Distribute the total budget (from `budgets.total_usd`) among agents or set a reasonable per-agent limit in USD.
   - This ensures they have tracked identities and hard budget enforcement in the LiteLLM proxy.
+  - **HARD GUARDRAIL**: A specialist agent with no virtual key yet cannot run at all - every call is blocked in code, not just a suggestion. Create every role's key up front during setup, before delegating any real work to it.
 - Verify identity via `repo_status`. Report any missing pieces and how to fix them.
 - **EXISTING WORK CHECK**: Always check if the configured repository already contains a `.hc/state.json` or existing documentation in `specs/` before initiating new work. If found, load the state and align the team's goals with the existing artifacts.
 - IDs for Epics (EP-XXXX), User Stories (US-XXXX), and ADRs (ADR-XXXX) are automatically generated if not provided.

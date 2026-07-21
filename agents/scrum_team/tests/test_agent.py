@@ -33,6 +33,10 @@ class TestAgent(unittest.TestCase):
         state = ScrumState()
         state.budgets.total = 1000
         state.budgets.total_usd = 10.0
+        # A budget-capped virtual key must exist for a non-Orchestrator agent
+        # to pass the check at all - see test_check_cost_budget_callback_blocks_
+        # agent_without_virtual_key for the case where it's missing.
+        state.litellm_keys["TestAgent"] = "sk-test-agent-key"
         mock_context.state = state.model_dump()
 
         # Test check_cost_budget_callback
@@ -43,7 +47,7 @@ class TestAgent(unittest.TestCase):
             mock_response.status_code = 200
             mock_response.json.return_value = [{"spend": 0.0}]
             mock_post.return_value = mock_response
-            
+
             result = check_cost_budget_callback(mock_context, mock_llm_request)
             self.assertIsNone(result)
 
@@ -53,6 +57,75 @@ class TestAgent(unittest.TestCase):
         result = update_token_usage_callback(mock_context, mock_llm_response)
         self.assertIsNone(result)
         self.assertEqual(mock_context.state["token_usage"]["total"], 100)
+
+    def test_check_cost_budget_callback_blocks_agent_without_virtual_key(self):
+        """
+        Acceptance Criteria (budget audit ahead of v0.1.0):
+        - In proxy mode, a sub-agent with no LiteLLM virtual key is blocked
+          rather than silently falling back to an unscoped key whose spend
+          the USD check below can't see (see inject_litellm_key_callback's
+          fallback to LITELLM_PROXY_API_KEY).
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total_usd = 10.0
+        mock_context.state = state.model_dump()  # litellm_keys is empty
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.model = "test-model"
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "test-master-key", "LITELLM_PROXY_API_BASE": "http://litellm:4000"}):
+            with patch("requests.post") as mock_post:
+                result = check_cost_budget_callback(mock_context, mock_llm_request)
+
+        self.assertIsNotNone(result)
+        self.assertIn("NO BUDGET-CAPPED KEY", result.content.parts[0].text)
+        # Blocked before any remote spend check is even attempted.
+        mock_post.assert_not_called()
+
+    def test_check_cost_budget_callback_exempts_orchestrator_bootstrap(self):
+        """
+        The Orchestrator has no virtual key of its own yet either (none
+        exist until it runs the setup wizard), but it must be allowed to
+        make that first bootstrap call - otherwise no key could ever be
+        created.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        state = ScrumState()
+        state.budgets.total_usd = 10.0
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "test-master-key", "LITELLM_PROXY_API_BASE": "http://litellm:4000"}):
+            with patch("requests.post") as mock_post:
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = [{"spend": 0.0}]
+                mock_post.return_value = mock_response
+
+                result = check_cost_budget_callback(mock_context, mock_llm_request)
+
+        self.assertIsNone(result)
+
+    def test_check_cost_budget_callback_no_proxy_configured_skips_key_gate(self):
+        """
+        Without a LiteLLM proxy configured at all, there's no virtual-key
+        mechanism to require - the pre-existing local-token-only check path
+        still applies unchanged.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total = 1000
+        state.budgets.total_usd = 10.0
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        with patch.dict("os.environ", {}, clear=True):
+            result = check_cost_budget_callback(mock_context, mock_llm_request)
+
+        self.assertIsNone(result)
 
     def test_sprint_status_injection_callback(self):
         mock_context = MagicMock()

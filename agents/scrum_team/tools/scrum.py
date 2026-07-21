@@ -29,13 +29,16 @@ REPO_STATE_KEYS = [
     "budgets",
     "token_usage",
     "story_estimates",
-    "litellm_keys",
     "sprint_report_kpis",
     "repo",
     "messages",
     "transcript",
     "hc_version",
 ]
+# Deliberately excluded from the above: github_token, github_app,
+# litellm_keys, last_auto_auth_error - these are real secrets/session-only
+# auth material and must never be written into the target repo's
+# .hc/state.json. See SECURITY.md.
 
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     """

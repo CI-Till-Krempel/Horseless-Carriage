@@ -304,7 +304,30 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     This is a real-time check against the LiteLLM proxy for USD and local state for tokens.
     """
     state = get_scrum_state(callback_context.state)
-    
+    agent_name = callback_context.agent_name
+
+    # 0. Require a budget-capped virtual key in proxy mode (Local Guardrail)
+    # inject_litellm_key_callback falls back to LITELLM_PROXY_API_KEY when an
+    # agent has no virtual key yet. That fallback key is not attached to
+    # scrum-sprint-budget, so the USD check below (step 2) would be blind to
+    # whatever it spends - and it may not be budget-capped at all (the
+    # documented DB-wipe recovery flow points it at the unbounded
+    # LITELLM_MASTER_KEY). Fail closed for every sub-agent rather than let it
+    # spend on an unscoped key. The Orchestrator is exempt: it needs at least
+    # one call to run the setup wizard that creates every other agent's key
+    # in the first place.
+    master_key = os.environ.get("LITELLM_MASTER_KEY")
+    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE")
+    if master_key and proxy_base and agent_name != "ScrumOrchestrator" and not state.litellm_keys.get(agent_name):
+        msg = (
+            f"🚫 [NO BUDGET-CAPPED KEY] Agent '{agent_name}' has no LiteLLM virtual key yet. "
+            f"Refusing to run on an unscoped fallback key - call create_litellm_virtual_key('{agent_name}', ...) first."
+        )
+        return LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text=msg)]),
+            model_version=llm_request.model or "unknown"
+        )
+
     # 1. Check Token Budget (Local Guardrail)
     token_limit = state.budgets.total
     # Fallback to environment if state is missing/zero
@@ -342,8 +365,6 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
             model_version=llm_request.model or "unknown"
         )
 
-    master_key = os.environ.get("LITELLM_MASTER_KEY")
-    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE")
     budget_id = "scrum-sprint-budget"
 
     if not master_key or not proxy_base:

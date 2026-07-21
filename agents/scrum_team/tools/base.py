@@ -82,6 +82,23 @@ def _configured_repo_root(tool_context=None) -> Path:
         pass
     return _project_root()
 
+def _redact_cmd(cmd: list[str]) -> list[str]:
+    """
+    Returns a copy of cmd with the injected git AUTHORIZATION header (see
+    _run below) masked out. The real cmd is still what's actually executed -
+    only the copy returned to callers is redacted, so a tool result never
+    echoes a reversible base64-encoded GitHub token back into a transcript,
+    sprint report, or log.
+    """
+    redacted = []
+    for arg in cmd:
+        if isinstance(arg, str) and "AUTHORIZATION: Basic " in arg:
+            prefix = arg.split("AUTHORIZATION: Basic ", 1)[0]
+            redacted.append(prefix + "AUTHORIZATION: Basic ***REDACTED***")
+        else:
+            redacted.append(arg)
+    return redacted
+
 def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str, Any]:
     """
     Run a shell command non-interactively and capture output.
@@ -130,10 +147,10 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
             "returncode": p.returncode,
             "stdout": p.stdout.strip(),
             "stderr": p.stderr.strip(),
-            "cmd": cmd,
+            "cmd": _redact_cmd(cmd),
         }
     except Exception as e:
-        return {"status": "error", "message": str(e), "cmd": cmd}
+        return {"status": "error", "message": str(e), "cmd": _redact_cmd(cmd)}
 
 def _normalize_private_key(key: str) -> str:
     """
