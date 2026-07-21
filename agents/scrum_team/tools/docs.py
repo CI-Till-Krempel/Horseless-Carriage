@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _project_root, _record_touched_file
+from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch
 
 def write_file(path: str, content: str, overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
@@ -277,7 +277,7 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
         # Initial commit and push
         if files_seeded:
             push_res = git_push(
-                branch="main", # default to main for seeding
+                branch=_default_push_branch(tool_context),
                 commit_message="chore: initial seed of README, specs and templates",
                 add_all=True,
                 tool_context=tool_context

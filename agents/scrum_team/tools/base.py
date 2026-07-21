@@ -34,6 +34,25 @@ def _record_touched_file(rel_path: str, tool_context=None) -> None:
         touched.append(rel_path)
         tool_context.state["sprint_files_touched"] = touched
 
+def _default_push_branch(tool_context=None) -> str:
+    """
+    The repo's configured default branch for pushes/PR bases (e.g. seeding,
+    release PRs). Preference order mirrors _configured_repo_root: the
+    branch configure_github_repo recorded in state, then the
+    GITHUB_REPO_BRANCH env var, then "main". Exists so an eval/test run
+    can point every push/PR at an isolated branch via GITHUB_REPO_BRANCH
+    instead of a hardcoded "main" contaminating the real default branch.
+    """
+    try:
+        if tool_context and getattr(tool_context, "state", None):
+            repo_cfg = tool_context.state.get("repo", {}) or {}
+            branch = repo_cfg.get("default_branch")
+            if branch:
+                return branch
+    except Exception:
+        pass
+    return os.getenv("GITHUB_REPO_BRANCH") or "main"
+
 def _configured_repo_root(tool_context=None) -> Path:
     """
     Determine which repository directory to operate in.

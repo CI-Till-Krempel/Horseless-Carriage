@@ -12,6 +12,7 @@ from agents.scrum_team.tools.github import (
     git_push,
     repo_status,
     create_release_pr,
+    configure_github_repo,
     _diff_release_against_sprint_tracking,
     _stage_sprint_tracked_changes,
 )
@@ -30,6 +31,46 @@ class TestGitHubTools(unittest.TestCase):
         tool_context.state = ScrumState().model_dump()
         pr_url = gh_pr_create(title="New Feature", body="This is a new feature.", head="feature-branch", base="main", tool_context=tool_context)
         self.assertEqual(pr_url["stdout"], "https://github.com/owner/repo/pull/1")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_create_defaults_base_to_configured_default_branch(self, mock_run):
+        """
+        Acceptance Criteria (eval harness): omitting `base` must use the
+        configured default branch (see _default_push_branch), not a
+        hardcoded "main" - so an isolated eval run's PRs target its own
+        branch via GITHUB_REPO_BRANCH.
+        """
+        mock_run.return_value = {"status": "ok", "stdout": "https://github.com/owner/repo/pull/2"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch.dict("os.environ", {"GITHUB_REPO_BRANCH": "eval/run-1"}, clear=True):
+            gh_pr_create(title="Eval PR", head="feature-branch", tool_context=tool_context)
+
+        mock_run.assert_called_once_with(
+            ["gh", "pr", "create", "--base", "eval/run-1", "--title", "Eval PR", "--head", "feature-branch"],
+            cwd=unittest.mock.ANY,
+            tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_configure_github_repo_does_not_clobber_configured_branch_with_main(self, mock_run):
+        """
+        Acceptance Criteria (eval harness): if the caller omits
+        default_branch, configure_github_repo must not silently reset the
+        repo's configured default branch back to a hardcoded "main" -
+        it should fall back to GITHUB_REPO_BRANCH like everything else.
+        """
+        mock_run.return_value = {"status": "ok"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch.dict("os.environ", {"GITHUB_REPO_BRANCH": "eval/run-1"}, clear=True):
+            with patch("agents.scrum_team.tools.github._configured_repo_root") as mock_root:
+                mock_root.return_value.__truediv__.return_value.exists.return_value = True
+                result = configure_github_repo("git@github.com:owner/repo.git", tool_context=tool_context)
+
+        self.assertEqual(result["repo"]["default_branch"], "eval/run-1")
 
     @patch("agents.scrum_team.tools.github._run")
     def test_gh_pr_status(self, mock_run):
