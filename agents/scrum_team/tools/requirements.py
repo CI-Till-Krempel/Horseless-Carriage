@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _state_file_path, _project_root
+from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file
 
 def upsert_story(story: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
@@ -113,6 +113,7 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
         new_lines = new_lines[:insertion_idx] + insertion + new_lines[insertion_idx:]
 
     roadmap_path.write_text("\n".join(new_lines), encoding="utf-8")
+    _record_touched_file(str(roadmap_path.relative_to(repo_root)), tool_context)
     save_state_to_repo(tool_context)
     return {"status": "ok", "message": f"Roadmap updated for {version}"}
 
@@ -422,6 +423,7 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     try:
         story_path.parent.mkdir(parents=True, exist_ok=True)
         story_path.write_text(content, encoding="utf-8")
+        _record_touched_file(str(story_path.relative_to(repo_root)), tool_context)
         return {"status": "ok", "path": str(story_path)}
     except Exception as e:
         return {"status": "error", "message": str(e)}

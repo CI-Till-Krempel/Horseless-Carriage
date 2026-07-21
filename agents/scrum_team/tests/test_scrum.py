@@ -13,6 +13,7 @@ from agents.scrum_team.tools.requirements import (
     upsert_epic,
     plan_backlog_item,
     set_priority,
+    update_roadmap,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -45,11 +46,29 @@ class TestScrumTools(unittest.TestCase):
         story = {"id": "ST-1", "title": "New Story", "status": "new"}
         upsert_story(story, tool_context=tool_context)
         self.assertTrue(any(x.get("id") == "ST-1" for x in tool_context.state["product_backlog"]))
+        # US-0009: the story markdown write is recorded for the release-PR check.
+        self.assertIn("specs/stories/ST-1-New-Story.md", tool_context.state["sprint_files_touched"])
 
         updated_story = {"id": "ST-1", "title": "Updated Story", "status": "in_progress"}
         upsert_story(updated_story, tool_context=tool_context)
         found = next(x for x in tool_context.state["product_backlog"] if x.get("id") == "ST-1")
         self.assertEqual(found["title"], "Updated Story")
+
+    def test_upsert_story_dedupes_repeated_writes_to_same_path(self):
+        """
+        Acceptance Criteria (US-0009 edge case):
+        - Writing the same story markdown path twice in one sprint records
+          it once in sprint_files_touched, not duplicated per write.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        story = {"id": "ST-2", "title": "Repeated Story", "status": "new"}
+        upsert_story(story, tool_context=tool_context)
+        upsert_story({**story, "status": "in_progress"}, tool_context=tool_context)
+        self.assertEqual(
+            tool_context.state["sprint_files_touched"].count("specs/stories/ST-2-Repeated-Story.md"),
+            1,
+        )
 
     def test_upsert_epic(self):
         """
@@ -62,6 +81,8 @@ class TestScrumTools(unittest.TestCase):
         epic = {"id": "EP-1", "title": "New Epic", "status": "new"}
         upsert_epic(epic, tool_context=tool_context)
         self.assertTrue(any(x.get("id") == "EP-1" for x in tool_context.state["product_backlog"]))
+        # US-0009: the epic markdown write is recorded for the release-PR check.
+        self.assertIn("specs/stories/EP-1-New-Epic.md", tool_context.state["sprint_files_touched"])
 
         updated_epic = {"id": "EP-1", "title": "Updated Epic", "status": "in_progress"}
         upsert_epic(updated_epic, tool_context=tool_context)
@@ -112,6 +133,27 @@ class TestScrumTools(unittest.TestCase):
         tool_context.state = ScrumState().model_dump()
         add_retro_action("Improve testing", "ScrumMaster", "CI passes", tool_context=tool_context)
         self.assertEqual(tool_context.state["retro_actions"][0]["action"], "Improve testing")
+
+    def test_update_roadmap_records_touched_path(self):
+        """
+        Acceptance Criteria (US-0009):
+        - update_roadmap's write to specs/ROADMAP.md is recorded in
+          sprint_files_touched.
+        """
+        import tempfile
+        from pathlib import Path
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch(
+                "agents.scrum_team.tools.requirements._configured_repo_root",
+                return_value=Path(tmp_dir),
+            ):
+                result = update_roadmap("v9.9-test", goals=["ship it"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("specs/ROADMAP.md", tool_context.state["sprint_files_touched"])
 
     def test_plan_sprint_backlog_item(self):
         """

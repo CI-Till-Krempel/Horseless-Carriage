@@ -2,7 +2,7 @@
 
 - Story ID: US-0009
 - Title: Track Sprint-Touched Files
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Scrum Master
 - Last Updated: 2026-07-16

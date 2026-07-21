@@ -33,3 +33,4 @@ class ScrumState(BaseModel):
     last_auto_auth_error: Optional[str] = None
     messages: List[Dict[str, Any]] = Field(default_factory=list)
     transcript: List[Dict[str, Any]] = Field(default_factory=list)
+    sprint_files_touched: List[str] = Field(default_factory=list)

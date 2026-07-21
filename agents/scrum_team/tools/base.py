@@ -9,6 +9,19 @@ from typing import Any, Dict
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
+def _record_touched_file(rel_path: str, tool_context=None) -> None:
+    """
+    Records a repo-relative path in ScrumState.sprint_files_touched, so a
+    later release-PR check can verify every sprint write actually landed in
+    the release. De-duplicates repeated writes to the same path.
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return
+    touched = list(tool_context.state.get("sprint_files_touched", []))
+    if rel_path not in touched:
+        touched.append(rel_path)
+        tool_context.state["sprint_files_touched"] = touched
+
 def _configured_repo_root(tool_context=None) -> Path:
     """
     Determine which repository directory to operate in.
