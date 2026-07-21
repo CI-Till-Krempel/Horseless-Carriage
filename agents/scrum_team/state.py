@@ -34,3 +34,4 @@ class ScrumState(BaseModel):
     messages: List[Dict[str, Any]] = Field(default_factory=list)
     transcript: List[Dict[str, Any]] = Field(default_factory=list)
     sprint_files_touched: List[str] = Field(default_factory=list)
+    hc_version: str = "unknown"

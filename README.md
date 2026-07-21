@@ -20,6 +20,8 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 - `doctor.sh` — a script to validate your setup.
 - `check_state_repo.sh` — a script to validate the state repository.
 - `PREFLIGHT.md` — a pre-flight checklist to ensure your environment is correctly set up.
+- `RELEASE.md` — how this repo itself is versioned and released (SemVer + GitFlow).
+- `VERSION` — the current Horseless Carriage version.
 
 ## How it works (high level)
 

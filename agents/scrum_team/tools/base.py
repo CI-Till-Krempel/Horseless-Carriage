@@ -9,6 +9,18 @@ from typing import Any, Dict
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
+def _hc_version() -> str:
+    """
+    Reads the Horseless Carriage version from the VERSION file at the
+    project root (see RELEASE.md). Recorded per-session into
+    ScrumState.hc_version rather than fabricated, so a sprint report is
+    traceable back to the tool version that actually produced it.
+    """
+    try:
+        return (_project_root() / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return "unknown"
+
 def _record_touched_file(rel_path: str, tool_context=None) -> None:
     """
     Records a repo-relative path in ScrumState.sprint_files_touched, so a

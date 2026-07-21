@@ -4,7 +4,7 @@ import os
 import json
 import shutil
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.tools.scrum import (
     save_state_to_repo,
@@ -81,6 +81,42 @@ class TestStatePersistence(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(fresh_context.state["transcript"], transcript)
+
+    def test_hc_version_is_in_the_persisted_allowlist(self):
+        self.assertIn("hc_version", REPO_STATE_KEYS)
+
+    def test_save_state_to_repo_persists_hc_version(self):
+        self.tool_context.state["hc_version"] = "0.1.0"
+
+        result = save_state_to_repo(tool_context=self.tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        state_file = self.test_repo / ".hc" / "state.json"
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved["hc_version"], "0.1.0")
+
+    @patch("agents.scrum_team.tools.scrum.migrate_state")
+    def test_load_state_from_repo_runs_migrations_against_recorded_version(self, mock_migrate_state):
+        """
+        Acceptance Criteria (release process, see RELEASE.md "Migration
+        scaffold"): a .hc/state.json's recorded hc_version is passed to
+        migrate_state() before merging into the live session state, so an
+        older persisted shape gets a chance to be fixed up.
+        """
+        self.tool_context.state["hc_version"] = "0.1.0"
+        self.tool_context.state["transcript"] = [{"agent_name": "DevTeam", "role": "model", "content": "did stuff"}]
+        save_state_to_repo(tool_context=self.tool_context)
+        mock_migrate_state.side_effect = lambda data, from_version: data
+
+        fresh_context = MagicMock()
+        fresh_context.state = ScrumState().model_dump()
+        result = load_state_from_repo(tool_context=fresh_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_migrate_state.assert_called_once()
+        called_data, called_from_version = mock_migrate_state.call_args[0]
+        self.assertEqual(called_from_version, "0.1.0")
+        self.assertEqual(called_data["hc_version"], "0.1.0")
 
     def test_save_state_to_repo_excludes_keys_outside_allowlist(self):
         # Confirm REPO_STATE_KEYS is a deliberate allowlist, not a full dump —

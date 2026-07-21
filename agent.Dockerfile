@@ -44,6 +44,7 @@ COPY ./agents ./agents
 COPY ./spec-templates ./spec-templates
 COPY auth_github.py .
 COPY entrypoint.sh .
+COPY VERSION .
 RUN chmod +x agents/scrum_team/scripts/run_agent.sh
 
 # Set the entrypoint for the production container
