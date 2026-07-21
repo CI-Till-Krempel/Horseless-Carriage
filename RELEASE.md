@@ -198,6 +198,13 @@ of only being noticed anecdotally.
   using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and a
   budget sized for a full 5-sprint run (`--token-budget`/`--usd-budget`, reusing
   the same guardrails from ["Budget Management"](README.md#budget-management)).
+  On top of that, `--max-duration-minutes` (default 40) is an independent
+  wall-clock safety net: if the token/USD guardrails somehow don't stop things
+  (a bug, an unexpected model behavior), the run still stops gracefully - it
+  writes out whatever's been gathered so far as a real report rather than
+  running until the CI job's own hard `timeout-minutes` kills the process with
+  no output at all. Verified directly: forcing the deadline to 0 stops the run
+  before sprint 1 with `stopped_early: true` and a valid, if empty, report.
   Because there's no human to approve PRs, it auto-merges any PR that opens
   against the eval branch once each sprint's invocation finishes — a deliberate,
   documented simplification of the real "Human Review is mandatory" flow, not a

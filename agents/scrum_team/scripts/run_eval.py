@@ -29,6 +29,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -179,27 +180,54 @@ _CONTINUE_NUDGE = (
 )
 
 
-async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, session_id: str, message_text: str, max_events: int, max_nudges: int = 4) -> dict:
+async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, session_id: str, message_text: str, max_events: int, deadline: float, max_nudges: int = 4) -> dict:
     """
     Sends message_text, then - if the model stops with plain text and no
-    sprint report yet, rather than an actual tool call moving the sprint
-    forward - sends a bounded number of "continue" nudges. A cheap/fast
-    model sometimes announces its next action ("Next actions: transfer to
-    X") without a tool call actually doing it in the same turn; a single
-    scripted message per sprint isn't always enough to get through a full
-    plan -> build -> review -> release cycle unattended.
+    NEW sprint report yet, rather than an actual tool call moving the
+    sprint forward - sends a bounded number of "continue" nudges. A
+    cheap/fast model sometimes announces its next action ("Next actions:
+    transfer to X") without a tool call actually doing it in the same
+    turn; a single scripted message per sprint isn't always enough to get
+    through a full plan -> build -> review -> release cycle unattended.
+
+    ScrumState.sprint_report is never cleared between sprints by the
+    product code itself (it's just whatever the last create_sprint_report
+    call produced) - so "is a report present" is only a valid completion
+    signal for *this* sprint if it's explicitly reset first. Passed as a
+    state_delta on the very first message of this sprint, rather than
+    mutating session.state directly (ADK session state is meant to be
+    updated via events/state_delta, not poked from outside the
+    conversation).
+
+    `deadline` (time.monotonic() seconds) is a wall-clock safety net,
+    independent of the token/USD budget guardrails - if those don't
+    actually stop things for whatever reason (a bug, an unexpected model
+    behavior), this still bails out and lets the caller write out
+    whatever's been gathered so far, rather than running indefinitely
+    until something else (e.g. the CI job's hard timeout) kills the
+    process with no report at all.
     """
     from google.genai import types
 
     events = []
     final_text = None
     sprint_report = None
+    stop_reason = "max_nudges_exhausted"
+    # Fetched unconditionally so it's always defined below, even if the
+    # deadline is already past before the first attempt runs (e.g. a
+    # prior sprint used up the whole time budget).
+    session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session_id)
 
     for attempt in range(max_nudges + 1):
+        if time.monotonic() >= deadline:
+            stop_reason = "max_duration_exceeded"
+            break
+
         text = message_text if attempt == 0 else _CONTINUE_NUDGE
         message = types.Content(role="user", parts=[types.Part(text=text)])
+        state_delta = {"sprint_report": ""} if attempt == 0 else None
 
-        async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=message):
+        async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=message, state_delta=state_delta):
             record = {"author": event.author, "text": None, "tool_calls": [], "tool_responses": []}
             if event.content and event.content.parts:
                 for part in event.content.parts:
@@ -211,12 +239,19 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
                     if getattr(part, "function_response", None):
                         record["tool_responses"].append(part.function_response.name)
             events.append(record)
-            if len(events) >= max_events:
+            if len(events) >= max_events or time.monotonic() >= deadline:
                 break
 
         session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session_id)
         sprint_report = session.state.get("sprint_report")
-        if sprint_report or len(events) >= max_events:
+        if sprint_report:
+            stop_reason = "sprint_report_produced"
+            break
+        if len(events) >= max_events:
+            stop_reason = "max_events_reached"
+            break
+        if time.monotonic() >= deadline:
+            stop_reason = "max_duration_exceeded"
             break
 
     return {
@@ -227,6 +262,7 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         "sprint_report": sprint_report,
         "sprint_backlog": session.state.get("sprint_backlog"),
         "product_backlog": session.state.get("product_backlog"),
+        "stop_reason": stop_reason,
     }
 
 
@@ -243,29 +279,49 @@ async def _main_async(args: argparse.Namespace) -> dict:
     session = await session_service.create_session(app_name=app_name, user_id=user_id)
 
     scenario_text = SCENARIO_PATH.read_text(encoding="utf-8")
+    # Wall-clock safety net (see _run_one_sprint's docstring): independent
+    # of the token/USD budget guardrails, so a bug or unexpected model
+    # behavior in *those* can't turn into an unbounded run. Deliberately
+    # NOT reset per-sprint - it's a ceiling on the whole run, matching
+    # what the CI job's own hard timeout is protecting against.
+    deadline = time.monotonic() + args.max_duration_minutes * 60
     manifest = {
         "run_id": args.run_id,
         "branch": args.branch,
         "eval_repo_url": args.eval_repo_url,
         "model": args.model,
         "sprints_requested": args.sprints,
+        "max_duration_minutes": args.max_duration_minutes,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "sprints": [],
         "pr_merges": [],
+        "stopped_early": False,
     }
 
     for sprint_number in range(1, args.sprints + 1):
+        if time.monotonic() >= deadline:
+            print(f"--- max duration ({args.max_duration_minutes}m) reached before sprint {sprint_number}/{args.sprints} - stopping ---", file=sys.stderr)
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = "max_duration_exceeded"
+            break
+
         message_text = _kickoff_message(scenario_text) if sprint_number == 1 else _sprint_message(sprint_number, args.sprints)
         print(f"--- sprint {sprint_number}/{args.sprints}: sending scripted message ---", file=sys.stderr)
         sprint_result = await _run_one_sprint(
-            runner, session_service, app_name, user_id, session.id, message_text, args.max_events_per_sprint,
+            runner, session_service, app_name, user_id, session.id, message_text, args.max_events_per_sprint, deadline,
         )
         sprint_result["sprint_number"] = sprint_number
         manifest["sprints"].append(sprint_result)
+        if sprint_result["stop_reason"] == "max_duration_exceeded":
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = "max_duration_exceeded"
 
         merges = _merge_open_prs(args.local_path, args.branch)
         manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number} for m in merges])
         _sync_local_clone_to_branch(args.branch, args.local_path, args.github_token)
+
+        if sprint_result["stop_reason"] == "max_duration_exceeded":
+            break
 
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
     return manifest
@@ -288,6 +344,11 @@ def main() -> None:
     # practice; this stays as the secondary $-denominated safety net.
     parser.add_argument("--usd-budget", type=float, default=5.0)
     parser.add_argument("--max-events-per-sprint", type=int, default=300, help="Safety cap on ADK events per sprint invocation (excluding continue-nudges)")
+    # Wall-clock ceiling for the whole run (all sprints combined), independent
+    # of token/USD budget - see _main_async. Default leaves headroom under
+    # eval.yml's 60-minute job timeout for service startup, the analysis
+    # step, artifact upload, and teardown.
+    parser.add_argument("--max-duration-minutes", type=int, default=40)
     parser.add_argument("--report-path", default=None, help="Where to write the raw run manifest JSON")
     args = parser.parse_args()
 
