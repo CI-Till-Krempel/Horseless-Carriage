@@ -11,6 +11,7 @@ from agents.scrum_team.tools.docs import (
     upsert_srs,
     upsert_adr,
     create_from_template,
+    seed_repository,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -115,6 +116,28 @@ class TestSprintFilesTouched(unittest.TestCase):
           list, not missing/undefined.
         """
         self.assertEqual(ScrumState().model_dump()["sprint_files_touched"], [])
+
+
+class TestSeedRepositoryBranch(unittest.TestCase):
+    """
+    Acceptance Criteria (eval harness): seed_repository's initial commit
+    must land on the configured default branch, not a hardcoded "main",
+    so an isolated eval run doesn't contaminate the eval repo's real main.
+    """
+
+    @patch("agents.scrum_team.tools.github.git_push")
+    def test_seed_repository_pushes_to_configured_default_branch(self, mock_git_push):
+        mock_git_push.return_value = {"status": "ok"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["repo"] = {"default_branch": "eval/run-1"}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("agents.scrum_team.tools.docs._configured_repo_root", return_value=Path(tmp_dir)):
+                seed_repository(tool_context=tool_context)
+
+        mock_git_push.assert_called_once()
+        self.assertEqual(mock_git_push.call_args.kwargs["branch"], "eval/run-1")
 
 
 if __name__ == "__main__":

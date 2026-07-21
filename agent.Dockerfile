@@ -42,6 +42,7 @@ FROM base AS final
 COPY --from=base /app /app
 COPY ./agents ./agents
 COPY ./spec-templates ./spec-templates
+COPY ./eval ./eval
 COPY auth_github.py .
 COPY entrypoint.sh .
 COPY VERSION .

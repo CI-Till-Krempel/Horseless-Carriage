@@ -21,9 +21,10 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 - `check_state_repo.sh` — a script to validate the state repository.
 - `PREFLIGHT.md` — a pre-flight checklist to ensure your environment is correctly set up.
 - `MANUAL.md` — a user manual: concepts, day-to-day usage, and common workflows.
-- `RELEASE.md` — how this repo itself is versioned and released (SemVer + GitFlow).
+- `RELEASE.md` — how this repo itself is versioned and released (SemVer + GitFlow), and how the team-performance evaluation harness works.
 - `SECURITY.md` — secret-handling notes and how to report a vulnerability.
 - `VERSION` — the current Horseless Carriage version.
+- `eval/scenario/PRODUCT-VISION.md` — the fixed product vision used to automatically evaluate the agent team's own performance each release; see [RELEASE.md "Team performance evaluation"](RELEASE.md#team-performance-evaluation).
 
 ## How it works (high level)
 

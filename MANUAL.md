@@ -175,11 +175,88 @@ Carriage itself* is released — this section is how the agents release the prod
   `LOG_LEVEL=debug` temporarily to see request volume.
 - **Old virtual keys stopped working** — see [§5](#5-budgets) recovery steps.
 
-## 9. Where to go next
+## 9. Team performance evaluation
+
+Separate from using Horseless Carriage on your own project, the tool also
+evaluates *itself*: how well the agent team performs against a fixed, known
+scenario (a small to-do-list web app), so regressions or improvements in team
+behavior surface release over release instead of only being noticed
+anecdotally when something feels off. Full mechanics are in
+[RELEASE.md "Team performance evaluation"](RELEASE.md#team-performance-evaluation)
+— this section is the practical "how do I actually use this" version.
+
+### Reading a result
+
+Each run produces a report (`EVAL-REPORT.md`, committed to a branch on the
+[eval repo](https://github.com/CI-Till-Krempel/horseless-carriage-eval-todo-app)
+and uploaded as a CI artifact) with three scored dimensions (code quality,
+requirements quality, team efficiency, each 1–5) and a ranked list of top
+problems with suggested fixes. Read the **methodology note** at the top first
+— the harness auto-merges PRs and pre-approves sprint goals to run unattended,
+so a report reflects the team's behavior under those simplified conditions,
+not full human-reviewed production usage.
+
+### Triggering a real run
+
+- **Automatically**: every `v*.*.*` tag push runs it alongside the real
+  release.
+- **Manually**: `workflow_dispatch` on `.github/workflows/eval.yml` (Actions
+  tab → "Team Performance Evaluation" → "Run workflow"), for any branch — use
+  this to check a feature branch's effect on team behavior before merging it.
+- Either way, the run pauses for a maintainer's explicit approval before
+  anything executes (real LLM spend) — see the `eval-approval` environment
+  under repo Settings.
+
+### Running it locally
+
+Useful for iterating on the harness itself, or sanity-checking a change
+before pushing it. This reuses your existing local setup — no extra tooling
+needed beyond what `docker-compose.yaml` already provides.
+
+1. Make sure your `.env` has real `GOOGLE_API_KEY`/`LITELLM_MASTER_KEY`, and a
+   GitHub auth method with push/PR access to the eval repo specifically (see
+   RELEASE.md's "Required secrets" note about GitHub App installations not
+   automatically covering new repos).
+2. Bring up the dependency services:
+   ```bash
+   docker compose --env-file .env up -d db litellm
+   ```
+3. Run a small, cheap sprint (start with 1 sprint and a modest budget, not the
+   full 5 — a full run is meant for CI, not rapid local iteration):
+   ```bash
+   docker compose --env-file .env run --rm agent python3 -m agents.scrum_team.scripts.run_eval \
+     --sprints 1 --run-id local-test-1 \
+     --token-budget 300000 --usd-budget 3.0 --max-duration-minutes 10 \
+     --local-path /app/eval-output/clone --report-path /app/eval-output/manifest.json
+   ```
+   Results land in `./eval-output/` on your host (bind-mounted in
+   `docker-compose.yaml`) — `clone/` is the eval repo's working copy,
+   `manifest.json` is the raw run data.
+4. Run the analysis to get a human-readable report:
+   ```bash
+   docker compose --env-file .env run --rm agent python3 -m agents.scrum_team.scripts.run_eval_analysis \
+     --manifest /app/eval-output/manifest.json --repo-path /app/eval-output/clone \
+     --report-path /app/eval-output/report.md
+   ```
+   Add `--commit-to-branch eval/local-test-1` to also push the report to the
+   eval repo, matching what CI does — skip this for quick local iteration
+   unless you want it recorded there.
+5. Clean up afterward — a local run creates a real branch (and possibly PRs)
+   on the public eval repo:
+   ```bash
+   gh pr list --repo CI-Till-Krempel/horseless-carriage-eval-todo-app --state open
+   # close/delete-branch any PRs your run opened, then:
+   gh api -X DELETE repos/CI-Till-Krempel/horseless-carriage-eval-todo-app/git/refs/heads/eval/local-test-1
+   docker compose --env-file .env down db litellm -v
+   rm -rf eval-output
+   ```
+
+## 10. Where to go next
 
 - [README.md](README.md) — architecture diagram, full env var reference, GitHub
   setup options.
-- [RELEASE.md](RELEASE.md) — how Horseless Carriage itself is versioned/released.
+- [RELEASE.md](RELEASE.md) — how Horseless Carriage itself is versioned/released,
+  and how its own team-performance evaluation harness works.
 - [SECURITY.md](SECURITY.md) — secret handling, what's never persisted, how to
   report a vulnerability.
 - `spec-templates/` — the actual templates the agents fill in (PRD, SRS, ADR, user

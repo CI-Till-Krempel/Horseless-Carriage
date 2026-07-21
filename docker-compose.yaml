@@ -37,12 +37,17 @@ services:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro
       - ./spec-templates:/app/spec-templates:ro
+      - ./eval:/app/eval:ro
       # Mount the state repository as read-write
       - type: bind
         source: ${STATE_REPO_PATH}
         target: /app/state_repo
       # Mount the sessions directory to persist conversation history
       - ./sessions:/app/sessions
+      # Scratch space for the team-performance eval harness (run_eval.py /
+      # run_eval_analysis.py) to write its clone + report where the host
+      # (and CI's artifact-upload step) can read them back.
+      - ./eval-output:/app/eval-output
     environment:
       - AGENT_MODE=${AGENT_MODE:-web}
       - STATE_REPO_PATH=${STATE_REPO_PATH}

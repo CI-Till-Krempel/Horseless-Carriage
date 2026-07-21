@@ -3,19 +3,23 @@ from __future__ import annotations
 import os
 import json
 from typing import Any, Dict
-from .base import _configured_repo_root, _run
+from .base import _configured_repo_root, _run, _default_push_branch
 
-def configure_github_repo(repo_url: str, local_path: str = "", default_branch: str = "main", tool_context=None) -> Dict[str, Any]:
+def configure_github_repo(repo_url: str, local_path: str = "", default_branch: str | None = None, tool_context=None) -> Dict[str, Any]:
     """
     Configure the GitHub repository used for persistence and tooling.
     - repo_url: SSH or HTTPS URL
     - local_path: optional existing checkout or desired clone path. If empty, will use the path from the STATE_REPO_PATH environment variable.
-    - default_branch: branch used for pushes/releases by default
+    - default_branch: branch used for pushes/releases by default. Defaults
+      to the configured default (see _default_push_branch) rather than a
+      hardcoded "main", so a caller-omitted value can't clobber an
+      eval/test run's GITHUB_REPO_BRANCH-configured branch.
     This will clone the repo if local_path does not exist.
     """
     from pathlib import Path
     from .base import _project_root
-    
+
+    default_branch = default_branch or _default_push_branch(tool_context)
     target_dir = _configured_repo_root(tool_context)
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
@@ -112,14 +116,17 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
 
     return {"status": "ok" if r3.get("status") == "ok" else "error", "steps": {"checkout": _, "add": r1, "commit": r2, "push": r3}}
 
-def gh_pr_create(title: str, body: str = "", base: str = "main", head: str | None = None, draft: bool = False, tool_context=None) -> Dict[str, Any]:
+def gh_pr_create(title: str, body: str = "", base: str | None = None, head: str | None = None, draft: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Create a Pull Request using `gh` CLI. Assumes authentication is set up.
-    - base: target branch (e.g., main)
+    - base: target branch. Defaults to the configured default branch (see
+      _default_push_branch) rather than a hardcoded "main", so an isolated
+      eval/test run can target its own branch via GITHUB_REPO_BRANCH.
     - head: source branch (defaults to current if None)
     - draft: open PR as draft
     """
     repo_root = str(_configured_repo_root(tool_context))
+    base = base or _default_push_branch(tool_context)
     cmd = ["gh", "pr", "create", "--base", base, "--title", title]
     if body:
         cmd += ["--body", body]
@@ -313,7 +320,10 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
     # staged go into the commit - stray, untracked changes are left
     # unstaged for human review rather than swept in by `git add -A`.
     push_res = git_push(branch=branch, commit_message=f"chore: {title}", add_all=False, tool_context=tool_context)
-    pr_res = gh_pr_create(title=title, body=body, base="main", head=branch, tool_context=tool_context)
+    # base intentionally omitted: gh_pr_create defaults it to the
+    # configured default branch (see _default_push_branch), not a
+    # hardcoded "main".
+    pr_res = gh_pr_create(title=title, body=body, head=branch, tool_context=tool_context)
     return {
         "status": "ok",
         "push": push_res,
