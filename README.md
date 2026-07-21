@@ -20,7 +20,9 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 - `doctor.sh` — a script to validate your setup.
 - `check_state_repo.sh` — a script to validate the state repository.
 - `PREFLIGHT.md` — a pre-flight checklist to ensure your environment is correctly set up.
+- `MANUAL.md` — a user manual: concepts, day-to-day usage, and common workflows.
 - `RELEASE.md` — how this repo itself is versioned and released (SemVer + GitFlow).
+- `SECURITY.md` — secret-handling notes and how to report a vulnerability.
 - `VERSION` — the current Horseless Carriage version.
 
 ## How it works (high level)
@@ -69,7 +71,18 @@ Run the agent using the `run.sh` script:
 This script will:
 1. Load environment variables from `.env`.
 2. Check for the existence of the state repository path.
-3. Build and run the agent container in interactive mode.
+3. Build and run the agent container.
+4. Wait for the LiteLLM dashboard (and, in web mode, the ADK web UI) to come up, then open them in your default browser.
+
+`run.sh` supports three modes, which can be combined:
+
+| Command | Behavior |
+|---|---|
+| `./run.sh` | **Default.** ADK web frontend, foreground, at `http://localhost:8000`. |
+| `./run.sh cli [query...]` | Interactive CLI session in your terminal instead of the web UI. |
+| `./run.sh daemon` | Add to either of the above to run detached (`./run.sh daemon` or `./run.sh cli daemon`). |
+
+The LiteLLM admin dashboard (`http://localhost:4000/ui`) is opened automatically in every mode.
 
 ### Running in Daemon Mode
 
@@ -357,35 +370,26 @@ Contribution rules
 - Update docs in the same PR as the related code when possible
 - Never commit real secrets — use placeholders, keep real values in your local `.env`
 
-## GitHub integration and repository configuration
+## This repo's own GitHub scaffolding
 
-This project ships with a minimal GitHub setup you can adopt:
+Separate from the GitHub *integration* above (how the agents authenticate against
+your target repo), this repo also ships static scaffolding for maintaining
+Horseless Carriage's own GitHub presence. These files are **not read by the agent
+runtime** — they're plain repo hygiene you can adopt/edit like any other OSS
+project:
 
-- `.github/workflows/ci.yml` — basic CI installing dependencies
-- `.github/ISSUE_TEMPLATE/` — bug report and feature request templates
-- `.github/PULL_REQUEST_TEMPLATE.md` — PR checklist emphasizing documentation updates
-- `.github/CODEOWNERS` — placeholder ownership (edit to your team)
-- `config/github_config.yaml` — declarative repository policy placeholders (e.g., branch protection)
+- `.github/workflows/ci.yml` — runs the test suite on every push/PR.
+- `.github/workflows/release.yml` — publishes a GitHub Release on `v*.*.*` tag push; see [RELEASE.md](RELEASE.md).
+- `.github/ISSUE_TEMPLATE/` — bug report and feature request templates.
+- `.github/PULL_REQUEST_TEMPLATE.md` — PR checklist emphasizing documentation updates.
+- `.github/CODEOWNERS` — edit to your team.
+- `config/github_config.yaml` — declarative notes on intended repo policy (branch protection, etc.) for humans setting up the GitHub repo's settings by hand; nothing in the codebase applies it automatically.
 
-Authentication and configuration
-1) Copy `.env.example` to `.env` and fill placeholders (do not commit real secrets):
+For how the *agents themselves* authenticate to GitHub, see
+[GitHub Integration](#github-integration) above — that's the real, live
+configuration (`GITHUB_TOKEN` or `GITHUB_APP_*` in `.env`).
 
-- `GITHUB_OWNER` — org or username that owns the repo
-- `GITHUB_REPO` — repository name
-- `GITHUB_TOKEN` — a GitHub Personal Access Token with `repo` scope (for automation or local scripts)
-- `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL` — used by scripts/commits as needed
-- Optional policy toggles: `DEFAULT_BRANCH`, `ENABLE_BRANCH_PROTECTION`, `REQUIRE_SIGNED_COMMITS`
+## Security
 
-2) Create or connect a GitHub repository:
-
-- Using CLI (example):
-  - `git init`
-  - `git remote add origin git@github.com:<GITHUB_OWNER>/<GITHUB_REPO>.git`
-  - `git add . && git commit -m "chore: init repo with docs + CI"`
-  - `git push -u origin main`
-
-3) Adjust CODEOWNERS, issue templates, and CI as you see fit. For Python lint/test, extend `ci.yml` with your tools (e.g., `ruff`, `pytest`).
-
-Security notes
-- Store tokens only locally in `.env` or a secure secret manager
-- For GitHub Actions secrets, add them in the repository settings under Secrets and variables → Actions (e.g., `OPENAI_API_KEY` if runners need it)
+See [SECURITY.md](SECURITY.md) for secret-handling notes and how to report a
+vulnerability.
