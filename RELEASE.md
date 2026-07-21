@@ -210,6 +210,12 @@ of only being noticed anecdotally.
 - **Triggers**: automatically on every `v*.*.*` tag (alongside the real release),
   and manually via `workflow_dispatch` for any branch — useful for checking a
   feature branch's effect on team behavior before merging it.
+- **Requires maintainer approval before it runs.** Each run is real LLM spend, so
+  the `evaluate` job targets the `eval-approval` GitHub Environment, which has a
+  required-reviewer protection rule — regardless of trigger (tag push or manual
+  dispatch), the job pauses and a maintainer must explicitly approve it in the
+  Actions UI before anything actually executes. Manage reviewers under repo
+  Settings → Environments → `eval-approval`.
 
 ### Required secrets (you must configure these — I can't provision repo secrets)
 

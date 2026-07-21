@@ -19,6 +19,12 @@ jobs:
   evaluate:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Real LLM spend per run - require a maintainer to approve before the
+    # job actually executes, regardless of trigger (tag push or manual
+    # dispatch). See RELEASE.md "Team performance evaluation" and set up
+    # the "eval-approval" environment's required reviewers in repo
+    # Settings -> Environments.
+    environment: eval-approval
     steps:
       - uses: actions/checkout@v4
         with:
