@@ -35,10 +35,10 @@ Stories:
   - [x] [US-0006] Compute Real Maintainability Metrics
   - [x] [US-0007] Run Security Vulnerability Scan
   - [x] [US-0008] Fail Gracefully When Test Tooling Unavailable
-- [ ] [EP-0003] Enforce Full Sprint Increment in Release PRs
+- [x] [EP-0003] Enforce Full Sprint Increment in Release PRs
   - [x] [US-0009] Track Sprint-Touched Files
   - [x] [US-0010] Verify Release PR Diff Against Sprint Tracking
-  - [ ] [US-0011] Block Release on Uncommitted Sprint Work
+  - [x] [US-0011] Block Release on Uncommitted Sprint Work
 
 ### v0.2 — Release Communication & Documentation (target: 2026-10)
 Goals
@@ -71,7 +71,7 @@ Stories:
 
 | To Do | In Progress | In Review | Done |
 |------|-------------|-----------|------|
-| US-0011 | | | EP-0001, US-0001, US-0002, US-0003, US-0004, US-0005, US-0006, US-0007, EP-0002, US-0008, US-0009, US-0010 |
+| | | | EP-0001, US-0001, US-0002, US-0003, US-0004, US-0005, US-0006, US-0007, EP-0002, US-0008, US-0009, US-0010, EP-0003, US-0011 |
 
 Notes
 - Update this table in PRs alongside code changes.

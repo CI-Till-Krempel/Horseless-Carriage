@@ -2,7 +2,7 @@
 
 - Story ID: US-0011
 - Title: Block Release on Uncommitted Sprint Work
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Dev Team
 - Last Updated: 2026-07-16

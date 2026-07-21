@@ -268,19 +268,60 @@ def _diff_release_against_sprint_tracking(tool_context=None) -> Dict[str, Any]:
         "warnings": warnings,
     }
 
+def _stage_sprint_tracked_changes(diff_check: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
+    """
+    Selectively stages working-tree changes that match
+    ScrumState.sprint_files_touched (US-0009), instead of blindly
+    `git add -A`-ing everything. Changes present in the diff but not
+    tracked as sprint work are left unstaged and flagged for human
+    review, rather than silently swept into the release (US-0011).
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    to_stage = sorted(set(diff_check.get("tracked_files", [])) & set(diff_check.get("changed_files", [])))
+    flagged = sorted(set(diff_check.get("changed_files", [])) - set(diff_check.get("tracked_files", [])))
+
+    staged = []
+    stage_errors = []
+    for path in to_stage:
+        result = _run(["git", "add", "--", path], cwd=repo_root, tool_context=tool_context)
+        if result.get("status") == "ok":
+            staged.append(path)
+        else:
+            stage_errors.append({"path": path, "error": result.get("stderr") or result.get("message")})
+
+    warnings = []
+    if flagged:
+        warnings.append(
+            "Uncommitted changes unrelated to this sprint's tracked files were left unstaged "
+            f"for human review rather than auto-committed: {flagged}"
+        )
+
+    return {
+        "staged_files": staged,
+        "flagged_for_review": flagged,
+        "stage_errors": stage_errors,
+        "warnings": warnings,
+    }
+
 def create_release_pr(title: str, body: str, branch: str = "release/increment", tool_context=None) -> Dict[str, Any]:
     """
     Create a Pull Request for the release increment.
     """
     sprint_tracking_check = _diff_release_against_sprint_tracking(tool_context=tool_context)
-    push_res = git_push(branch=branch, commit_message=f"chore: {title}", add_all=True, tool_context=tool_context)
+    stage_result = _stage_sprint_tracked_changes(sprint_tracking_check, tool_context=tool_context)
+    # add_all=False: only the paths _stage_sprint_tracked_changes just
+    # staged go into the commit - stray, untracked changes are left
+    # unstaged for human review rather than swept in by `git add -A`.
+    push_res = git_push(branch=branch, commit_message=f"chore: {title}", add_all=False, tool_context=tool_context)
     pr_res = gh_pr_create(title=title, body=body, base="main", head=branch, tool_context=tool_context)
     return {
         "status": "ok",
         "push": push_res,
         "pr": pr_res,
         "sprint_tracking_check": sprint_tracking_check,
-        "warnings": sprint_tracking_check["warnings"],
+        "staged_files": stage_result["staged_files"],
+        "flagged_for_review": stage_result["flagged_for_review"],
+        "warnings": sprint_tracking_check["warnings"] + stage_result["warnings"],
     }
 
 def gh_pr_comment(body: str, pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
