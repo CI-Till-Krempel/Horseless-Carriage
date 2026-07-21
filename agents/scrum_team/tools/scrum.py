@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import json
 from typing import Any, Dict, List
-from .base import _configured_repo_root, _state_file_path, _project_root
+from .base import _configured_repo_root, _state_file_path, _project_root, _hc_version
+from .migrations import migrate_state
 
 DEFAULT_DOD = [
     "Code reviewed",
@@ -33,6 +34,7 @@ REPO_STATE_KEYS = [
     "repo",
     "messages",
     "transcript",
+    "hc_version",
 ]
 
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
@@ -73,6 +75,11 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
             _ = load_state_from_repo(tool_context)
     except Exception:
         pass
+
+    # hc_version always reflects the version actually running this session,
+    # never the (possibly older) value just loaded from the state repo -
+    # see RELEASE.md "Tracking the HC version in the state repo".
+    s["hc_version"] = _hc_version()
 
     # 2. Load/Override from environment variables
     # (Environment variables take precedence over persisted state for configuration)
@@ -170,6 +177,7 @@ def load_state_from_repo(tool_context=None) -> Dict[str, Any]:
         data = json.loads(fp.read_text(encoding="utf-8", errors="replace"))
         if not isinstance(data, dict):
             return {"status": "error", "message": "Invalid state format in state.json"}
+        data = migrate_state(data, data.get("hc_version", "unknown"))
         for k, v in data.items():
             tool_context.state[k] = v
         return {"status": "ok", "loaded_keys": list(data.keys())}

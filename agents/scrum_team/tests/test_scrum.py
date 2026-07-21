@@ -16,6 +16,7 @@ from agents.scrum_team.tools.requirements import (
     update_roadmap,
 )
 from agents.scrum_team.state import ScrumState
+from agents.scrum_team.tools.base import _hc_version
 
 
 class TestScrumTools(unittest.TestCase):
@@ -34,6 +35,20 @@ class TestScrumTools(unittest.TestCase):
             self.assertIn("version", tool_context.state)
             self.assertEqual(tool_context.state["version"], ScrumState().version)
             self.assertEqual(tool_context.state["github_token"], "test_token")
+            # Release process: hc_version reflects the version actually running.
+            self.assertEqual(tool_context.state["hc_version"], _hc_version())
+
+    def test_init_scrum_state_overwrites_stale_persisted_hc_version(self):
+        """
+        Acceptance Criteria (release process, see RELEASE.md): hc_version
+        must reflect the currently running version, not whatever was
+        loaded from a prior session's persisted state.json.
+        """
+        with patch.dict("os.environ", {}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {"hc_version": "0.0.1-stale"}
+            init_scrum_state(tool_context=tool_context)
+            self.assertEqual(tool_context.state["hc_version"], _hc_version())
 
     def test_upsert_story(self):
         """
