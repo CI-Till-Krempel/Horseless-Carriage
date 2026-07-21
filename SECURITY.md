@@ -73,6 +73,18 @@ everyone else's key in the first place — see the tests in `test_agent.py`
 boundary. See README.md ["Budget Management"](README.md#budget-management) and
 MANUAL.md §5 for user-facing detail.
 
+## Secrets used by CI (`.github/workflows/eval.yml`)
+
+The team-performance evaluation workflow (see RELEASE.md "Team performance
+evaluation") needs real credentials as GitHub Actions repository secrets:
+`GOOGLE_API_KEY`, `LITELLM_MASTER_KEY`, and a GitHub App
+(`EVAL_GITHUB_APP_ID`/`_PRIVATE_KEY`/`_INSTALLATION_ID`) installed on the eval
+repo specifically. These are written to a local `.env.eval` file inside the
+runner's ephemeral workspace for the duration of the job only — never logged,
+never committed. Scope that GitHub App's permissions to the eval repo alone
+(`Contents` + `Pull requests: Read & write`); it does not need — and should not
+be given — access to any other repo.
+
 ## Known limitations (being upfront, not exhaustive)
 
 - No automated secret-scanning (e.g. gitleaks) runs in CI yet.

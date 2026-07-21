@@ -213,3 +213,6 @@ __marimo__/
 # results, pasted secrets) - never track them. placeholder.txt is kept
 # tracked on purpose, just to keep the directory present in git.
 /sessions/*.session.json
+# Scratch space for the eval harness's local eval-repo clone + generated
+# report/manifest (see docker-compose.yaml, .github/workflows/eval.yml).
+/eval-output/

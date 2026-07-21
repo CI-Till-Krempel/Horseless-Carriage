@@ -179,7 +179,8 @@ Carriage itself* is released — this section is how the agents release the prod
 
 - [README.md](README.md) — architecture diagram, full env var reference, GitHub
   setup options.
-- [RELEASE.md](RELEASE.md) — how Horseless Carriage itself is versioned/released.
+- [RELEASE.md](RELEASE.md) — how Horseless Carriage itself is versioned/released,
+  and how its own team-performance evaluation harness works.
 - [SECURITY.md](SECURITY.md) — secret handling, what's never persisted, how to
   report a vulnerability.
 - `spec-templates/` — the actual templates the agents fill in (PRD, SRS, ADR, user

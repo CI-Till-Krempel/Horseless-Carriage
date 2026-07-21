@@ -178,6 +178,72 @@ doesn't exist yet, so this release is cut directly on `main`. Once `v0.1.0` is t
 This avoids introducing branch-workflow churn in the same change as the first-ever
 release.
 
+## Team performance evaluation
+
+Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
+evaluates how well the agent team itself performs, against a fixed scenario, so
+regressions or improvements in team behavior surface release over release instead
+of only being noticed anecdotally.
+
+- **Fixed scenario**: `eval/scenario/PRODUCT-VISION.md` — a deliberately narrow
+  to-do-list-web-app product vision, byte-identical across runs so results are
+  comparable across versions. Don't edit it to make a run look better; if the
+  scenario genuinely needs to change, that's its own deliberate, explained commit.
+- **Isolated public state repo**: `CI-Till-Krempel/horseless-carriage-eval-todo-app`.
+  Every run creates a fresh branch (`eval/<version>-run<N>`) rather than touching
+  `main`, so runs never contaminate each other or the real target repo you'd use
+  for actual work.
+- **Driver**: `agents/scrum_team/scripts/run_eval.py` runs the team through 5
+  sprints headlessly (no human in the loop) via ADK's `Runner` API directly,
+  using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and a
+  budget sized for a full 5-sprint run (`--token-budget`/`--usd-budget`, reusing
+  the same guardrails from ["Budget Management"](README.md#budget-management)).
+  Because there's no human to approve PRs, it auto-merges any PR that opens
+  against the eval branch once each sprint's invocation finishes — a deliberate,
+  documented simplification of the real "Human Review is mandatory" flow, not a
+  silent one.
+- **Analysis**: `agents/scrum_team/scripts/run_eval_analysis.py` sends the final
+  code/specs/sprint-reports to a judge LLM call against a fixed rubric (code
+  quality, requirements quality, team efficiency) and writes a report with the
+  top problems and suggested fixes, ranked by severity. The report is committed
+  back to the eval branch *and* uploaded as a CI artifact.
+- **Triggers**: automatically on every `v*.*.*` tag (alongside the real release),
+  and manually via `workflow_dispatch` for any branch — useful for checking a
+  feature branch's effect on team behavior before merging it.
+
+### Required secrets (you must configure these — I can't provision repo secrets)
+
+`eval.yml` needs, as GitHub Actions repository secrets:
+- `GOOGLE_API_KEY`, `LITELLM_MASTER_KEY` — same as local `.env`, for the LiteLLM
+  proxy the eval run stands up.
+- `EVAL_GITHUB_APP_ID`, `EVAL_GITHUB_APP_PRIVATE_KEY`, `EVAL_GITHUB_APP_INSTALLATION_ID`
+  — a GitHub App installed on the eval repo (**not** necessarily the same App used
+  for real target repos) with `Contents` + `Pull requests: Read & write`. The
+  installation must specifically include
+  `CI-Till-Krempel/horseless-carriage-eval-todo-app` under "Repository access" —
+  a GitHub App's own repo-scoped permissions don't extend to new repos
+  automatically (this bit me during development: the eval repo returned a real
+  403 until I added it to the installation by hand).
+
+### Known limitations (found via real testing, not fixed here — out of scope)
+
+- `litellm.yaml`'s production model aliases (`scrum-po`, `scrum-dev`, etc.) all
+  point at `gemini-1.5-pro`, which 404s as a retired model against a live Gemini
+  API key today. `scrum-eval-cheap` was deliberately pointed at a model confirmed
+  working (`gemini-flash-lite-latest`) instead of reusing a production alias —
+  the production aliases need their own follow-up fix.
+- `create_litellm_virtual_key()` doesn't handle "key alias already exists"
+  gracefully (a real LiteLLM 400 if the same agent name's key was already
+  created in that LiteLLM database) — harmless for a fresh eval run's fresh `db`/
+  `litellm` containers, but a real gap if a long-lived LiteLLM database is reused
+  across many setup attempts.
+- The cheap model is not fully reliable at autonomous multi-step execution — it
+  sometimes announces a next action ("Next actions: transfer to X") without a
+  tool call actually doing it in the same turn. `run_eval.py` sends a bounded
+  number of "continue" nudges to recover from this, but a run can still end
+  without a sprint report if the model doesn't recover within that budget. This
+  is itself a legitimate signal about team reliability, not just a harness bug.
+
 ## Non-goals
 
 - No Docker image publishing / container registry.

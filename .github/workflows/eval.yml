@@ -1,0 +1,89 @@
+name: Team Performance Evaluation
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Horseless Carriage branch/ref to evaluate"
+        required: false
+        default: "main"
+      sprints:
+        description: "Number of sprints to run"
+        required: false
+        default: "5"
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch || github.ref }}
+
+      - name: Compute run id
+        id: run_id
+        run: |
+          VERSION=$(cat VERSION)
+          RUN_ID="${VERSION}-run${{ github.run_number }}"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "branch=eval/$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Write eval environment file
+        run: |
+          mkdir -p /tmp/hc-eval-state-scratch eval-output
+          cat > .env.eval << EOF
+          GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+          LITELLM_MASTER_KEY=${{ secrets.LITELLM_MASTER_KEY }}
+          DATABASE_URL=postgresql://llm_user:llm_password@db:5432/litellm_db
+          GITHUB_APP_ID=${{ secrets.EVAL_GITHUB_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY=${{ secrets.EVAL_GITHUB_APP_PRIVATE_KEY }}
+          GITHUB_APP_INSTALLATION_ID=${{ secrets.EVAL_GITHUB_APP_INSTALLATION_ID }}
+          STATE_REPO_PATH=/tmp/hc-eval-state-scratch
+          GIT_USER_NAME=Horseless Carriage Eval Harness
+          GIT_USER_EMAIL=eval@horseless-carriage.local
+          SESSION_ID=eval-${{ steps.run_id.outputs.run_id }}
+          LOG_LEVEL=info
+          EOF
+
+      - name: Start dependency services
+        run: |
+          docker compose --env-file .env.eval up -d db litellm
+          until curl -sf http://localhost:4000/health/readiness > /dev/null; do
+            echo "Waiting for litellm..."
+            sleep 2
+          done
+
+      - name: Run evaluation sprints and analysis
+        run: |
+          docker compose --env-file .env.eval run --rm agent bash -c '
+            set -e
+            python3 -m agents.scrum_team.scripts.run_eval \
+              --sprints "${{ github.event.inputs.sprints || 5 }}" \
+              --run-id "${{ steps.run_id.outputs.run_id }}" \
+              --branch "${{ steps.run_id.outputs.branch }}" \
+              --local-path /app/eval-output/clone \
+              --report-path /app/eval-output/manifest.json
+            python3 -m agents.scrum_team.scripts.run_eval_analysis \
+              --manifest /app/eval-output/manifest.json \
+              --repo-path /app/eval-output/clone \
+              --report-path /app/eval-output/report.md \
+              --commit-to-branch "${{ steps.run_id.outputs.branch }}"
+          '
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ steps.run_id.outputs.run_id }}
+          path: |
+            eval-output/report.md
+            eval-output/manifest.json
+          retention-days: 90
+
+      - name: Stop dependency services
+        if: always()
+        run: docker compose --env-file .env.eval down -v
