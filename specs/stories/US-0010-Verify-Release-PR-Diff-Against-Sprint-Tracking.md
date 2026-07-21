@@ -2,7 +2,7 @@
 
 - Story ID: US-0010
 - Title: Verify Release PR Diff Against Sprint Tracking
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Product Owner
 - Last Updated: 2026-07-16
