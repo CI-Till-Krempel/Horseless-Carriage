@@ -206,13 +206,82 @@ def gh_release_create(tag: str, title: str | None = None, notes: str | None = No
     r = _run(cmd, cwd=repo_root, tool_context=tool_context)
     return r
 
+def _parse_porcelain_paths(stdout: str) -> set:
+    paths = set()
+    for line in (stdout or "").splitlines():
+        line = line.rstrip()
+        if len(line) < 4:
+            continue
+        path_part = line[3:]
+        if " -> " in path_part:
+            # Renames: "R  OLD -> NEW" - the new path is what ends up in the diff.
+            path_part = path_part.split(" -> ", 1)[1]
+        paths.add(path_part.strip('"'))
+    return paths
+
+def _diff_release_against_sprint_tracking(tool_context=None) -> Dict[str, Any]:
+    """
+    Compares ScrumState.sprint_files_touched (US-0009) against the actual
+    working-tree diff at release time (git status --porcelain), so
+    completed sprint work is never silently dropped from - or an untracked
+    change silently smuggled into - the release PR.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    tracked = set(
+        tool_context.state.get("sprint_files_touched", [])
+        if tool_context and getattr(tool_context, "state", None)
+        else []
+    )
+
+    # --untracked-files=all: without it, a brand-new untracked directory
+    # collapses to a single "dir/" line instead of listing the files inside,
+    # which breaks exact-path comparison against sprint_files_touched.
+    result = _run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo_root,
+        tool_context=tool_context,
+    )
+    if result.get("status") == "error" and "returncode" not in result:
+        return {
+            "status": "error",
+            "matched": False,
+            "tracked_files": sorted(tracked),
+            "changed_files": [],
+            "warnings": [f"git status could not be executed: {result.get('message', 'unknown error')}"],
+        }
+
+    changed = _parse_porcelain_paths(result.get("stdout", ""))
+    missing = sorted(tracked - changed)
+    extra = sorted(changed - tracked)
+
+    warnings = []
+    if missing:
+        warnings.append(f"Tracked as sprint-touched but missing from the release diff: {missing}")
+    if extra:
+        warnings.append(f"Present in the release diff but not tracked as sprint-touched: {extra}")
+
+    return {
+        "status": "ok",
+        "matched": not warnings,
+        "tracked_files": sorted(tracked),
+        "changed_files": sorted(changed),
+        "warnings": warnings,
+    }
+
 def create_release_pr(title: str, body: str, branch: str = "release/increment", tool_context=None) -> Dict[str, Any]:
     """
     Create a Pull Request for the release increment.
     """
+    sprint_tracking_check = _diff_release_against_sprint_tracking(tool_context=tool_context)
     push_res = git_push(branch=branch, commit_message=f"chore: {title}", add_all=True, tool_context=tool_context)
     pr_res = gh_pr_create(title=title, body=body, base="main", head=branch, tool_context=tool_context)
-    return {"status": "ok", "push": push_res, "pr": pr_res}
+    return {
+        "status": "ok",
+        "push": push_res,
+        "pr": pr_res,
+        "sprint_tracking_check": sprint_tracking_check,
+        "warnings": sprint_tracking_check["warnings"],
+    }
 
 def gh_pr_comment(body: str, pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
     """

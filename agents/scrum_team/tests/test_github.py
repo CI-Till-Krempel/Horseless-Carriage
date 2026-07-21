@@ -11,6 +11,8 @@ from agents.scrum_team.tools.github import (
     gh_release_create,
     git_push,
     repo_status,
+    create_release_pr,
+    _diff_release_against_sprint_tracking,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -133,6 +135,97 @@ class TestGitHubTools(unittest.TestCase):
             self.assertIn("diagnostics", res)
             self.assertIn("env_repo_url_present", res["diagnostics"])
             self.assertEqual(res["env_config"]["url"], "test_url")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_diff_release_against_sprint_tracking_matches_exactly(self, mock_run):
+        """
+        Acceptance Criteria (US-0010 edge case):
+        - Tracked files and the real git diff match exactly - no warnings.
+        """
+        mock_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": " M specs/stories/US-0010-Foo.md\n?? specs/ROADMAP.md",
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_files_touched"] = ["specs/stories/US-0010-Foo.md", "specs/ROADMAP.md"]
+
+        result = _diff_release_against_sprint_tracking(tool_context=tool_context)
+
+        self.assertTrue(result["matched"])
+        self.assertEqual(result["warnings"], [])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_diff_release_against_sprint_tracking_flags_missing_file(self, mock_run):
+        """
+        Acceptance Criteria (US-0010):
+        - A tracked file absent from the real diff triggers a clear warning.
+        """
+        mock_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": "",  # nothing actually changed in git
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_files_touched"] = ["specs/stories/US-0010-Foo.md"]
+
+        result = _diff_release_against_sprint_tracking(tool_context=tool_context)
+
+        self.assertFalse(result["matched"])
+        self.assertTrue(any("missing from the release diff" in w for w in result["warnings"]))
+        self.assertIn("specs/stories/US-0010-Foo.md", result["warnings"][0])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_diff_release_against_sprint_tracking_flags_extra_file(self, mock_run):
+        """
+        Acceptance Criteria (US-0010):
+        - A real diff entry not tracked as sprint-touched triggers a clear
+          warning (the "vice versa" case).
+        """
+        mock_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": "?? specs/stories/UNTRACKED.md",
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_files_touched"] = []
+
+        result = _diff_release_against_sprint_tracking(tool_context=tool_context)
+
+        self.assertFalse(result["matched"])
+        self.assertTrue(any("not tracked as sprint-touched" in w for w in result["warnings"]))
+        self.assertIn("specs/stories/UNTRACKED.md", result["warnings"][0])
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_create_release_pr_surfaces_mismatch_warning_without_blocking(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """
+        Acceptance Criteria (US-0010):
+        - create_release_pr() runs the sprint-tracking diff check and
+          surfaces any mismatch as a clear warning, without blocking the
+          release (blocking is US-0011's concern).
+        """
+        mock_run.return_value = {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
+        mock_git_push.return_value = {"status": "ok"}
+        mock_gh_pr_create.return_value = {"status": "ok", "stdout": "https://github.com/owner/repo/pull/1"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_files_touched"] = ["specs/stories/US-0010-Foo.md"]
+
+        result = create_release_pr(title="Release", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_git_push.assert_called_once()
+        mock_gh_pr_create.assert_called_once()
+        self.assertTrue(len(result["warnings"]) > 0)
+        self.assertFalse(result["sprint_tracking_check"]["matched"])
 
 
 if __name__ == "__main__":
