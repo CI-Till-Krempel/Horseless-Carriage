@@ -129,6 +129,22 @@ class TestStatePersistence(unittest.TestCase):
         saved = json.loads(state_file.read_text(encoding="utf-8"))
         self.assertNotIn("github_token", saved)
 
+    def test_litellm_keys_are_never_persisted_to_the_state_repo(self):
+        """
+        Acceptance Criteria (security review ahead of the public v0.1.0
+        release, see SECURITY.md): per-agent LiteLLM virtual API keys are a
+        real secret and must never be written into the target repo's
+        .hc/state.json, which is typically committed to git.
+        """
+        self.assertNotIn("litellm_keys", REPO_STATE_KEYS)
+        self.tool_context.state["litellm_keys"] = {"DevTeam": "sk-should-not-be-persisted"}
+
+        save_state_to_repo(tool_context=self.tool_context)
+
+        state_file = self.test_repo / ".hc" / "state.json"
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        self.assertNotIn("litellm_keys", saved)
+
 
 if __name__ == "__main__":
     unittest.main()
