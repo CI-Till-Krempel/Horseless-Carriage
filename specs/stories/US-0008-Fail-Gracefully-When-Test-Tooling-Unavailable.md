@@ -2,7 +2,7 @@
 
 - Story ID: US-0008
 - Title: Fail Gracefully When Test Tooling Unavailable
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Dev Team
 - Last Updated: 2026-07-16

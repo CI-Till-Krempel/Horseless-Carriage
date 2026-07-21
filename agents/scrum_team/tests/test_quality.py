@@ -10,7 +10,13 @@ from agents.scrum_team.tools.quality import (
     _compute_code_complexity,
     _scan_security_vulnerabilities,
 )
+from agents.scrum_team.tools.budget import create_sprint_report
 from agents.scrum_team.state import ScrumState
+
+_TOOL_NOT_INSTALLED = {
+    "status": "error",
+    "message": "[Errno 2] No such file or directory",
+}
 
 
 class TestQualityTools(unittest.TestCase):
@@ -309,6 +315,86 @@ class TestQualityTools(unittest.TestCase):
         self.assertFalse(result["available"])
         self.assertIsNone(result["vulnerability_scan_results"])
         self.assertEqual(result["note"], "could not parse bandit output")
+
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_calculate_kpis_all_tools_unavailable(self, mock_run):
+        """
+        Acceptance Criteria (US-0008):
+        - With pytest, radon, and bandit all unavailable, calculate_kpis()
+          flags each metric as unavailable independently rather than
+          substituting a default/dummy value, and does not raise.
+        """
+        mock_run.side_effect = [_TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED]
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            kpis = calculate_kpis(tool_context=tool_context)
+
+        maintainability = kpis["maintainability"]
+        self.assertFalse(maintainability["test_coverage_available"])
+        self.assertIsNone(maintainability["test_coverage"])
+        self.assertFalse(maintainability["code_complexity_available"])
+        self.assertIsNone(maintainability["code_complexity"])
+        self.assertFalse(kpis["security"]["vulnerability_scan_available"])
+        self.assertIsNone(kpis["security"]["vulnerability_scan_results"])
+        # Each unavailable metric carries its own distinct explanation.
+        self.assertIn("pytest", maintainability["test_coverage_note"])
+        self.assertIn("radon", maintainability["code_complexity_note"])
+        self.assertIn("bandit", kpis["security"]["vulnerability_scan_note"])
+
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_calculate_kpis_partial_tooling_flags_independently(self, mock_run):
+        """
+        Acceptance Criteria (US-0008):
+        - With pytest present but radon/bandit unavailable, the available
+          metric is reported normally and the unavailable ones are flagged
+          independently rather than dragging the whole result down.
+        """
+        mock_run.side_effect = [
+            {
+                "status": "ok",
+                "returncode": 0,
+                "stdout": "TOTAL 100 10 90%\n5 passed in 1.23s",
+                "stderr": "",
+            },
+            _TOOL_NOT_INSTALLED,
+            _TOOL_NOT_INSTALLED,
+        ]
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            kpis = calculate_kpis(tool_context=tool_context)
+
+        maintainability = kpis["maintainability"]
+        self.assertTrue(maintainability["test_coverage_available"])
+        self.assertEqual(maintainability["test_coverage"], 0.9)
+        self.assertNotIn("test_coverage_note", maintainability)
+        self.assertFalse(maintainability["code_complexity_available"])
+        self.assertIsNone(maintainability["code_complexity"])
+        self.assertFalse(kpis["security"]["vulnerability_scan_available"])
+        self.assertIsNone(kpis["security"]["vulnerability_scan_results"])
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_sprint_report_generation_survives_total_tooling_failure(self, mock_run, mock_write_file):
+        """
+        Acceptance Criteria (US-0008 edge case):
+        - Total tooling failure degrades gracefully: calculate_kpis() ->
+          update_sprint_report() -> create_sprint_report() completes
+          without raising, even though every KPI tool is unavailable.
+        """
+        mock_run.side_effect = [_TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED]
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
+            kpis = calculate_kpis(tool_context=tool_context)
+        update_sprint_report(kpis=kpis, tool_context=tool_context)
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(report["status"], "ok")
 
     def test_update_sprint_report(self):
         """
