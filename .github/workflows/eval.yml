@@ -39,21 +39,34 @@ jobs:
           echo "branch=eval/$RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Write eval environment file
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+          EVAL_GITHUB_APP_ID: ${{ secrets.EVAL_GITHUB_APP_ID }}
+          EVAL_GITHUB_APP_PRIVATE_KEY: ${{ secrets.EVAL_GITHUB_APP_PRIVATE_KEY }}
+          EVAL_GITHUB_APP_INSTALLATION_ID: ${{ secrets.EVAL_GITHUB_APP_INSTALLATION_ID }}
         run: |
           mkdir -p /tmp/hc-eval-state-scratch eval-output
-          cat > .env.eval << EOF
-          GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-          LITELLM_MASTER_KEY=${{ secrets.LITELLM_MASTER_KEY }}
-          DATABASE_URL=postgresql://llm_user:llm_password@db:5432/litellm_db
-          GITHUB_APP_ID=${{ secrets.EVAL_GITHUB_APP_ID }}
-          GITHUB_APP_PRIVATE_KEY=${{ secrets.EVAL_GITHUB_APP_PRIVATE_KEY }}
-          GITHUB_APP_INSTALLATION_ID=${{ secrets.EVAL_GITHUB_APP_INSTALLATION_ID }}
-          STATE_REPO_PATH=/tmp/hc-eval-state-scratch
-          GIT_USER_NAME=Horseless Carriage Eval Harness
-          GIT_USER_EMAIL=eval@horseless-carriage.local
-          SESSION_ID=eval-${{ steps.run_id.outputs.run_id }}
-          LOG_LEVEL=info
-          EOF
+          # A .env file must be one KEY=VALUE per line, but a GitHub App
+          # private key is a multi-line PEM. Collapse any real newlines in
+          # the secret into literal "\n" first - agents/scrum_team/tools/
+          # base.py's _normalize_private_key converts them back to real
+          # newlines at runtime (same convention as .env.example). This is
+          # idempotent if the secret was already stored with escaped \n.
+          PRIVATE_KEY_SINGLE_LINE=$(printf '%s' "$EVAL_GITHUB_APP_PRIVATE_KEY" | sed ':a;N;$!ba;s/\n/\\n/g')
+          {
+            echo "GOOGLE_API_KEY=$GOOGLE_API_KEY"
+            echo "LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY"
+            echo "DATABASE_URL=postgresql://llm_user:llm_password@db:5432/litellm_db"
+            echo "GITHUB_APP_ID=$EVAL_GITHUB_APP_ID"
+            echo "GITHUB_APP_PRIVATE_KEY=$PRIVATE_KEY_SINGLE_LINE"
+            echo "GITHUB_APP_INSTALLATION_ID=$EVAL_GITHUB_APP_INSTALLATION_ID"
+            echo "STATE_REPO_PATH=/tmp/hc-eval-state-scratch"
+            echo "GIT_USER_NAME=Horseless Carriage Eval Harness"
+            echo "GIT_USER_EMAIL=eval@horseless-carriage.local"
+            echo "SESSION_ID=eval-${{ steps.run_id.outputs.run_id }}"
+            echo "LOG_LEVEL=info"
+          } > .env.eval
 
       - name: Start dependency services
         run: |
