@@ -13,6 +13,7 @@ from agents.scrum_team.tools.github import (
     repo_status,
     create_release_pr,
     _diff_release_against_sprint_tracking,
+    _stage_sprint_tracked_changes,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -209,8 +210,9 @@ class TestGitHubTools(unittest.TestCase):
         """
         Acceptance Criteria (US-0010):
         - create_release_pr() runs the sprint-tracking diff check and
-          surfaces any mismatch as a clear warning, without blocking the
-          release (blocking is US-0011's concern).
+          surfaces any mismatch as a clear warning, without failing the
+          release outright (US-0011 selectively stages/flags instead of
+          hard-blocking).
         """
         mock_run.return_value = {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
         mock_git_push.return_value = {"status": "ok"}
@@ -226,6 +228,83 @@ class TestGitHubTools(unittest.TestCase):
         mock_gh_pr_create.assert_called_once()
         self.assertTrue(len(result["warnings"]) > 0)
         self.assertFalse(result["sprint_tracking_check"]["matched"])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_stage_sprint_tracked_changes_stages_tracked_files(self, mock_run):
+        """
+        Acceptance Criteria (US-0011):
+        - Uncommitted changes that match sprint_files_touched are staged
+          (included) rather than left behind.
+        """
+        mock_run.return_value = {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
+        diff_check = {
+            "tracked_files": ["specs/stories/US-0011-Foo.md"],
+            "changed_files": ["specs/stories/US-0011-Foo.md"],
+        }
+
+        result = _stage_sprint_tracked_changes(diff_check, tool_context=MagicMock())
+
+        self.assertEqual(result["staged_files"], ["specs/stories/US-0011-Foo.md"])
+        self.assertEqual(result["flagged_for_review"], [])
+        self.assertEqual(result["warnings"], [])
+        mock_run.assert_called_once_with(
+            ["git", "add", "--", "specs/stories/US-0011-Foo.md"],
+            cwd=unittest.mock.ANY,
+            tool_context=unittest.mock.ANY,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_stage_sprint_tracked_changes_flags_stray_changes(self, mock_run):
+        """
+        Acceptance Criteria (US-0011 edge case):
+        - Uncommitted changes unrelated to this sprint's tracked files are
+          flagged for human review, not silently staged/committed.
+        """
+        diff_check = {
+            "tracked_files": [],
+            "changed_files": ["notes/stray-local-edit.md"],
+        }
+
+        result = _stage_sprint_tracked_changes(diff_check, tool_context=MagicMock())
+
+        self.assertEqual(result["staged_files"], [])
+        self.assertEqual(result["flagged_for_review"], ["notes/stray-local-edit.md"])
+        self.assertTrue(any("stray-local-edit.md" in w for w in result["warnings"]))
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_create_release_pr_stages_selectively_and_does_not_add_all(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """
+        Acceptance Criteria (US-0011):
+        - create_release_pr() stages sprint-tracked changes itself and
+          calls git_push with add_all=False, so stray uncommitted changes
+          aren't swept in by a blanket `git add -A`.
+        """
+        mock_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": " M specs/stories/US-0011-Foo.md\n?? notes/stray.md",
+            "stderr": "",
+        }
+        mock_git_push.return_value = {"status": "ok"}
+        mock_gh_pr_create.return_value = {"status": "ok", "stdout": "https://github.com/owner/repo/pull/1"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_files_touched"] = ["specs/stories/US-0011-Foo.md"]
+
+        result = create_release_pr(title="Release", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["staged_files"], ["specs/stories/US-0011-Foo.md"])
+        self.assertEqual(result["flagged_for_review"], ["notes/stray.md"])
+        self.assertTrue(any("stray.md" in w for w in result["warnings"]))
+        mock_git_push.assert_called_once_with(
+            branch="release/increment",
+            commit_message="chore: Release",
+            add_all=False,
+            tool_context=tool_context,
+        )
 
 
 if __name__ == "__main__":
