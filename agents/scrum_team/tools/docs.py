@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _project_root
+from .base import _configured_repo_root, _project_root, _record_touched_file
 
 def write_file(path: str, content: str, overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
@@ -11,16 +11,17 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
     """
     repo_root = _configured_repo_root(tool_context)
     abs_path = (repo_root / path).resolve()
-    
+
     # Safety: ensure the path is within the repo_root
     if not str(abs_path).startswith(str(repo_root.resolve())):
         return {"status": "error", "message": f"Path '{path}' is outside the repository root."}
-        
+
     try:
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         if abs_path.exists() and not overwrite:
             return {"status": "error", "message": f"File exists: {path}"}
         abs_path.write_text(content, encoding="utf-8")
+        _record_touched_file(path, tool_context)
         return {"status": "ok", "path": str(abs_path)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
