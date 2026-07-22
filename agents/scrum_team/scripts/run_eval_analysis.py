@@ -262,6 +262,66 @@ def _open_and_merge_report_pr(report: str, repo_path: Path, base_branch: str, ru
     return result
 
 
+def _open_overview_pr(repo_path: Path, base_branch: str, run_id: str, manifest: dict) -> dict:
+    """
+    Opens (but never merges) a PR from the whole eval run branch
+    (base_branch - by now containing every sprint's merged work plus the
+    eval-report commit from _open_and_merge_report_pr) against the eval
+    repo's actual default branch, as a single human-reviewable overview of
+    everything the run produced. Distinct from _open_and_merge_report_pr's
+    PR, which only adds EVAL-REPORT.md to base_branch itself and is
+    immediately merged - this one is the run's full diff and is
+    deliberately left open, since merging an eval run into the eval repo's
+    real main would defeat the point of keeping eval runs isolated (see
+    module docstring / RELEASE.md "Team performance evaluation").
+    """
+    import subprocess
+
+    repo_info = subprocess.run(
+        ["gh", "repo", "view", "--json", "defaultBranchRef,nameWithOwner"],
+        cwd=str(repo_path), capture_output=True, text=True,
+    )
+    if repo_info.returncode != 0:
+        return {"status": "error", "message": f"gh repo view failed: {repo_info.stderr.strip()}"}
+    info = json.loads(repo_info.stdout)
+    default_branch = info["defaultBranchRef"]["name"]
+    repo_slug = info["nameWithOwner"]
+
+    if default_branch == base_branch:
+        return {"status": "skipped", "message": "base_branch is already the repo's default branch"}
+
+    sprint_pr_links = "\n".join(
+        f"- Sprint {m['after_sprint']}: #{m['number']} ({'merged' if m.get('merged') else 'not merged'}) - "
+        "carries that sprint's raw agent activity log as a PR comment"
+        for m in manifest.get("pr_merges", [])
+        if "number" in m
+    ) or "(no sprint PRs were opened during this run)"
+
+    body = (
+        f"Full diff produced by eval run `{run_id}` against `{default_branch}` - opened for human review only.\n\n"
+        "**DO NOT MERGE** - eval runs are deliberately isolated from the eval repo's real "
+        f"`{default_branch}`; this PR exists purely as a single place to review the run's "
+        "total output (see EVAL-REPORT.md on this branch for the judged report).\n\n"
+        f"### Sprint PRs (merged into `{base_branch}` during the run)\n{sprint_pr_links}\n"
+    )
+
+    pr = subprocess.run(
+        [
+            "gh", "pr", "create", "--base", default_branch, "--head", base_branch,
+            "--title", f"[eval-{run_id}] Evaluation run overview - DO NOT MERGE",
+            "--body", body,
+        ],
+        cwd=str(repo_path), capture_output=True, text=True,
+    )
+    return {
+        "status": "ok" if pr.returncode == 0 else "error",
+        "returncode": pr.returncode,
+        "stdout": pr.stdout.strip(),
+        "stderr": pr.stderr.strip(),
+        "repo": repo_slug,
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
@@ -287,6 +347,9 @@ def main() -> None:
         result = _open_and_merge_report_pr(report, Path(args.repo_path), args.base_branch, args.run_id)
         merged = bool(result["merge"]) and result["merge"].get("returncode") == 0
         print(f"Report PR against {args.base_branch}: {'merged' if merged else 'FAILED'} - {json.dumps(result)}")
+
+        overview_result = _open_overview_pr(Path(args.repo_path), args.base_branch, args.run_id, manifest)
+        print(f"Overview PR (not merged, for human review): {overview_result.get('status')} - {json.dumps(overview_result)}")
 
 
 if __name__ == "__main__":

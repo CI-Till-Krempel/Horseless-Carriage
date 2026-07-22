@@ -107,6 +107,16 @@ def _prepare_local_clone(repo_url: str, branch: str, local_path: Path, github_to
     checkout = run_git(["checkout", "-b", branch], cwd=local_path, github_token=github_token)
     if checkout.get("status") != "ok":
         raise RuntimeError(f"Failed to create eval branch {branch}: {checkout.get('stderr') or checkout.get('message')}")
+    # Push it immediately: gh_pr_create/create_release_pr default `base` to
+    # this branch (see _default_push_branch), and `gh pr create --base
+    # <branch>` fails outright if <branch> doesn't exist on the remote yet.
+    # Without this push, every PR the team tries to open all run fails
+    # silently (create_release_pr doesn't surface the failure - see its own
+    # docstring) and the run finishes having created feature branches but
+    # zero PRs, as happened in 0.1.0-run4.
+    push = run_git(["push", "-u", "origin", branch], cwd=local_path, github_token=github_token)
+    if push.get("status") != "ok":
+        raise RuntimeError(f"Failed to push eval branch {branch} to origin: {push.get('stderr') or push.get('message')}")
 
 
 def _sync_local_clone_to_branch(branch: str, local_path: Path, github_token: str) -> None:
@@ -121,10 +131,59 @@ def _sync_local_clone_to_branch(branch: str, local_path: Path, github_token: str
     run_git(["pull", "--ff-only", "origin", branch], cwd=local_path, github_token=github_token)
 
 
-def _merge_open_prs(local_path: Path, base_branch: str) -> list:
+# PR comment body cap: GitHub rejects bodies over 65536 chars outright: stay
+# well under that so a very chatty sprint still posts (truncated) rather
+# than failing to comment at all.
+MAX_TRANSCRIPT_CHARS = 60000
+
+
+def _format_sprint_transcript(sprint_result: dict) -> str:
+    """
+    Renders sprint_result["events"] (author/text/tool_calls/tool_responses
+    per ADK event - see _run_one_sprint) as the raw, otherwise-nowhere-else
+    -surfaced record of what the agent team actually did this sprint, for
+    posting onto that sprint's PR(s) - these PRs are for human review, and
+    a diff alone doesn't show the reasoning/tool-call trail behind it.
+    """
+    n = sprint_result.get("sprint_number")
+    lines = [
+        f"## Raw agent activity log - sprint {n}",
+        "",
+        f"Stop reason: `{sprint_result.get('stop_reason')}` - {sprint_result.get('event_count')} events.",
+        "",
+    ]
+    for i, event in enumerate(sprint_result.get("events") or [], start=1):
+        lines.append(f"### Event {i} - {event.get('author')}")
+        if event.get("tool_calls"):
+            lines.append(f"- Tool calls: {', '.join(event['tool_calls'])}")
+        if event.get("tool_responses"):
+            lines.append(f"- Tool responses: {', '.join(event['tool_responses'])}")
+        if event.get("text"):
+            lines += ["", "```", event["text"], "```"]
+        lines.append("")
+
+    text = "\n".join(lines)
+    if len(text) > MAX_TRANSCRIPT_CHARS:
+        text = text[:MAX_TRANSCRIPT_CHARS] + f"\n\n...[truncated - {sprint_result.get('event_count')} events total]..."
+    return text
+
+
+def _post_sprint_transcript(local_path: Path, pr_number: int, sprint_result: dict) -> dict:
+    comment = subprocess.run(
+        ["gh", "pr", "comment", str(pr_number), "--body-file", "-"],
+        cwd=str(local_path), input=_format_sprint_transcript(sprint_result), capture_output=True, text=True,
+    )
+    return {"posted": comment.returncode == 0, "message": (comment.stdout + comment.stderr).strip()}
+
+
+def _merge_open_prs(local_path: Path, base_branch: str, sprint_result: dict | None = None) -> list:
     """
     Auto-merges every open PR targeting base_branch in the eval repo -
     the eval harness's stand-in for human review (see module docstring).
+    If sprint_result is given, first posts that sprint's full raw activity
+    log as a PR comment (see _format_sprint_transcript) - the PR body
+    itself is whatever the agent wrote, so this is the only place the
+    underlying prompt/tool-call trail becomes visible to a human reviewer.
     Returns a list of {number, merged, message} for the report.
     """
     results = []
@@ -140,6 +199,7 @@ def _merge_open_prs(local_path: Path, base_branch: str) -> list:
         prs = []
     for pr in prs:
         number = pr["number"]
+        transcript_result = _post_sprint_transcript(local_path, number, sprint_result) if sprint_result else None
         merge_res = subprocess.run(
             ["gh", "pr", "merge", str(number), "--merge", "--admin"],
             cwd=str(local_path), capture_output=True, text=True,
@@ -148,6 +208,7 @@ def _merge_open_prs(local_path: Path, base_branch: str) -> list:
             "number": number,
             "merged": merge_res.returncode == 0,
             "message": (merge_res.stdout + merge_res.stderr).strip(),
+            "transcript_posted": transcript_result,
         })
     return results
 
@@ -339,7 +400,7 @@ async def _main_async(args: argparse.Namespace) -> dict:
             manifest["stopped_early"] = True
             manifest["stop_reason"] = "max_duration_exceeded"
 
-        merges = _merge_open_prs(args.local_path, args.branch)
+        merges = _merge_open_prs(args.local_path, args.branch, sprint_result=sprint_result)
         manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number} for m in merges])
         _sync_local_clone_to_branch(args.branch, args.local_path, args.github_token)
 

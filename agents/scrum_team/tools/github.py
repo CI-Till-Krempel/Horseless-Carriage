@@ -338,8 +338,14 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
     # configured default branch (see _default_push_branch), not a
     # hardcoded "main".
     pr_res = gh_pr_create(title=title, body=body, head=push_res.get("branch", branch), tool_context=tool_context)
+    # Reflect push/PR-create failures honestly instead of always claiming
+    # "ok" - a caller (agent or the eval harness) that only checks this
+    # top-level status has no other way to notice e.g. `gh pr create`
+    # failing because `base` doesn't exist on the remote yet, which is
+    # exactly what silently produced zero PRs for a whole eval run before.
+    ok = push_res.get("status") == "ok" and pr_res.get("status") == "ok"
     return {
-        "status": "ok",
+        "status": "ok" if ok else "error",
         "push": push_res,
         "pr": pr_res,
         "sprint_tracking_check": sprint_tracking_check,
