@@ -192,7 +192,13 @@ of only being noticed anecdotally.
 - **Isolated public state repo**: `CI-Till-Krempel/horseless-carriage-eval-todo-app`.
   Every run creates a fresh branch (`eval/<version>-run<N>`) rather than touching
   `main`, so runs never contaminate each other or the real target repo you'd use
-  for actual work.
+  for actual work. This branch is pushed to the remote immediately after being
+  created, before the team does anything - `gh_pr_create`/`create_release_pr`
+  default their PR `base` to it, and `gh pr create --base <branch>` fails
+  outright if that branch doesn't exist on the remote yet. Without this,
+  0.1.0-run4 produced feature branches but zero PRs for the whole run - silently,
+  since `create_release_pr` used to always report `"status": "ok"` regardless of
+  whether the underlying push/PR-create actually succeeded (also fixed).
 - **Driver**: `agents/scrum_team/scripts/run_eval.py` runs the team through 5
   sprints headlessly (no human in the loop) via ADK's `Runner` API directly,
   using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and a
@@ -223,9 +229,15 @@ of only being noticed anecdotally.
   Because there's no human to approve PRs, it auto-merges any PR that opens
   against the eval branch once each sprint's invocation finishes — a deliberate,
   documented simplification of the real "Human Review is mandatory" flow, not a
-  silent one. Every branch/PR the team creates during an eval run is tagged
-  with the run id (`eval-<run-id>/<branch>`, `[eval-<run-id>]` PR title prefix
-  - see `_with_eval_branch_prefix`/`_with_eval_title_prefix` in
+  silent one. Before merging each sprint's PR(s), it posts that sprint's full
+  raw agent activity log (every event's author/text/tool-calls/tool-responses -
+  see `_run_one_sprint`) as a PR comment via `_format_sprint_transcript` /
+  `_post_sprint_transcript` - a PR's diff alone doesn't show the reasoning or
+  tool-call trail behind it, and this is otherwise only ever written to the run
+  manifest (a CI artifact, not something a PR reviewer sees). Every branch/PR
+  the team creates during an eval run is tagged with the run id
+  (`eval-<run-id>/<branch>`, `[eval-<run-id>]` PR title prefix - see
+  `_with_eval_branch_prefix`/`_with_eval_title_prefix` in
   `agents/scrum_team/tools/base.py`), set via `EVAL_RUN_ID` and never present
   in real usage, so branches/PRs from different runs sharing the eval repo
   stay distinguishable and the auto-merge only ever matches PRs actually
@@ -238,7 +250,13 @@ of only being noticed anecdotally.
   harness's own concluding action, after the run itself is already done) rather
   than pushed directly, so it goes through the same PR mechanism as everything
   else and shows up as the run's final PR - and is also uploaded as a CI
-  artifact.
+  artifact. It then opens a second, run-id-tagged PR from the whole eval branch
+  (by now containing every sprint's merged work plus that report commit)
+  against the eval repo's actual default branch, as a single place to review
+  everything the run produced - and deliberately leaves it **open, never
+  merged** (title says so explicitly), since merging an eval run into the eval
+  repo's real default branch would defeat the point of keeping eval runs
+  isolated. See `_open_overview_pr`.
 - **Triggers**: automatically on every `v*.*.*` tag (alongside the real release),
   and manually via `workflow_dispatch` for any branch — useful for checking a
   feature branch's effect on team behavior before merging it.
