@@ -66,6 +66,11 @@ jobs:
             echo "GIT_USER_EMAIL=eval@horseless-carriage.local"
             echo "SESSION_ID=eval-${{ steps.run_id.outputs.run_id }}"
             echo "LOG_LEVEL=info"
+            # Mirrors .env.example's "Eval Harness Budget Configuration" -
+            # override via repo/environment Settings -> Variables if these
+            # ever need recalibrating without a code change.
+            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ vars.EVAL_SPRINT_TOKEN_BUDGET || '2600000' }}"
+            echo "EVAL_SPRINT_USD_BUDGET=${{ vars.EVAL_SPRINT_USD_BUDGET || '3.0' }}"
           } > .env.eval
 
       - name: Start dependency services
@@ -90,7 +95,8 @@ jobs:
               --manifest /app/eval-output/manifest.json \
               --repo-path /app/eval-output/clone \
               --report-path /app/eval-output/report.md \
-              --commit-to-branch "${{ steps.run_id.outputs.branch }}"
+              --run-id "${{ steps.run_id.outputs.run_id }}" \
+              --base-branch "${{ steps.run_id.outputs.branch }}"
           '
 
       - name: Upload report artifact

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import json
 from typing import Any, Dict
-from .base import _configured_repo_root, _run, _default_push_branch
+from .base import _configured_repo_root, _run, _default_push_branch, _with_eval_branch_prefix, _with_eval_title_prefix
 
 def configure_github_repo(repo_url: str, local_path: str = "", default_branch: str | None = None, tool_context=None) -> Dict[str, Any]:
     """
@@ -94,7 +94,12 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
     """
     Stage changes (optionally), commit, and push the current working tree to the given branch.
     Non-interactive; returns command outputs.
+    - In an eval run (EVAL_RUN_ID set), branch is auto-tagged with the run id
+      (e.g. "eval-<run-id>/<branch>") so branches from different runs sharing
+      one eval repo stay distinguishable - see _with_eval_branch_prefix. No-op
+      in real usage.
     """
+    branch = _with_eval_branch_prefix(branch)
     repo_root = str(_configured_repo_root(tool_context))
 
     # Ensure branch exists locally
@@ -114,7 +119,7 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
         # If still failing, continue to push in case branch update is desired
     r3 = _run(["git", "push", "-u", "origin", branch], cwd=repo_root, tool_context=tool_context)
 
-    return {"status": "ok" if r3.get("status") == "ok" else "error", "steps": {"checkout": _, "add": r1, "commit": r2, "push": r3}}
+    return {"status": "ok" if r3.get("status") == "ok" else "error", "branch": branch, "steps": {"checkout": _, "add": r1, "commit": r2, "push": r3}}
 
 def gh_pr_create(title: str, body: str = "", base: str | None = None, head: str | None = None, draft: bool = False, tool_context=None) -> Dict[str, Any]:
     """
@@ -122,11 +127,17 @@ def gh_pr_create(title: str, body: str = "", base: str | None = None, head: str 
     - base: target branch. Defaults to the configured default branch (see
       _default_push_branch) rather than a hardcoded "main", so an isolated
       eval/test run can target its own branch via GITHUB_REPO_BRANCH.
-    - head: source branch (defaults to current if None)
+    - head: source branch (defaults to current if None). In an eval run
+      (EVAL_RUN_ID set), auto-tagged with the run id the same way git_push
+      tags branches, so a head passed as the plain (unprefixed) branch name
+      still resolves - see _with_eval_branch_prefix. No-op in real usage.
     - draft: open PR as draft
     """
     repo_root = str(_configured_repo_root(tool_context))
     base = base or _default_push_branch(tool_context)
+    if head:
+        head = _with_eval_branch_prefix(head)
+    title = _with_eval_title_prefix(title)
     cmd = ["gh", "pr", "create", "--base", base, "--title", title]
     if body:
         cmd += ["--body", body]
@@ -320,10 +331,13 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
     # staged go into the commit - stray, untracked changes are left
     # unstaged for human review rather than swept in by `git add -A`.
     push_res = git_push(branch=branch, commit_message=f"chore: {title}", add_all=False, tool_context=tool_context)
+    # Reuse push_res's (possibly eval-run-prefixed - see git_push) branch
+    # rather than the raw `branch` param, so head matches what was actually
+    # pushed.
     # base intentionally omitted: gh_pr_create defaults it to the
     # configured default branch (see _default_push_branch), not a
     # hardcoded "main".
-    pr_res = gh_pr_create(title=title, body=body, head=branch, tool_context=tool_context)
+    pr_res = gh_pr_create(title=title, body=body, head=push_res.get("branch", branch), tool_context=tool_context)
     return {
         "status": "ok",
         "push": push_res,

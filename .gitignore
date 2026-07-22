@@ -216,3 +216,12 @@ __marimo__/
 # Scratch space for the eval harness's local eval-repo clone + generated
 # report/manifest (see docker-compose.yaml, .github/workflows/eval.yml).
 /eval-output/
+
+# This repo is the tool's own source, not a target/state repo - .hc/state.json
+# should only ever exist in a *configured* state repo. Some tests build a
+# tool_context whose state doesn't set repo.local_path/STATE_REPO_PATH, so
+# _configured_repo_root() falls back to the project root and writes real
+# fixture data here - never track that leakage.
+.hc/
+
+.DS_Store

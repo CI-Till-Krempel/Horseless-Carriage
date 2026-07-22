@@ -11,7 +11,8 @@ Markdown report with the top problems and suggested fixes.
 Usage:
     python3 -m agents.scrum_team.scripts.run_eval_analysis \
         --manifest eval-run-<id>.json --repo-path <local clone path> \
-        --branch eval/<id> --report-path EVAL-REPORT-<id>.md
+        --report-path EVAL-REPORT-<id>.md \
+        --run-id <id> --base-branch eval/<id>
 """
 from __future__ import annotations
 
@@ -209,21 +210,56 @@ def _render_report(manifest: dict, judgment: dict) -> str:
     return "\n".join(lines)
 
 
-def _commit_report_to_branch(report: str, repo_path: Path, branch: str) -> dict:
+def _open_and_merge_report_pr(report: str, repo_path: Path, base_branch: str, run_id: str) -> dict:
     """
-    Writes the report into the eval repo's own clone as EVAL-REPORT.md and
-    pushes it to the run's branch, so the report lives alongside the code
-    it's about - not just as a CI artifact that disappears after the
-    retention window.
+    Opens the report as its own small PR against base_branch, rather than
+    pushing straight to it - so the report goes through the same PR
+    mechanism as every other change instead of bypassing it, and shows up
+    as the run's own final PR alongside the team's. Branch/title are
+    tagged with run_id the same way agents/scrum_team/tools/base.py's
+    _with_eval_branch_prefix/_with_eval_title_prefix tag agent-created
+    branches/PRs, so it's obvious which run this belongs to.
+
+    Merges the PR itself immediately after opening it: unlike the team's
+    PRs (where run_eval.py's _merge_open_prs stands in for the "Human
+    Review is mandatory" gate during the run), this one is the harness's
+    own concluding action, produced after that run has already finished -
+    there is no further review step left to stand in for.
     """
+    import subprocess
     from agents.scrum_team.scripts._eval_git_utils import get_github_token, run_git
 
     github_token = get_github_token()
+    report_branch = f"eval-{run_id}/eval-report"
+
+    checkout = run_git(["checkout", "-B", report_branch], cwd=repo_path, github_token=github_token)
     (repo_path / "EVAL-REPORT.md").write_text(report, encoding="utf-8")
     run_git(["add", "EVAL-REPORT.md"], cwd=repo_path, github_token=github_token)
-    commit = run_git(["commit", "-m", f"chore: add evaluation report ({branch})"], cwd=repo_path, github_token=github_token)
-    push = run_git(["push", "origin", branch], cwd=repo_path, github_token=github_token)
-    return {"commit": commit, "push": push}
+    commit = run_git(["commit", "-m", f"chore: add evaluation report ({run_id})"], cwd=repo_path, github_token=github_token)
+    push = run_git(["push", "-u", "origin", report_branch], cwd=repo_path, github_token=github_token)
+    result = {"checkout": checkout, "commit": commit, "push": push, "pr": None, "merge": None}
+    if push.get("status") != "ok":
+        return result
+
+    pr = subprocess.run(
+        [
+            "gh", "pr", "create", "--base", base_branch, "--head", report_branch,
+            "--title", f"[eval-{run_id}] Evaluation report",
+            "--body", "Auto-generated evaluation report for this run - see EVAL-REPORT.md.",
+        ],
+        cwd=str(repo_path), capture_output=True, text=True,
+    )
+    result["pr"] = {"returncode": pr.returncode, "stdout": pr.stdout.strip(), "stderr": pr.stderr.strip()}
+    if pr.returncode != 0:
+        return result
+
+    pr_number = result["pr"]["stdout"].rsplit("/", 1)[-1]
+    merge = subprocess.run(
+        ["gh", "pr", "merge", pr_number, "--merge", "--admin"],
+        cwd=str(repo_path), capture_output=True, text=True,
+    )
+    result["merge"] = {"returncode": merge.returncode, "stdout": merge.stdout.strip(), "stderr": merge.stderr.strip()}
+    return result
 
 
 def main() -> None:
@@ -232,8 +268,11 @@ def main() -> None:
     parser.add_argument("--repo-path", required=True)
     parser.add_argument("--report-path", required=True)
     parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
-    parser.add_argument("--commit-to-branch", default=None, help="If set, also commit+push the report to this branch in --repo-path")
+    parser.add_argument("--run-id", default=None, help="Required together with --base-branch, to tag/name the report PR")
+    parser.add_argument("--base-branch", default=None, help="If set (with --run-id), open+merge a PR adding the report against this branch in --repo-path")
     args = parser.parse_args()
+    if bool(args.base_branch) != bool(args.run_id):
+        parser.error("--base-branch and --run-id must be given together")
 
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     snapshot = _collect_repo_snapshot(Path(args.repo_path))
@@ -244,10 +283,10 @@ def main() -> None:
     Path(args.report_path).write_text(report, encoding="utf-8")
     print(f"Report written to {args.report_path}")
 
-    if args.commit_to_branch:
-        result = _commit_report_to_branch(report, Path(args.repo_path), args.commit_to_branch)
-        status = "ok" if result["push"].get("status") == "ok" else "FAILED"
-        print(f"Committed report to {args.commit_to_branch}: {status}")
+    if args.base_branch:
+        result = _open_and_merge_report_pr(report, Path(args.repo_path), args.base_branch, args.run_id)
+        merged = bool(result["merge"]) and result["merge"].get("returncode") == 0
+        print(f"Report PR against {args.base_branch}: {'merged' if merged else 'FAILED'} - {json.dumps(result)}")
 
 
 if __name__ == "__main__":

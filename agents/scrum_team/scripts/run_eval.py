@@ -33,11 +33,30 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
+
 from agents.scrum_team.scripts._eval_git_utils import get_github_token, run_git, eval_repo_slug
 
 DEFAULT_EVAL_REPO_URL = "git@github.com:CI-Till-Krempel/horseless-carriage-eval-todo-app.git"
 EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH", "QUALITY"]
 SCENARIO_PATH = Path(__file__).resolve().parents[3] / "eval" / "scenario" / "PRODUCT-VISION.md"
+
+
+def _litellm_proxy_reachable(proxy_base: str) -> bool:
+    """Best-effort check that the LiteLLM proxy is actually up, not just configured.
+
+    See README.md "Budget Management": the USD budget guardrail lives in
+    check_cost_budget_callback's step 2 (agents/scrum_team/agent.py) and is
+    skipped outright - not just failed closed - when LITELLM_MASTER_KEY /
+    LITELLM_PROXY_API_BASE aren't set. A configured-but-unreachable proxy still
+    fails closed at call time, but that's cold comfort for a local run: better
+    to catch it here, before any spend happens, than after.
+    """
+    try:
+        resp = requests.get(f"{proxy_base}/health/readiness", timeout=5)
+        return resp.ok
+    except requests.RequestException:
+        return False
 
 
 def _configure_env(args: argparse.Namespace) -> None:
@@ -51,6 +70,10 @@ def _configure_env(args: argparse.Namespace) -> None:
     os.environ["SESSION_ID"] = f"eval-{args.branch.replace('/', '-')}"
     os.environ["SPRINT_TOKEN_BUDGET"] = str(args.token_budget)
     os.environ["SPRINT_USD_BUDGET"] = str(args.usd_budget)
+    # Read by agents/scrum_team/tools/base.py's _with_eval_branch_prefix /
+    # _with_eval_title_prefix to tag every branch/PR this run creates with
+    # its run id - never set in real/production usage.
+    os.environ["EVAL_RUN_ID"] = args.run_id
     # Bootstrap only: the Orchestrator's very first call runs before any
     # virtual key exists (see check_cost_budget_callback's Orchestrator
     # exemption in agents/scrum_team/agent.py). Every other agent stays
@@ -336,13 +359,17 @@ def main() -> None:
     parser.add_argument("--local-path", default=None, help="Defaults to a fresh temp dir")
     parser.add_argument("--model", default="scrum-eval-cheap")
     # token_usage is cumulative for the whole session (never resets between
-    # sprints - see check_cost_budget_callback), so this must cover all 5
-    # sprints combined, not one. Calibrated against a real sprint 1 run:
-    # ~260k tokens for planning + a full implementation-and-PR cycle.
-    parser.add_argument("--token-budget", type=int, default=2000000)
+    # sprints - see check_cost_budget_callback), so this must cover all
+    # sprints combined, not one - a single sprint blowing the *total*
+    # budget permanently starves every later sprint (every LLM call gets
+    # hard-blocked for the rest of the run). Defaulted to None here and
+    # resolved below from EVAL_SPRINT_TOKEN_BUDGET (scaled by --sprints)
+    # once args.sprints is known.
+    parser.add_argument("--token-budget", type=int, default=None, help="Defaults to --sprints * EVAL_SPRINT_TOKEN_BUDGET (see .env)")
     # scrum-eval-cheap is cheap enough that token budget binds first in
     # practice; this stays as the secondary $-denominated safety net.
-    parser.add_argument("--usd-budget", type=float, default=5.0)
+    # Also resolved below from EVAL_SPRINT_USD_BUDGET, scaled by --sprints.
+    parser.add_argument("--usd-budget", type=float, default=None, help="Defaults to --sprints * EVAL_SPRINT_USD_BUDGET (see .env)")
     parser.add_argument("--max-events-per-sprint", type=int, default=300, help="Safety cap on ADK events per sprint invocation (excluding continue-nudges)")
     # Wall-clock ceiling for the whole run (all sprints combined), independent
     # of token/USD budget - see _main_async. Default leaves headroom under
@@ -350,6 +377,17 @@ def main() -> None:
     # step, artifact upload, and teardown.
     parser.add_argument("--max-duration-minutes", type=int, default=40)
     parser.add_argument("--report-path", default=None, help="Where to write the raw run manifest JSON")
+    # Gate for the local-run-without-a-live-proxy footgun below - deliberately
+    # not needed in CI, where eval.yml already waits for /health/readiness
+    # before this script ever runs.
+    parser.add_argument(
+        "--dev-mode",
+        action="store_true",
+        help="Required to proceed with a local run when the LiteLLM proxy isn't reachable "
+        "(the USD budget guardrail is enforced by the proxy - see README.md 'Budget "
+        "Management' - and silently does not apply without it, only the local token-count "
+        "guardrail still runs). Only pass this if you understand and accept that.",
+    )
     args = parser.parse_args()
 
     if args.branch is None:
@@ -361,6 +399,68 @@ def main() -> None:
         args.local_path = Path(args.local_path)
     if args.report_path is None:
         args.report_path = f"eval-run-{args.run_id.replace('/', '-')}.json"
+    # token_usage is cumulative for the whole session (never resets between
+    # sprints - see check_cost_budget_callback), so a flat per-sprint budget
+    # would permanently starve every later sprint once one sprint blew it -
+    # which is why sprints 2-3 of run 0.1.0-run2 (2026-07-21) did nothing (5
+    # events each, identical token count). Scale the per-sprint config value
+    # by --sprints instead of using it as a flat total. The per-sprint
+    # values themselves live in .env (EVAL_SPRINT_TOKEN_BUDGET /
+    # EVAL_SPRINT_USD_BUDGET, next to SPRINT_TOKEN_BUDGET/SPRINT_USD_BUDGET)
+    # rather than here, so recalibrating doesn't require a code change.
+    if args.token_budget is None:
+        per_sprint_token_budget = os.environ.get("EVAL_SPRINT_TOKEN_BUDGET")
+        if not per_sprint_token_budget:
+            parser.error(
+                "--token-budget not given and EVAL_SPRINT_TOKEN_BUDGET is not "
+                "set - see .env.example's 'Eval Harness Budget Configuration' section."
+            )
+        args.token_budget = args.sprints * int(per_sprint_token_budget)
+    if args.usd_budget is None:
+        per_sprint_usd_budget = os.environ.get("EVAL_SPRINT_USD_BUDGET")
+        if not per_sprint_usd_budget:
+            parser.error(
+                "--usd-budget not given and EVAL_SPRINT_USD_BUDGET is not "
+                "set - see .env.example's 'Eval Harness Budget Configuration' section."
+            )
+        args.usd_budget = args.sprints * float(per_sprint_usd_budget)
+
+    # Heads-up for a human running this on their own machine (as opposed to
+    # the eval-approval-gated CI job - see RELEASE.md "Team performance
+    # evaluation") that this spends real money against a real LLM. eval.yml
+    # always brings the proxy up and waits for /health/readiness before
+    # invoking this script, so this whole block is a no-op under CI.
+    if not os.environ.get("GITHUB_ACTIONS"):
+        proxy_base = os.environ.get("LITELLM_PROXY_API_BASE")
+        master_key = os.environ.get("LITELLM_MASTER_KEY")
+        proxy_ok = bool(proxy_base and master_key and _litellm_proxy_reachable(proxy_base))
+        if not proxy_ok:
+            bar = "!" * 78
+            print(
+                f"\n{bar}\n"
+                "!! LITELLM PROXY NOT REACHABLE\n"
+                "!!\n"
+                "!! The USD budget guardrail (README.md \"Budget Management\") is enforced\n"
+                "!! by the LiteLLM proxy and will NOT apply without it - only the local\n"
+                f"!! token-count guardrail (up to {args.token_budget:,} tokens) still runs.\n"
+                f"!! A misbehaving run could spend well past the intended ${args.usd_budget:.2f}\n"
+                "!! cap with no guardrail catching it.\n"
+                f"{bar}\n",
+                file=sys.stderr,
+            )
+            if not args.dev_mode:
+                parser.error(
+                    "Refusing to run without a reachable LiteLLM proxy (see warning above). "
+                    "Start it with `docker compose up -d db litellm`, or pass --dev-mode if "
+                    "you understand the USD budget guardrail won't be enforced."
+                )
+        print(
+            f"\n⚠️  About to run {args.sprints} sprint(s) against real LLM "
+            f"traffic via LiteLLM, budgeted up to {args.token_budget:,} tokens "
+            f"/ ${args.usd_budget:.2f} total for this run. This is real spend, "
+            "not a dry run.\n",
+            file=sys.stderr,
+        )
 
     args.github_token = get_github_token()
 

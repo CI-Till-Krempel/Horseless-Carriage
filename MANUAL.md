@@ -78,7 +78,8 @@ A sprint always follows the same shape:
    Orchestrator can skip.
 3. **Delivery.** The Dev Team breaks stories into tasks, estimates them in tokens,
    implements on a feature branch, and opens a PR (`git_push` → `gh_pr_create` →
-   `gh_pr_checks`) — **`main` is protected; agents cannot push to it directly.**
+   `gh_pr_checks`) — **your configured default branch (`main` unless you set otherwise)
+   is protected; agents cannot push to it directly.**
 4. **Review.** QA and the Architect comment on / review the PR
    (`gh_pr_comment`/`gh_pr_review`); their comments are auto-prefixed with their
    role so you can tell who said what.
@@ -238,9 +239,10 @@ needed beyond what `docker-compose.yaml` already provides.
      --manifest /app/eval-output/manifest.json --repo-path /app/eval-output/clone \
      --report-path /app/eval-output/report.md
    ```
-   Add `--commit-to-branch eval/local-test-1` to also push the report to the
-   eval repo, matching what CI does — skip this for quick local iteration
-   unless you want it recorded there.
+   Add `--run-id local-test-1 --base-branch eval/local-test-1` to also open
+   (and self-merge) a PR adding the report to the eval repo, matching what CI
+   does — skip this for quick local iteration unless you want it recorded
+   there.
 5. Clean up afterward — a local run creates a real branch (and possibly PRs)
    on the public eval repo:
    ```bash

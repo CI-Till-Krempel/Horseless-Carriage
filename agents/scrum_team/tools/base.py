@@ -34,6 +34,30 @@ def _record_touched_file(rel_path: str, tool_context=None) -> None:
         touched.append(rel_path)
         tool_context.state["sprint_files_touched"] = touched
 
+def _eval_run_id() -> str | None:
+    """
+    Set only by the eval harness (run_eval.py) via EVAL_RUN_ID - never by
+    real/production usage. Lets branch/PR-creating tools tag their output
+    with the run it belongs to, so multiple eval runs sharing one eval repo
+    don't produce indistinguishable branches/PRs (see _with_eval_branch_prefix
+    and _with_eval_title_prefix).
+    """
+    return os.environ.get("EVAL_RUN_ID") or None
+
+def _with_eval_branch_prefix(branch: str) -> str:
+    run_id = _eval_run_id()
+    if not run_id:
+        return branch
+    prefix = f"eval-{run_id}/"
+    return branch if branch.startswith(prefix) else f"{prefix}{branch}"
+
+def _with_eval_title_prefix(title: str) -> str:
+    run_id = _eval_run_id()
+    if not run_id:
+        return title
+    tag = f"[eval-{run_id}] "
+    return title if title.startswith(tag) else f"{tag}{title}"
+
 def _default_push_branch(tool_context=None) -> str:
     """
     The repo's configured default branch for pushes/PR bases (e.g. seeding,
