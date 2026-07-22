@@ -296,7 +296,14 @@ The system tracks performance indicators to provide visibility into team health:
 - **Vulnerability Scan Results**: Tracks critical, high, medium, and low security findings.
 
 #### Sprint Report
-At the end of each sprint, the Product Owner generates a `SPRINT-REPORT-LATEST.md` which includes a detailed breakdown of token usage per agent, total USD spend, and quality metrics.
+At the end of each sprint, the Product Owner generates a report via `create_sprint_report`, which
+includes a detailed breakdown of token usage per agent, total USD spend, and quality metrics.
+Every sprint's report is kept — written to a sequentially numbered
+`specs/reports/SPRINT-REPORT-NNN.md` (`001`, `002`, ...; the number is derived by scanning what's
+already there, the same way story/ADR IDs are generated, so there's no separate counter to drift
+out of sync) — and `specs/reports/SPRINT-REPORT-LATEST.md` is also kept up to date as a convenience
+pointer to the most recent one. Earlier versions of this only ever kept `SPRINT-REPORT-LATEST.md`,
+so every sprint but the last got silently overwritten.
 
 Example report content:
 ```markdown
@@ -319,11 +326,31 @@ Completed the core implementation of the GitHub integration and established the 
   - DevTeam: 120,500
   - ScrumMaster: 12,300
 
+## Sprint Length Feedback
+- Tokens used: 950,000 / 1,000,000 (95%)
+- Stories: 3/6 completed this sprint
+- This sprint used 95% of its token budget and left 3/6 stories unfinished - the per-sprint token
+  budget looks too small for the amount of work planned, not necessarily a quality problem.
+- **Suggested new per-sprint token budget: ~3,800,000 tokens** (extrapolated from ~316,667
+  tokens/completed story x 6 planned stories, +20% headroom).
+- **This is a recommendation only - it is NOT applied automatically.** A human must approve it and
+  set it manually (`SPRINT_TOKEN_BUDGET` / `EVAL_SPRINT_TOKEN_BUDGET`; see "Budget Management" above).
+
+## Story Estimates vs Actual Tokens
+- US-0012: estimate=50000, actual=62345
+
 ## Quality Dashboard
 - Say-Do Ratio: 0.9
 - Test Coverage: 85%
 - Defect Escape Rate: 2%
 ```
+
+The "Sprint Length Feedback" section is advisory only - see `_sprint_length_feedback` in
+`agents/scrum_team/tools/budget.py`. It only appears with a budget-increase suggestion when the
+sprint actually looks budget-starved (near/at its token cap **and** stories left unfinished); if
+there's unused budget headroom left over, it says so instead and points at process/quality issues
+rather than the budget. Nothing here ever changes `SPRINT_TOKEN_BUDGET`/`budgets.total` itself - a
+human has to act on the suggestion deliberately.
 
 #### Admin UI
 Log in to `http://localhost:4000/ui/` to see real-time cost tracking and budget status for the `scrum-sprint-budget`.
@@ -383,6 +410,16 @@ Stored in this repository, these provide the structure for Scrum artifacts.
 - `spec-templates/architecture/` — Architecture Decision Record (ADR) templates.
 - `spec-templates/stories/` — User story templates.
 - `spec-templates/workflows/` — Agentic workflow and runbook templates.
+- `spec-templates/DOD.md` / `spec-templates/DOR.md` — Definition of Done / Definition of Ready
+  checklists. Unlike the templates above, these aren't per-item blueprints to copy - PO and Dev Team
+  read them directly (`read_doc`) and are instructed (see `PO_PROMPT`/`DEV_PROMPT`) to check every
+  story against them before committing to it (DoR) or accepting it as Done (DoD). DoD is partly
+  enforced in code, not just by asking nicely: a story can't be written to `specs/stories/` with
+  status Done if its title/user story/acceptance criteria are missing or still placeholder text
+  (`_story_readiness_issues` in `agents/scrum_team/tools/requirements.py`), and QA must run
+  `check_build()` (installs the project's actual declared dependencies) for every story before it's
+  Done - both were added after a real eval run shipped a story as "Done" with an empty user story
+  and a `requirements.txt` pinning a package version that doesn't exist.
 
 ### 2. Specification Artifacts (`specs/`)
 Stored in your **target state repository** (configured via `STATE_REPO_PATH`), these are the actual documents generated and updated by the agents.
@@ -392,7 +429,12 @@ Stored in your **target state repository** (configured via `STATE_REPO_PATH`), t
 - `specs/stories/` — Refined User Stories.
 - `specs/workflows/` — Agentic workflows and runbooks.
 - `specs/reports/` — Sprint review reports and budget status.
-- `specs/ROADMAP.md` — Product roadmap tracking releases and stories.
+- `specs/ROADMAP.md` — Product roadmap tracking releases and stories. Checkbox state (`update_roadmap`)
+  is resolved from whichever of `sprint_backlog` (Dev Team's working record) or `product_backlog`
+  (PO's) has the more complete status for a given story, since Dev Team marks completion on the
+  former and nothing else automatically mirrors that into the latter. `update_roadmap` must be
+  called again with a story listed once it's actually Done — calling it once during sprint planning
+  does not keep re-rendering checkbox state on its own as work completes.
 
 Contribution rules
 - One artifact per file; keep them small and link related docs together

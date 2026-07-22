@@ -230,11 +230,18 @@ of only being noticed anecdotally.
   against the eval branch once each sprint's invocation finishes — a deliberate,
   documented simplification of the real "Human Review is mandatory" flow, not a
   silent one. Before merging each sprint's PR(s), it posts that sprint's full
-  raw agent activity log (every event's author/text/tool-calls/tool-responses -
-  see `_run_one_sprint`) as a PR comment via `_format_sprint_transcript` /
-  `_post_sprint_transcript` - a PR's diff alone doesn't show the reasoning or
-  tool-call trail behind it, and this is otherwise only ever written to the run
-  manifest (a CI artifact, not something a PR reviewer sees). Every branch/PR
+  raw agent activity log (every event's author/text and each tool call's actual
+  arguments/response, not just the tool name - a cheap model often makes a
+  tool call with little or no accompanying free text, so name-only logging
+  looked like "just tool calls, no conversation" when the real substance - PR
+  comment bodies, code passed to `write_file`, etc. - was one field over the
+  whole time; see `_run_one_sprint`) as a PR comment via
+  `_format_sprint_transcript`/`_post_sprint_transcript`, capped at
+  `MAX_TRANSCRIPT_CHARS` with a pointer to the full, untruncated version. That
+  full version - every sprint's complete transcript, all events, no cap - is
+  written to `transcript.md` and uploaded as its own CI artifact (see
+  `_format_full_transcript`, eval.yml's "Upload report artifact" step) rather
+  than only ever existing inside the run manifest. Every branch/PR
   the team creates during an eval run is tagged with the run id
   (`eval-<run-id>/<branch>`, `[eval-<run-id>]` PR title prefix - see
   `_with_eval_branch_prefix`/`_with_eval_title_prefix` in

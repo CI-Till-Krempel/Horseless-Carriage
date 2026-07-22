@@ -14,3 +14,6 @@ into `specs/`.
       `estimate` field) - the estimate that will later be compared against
       actual tokens spent (see `spec-templates/DOD.md`)
 - [ ] Story is present in `specs/ROADMAP.md` under the version it targets
+- [ ] The existing build is green before adding new work on top of it - if the previous story's
+      `check_build()` (see `spec-templates/DOD.md`) wasn't run or failed, fix that first rather than
+      building further on top of an already-broken dependency set

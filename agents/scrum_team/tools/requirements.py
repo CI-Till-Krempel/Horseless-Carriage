@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file
+from ..helpers import is_story_done
 
 # Matches a bare item ID (US-0001, EP-0002, ...) and nothing else. Guards
 # against building a filename like "US-0007-US-0001.md" when a story was
@@ -12,6 +13,36 @@ from .base import _configured_repo_root, _state_file_path, _project_root, _recor
 # in real eval runs (0.1.0-run4/run5's specs/stories/US-0010-US-009.md,
 # US-0007-US-0001.md, etc.).
 _BARE_ID_PATTERN = re.compile(r"^[A-Za-z]{2,4}-\d{2,6}$")
+
+# Matches a "filled-in" user story with every slot left empty (e.g. "As a ,
+# I want , so that .") - distinct from the template's own placeholder text,
+# which _update_story_markdown already substitutes away when a real value is
+# given. Seen in real eval runs (0.1.0-run6): the model does replace the
+# placeholder, just with nothing.
+_BLANK_USER_STORY_PATTERN = re.compile(r"^as a\s*,\s*i want\s*,\s*so that\s*\.?\s*$", re.IGNORECASE)
+_PLACEHOLDER_USER_STORY = "As a <role>, I want <capability>, so that <benefit>."
+
+
+def _story_readiness_issues(item: Dict[str, Any], is_epic: bool) -> List[str]:
+    """
+    Mechanical content-completeness check, applied when a story is being
+    marked Done (see spec-templates/DOD.md) - a doc-only checklist the model
+    is *told* to consult doesn't stop it from writing an empty/garbage story
+    anyway; this is the code-level backstop for the concrete failure modes
+    actually observed (title reused as another item's ID, "As a , I want ,
+    so that ." with every slot blank, no acceptance criteria at all).
+    """
+    issues = []
+    title = (item.get("title") or "").strip()
+    if not title or _BARE_ID_PATTERN.match(title):
+        issues.append("title is missing or is just another item's ID, not a real description")
+    if not is_epic:
+        user_story = (item.get("user_story") or "").strip()
+        if not user_story or user_story == _PLACEHOLDER_USER_STORY or _BLANK_USER_STORY_PATTERN.match(user_story):
+            issues.append("user_story is missing, still the template placeholder, or has every slot left blank")
+    if not item.get("acceptance_criteria"):
+        issues.append("acceptance_criteria is empty")
+    return issues
 
 def upsert_story(story: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
@@ -88,14 +119,29 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
                 else:
                     new_lines.append("\nStories")
                 for s in stories:
-                    s_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                    # DEV updates completion status on sprint_backlog (via
+                    # plan_sprint_backlog_item); PO's own product_backlog
+                    # entry is never automatically synced from that - so
+                    # checking product_backlog alone silently never sees a
+                    # story marked Done during the sprint (roadmap checkbox
+                    # stays unchecked forever). Check both, sprint_backlog
+                    # first since it's the more current record during an
+                    # active sprint, and treat "done" as sticky - if either
+                    # list says Done, it's Done, regardless of what the
+                    # other says.
+                    sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                    product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                    s_data = {**product_data, **sprint_data}
                     s_id = s_data.get("id") or s
                     s_title = s_data.get("title") or ""
                     status = s_data.get("status", "To Do")
                     mark = " "
-                    if status == "In Progress": mark = "~"
-                    elif status == "Done": mark = "x"
-                    elif status == "In Review": mark = "R"
+                    if is_story_done(status) or is_story_done(product_data.get("status")) or is_story_done(sprint_data.get("status")):
+                        mark = "x"
+                    elif str(status).strip().lower() == "in progress":
+                        mark = "~"
+                    elif str(status).strip().lower() == "in review":
+                        mark = "R"
                     new_lines.append(f"- [{mark}] [{s_id}] {s_title}")
                 while i < len(lines) and not (lines[i].startswith("###") or lines[i].startswith("---") or lines[i].strip() == ""):
                     i += 1
@@ -176,8 +222,12 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
         updated_item = item
 
     save_state_to_repo(tool_context)
-    _update_story_markdown(updated_item, tool_context)
-    return {"status": "ok", "updated": (updated_item != item), "item": updated_item}
+    story_md_result = _update_story_markdown(updated_item, tool_context)
+    if story_md_result.get("status") != "ok":
+        # Surface the failure (e.g. a Definition-of-Ready rejection) instead
+        # of silently discarding it, as this used to do unconditionally.
+        return {"status": "error", "message": story_md_result.get("message"), "item": updated_item, "story_markdown": story_md_result}
+    return {"status": "ok", "updated": (updated_item != item), "item": updated_item, "story_markdown": story_md_result}
 
 def _generate_next_id(prefix: str, tool_context=None) -> str:
     s = tool_context.state
@@ -379,9 +429,27 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     if not template_path.exists():
         return {"status": "error", "message": f"Template {template_name} not found."}
 
+    status = item.get("status", "Draft")
+    # Gated on is_story_done rather than "any non-Draft status", since status
+    # is a free-form string used for all sorts of intermediate states (test
+    # fixtures alone use "new"/"in_progress") - blocking all of those would
+    # be far more disruptive than the actual observed failure mode: a story
+    # explicitly marked *Done* with garbage/missing content (title reused as
+    # another item's ID, blank user story, no acceptance criteria).
+    if is_story_done(status):
+        issues = _story_readiness_issues(item, is_epic)
+        if issues:
+            return {
+                "status": "error",
+                "message": (
+                    "Fails Definition of Done (see spec-templates/DOD.md) - not written: "
+                    + "; ".join(issues) + ". Fix the content before marking this Done."
+                ),
+                "issues": issues,
+            }
+
     from .docs import _strip_agent_safeguard_comments
     template_content = _strip_agent_safeguard_comments(template_path.read_text(encoding="utf-8", errors="replace"))
-    status = item.get("status", "Draft")
     priority = item.get("priority", "Must")
     
     # User story text for stories, or overview for epics

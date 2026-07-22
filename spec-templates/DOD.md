@@ -6,6 +6,13 @@ consult, not a template to copy per story - reference it directly
 
 - [ ] Code reviewed
 - [ ] Automated tests passing
+- [ ] **The build actually runs** - QA must call `check_build()` for this story before it's accepted
+      as Done. This attempts a real install of the project's declared dependencies
+      (`requirements.txt`/`package.json`); a nonexistent pinned package version or similar breakage
+      fails this check immediately. A story whose `check_build()` reports `passing: false` is not
+      Done, no matter how complete the code otherwise looks - this exact failure mode (a pinned
+      `SQLAlchemy` version that doesn't exist) shipped as "Done" in a real eval run before this check
+      existed.
 - [ ] Acceptance criteria met
 - [ ] No critical security issues
 - [ ] Docs updated if needed
