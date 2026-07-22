@@ -66,6 +66,12 @@ jobs:
             echo "GIT_USER_EMAIL=eval@horseless-carriage.local"
             echo "SESSION_ID=eval-${{ steps.run_id.outputs.run_id }}"
             echo "LOG_LEVEL=info"
+            # docker-compose.yaml's agent service always sets
+            # PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE} - if this
+            # .env file doesn't define it, Compose substitutes an *empty string*,
+            # not "unset", so get_process_overhead_percentage()'s os.getenv(...,
+            # "10.0") default never kicks in and float("") crashes the run.
+            echo "PROCESS_OVERHEAD_PERCENTAGE=20"
             # Mirrors .env.example's "Eval Harness Budget Configuration" -
             # override via repo/environment Settings -> Variables if these
             # ever need recalibrating without a code change.
