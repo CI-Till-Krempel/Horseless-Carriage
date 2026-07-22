@@ -153,7 +153,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.lite_llm import LiteLlm
 
-from .helpers import get_process_overhead_percentage
+from .helpers import get_process_overhead_percentage, is_story_done
 from .prompts import (
     ORCHESTRATOR_PROMPT,
     PO_PROMPT,
@@ -206,6 +206,7 @@ from .tools import (
 from .tools.quality import (
     calculate_kpis,
     update_sprint_report as update_sprint_report_with_kpis,
+    check_build,
 )
 from .tools.workflow import (
     generate_workflow_diagram,
@@ -450,7 +451,7 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
     # Calculate backlog progress
     backlog = state.sprint_backlog or []
     total_items = len(backlog)
-    completed_items = len([i for i in backlog if i.get("status") in ["done", "completed", "closed"]])
+    completed_items = len([i for i in backlog if is_story_done(i.get("status"))])
     
     # Budget info
     token_usage = state.token_usage.total
@@ -687,6 +688,7 @@ qa_agent = LlmAgent(
         log_decision,
         gh_pr_comment,
         gh_pr_review,
+        check_build,
     ],
     **COMMON_AGENT_CALLBACKS,
 )

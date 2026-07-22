@@ -1,10 +1,12 @@
 # agents/scrum_team/tools/budget.py
 from __future__ import annotations
+import math
 import os
+import re
 import requests
 from typing import Any, Dict, List
 from .base import _state_file_path, _configured_repo_root
-from ..helpers import get_process_overhead_percentage
+from ..helpers import get_process_overhead_percentage, is_story_done
 
 def update_budgets(total_usd: float = None, tool_context=None) -> Dict[str, Any]:
     """
@@ -193,6 +195,90 @@ def _summarize_transcript(transcript: List[Dict[str, Any]]) -> List[Dict[str, An
         last_by_agent[agent_name] = entry
     return [last_by_agent[name] for name in order]
 
+def _sprint_length_feedback(s: Dict[str, Any]) -> str:
+    """
+    Advisory-only: flags when this sprint looks budget-starved (hit its
+    token cap with stories still unfinished) and suggests a new per-sprint
+    token budget extrapolated from the observed tokens-per-completed-story
+    rate. Never applied automatically - a human must change the actual
+    config (SPRINT_TOKEN_BUDGET / EVAL_SPRINT_TOKEN_BUDGET) - see README.md
+    "Budget Management" / RELEASE.md "Team performance evaluation".
+    """
+    budgets = s.get("budgets", {})
+    token_limit = budgets.get("total", 0)
+    if token_limit <= 0:
+        try:
+            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 1000000))
+        except (ValueError, TypeError):
+            token_limit = 1000000
+
+    token_used = s.get("token_usage", {}).get("total", 0)
+    backlog = s.get("sprint_backlog", []) or []
+    total_items = len(backlog)
+    done_items = len([i for i in backlog if is_story_done(i.get("status"))])
+    unfinished = total_items - done_items
+    pct = (token_used / token_limit * 100) if token_limit else 0.0
+
+    lines = [
+        "\n## Sprint Length Feedback\n",
+        f"- Tokens used: {token_used:,} / {token_limit:,} ({pct:.0f}%)\n",
+        f"- Stories: {done_items}/{total_items} completed this sprint\n",
+    ]
+
+    if total_items == 0:
+        lines.append("- No sprint backlog recorded - nothing to assess.\n")
+        return "".join(lines)
+    if unfinished == 0:
+        lines.append("- All planned stories were completed within budget - no sprint-length change suggested.\n")
+        return "".join(lines)
+
+    if token_limit > 0 and token_used >= 0.9 * token_limit:
+        avg_per_done = token_used / done_items if done_items else token_used / total_items
+        projected_total = avg_per_done * total_items
+        suggested = math.ceil(projected_total * 1.2 / 50_000) * 50_000
+        lines += [
+            f"- This sprint used {pct:.0f}% of its token budget and left {unfinished}/{total_items} "
+            "stories unfinished - the per-sprint token budget looks too small for the amount of work "
+            "planned, not necessarily a quality problem.\n",
+            f"- **Suggested new per-sprint token budget: ~{suggested:,} tokens** (extrapolated from "
+            f"~{avg_per_done:,.0f} tokens/completed story x {total_items} planned stories, +20% headroom).\n",
+            "- **This is a recommendation only - it is NOT applied automatically.** A human must "
+            "approve it and set it manually (`SPRINT_TOKEN_BUDGET` / `EVAL_SPRINT_TOKEN_BUDGET`; see "
+            "README.md \"Budget Management\").\n",
+        ]
+    else:
+        remaining = max(token_limit - token_used, 0)
+        lines.append(
+            f"- {unfinished}/{total_items} stories are unfinished despite {remaining:,} tokens of "
+            "budget headroom still available - the sprint-length token budget is likely NOT the "
+            "cause; consider reviewing process/quality issues instead (see Top Problems / retro "
+            "actions) rather than increasing the budget.\n"
+        )
+    return "".join(lines)
+
+
+_SPRINT_REPORT_NUM_PATTERN = re.compile(r"SPRINT-REPORT-(\d+)\.md$")
+
+
+def _next_sprint_report_path(tool_context) -> str:
+    """
+    Picks the next sequential specs/reports/SPRINT-REPORT-NNN.md path by
+    scanning what's already there - self-healing like _generate_next_id,
+    no separate counter in state to drift out of sync. Previously every
+    sprint overwrote the same SPRINT-REPORT-LATEST.md, so only the final
+    sprint's report ever survived in the repo.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    reports_dir = repo_root / "specs" / "reports"
+    max_num = 0
+    if reports_dir.exists():
+        for fp in reports_dir.glob("SPRINT-REPORT-*.md"):
+            m = _SPRINT_REPORT_NUM_PATTERN.match(fp.name)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+    return f"specs/reports/SPRINT-REPORT-{max_num + 1:03d}.md"
+
+
 def create_sprint_report(summary: str, accomplishments: List[str], tool_context=None) -> Dict[str, Any]:
     """
     Generate a management summary report for the current sprint.
@@ -218,7 +304,9 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     report += "\n### Per-Agent Token Usage\n"
     for agent, agent_usage in usage.get("agents", {}).items():
         report += f"  - {agent}: {agent_usage}\n"
-        
+
+    report += _sprint_length_feedback(s)
+
     if retro:
         report += "\n## Retrospective Actions (including efficiency improvements)\n"
         for action in retro:
@@ -263,10 +351,12 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         report += "No transcript available yet for this sprint.\n"
 
     s["sprint_report"] = report
-    path = "specs/reports/SPRINT-REPORT-LATEST.md"
-    write_file(path, report, overwrite=True, tool_context=tool_context)
-    
-    return {"status": "ok", "report": report, "path": path}
+    numbered_path = _next_sprint_report_path(tool_context)
+    write_file(numbered_path, report, overwrite=True, tool_context=tool_context)
+    latest_path = "specs/reports/SPRINT-REPORT-LATEST.md"
+    write_file(latest_path, report, overwrite=True, tool_context=tool_context)
+
+    return {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
 
 def calculate_cost_breakdown(tool_context=None) -> Dict[str, Any]:
     """

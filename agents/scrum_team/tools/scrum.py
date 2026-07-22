@@ -260,11 +260,28 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
             break
 
     if not updated_item:
-        entry = {"title": key, **plan}
+        # Inherit title/user_story/acceptance_criteria/type from the matching
+        # product_backlog entry (PO-owned, via upsert_story) rather than
+        # defaulting title to the bare lookup key - that default is exactly
+        # what produced story files literally titled "US-0008" in real eval
+        # runs (plan_sprint_backlog_item's own plan dict never carries those
+        # PO-owned fields at all).
+        product_match = next(
+            (x for x in s.get("product_backlog", []) if x.get("id") == key or x.get("title") == key),
+            {},
+        )
+        entry = {**product_match, **plan}
+        entry.setdefault("title", key)
         sprint.append(entry)
         s["sprint_backlog"] = sprint
         updated_item = entry
 
     _ = save_state_to_repo(tool_context)
-    _update_story_markdown(updated_item, tool_context)
-    return {"status": "ok", "updated": (updated_item != ({"title": key, **plan})), "item": updated_item}
+    story_md_result = _update_story_markdown(updated_item, tool_context)
+    if story_md_result.get("status") != "ok":
+        # Surface the failure (e.g. a Definition-of-Ready rejection) instead
+        # of silently discarding it - a caller that only checks this
+        # top-level status must be able to see the story file wasn't
+        # actually written.
+        return {"status": "error", "message": story_md_result.get("message"), "item": updated_item, "story_markdown": story_md_result}
+    return {"status": "ok", "updated": (updated_item != ({"title": key, **plan})), "item": updated_item, "story_markdown": story_md_result}

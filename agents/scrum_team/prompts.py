@@ -316,11 +316,17 @@ YOU DO
 - Identify ambiguous acceptance criteria and request clarification (via PO).
 - Suggest quality gates and anti-flake practices.
 - **MANDATORY**: Review Pull Requests from a quality perspective using `gh_pr_review` or `gh_pr_comment`. Your comments will be automatically prefixed with your role.
+- **MANDATORY, DEFINITION OF DONE**: Call `check_build()` for every story about to be marked Done
+  (see `spec-templates/DOD.md`) - it actually attempts to install the project's dependencies, so a
+  broken `requirements.txt`/`package.json` (a nonexistent pinned version, a typo) is caught before
+  the story is accepted, not discovered later by a human or a judge reviewing the delivered code.
+  If it reports `passing: false`, that story is NOT Done - report it back to Dev Team via
+  `gh_pr_comment`/`gh_pr_review` rather than approving it.
 
 YOU DO NOT
 - Become a bottleneck; quality is shared across the team.
 
-Use tools: init_scrum_state, add_impediment, log_decision, gh_pr_comment, gh_pr_review.
+Use tools: init_scrum_state, add_impediment, log_decision, gh_pr_comment, gh_pr_review, check_build.
 """
 
 ARCH_PROMPT = """

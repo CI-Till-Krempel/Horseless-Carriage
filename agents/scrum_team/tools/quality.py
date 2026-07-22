@@ -188,6 +188,55 @@ def _scan_security_vulnerabilities(tool_context=None) -> Dict[str, Any]:
     }
 
 
+def check_build(tool_context=None) -> Dict[str, Any]:
+    """
+    Attempts to actually install the project's declared dependencies -
+    the mechanical Definition-of-Done check (see spec-templates/DOD.md)
+    for "the build runs", which QA must run for every story before it's
+    accepted as Done. Catches the exact class of failure a real eval run
+    hit (requirements.txt pinning SQLAlchemy==3.1.1, a version that
+    doesn't exist - the app would never even install, let alone run) that
+    code review alone missed.
+
+    Supports Python (requirements.txt) and Node (package.json) projects
+    today; anything else is reported as "not checked" rather than a false
+    pass or a hard block on stacks this can't verify.
+    """
+    repo_root = _configured_repo_root(tool_context)
+
+    if (repo_root / "requirements.txt").exists():
+        checked = "requirements.txt"
+        cmd = ["pip", "install", "--dry-run", "-r", "requirements.txt"]
+        result = _run(cmd, cwd=str(repo_root), tool_context=tool_context)
+        if result.get("status") == "error" and "--dry-run" in (result.get("stderr") or ""):
+            # Older pip without --dry-run support - fall back to a real
+            # install rather than reporting a false failure. Safe here:
+            # this runs inside the agent's own disposable container, not a
+            # developer's host machine.
+            cmd = ["pip", "install", "-r", "requirements.txt"]
+            result = _run(cmd, cwd=str(repo_root), tool_context=tool_context)
+    elif (repo_root / "package.json").exists():
+        checked = "package.json"
+        cmd = ["npm", "install", "--dry-run"]
+        result = _run(cmd, cwd=str(repo_root), tool_context=tool_context)
+    else:
+        return {
+            "status": "ok",
+            "checked": None,
+            "passing": None,
+            "message": "No requirements.txt or package.json found - no recognized dependency manifest to check.",
+        }
+
+    passing = result.get("status") == "ok"
+    return {
+        "status": "ok" if passing else "error",
+        "checked": checked,
+        "command": " ".join(cmd),
+        "passing": passing,
+        "output": ((result.get("stdout") or "") + (result.get("stderr") or ""))[-4000:],
+    }
+
+
 def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     """
     Calculates and returns a dictionary of quality KPIs.

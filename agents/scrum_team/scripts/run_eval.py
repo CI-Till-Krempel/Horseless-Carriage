@@ -159,10 +159,20 @@ def _format_sprint_transcript(sprint_result: dict, truncate: bool = True) -> str
     ]
     for i, event in enumerate(sprint_result.get("events") or [], start=1):
         lines.append(f"### Event {i} - {event.get('author')}")
-        if event.get("tool_calls"):
-            lines.append(f"- Tool calls: {', '.join(event['tool_calls'])}")
-        if event.get("tool_responses"):
-            lines.append(f"- Tool responses: {', '.join(event['tool_responses'])}")
+        for call in event.get("tool_calls") or []:
+            # Backward-compatible with the old name-only shape, in case
+            # anything still hands one of those in (e.g. a test fixture).
+            name = call.get("name") if isinstance(call, dict) else call
+            args = call.get("args") if isinstance(call, dict) else None
+            lines.append(f"- Tool call: `{name}`")
+            if args:
+                lines += ["  ```json", json.dumps(args, indent=2, default=str), "  ```"]
+        for resp in event.get("tool_responses") or []:
+            name = resp.get("name") if isinstance(resp, dict) else resp
+            response = resp.get("response") if isinstance(resp, dict) else None
+            lines.append(f"- Tool response: `{name}`")
+            if response:
+                lines += ["  ```json", json.dumps(response, indent=2, default=str), "  ```"]
         if event.get("text"):
             lines += ["", "```", event["text"], "```"]
         lines.append("")
@@ -352,10 +362,21 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
                     if getattr(part, "text", None):
                         record["text"] = part.text
                         final_text = part.text
+                    # Capture args/response, not just the tool name - the
+                    # actual substance of what an agent wrote (a PR comment
+                    # body, a sprint report, source code passed to
+                    # write_file) lives there. A cheap model often makes a
+                    # tool call with little or no accompanying free text, so
+                    # name-only logging looked like "just tool calls, no
+                    # conversation" even though the real content was one
+                    # field over the whole time.
                     if getattr(part, "function_call", None):
-                        record["tool_calls"].append(part.function_call.name)
+                        fc = part.function_call
+                        record["tool_calls"].append({"name": fc.name, "args": dict(fc.args) if fc.args else {}})
                     if getattr(part, "function_response", None):
-                        record["tool_responses"].append(part.function_response.name)
+                        fr = part.function_response
+                        response = fr.response if isinstance(fr.response, dict) else {"value": fr.response}
+                        record["tool_responses"].append({"name": fr.name, "response": response})
             events.append(record)
             if len(events) >= max_events or time.monotonic() >= deadline:
                 break
