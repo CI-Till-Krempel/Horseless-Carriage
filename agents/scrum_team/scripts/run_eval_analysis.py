@@ -37,6 +37,41 @@ SKIP_DIRS = {".git", ".hc", "node_modules", "__pycache__", ".venv"}
 MAX_FILE_CHARS = 8000
 MAX_TOTAL_CODE_CHARS = 60000
 
+# Underlying provider model per driver-model alias (see litellm.yaml) - used
+# only to look up litellm's static per-token pricing table for a rough cost
+# estimate. manifest token_usage doesn't split prompt/completion tokens, so
+# _estimate_cost_range reports a [low, high] bound (all-input vs
+# all-output), not a single exact figure.
+MODEL_PRICING_LOOKUP = {
+    "scrum-eval-cheap": "gemini/gemini-flash-lite-latest",
+}
+
+
+def _total_tokens_used(manifest: dict) -> int:
+    """
+    token_usage.total is cumulative for the whole run, never resets between
+    sprints (see check_cost_budget_callback) - so the run's total is the
+    last sprint's figure, NOT the sum of every sprint row (that would
+    double/triple-count earlier sprints' tokens).
+    """
+    totals = [(s.get("token_usage") or {}).get("total", 0) for s in manifest.get("sprints", [])]
+    return max(totals, default=0)
+
+
+def _estimate_cost_range(total_tokens: int, model_alias: str):
+    """Returns (low, high) USD, or None if the model isn't in MODEL_PRICING_LOOKUP or litellm has no pricing for it."""
+    import litellm
+
+    underlying = MODEL_PRICING_LOOKUP.get(model_alias)
+    if not underlying or total_tokens <= 0:
+        return None
+    try:
+        low, _ = litellm.cost_per_token(model=underlying, prompt_tokens=total_tokens, completion_tokens=0)
+        _, high = litellm.cost_per_token(model=underlying, prompt_tokens=0, completion_tokens=total_tokens)
+        return (low, high) if low <= high else (high, low)
+    except Exception:
+        return None
+
 
 def _collect_repo_snapshot(repo_path: Path) -> dict:
     """Real file tree + capped file contents - never fabricated, and
@@ -189,6 +224,20 @@ def _render_report(manifest: dict, judgment: dict) -> str:
         _sprint_metrics_table(manifest),
         "",
     ]
+
+    total_tokens = _total_tokens_used(manifest)
+    cost_range = _estimate_cost_range(total_tokens, manifest.get("model"))
+    lines += ["## Token & Cost Summary", "", f"- Total tokens used: {total_tokens:,}"]
+    if cost_range:
+        low, high = cost_range
+        lines.append(
+            f"- Expected cost: ${low:.4f} - ${high:.4f} (rough estimate from litellm's static "
+            f"pricing for `{MODEL_PRICING_LOOKUP.get(manifest.get('model'))}` - token_usage doesn't "
+            "split prompt/completion tokens, so this is an all-input-vs-all-output bound, not an exact figure)"
+        )
+    else:
+        lines.append(f"- Expected cost: n/a (no pricing lookup configured for model `{manifest.get('model')}`)")
+    lines.append("")
 
     if "error" in judgment:
         lines += ["## Judge error", "", judgment["error"], "", "Raw response:", "```", judgment.get("raw_response", ""), "```"]

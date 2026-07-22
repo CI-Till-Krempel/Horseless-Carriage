@@ -5,6 +5,30 @@ from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch
 
+def _strip_agent_safeguard_comments(text: str) -> str:
+    """
+    Templates under spec-templates/ carry `<!-- ... -->` HTML comment lines
+    (e.g. "AGENT SAFEGUARD: Do NOT implement or fill out this template file
+    directly.") warning agents off editing the blueprint itself. Those
+    comments are meta-instructions for whoever's about to copy the
+    template, not content that belongs in the instantiated document - a
+    plain text copy (which is all create_from_template/upsert_adr do
+    otherwise) leaves them sitting, unfilled, in every real story/ADR/PRD.
+    """
+    def _is_full_line_comment(line: str) -> bool:
+        stripped = line.strip()
+        return stripped.startswith("<!--") and stripped.endswith("-->")
+
+    lines = [line for line in text.splitlines() if not _is_full_line_comment(line)]
+    # Collapse the blank-line gap the removed comment lines leave behind.
+    deduped = []
+    for line in lines:
+        if line.strip() == "" and deduped and deduped[-1].strip() == "":
+            continue
+        deduped.append(line)
+    return "\n".join(deduped) + ("\n" if text.endswith("\n") else "")
+
+
 def write_file(path: str, content: str, overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Write content to a repository-relative file path.
@@ -132,7 +156,7 @@ def upsert_adr(title: str, context: str, decision: str, consequences: str, adr_i
     if not template_path.exists():
          return {"status": "error", "message": "ADR template not found."}
     
-    content = template_path.read_text(encoding="utf-8", errors="replace")
+    content = _strip_agent_safeguard_comments(template_path.read_text(encoding="utf-8", errors="replace"))
     content = content.replace("ADR-XXXX", adr_id)
     content = content.replace("<short title>", title)
     content = content.replace("Proposed | Accepted | Rejected | Superseded by ADR-YYYY | Deprecated", status)
@@ -208,7 +232,7 @@ def create_from_template(template_path: str, destination_path: str, substitution
         if not src.exists():
             return {"status": "error", "message": f"Template not found: {template_path}"}
             
-        raw = src.read_text(encoding="utf-8", errors="replace")
+        raw = _strip_agent_safeguard_comments(src.read_text(encoding="utf-8", errors="replace"))
         try:
             subs: Dict[str, Any] = json.loads(substitutions_json or "{}")
         except json.JSONDecodeError as e:

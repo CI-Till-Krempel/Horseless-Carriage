@@ -192,6 +192,7 @@ from .tools import (
     update_budgets,
     get_budget_status,
     log_token_usage,
+    log_story_tokens,
     create_sprint_report,
     create_release_pr,
     gh_pr_check_logs,
@@ -656,6 +657,7 @@ dev_team = LlmAgent(
     tools=[
         init_scrum_state,
         plan_sprint_backlog_item,
+        log_story_tokens,
         add_impediment,
         log_decision,
         write_file,
