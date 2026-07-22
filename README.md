@@ -246,7 +246,10 @@ The system implements a **dual-layer budgeting strategy** to ensure both operati
 
 ### 1. Token Budget (ADK Layer)
 - **Unit**: Total tokens (e.g., 1,000,000).
-- **Enforcement**: Hard-blocked locally by the ADK framework via callbacks (`enforce_budget_callback` and `check_model_budget_callback`).
+- **Enforcement**: Hard-blocked locally, purely from session state/`SPRINT_TOKEN_BUDGET` — no
+  call to LiteLLM is involved, so this guardrail applies **even if the LiteLLM proxy isn't
+  running**. See step 1 of `check_cost_budget_callback` in `agents/scrum_team/agent.py`
+  (usage is recorded by the separate `update_token_usage_callback`).
 - **Automatic Tracking**: The system automatically tracks token usage after every LLM call and attributes it to the specific agent role.
 - **Purpose**: Prevents long-running loops or runaway agent conversations. LiteLLM natively supports rate limits (tokens per minute) but does not provide a hard-stop for a *total cumulative token quota* across an entire sprint. Local enforcement provides immediate, zero-latency feedback and allows for a pure "logical" work limit.
 
@@ -259,6 +262,16 @@ The system implements a **dual-layer budgeting strategy** to ensure both operati
   provider-level pricing. By setting a `max_budget` on the `scrum-sprint-budget`
   object, we ensure that the team never exceeds a hard financial limit, regardless of
   the token count.
+- **Requires the LiteLLM proxy to actually be running.** Step 2 of
+  `check_cost_budget_callback` only runs this check `if master_key and proxy_base` (both
+  `LITELLM_MASTER_KEY` and `LITELLM_PROXY_API_BASE` set) — if either is unset, the USD
+  check is **skipped outright** (not failed closed), and only the token budget above still
+  applies. If the proxy *is* configured but unreachable (e.g. the container isn't up), the
+  check does fail closed with a `[BUDGET ERROR]` instead. In short: no USD guardrail at all
+  without proxy config; a hard stop instead of silent bypass if it's configured but down.
+  `agents/scrum_team/scripts/run_eval.py` checks proxy reachability itself before a local
+  (non-CI) run and refuses to proceed without an explicit `--dev-mode` flag — see
+  RELEASE.md "Team performance evaluation".
 - **No unscoped fallback spend**: every specialist agent's calls are blocked in code
   until it has its own `scrum-sprint-budget`-attached virtual key —
   `create_litellm_virtual_key()` must run for it first. Without this, a missing key

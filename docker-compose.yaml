@@ -65,6 +65,10 @@ services:
       - SPRINT_TOKEN_BUDGET=${SPRINT_TOKEN_BUDGET}
       - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET}
       - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE}
+      # Per-sprint config for agents/scrum_team/scripts/run_eval.py - see
+      # .env.example's "Eval Harness Budget Configuration" section.
+      - EVAL_SPRINT_TOKEN_BUDGET=${EVAL_SPRINT_TOKEN_BUDGET}
+      - EVAL_SPRINT_USD_BUDGET=${EVAL_SPRINT_USD_BUDGET}
       - SESSION_ID=${SESSION_ID}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - GIT_USER_NAME=${GIT_USER_NAME}

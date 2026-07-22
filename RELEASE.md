@@ -198,11 +198,12 @@ of only being noticed anecdotally.
   using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and a
   budget sized for a full run (`--token-budget`/`--usd-budget`, reusing the
   same guardrails from ["Budget Management"](README.md#budget-management)) -
-  defaulted per sprint (currently 2,600,000 tokens/$3 per sprint, calibrated
-  against a real run that hit 2,070,364 tokens in a single sprint) rather than
-  a flat total, since the token check is cumulative for the whole session and
-  never resets: one sprint blowing a flat total silently starves every later
-  sprint of any further LLM calls.
+  defaulted per sprint from `EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_SPRINT_USD_BUDGET`
+  in `.env` (currently 2,600,000 tokens/$3 per sprint, calibrated against a
+  real run that hit 2,070,364 tokens in a single sprint) rather than a flat
+  total, since the token check is cumulative for the whole session and never
+  resets: one sprint blowing a flat total silently starves every later sprint
+  of any further LLM calls.
   On top of that, `--max-duration-minutes` (default 40) is an independent
   wall-clock safety net: if the token/USD guardrails somehow don't stop things
   (a bug, an unexpected model behavior), the run still stops gracefully - it
@@ -210,6 +211,15 @@ of only being noticed anecdotally.
   running until the CI job's own hard `timeout-minutes` kills the process with
   no output at all. Verified directly: forcing the deadline to 0 stops the run
   before sprint 1 with `stopped_early: true` and a valid, if empty, report.
+  **Local runs only** (`GITHUB_ACTIONS` unset): before spending anything, the
+  script checks that the LiteLLM proxy is actually reachable, not just
+  configured - the USD guardrail above lives entirely in the proxy (see
+  README.md "Budget Management") and silently does not apply without it. If
+  it's not reachable, the script prints a loud warning and refuses to proceed
+  unless `--dev-mode` is passed, acknowledging that only the local token-count
+  guardrail is protecting the run. `eval.yml`'s CI job always brings the proxy
+  up and waits for `/health/readiness` first, so this never triggers there and
+  `--dev-mode` is never needed in CI.
   Because there's no human to approve PRs, it auto-merges any PR that opens
   against the eval branch once each sprint's invocation finishes — a deliberate,
   documented simplification of the real "Human Review is mandatory" flow, not a
