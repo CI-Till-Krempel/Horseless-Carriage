@@ -51,6 +51,10 @@ def _configure_env(args: argparse.Namespace) -> None:
     os.environ["SESSION_ID"] = f"eval-{args.branch.replace('/', '-')}"
     os.environ["SPRINT_TOKEN_BUDGET"] = str(args.token_budget)
     os.environ["SPRINT_USD_BUDGET"] = str(args.usd_budget)
+    # Read by agents/scrum_team/tools/base.py's _with_eval_branch_prefix /
+    # _with_eval_title_prefix to tag every branch/PR this run creates with
+    # its run id - never set in real/production usage.
+    os.environ["EVAL_RUN_ID"] = args.run_id
     # Bootstrap only: the Orchestrator's very first call runs before any
     # virtual key exists (see check_cost_budget_callback's Orchestrator
     # exemption in agents/scrum_team/agent.py). Every other agent stays
@@ -336,13 +340,16 @@ def main() -> None:
     parser.add_argument("--local-path", default=None, help="Defaults to a fresh temp dir")
     parser.add_argument("--model", default="scrum-eval-cheap")
     # token_usage is cumulative for the whole session (never resets between
-    # sprints - see check_cost_budget_callback), so this must cover all 5
-    # sprints combined, not one. Calibrated against a real sprint 1 run:
-    # ~260k tokens for planning + a full implementation-and-PR cycle.
-    parser.add_argument("--token-budget", type=int, default=2000000)
+    # sprints - see check_cost_budget_callback), so this must cover all
+    # sprints combined, not one - a single sprint blowing the *total*
+    # budget permanently starves every later sprint (every LLM call gets
+    # hard-blocked for the rest of the run). Defaulted to None here and
+    # resolved below (scaled by --sprints) once args.sprints is known.
+    parser.add_argument("--token-budget", type=int, default=None)
     # scrum-eval-cheap is cheap enough that token budget binds first in
     # practice; this stays as the secondary $-denominated safety net.
-    parser.add_argument("--usd-budget", type=float, default=5.0)
+    # Also resolved below, scaled by --sprints.
+    parser.add_argument("--usd-budget", type=float, default=None)
     parser.add_argument("--max-events-per-sprint", type=int, default=300, help="Safety cap on ADK events per sprint invocation (excluding continue-nudges)")
     # Wall-clock ceiling for the whole run (all sprints combined), independent
     # of token/USD budget - see _main_async. Default leaves headroom under
@@ -361,6 +368,19 @@ def main() -> None:
         args.local_path = Path(args.local_path)
     if args.report_path is None:
         args.report_path = f"eval-run-{args.run_id.replace('/', '-')}.json"
+    # Per-sprint calibration: the original flat 2,000,000 *total* budget was
+    # based on an estimate of ~260k tokens/sprint, but a real run
+    # (0.1.0-run2, 2026-07-21) showed a single sprint costing 2,070,364
+    # tokens on its own - ~8x that estimate. Because the check is cumulative
+    # for the whole session and never resets (see check_cost_budget_callback
+    # / _configure_env above), that overshoot permanently blocked every
+    # later sprint, which is why sprints 2-3 of that run did nothing (5
+    # events each, identical token count). Scale per sprint instead of a
+    # fixed total, with headroom above the observed figure.
+    if args.token_budget is None:
+        args.token_budget = args.sprints * 2_600_000
+    if args.usd_budget is None:
+        args.usd_budget = args.sprints * 3.0
 
     args.github_token = get_github_token()
 

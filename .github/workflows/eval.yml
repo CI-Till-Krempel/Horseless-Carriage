@@ -90,7 +90,8 @@ jobs:
               --manifest /app/eval-output/manifest.json \
               --repo-path /app/eval-output/clone \
               --report-path /app/eval-output/report.md \
-              --commit-to-branch "${{ steps.run_id.outputs.branch }}"
+              --run-id "${{ steps.run_id.outputs.run_id }}" \
+              --base-branch "${{ steps.run_id.outputs.branch }}"
           '
 
       - name: Upload report artifact

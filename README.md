@@ -227,15 +227,15 @@ graph TD
     end
     
     subgraph External [External Systems & Storage]
+        Clone[(State Repo - Local Clone)]
         GH[GitHub Repository]
-        FS[Local Filesystem]
     end
     
     Callbacks -- API Keys/Usage --> LiteLLM
     LiteLLM -- Routed Requests --> Models[LLM Providers: Gemini, OpenAI, etc.]
     
-    Tools -- Pushes/PRs/State --> GH
-    Tools -- Writes Docs/Reports --> FS
+    Tools -- Writes Docs/Reports/State --> Clone
+    Clone -- git push / gh pr create --> GH
     
     GH -- Persists State --> StateFile[.hc/state.json]
 ```
