@@ -96,7 +96,8 @@ jobs:
               --run-id "${{ steps.run_id.outputs.run_id }}" \
               --branch "${{ steps.run_id.outputs.branch }}" \
               --local-path /app/eval-output/clone \
-              --report-path /app/eval-output/manifest.json
+              --report-path /app/eval-output/manifest.json \
+              --transcript-path /app/eval-output/transcript.md
             python3 -m agents.scrum_team.scripts.run_eval_analysis \
               --manifest /app/eval-output/manifest.json \
               --repo-path /app/eval-output/clone \
@@ -113,6 +114,7 @@ jobs:
           path: |
             eval-output/report.md
             eval-output/manifest.json
+            eval-output/transcript.md
           retention-days: 90
 
       - name: Stop dependency services

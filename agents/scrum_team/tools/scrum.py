@@ -12,6 +12,8 @@ DEFAULT_DOD = [
     "Acceptance criteria met",
     "No critical security issues",
     "Docs updated if needed",
+    "specs/ROADMAP.md updated via update_roadmap to reflect this story's completed status",
+    "Actual tokens spent logged via log_story_tokens",
 ]
 
 REPO_STATE_KEYS = [
@@ -237,7 +239,15 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
 
     estimates = s.get("story_estimates", {})
     if "estimate" in plan:
-        estimates[title_or_id] = plan["estimate"]
+        # {estimate, actual} shape - actual is filled in later via
+        # log_story_tokens (agents/scrum_team/tools/budget.py). A bare
+        # number here is the old pre-actual-tracking shape, where the
+        # stored value was always the estimate - keep it as one rather
+        # than misreading it as an actual.
+        entry = estimates.get(title_or_id)
+        entry = entry if isinstance(entry, dict) else {}
+        entry["estimate"] = plan["estimate"]
+        estimates[title_or_id] = entry
         s["story_estimates"] = estimates
 
     updated_item = None

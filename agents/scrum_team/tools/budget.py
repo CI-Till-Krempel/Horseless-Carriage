@@ -50,6 +50,27 @@ def log_token_usage(agent_name: str, tokens: int, tool_context=None) -> Dict[str
     save_state_to_repo(tool_context)
     return {"status": "ok", "usage": usage}
 
+def log_story_tokens(title_or_id: str, actual_tokens: int, tool_context=None) -> Dict[str, Any]:
+    """
+    Records the actual tokens spent implementing a story, alongside its
+    estimate (see plan_sprint_backlog_item's `estimate` field), so
+    create_sprint_report can show estimate-vs-actual per story instead of
+    just the estimate - part of Definition of Done (see spec-templates/
+    DOD.md): log this for a story before marking it Done.
+    """
+    from .scrum import save_state_to_repo
+    s = tool_context.state
+    estimates = s.get("story_estimates", {})
+    entry = estimates.get(title_or_id)
+    # Older/other callers may still leave a bare number here (the original
+    # shape, before actuals existed) - normalize to a dict without losing it.
+    entry = entry if isinstance(entry, dict) else ({"estimate": entry} if entry is not None else {})
+    entry["actual"] = actual_tokens
+    estimates[title_or_id] = entry
+    s["story_estimates"] = estimates
+    save_state_to_repo(tool_context)
+    return {"status": "ok", "story_estimates": estimates}
+
 def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget_duration: str = None, models: List[str] = None, tool_context=None) -> Dict[str, Any]:
     """
     Generate a LiteLLM Virtual Key for a specific agent role with an optional budget.
@@ -206,9 +227,15 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # Include story estimates if present
     estimates = s.get("story_estimates", {})
     if estimates:
-        report += "\n## Story Estimates (Tokens)\n"
-        for title, estimate in estimates.items():
-            report += f"- {title}: {estimate}\n"
+        report += "\n## Story Estimates vs Actual Tokens\n"
+        for title, entry in estimates.items():
+            if isinstance(entry, dict):
+                estimate = entry.get("estimate", "n/a")
+                actual = entry.get("actual", "not logged")
+            else:
+                # Pre-actual-tracking shape: a bare number was always the estimate.
+                estimate, actual = entry, "not logged"
+            report += f"- {title}: estimate={estimate}, actual={actual}\n"
 
     # Link to the persisted multi-agent transcript (see US-0001/US-0002),
     # with a condensed per-agent excerpt so reviewers can trace which agent

@@ -137,13 +137,18 @@ def _sync_local_clone_to_branch(branch: str, local_path: Path, github_token: str
 MAX_TRANSCRIPT_CHARS = 60000
 
 
-def _format_sprint_transcript(sprint_result: dict) -> str:
+def _format_sprint_transcript(sprint_result: dict, truncate: bool = True) -> str:
     """
     Renders sprint_result["events"] (author/text/tool_calls/tool_responses
     per ADK event - see _run_one_sprint) as the raw, otherwise-nowhere-else
-    -surfaced record of what the agent team actually did this sprint, for
-    posting onto that sprint's PR(s) - these PRs are for human review, and
-    a diff alone doesn't show the reasoning/tool-call trail behind it.
+    -surfaced record of what the agent team actually did this sprint.
+
+    truncate=True (used for the PR comment posted by _post_sprint_transcript)
+    caps this at MAX_TRANSCRIPT_CHARS - a real sprint's conversation can run
+    well past that, silently dropping most of "the actual conversation" from
+    the comment. truncate=False (used for the full-run transcript file - see
+    _format_full_transcript/write_full_transcript) renders everything, since
+    that file isn't posted anywhere size-limited.
     """
     n = sprint_result.get("sprint_number")
     lines = [
@@ -163,15 +168,44 @@ def _format_sprint_transcript(sprint_result: dict) -> str:
         lines.append("")
 
     text = "\n".join(lines)
-    if len(text) > MAX_TRANSCRIPT_CHARS:
-        text = text[:MAX_TRANSCRIPT_CHARS] + f"\n\n...[truncated - {sprint_result.get('event_count')} events total]..."
+    if truncate and len(text) > MAX_TRANSCRIPT_CHARS:
+        text = (
+            text[:MAX_TRANSCRIPT_CHARS]
+            + f"\n\n...[truncated - {sprint_result.get('event_count')} events total; "
+            "see this run's `transcript.md` CI artifact for the full, untruncated log]..."
+        )
     return text
 
 
+def _format_full_transcript(manifest: dict) -> str:
+    """
+    Untruncated transcript for every sprint in the run, meant for the CI
+    artifact (see eval.yml's "Upload report artifact" step) rather than any
+    space-limited destination like a PR comment.
+    """
+    header = [f"# Full agent activity log - run {manifest.get('run_id')}", ""]
+    sprints = "\n\n".join(_format_sprint_transcript(s, truncate=False) for s in manifest.get("sprints", []))
+    return "\n".join(header) + "\n\n" + sprints
+
+
+def _ci_run_url() -> str | None:
+    """Link back to this CI job's own run, so a PR comment in the eval repo can point at the full-transcript artifact living on the Horseless Carriage side. None outside GitHub Actions (see GITHUB_ACTIONS check in main())."""
+    server = os.environ.get("GITHUB_SERVER_URL")
+    repo = os.environ.get("GITHUB_REPOSITORY")
+    run_id = os.environ.get("GITHUB_RUN_ID")
+    if not (server and repo and run_id):
+        return None
+    return f"{server}/{repo}/actions/runs/{run_id}"
+
+
 def _post_sprint_transcript(local_path: Path, pr_number: int, sprint_result: dict) -> dict:
+    body = _format_sprint_transcript(sprint_result)
+    ci_url = _ci_run_url()
+    if ci_url:
+        body += f"\n\nFull, untruncated transcript for the whole run: see `transcript.md` in the uploaded artifacts on [this CI run]({ci_url})."
     comment = subprocess.run(
         ["gh", "pr", "comment", str(pr_number), "--body-file", "-"],
-        cwd=str(local_path), input=_format_sprint_transcript(sprint_result), capture_output=True, text=True,
+        cwd=str(local_path), input=body, capture_output=True, text=True,
     )
     return {"posted": comment.returncode == 0, "message": (comment.stdout + comment.stderr).strip()}
 
@@ -438,6 +472,7 @@ def main() -> None:
     # step, artifact upload, and teardown.
     parser.add_argument("--max-duration-minutes", type=int, default=40)
     parser.add_argument("--report-path", default=None, help="Where to write the raw run manifest JSON")
+    parser.add_argument("--transcript-path", default=None, help="Where to write the full, untruncated conversation log (see _format_full_transcript)")
     # Gate for the local-run-without-a-live-proxy footgun below - deliberately
     # not needed in CI, where eval.yml already waits for /health/readiness
     # before this script ever runs.
@@ -460,6 +495,8 @@ def main() -> None:
         args.local_path = Path(args.local_path)
     if args.report_path is None:
         args.report_path = f"eval-run-{args.run_id.replace('/', '-')}.json"
+    if args.transcript_path is None:
+        args.transcript_path = f"eval-transcript-{args.run_id.replace('/', '-')}.md"
     # token_usage is cumulative for the whole session (never resets between
     # sprints - see check_cost_budget_callback), so a flat per-sprint budget
     # would permanently starve every later sprint once one sprint blew it -
@@ -532,6 +569,9 @@ def main() -> None:
 
     Path(args.report_path).write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     print(f"Run manifest written to {args.report_path}")
+
+    Path(args.transcript_path).write_text(_format_full_transcript(manifest), encoding="utf-8")
+    print(f"Full transcript written to {args.transcript_path}")
 
 
 if __name__ == "__main__":

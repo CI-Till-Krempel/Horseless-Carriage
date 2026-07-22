@@ -1,9 +1,17 @@
 # agents/scrum_team/tools/requirements.py
 from __future__ import annotations
 import json
+import re
 from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file
+
+# Matches a bare item ID (US-0001, EP-0002, ...) and nothing else. Guards
+# against building a filename like "US-0007-US-0001.md" when a story was
+# (mis)titled with another item's ID instead of a real description - seen
+# in real eval runs (0.1.0-run4/run5's specs/stories/US-0010-US-009.md,
+# US-0007-US-0001.md, etc.).
+_BARE_ID_PATTERN = re.compile(r"^[A-Za-z]{2,4}-\d{2,6}$")
 
 def upsert_story(story: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
@@ -360,17 +368,19 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
         item["id"] = item_id
         
     title = item.get("title", "Untitled")
-    filename = f"{item_id}-{title.replace(' ', '-').replace('/', '-')}.md"
+    filename_title = "Untitled" if _BARE_ID_PATTERN.match(title.strip()) else title
+    filename = f"{item_id}-{filename_title.replace(' ', '-').replace('/', '-')}.md"
     story_path = repo_root / "specs" / "stories" / filename
-    
+
     template_path = repo_root / "spec-templates" / "stories" / template_name
     if not template_path.exists():
         template_path = _project_root() / "spec-templates" / "stories" / template_name
-    
+
     if not template_path.exists():
         return {"status": "error", "message": f"Template {template_name} not found."}
-        
-    template_content = template_path.read_text(encoding="utf-8", errors="replace")
+
+    from .docs import _strip_agent_safeguard_comments
+    template_content = _strip_agent_safeguard_comments(template_path.read_text(encoding="utf-8", errors="replace"))
     status = item.get("status", "Draft")
     priority = item.get("priority", "Must")
     
