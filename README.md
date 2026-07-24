@@ -240,6 +240,48 @@ graph TD
     GH -- Persists State --> StateFile[.hc/state.json]
 ```
 
+### Design Principle: Enforce Mandatory Process Mechanically, Not Just by Prompting
+
+A failure mode surfaced repeatedly across real eval runs: a rule stated only in an agent's prompt
+("check the DoD before marking a story Done", "call `update_roadmap` once a story completes") was
+reliably *not* followed by a cheap model under budget/token pressure, even when the prompt was
+clear, mandatory, and repeated. Prompting alone is advisory - the model can skip it, misremember
+it, or take a shortcut, and nothing catches that.
+
+**The principle this project follows for any future mandatory process step: enforce it in the tool
+layer itself, not only in the prompt that asks for it.** A tool call should either perform the
+required step as an unavoidable side effect, or refuse to proceed when a mandatory precondition
+isn't met - it should never be possible to "successfully" call a tool in a way that silently skips
+a required step.
+
+Concretely, in this codebase (see "Story workflow" below for the full feature these come from):
+- **Automatic side effects instead of a second, separate step.** `advance_story_stage` updates
+  `specs/ROADMAP.md`'s checkboxes as part of the same call that marks a stage complete - there's no
+  separate "now remember to sync the roadmap" instruction left for the agent to forget. The earlier
+  design (a documented, mandatory, but separate `update_roadmap` step) didn't reliably happen.
+- **Structural refusal instead of a checklist.** `_story_readiness_issues` refuses to write a story
+  with an empty/placeholder title, user story, or acceptance criteria - it doesn't just ask the
+  model to check `spec-templates/DOD.md`/`DOR.md` first. `check_build()` actually attempts to
+  install the project's dependencies rather than asking QA to "verify the build works" by reading
+  the code.
+- **No bypass path left open.** Enforcing order/ownership in one tool (`advance_story_stage`) is
+  only real enforcement if every other way to change the same state is closed off too -
+  `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status` directly to a
+  pipeline stage name *or* a legacy done-synonym (`blocks_direct_status_set` in
+  `agents/scrum_team/helpers.py`), so the enforced path can't be routed around through a
+  less-guarded tool.
+- **A tool's own success/failure must reflect the whole operation, not just the first part of it.**
+  Several tools (`create_release_pr`, `upsert_backlog_item`, `plan_sprint_backlog_item`,
+  `advance_story_stage`) call a second helper to finish their job (writing the story file, syncing
+  the roadmap); each propagates that helper's failure into its own top-level `status` instead of
+  unconditionally reporting "ok" once the first part succeeded - a caller that only checks the
+  top-level status must be able to trust it.
+
+When adding a new mandatory rule to this codebase, default to asking: can this be enforced in the
+tool that performs the relevant action, rather than only stated in a prompt? If yes, do that first.
+The prompt instruction is still worth keeping - it's what tells the agent to attempt the action in
+the first place - but it must not be the only thing standing between "mandatory" and "optional".
+
 ## Budget Management
 
 The system implements a **dual-layer budgeting strategy** to ensure both operational safety and financial control. This approach leverages LiteLLM's native financial enforcement while providing local, high-fidelity control over the logical "Sprint Budget" in tokens.
@@ -411,15 +453,40 @@ Stored in this repository, these provide the structure for Scrum artifacts.
 - `spec-templates/stories/` — User story templates.
 - `spec-templates/workflows/` — Agentic workflow and runbook templates.
 - `spec-templates/DOD.md` / `spec-templates/DOR.md` — Definition of Done / Definition of Ready
-  checklists. Unlike the templates above, these aren't per-item blueprints to copy - PO and Dev Team
-  read them directly (`read_doc`) and are instructed (see `PO_PROMPT`/`DEV_PROMPT`) to check every
-  story against them before committing to it (DoR) or accepting it as Done (DoD). DoD is partly
-  enforced in code, not just by asking nicely: a story can't be written to `specs/stories/` with
-  status Done if its title/user story/acceptance criteria are missing or still placeholder text
-  (`_story_readiness_issues` in `agents/scrum_team/tools/requirements.py`), and QA must run
-  `check_build()` (installs the project's actual declared dependencies) for every story before it's
-  Done - both were added after a real eval run shipped a story as "Done" with an empty user story
-  and a `requirements.txt` pinning a package version that doesn't exist.
+  checklists, mapped onto the 5-stage story pipeline below. Unlike the templates above, these
+  aren't per-item blueprints to copy - every role reads them directly (`read_doc`).
+
+### Story workflow (Ready → Implemented → Reviewed → Tested → Accepted)
+
+Every story passes through exactly these 5 stages, in this exact order, no skipping:
+
+| Stage | Owner | Gate |
+|---|---|---|
+| READY | Product Owner (Architect supports on technical feasibility) | Real title/user story/acceptance criteria, Dev Team estimate - see `spec-templates/DOR.md` |
+| IMPLEMENTED | Dev Team | Real, working code committed and pushed |
+| REVIEWED | Architect | Architectural/technical review complete |
+| TESTED | QA | `check_build()` passes; test strategy verified |
+| ACCEPTED | Product Owner | Acceptance criteria genuinely verified met |
+
+A stage is only ever completed via `advance_story_stage(title_or_id, stage)`
+(`agents/scrum_team/tools/requirements.py`), which enforces this **in code**, not just by asking
+nicely in a prompt:
+- **No skipping**: rejects the call if the stages before it aren't done yet.
+- **Stage ownership**: rejects the call if the calling agent isn't that stage's owner.
+- **One story at a time**: `product_backlog` list order is priority order - a story can't advance
+  past READY until the story immediately above it has reached ACCEPTED.
+- **Content quality**: rejects marking READY (or the legacy "Done"/"Accepted") if the title/user
+  story/acceptance criteria are missing or still placeholder text
+  (`_story_readiness_issues` in `agents/scrum_team/tools/requirements.py`).
+- **No bypass**: `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status`
+  directly to any of the 5 stage names - only `advance_story_stage` can.
+- It also updates `specs/ROADMAP.md`'s per-stage checkboxes for that story automatically, in the
+  same call - see below.
+
+This was added after real eval runs repeatedly shipped stories as "Done" with an empty/placeholder
+user story, a `requirements.txt` pinning a package version that doesn't exist, and a roadmap that
+never reflected any of it - asking the agents nicely to follow a written checklist wasn't enough on
+its own.
 
 ### 2. Specification Artifacts (`specs/`)
 Stored in your **target state repository** (configured via `STATE_REPO_PATH`), these are the actual documents generated and updated by the agents.
@@ -429,12 +496,20 @@ Stored in your **target state repository** (configured via `STATE_REPO_PATH`), t
 - `specs/stories/` — Refined User Stories.
 - `specs/workflows/` — Agentic workflows and runbooks.
 - `specs/reports/` — Sprint review reports and budget status.
-- `specs/ROADMAP.md` — Product roadmap tracking releases and stories. Checkbox state (`update_roadmap`)
-  is resolved from whichever of `sprint_backlog` (Dev Team's working record) or `product_backlog`
-  (PO's) has the more complete status for a given story, since Dev Team marks completion on the
-  former and nothing else automatically mirrors that into the latter. `update_roadmap` must be
-  called again with a story listed once it's actually Done — calling it once during sprint planning
-  does not keep re-rendering checkbox state on its own as work completes.
+- `specs/ROADMAP.md` — Product roadmap tracking releases and stories. Each story gets its own 5
+  checkboxes, one per stage of the story workflow above:
+  ```
+  - [US-0001] Create a to-do list
+    - [x] READY
+    - [x] IMPLEMENTED
+    - [ ] REVIEWED
+    - [ ] TESTED
+    - [ ] ACCEPTED
+  ```
+  These update automatically as a side effect of `advance_story_stage` - see "Story workflow" above
+  - not via a separate manual roadmap-editing step. Status is resolved from whichever of
+  `sprint_backlog` (Dev Team's working record) or `product_backlog` (PO's) has the more complete
+  stage history for a given story, since the two aren't otherwise kept in sync with each other.
 
 Contribution rules
 - One artifact per file; keep them small and link related docs together

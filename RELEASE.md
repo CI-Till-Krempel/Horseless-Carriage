@@ -178,6 +178,47 @@ doesn't exist yet, so this release is cut directly on `main`. Once `v0.1.0` is t
 This avoids introducing branch-workflow churn in the same change as the first-ever
 release.
 
+## Story workflow
+
+Real eval runs repeatedly showed the same failure pattern: stories left with placeholder/empty
+content but marked "Done" anyway, and `specs/ROADMAP.md` never reflecting completed work - because
+the only enforcement was prompt text asking the agents nicely to follow a checklist, and a cheap
+model under budget pressure just... didn't, reliably. See README.md "Story workflow" for the full
+human-facing writeup (the stage table, the checklist mapping in `spec-templates/DOD.md`/`DOR.md`);
+this section is the operational summary the agent prompts themselves point back to.
+
+Every story passes through exactly 5 stages, in this exact order, no skipping: **Ready**
+(Product Owner, supported by Architect) → **Implemented** (Dev Team) → **Reviewed** (Architect) →
+**Tested** (QA) → **Accepted** (Product Owner). `STORY_STAGES`/`STAGE_OWNERS`
+(`agents/scrum_team/helpers.py`) are the source of truth for the stage list and ownership.
+
+`advance_story_stage(title_or_id, stage)` (`agents/scrum_team/tools/requirements.py`) is the only
+way a stage is marked complete, and it enforces, in code:
+- **Order**: rejects the call if the stages before `stage` aren't complete yet.
+- **Ownership**: rejects the call if `tool_context.agent_name` isn't that stage's owner.
+- **One story at a time**: `product_backlog` list order is priority order; a story can't advance
+  past Ready until the immediately-preceding story (`_preceding_story`, skipping Epics) has reached
+  Accepted.
+- **Content quality**: for Ready and Accepted/legacy-Done, `_story_readiness_issues` refuses the
+  write if title/user story/acceptance criteria are missing or still placeholder/blank text - the
+  same check `create_from_template`/`upsert_adr` already apply to templates themselves (see
+  `_strip_agent_safeguard_comments` in `agents/scrum_team/tools/docs.py`), now applied to content
+  quality, not just leftover template markup.
+- **No bypass**: `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status`
+  directly to any of the 5 stage names *or* a legacy done-synonym ("Done"/"completed"/"closed" -
+  `_story_stages_completed`'s read-side backward compat treats any of those as every stage complete,
+  so setting one directly is an equally complete bypass, just spelled differently) - see
+  `blocks_direct_status_set` in `agents/scrum_team/helpers.py`. Only `advance_story_stage` can set
+  status this way, since it's the only path that actually enforces the above.
+
+`advance_story_stage` re-renders `specs/ROADMAP.md`'s per-stage checkboxes for that story via
+`_sync_roadmap_for_story`/`update_roadmap` in the same call that marks a stage complete - and its
+own top-level `status` reflects whether that sync (and the story markdown rewrite) actually
+succeeded, not just whether the in-state stage change did. Reporting "ok" while the roadmap update
+silently failed would be exactly the kind of gap this mechanism exists to close. Beyond that,
+there's no longer a separate "now go tell the roadmap" step for a story once it's moving through
+stages at all.
+
 ## Team performance evaluation
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically

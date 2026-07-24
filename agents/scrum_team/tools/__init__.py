@@ -17,6 +17,7 @@ from .requirements import (
     set_priority,
     sync_stories_from_markdown,
     sync_requirements_from_markdown,
+    advance_story_stage,
 )
 from .github import (
     configure_github_repo,
