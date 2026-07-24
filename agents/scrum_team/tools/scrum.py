@@ -5,6 +5,7 @@ import json
 from typing import Any, Dict, List
 from .base import _configured_repo_root, _state_file_path, _project_root, _hc_version
 from .migrations import migrate_state
+from ..helpers import blocks_direct_status_set
 
 DEFAULT_DOD = [
     "Code reviewed",
@@ -234,6 +235,18 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
     Add/update an item in sprint_backlog with implementation plan fields.
     """
     from .requirements import _update_story_markdown
+
+    if blocks_direct_status_set(plan.get("status")):
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot set status to '{plan.get('status')}' directly - stage transitions (and "
+                "legacy 'Done'/'completed'/'closed', which are treated as every stage complete) "
+                "must go through advance_story_stage(title_or_id, stage), which enforces ordering "
+                "and stage ownership. Omit 'status' here and call advance_story_stage instead."
+            ),
+        }
+
     s = tool_context.state
     sprint: List[Dict[str, Any]] = list(s.get("sprint_backlog", []))
 

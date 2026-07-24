@@ -307,11 +307,25 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
 
     report += _sprint_length_feedback(s)
 
+    report += "\n## Retrospective Actions (including efficiency improvements)\n"
     if retro:
-        report += "\n## Retrospective Actions (including efficiency improvements)\n"
         for action in retro:
             report += f"- {action['action']} (Owner: {action['owner']}, Status: {action['status']})\n"
-            
+    else:
+        # Deterministic, not reliant on the Scrum Master remembering to
+        # mention it: a genuinely silent retro (no impediments, no
+        # improvement ideas) is indistinguishable from one that just didn't
+        # happen unless something says so explicitly - see SM_PROMPT's
+        # RETROSPECTIVE REASONING, which requires add_retro_action every
+        # sprint.
+        report += (
+            "**No retro actions recorded this sprint.** Scrum Master must call `add_retro_action` "
+            "with at least one concrete improvement - see SM_PROMPT's RETROSPECTIVE REASONING. This "
+            "either means the retrospective didn't happen, or it happened without producing anything "
+            "actionable; either way it should not be silent.\n"
+        )
+
+
     # Include story estimates if present
     estimates = s.get("story_estimates", {})
     if estimates:

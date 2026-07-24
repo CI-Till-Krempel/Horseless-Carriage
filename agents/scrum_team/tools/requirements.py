@@ -5,7 +5,7 @@ import re
 from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file
-from ..helpers import is_story_done
+from ..helpers import is_story_done, STORY_STAGES, STAGE_OWNERS, blocks_direct_status_set
 
 # Matches a bare item ID (US-0001, EP-0002, ...) and nothing else. Guards
 # against building a filename like "US-0007-US-0001.md" when a story was
@@ -43,6 +43,32 @@ def _story_readiness_issues(item: Dict[str, Any], is_epic: bool) -> List[str]:
     if not item.get("acceptance_criteria"):
         issues.append("acceptance_criteria is empty")
     return issues
+
+
+def _story_stages_completed(product_data: Dict[str, Any], sprint_data: Dict[str, Any]) -> List[str]:
+    """
+    Merges stages_completed from both backlog copies (union, since
+    advance_story_stage writes the same value to both but older/drifted
+    data shouldn't silently lose progress either way) into STORY_STAGES
+    order. A story from before this pipeline existed (bare status="Done"/
+    "done"/etc., no stages_completed at all) is treated as having
+    completed every stage, rather than being silently reset to square one.
+    """
+    combined = set(product_data.get("stages_completed") or []) | set(sprint_data.get("stages_completed") or [])
+    if combined:
+        return [st for st in STORY_STAGES if st in combined]
+    if is_story_done(sprint_data.get("status") or product_data.get("status")):
+        return list(STORY_STAGES)
+    return []
+
+
+def _render_story_block(story_id: str, title: str, stages_completed: List[str]) -> List[str]:
+    lines = [f"- [{story_id}] {title}"]
+    for stage in STORY_STAGES:
+        mark = "x" if stage in stages_completed else " "
+        lines.append(f"  - [{mark}] {stage.upper()}")
+    return lines
+
 
 def upsert_story(story: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
@@ -91,14 +117,22 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
     content = roadmap_path.read_text(encoding="utf-8", errors="replace")
     lines = content.splitlines()
     new_lines = []
-    
+
     in_version_section = False
     version_found = False
-    
+
+    # `version in line` alone is a substring match: "v0.1" also matches
+    # "### v0.1 Kanban" (a *different* heading, from the Task board section
+    # further down in the template), which used to inject a spurious extra
+    # copy of the Stories list there too. Anchor on a real version heading:
+    # either the bare "### v0.1" this function's own insertion writes, or
+    # the template's "### v0.1 — MVP (...)" form - never "### v0.1 <word>".
+    version_heading_re = re.compile(rf"^###\s+{re.escape(version)}(\s*$|\s+—)")
+
     i = 0
     while i < len(lines):
         line = lines[i]
-        if line.startswith("### ") and version in line:
+        if version_heading_re.match(line):
             in_version_section = True
             version_found = True
             new_lines.append(line)
@@ -120,29 +154,17 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
                     new_lines.append("\nStories")
                 for s in stories:
                     # DEV updates completion status on sprint_backlog (via
-                    # plan_sprint_backlog_item); PO's own product_backlog
-                    # entry is never automatically synced from that - so
-                    # checking product_backlog alone silently never sees a
-                    # story marked Done during the sprint (roadmap checkbox
-                    # stays unchecked forever). Check both, sprint_backlog
-                    # first since it's the more current record during an
-                    # active sprint, and treat "done" as sticky - if either
-                    # list says Done, it's Done, regardless of what the
-                    # other says.
+                    # plan_sprint_backlog_item/advance_story_stage); PO's own
+                    # product_backlog entry is never automatically synced
+                    # from that - so checking product_backlog alone silently
+                    # never sees a story marked Done during the sprint
+                    # (roadmap checkbox stays unchecked forever). Check both.
                     sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == s or x.get("title") == s), {})
                     product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == s or x.get("title") == s), {})
-                    s_data = {**product_data, **sprint_data}
-                    s_id = s_data.get("id") or s
-                    s_title = s_data.get("title") or ""
-                    status = s_data.get("status", "To Do")
-                    mark = " "
-                    if is_story_done(status) or is_story_done(product_data.get("status")) or is_story_done(sprint_data.get("status")):
-                        mark = "x"
-                    elif str(status).strip().lower() == "in progress":
-                        mark = "~"
-                    elif str(status).strip().lower() == "in review":
-                        mark = "R"
-                    new_lines.append(f"- [{mark}] [{s_id}] {s_title}")
+                    s_id = product_data.get("id") or sprint_data.get("id") or s
+                    s_title = product_data.get("title") or sprint_data.get("title") or ""
+                    stages_completed = _story_stages_completed(product_data, sprint_data)
+                    new_lines.extend(_render_story_block(s_id, s_title, stages_completed))
                 while i < len(lines) and not (lines[i].startswith("###") or lines[i].startswith("---") or lines[i].strip() == ""):
                     i += 1
             continue
@@ -162,7 +184,13 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
             for g in goals: insertion.append(f"- {g}")
         insertion.append("\nStories")
         if stories:
-            for s in stories: insertion.append(f"- [ ] [{s}] {s}")
+            for s in stories:
+                sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                s_id = product_data.get("id") or sprint_data.get("id") or s
+                s_title = product_data.get("title") or sprint_data.get("title") or s
+                stages_completed = _story_stages_completed(product_data, sprint_data)
+                insertion.extend(_render_story_block(s_id, s_title, stages_completed))
         insertion.append("\n")
         new_lines = new_lines[:insertion_idx] + insertion + new_lines[insertion_idx:]
 
@@ -175,11 +203,23 @@ def plan_backlog_item(title_or_id: str, priority: str = None, version: str = Non
     """
     Requirements Management: Plan a backlog item.
     """
+    from .scrum import save_state_to_repo
     res = {"status": "ok", "updates": []}
     if priority:
         p_res = set_priority(title_or_id, priority, tool_context=tool_context)
         res["updates"].append({"type": "priority", "result": p_res})
     if version:
+        # Persisted on the backlog item itself (not just passed through to
+        # this one update_roadmap call) so advance_story_stage can later
+        # find every story in this version on its own, without the caller
+        # having to re-enumerate them each time a single story advances.
+        s = tool_context.state
+        backlog = list(s.get("product_backlog", []))
+        idx = next((i for i, x in enumerate(backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+        if idx is not None:
+            backlog[idx] = {**backlog[idx], "version": version}
+            s["product_backlog"] = backlog
+            save_state_to_repo(tool_context)
         r_res = update_roadmap(version, stories=[title_or_id], tool_context=tool_context)
         res["updates"].append({"type": "roadmap", "result": r_res})
     return res
@@ -189,6 +229,19 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     Add or update a product backlog item.
     """
     from .scrum import save_state_to_repo
+
+    if blocks_direct_status_set(item.get("status")):
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot set status to '{item.get('status')}' directly - stage transitions (and "
+                "legacy 'Done'/'completed'/'closed', which are treated as every stage complete) "
+                "must go through advance_story_stage(title_or_id, stage), which enforces ordering "
+                "and stage ownership. Omit 'status' here (or set it to something outside the "
+                "pipeline, e.g. 'Draft') and call advance_story_stage instead."
+            ),
+        }
+
     s = tool_context.state
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))
     item_id = item.get("id")
@@ -430,20 +483,22 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
         return {"status": "error", "message": f"Template {template_name} not found."}
 
     status = item.get("status", "Draft")
-    # Gated on is_story_done rather than "any non-Draft status", since status
-    # is a free-form string used for all sorts of intermediate states (test
-    # fixtures alone use "new"/"in_progress") - blocking all of those would
-    # be far more disruptive than the actual observed failure mode: a story
-    # explicitly marked *Done* with garbage/missing content (title reused as
-    # another item's ID, blank user story, no acceptance criteria).
-    if is_story_done(status):
+    # Gated on is_story_done/"Ready" rather than "any non-Draft status",
+    # since status is a free-form string used for all sorts of intermediate
+    # states (test fixtures alone use "new"/"in_progress") - blocking all of
+    # those would be far more disruptive than the actual observed failure
+    # modes: a story marked *Ready* (start of the pipeline - see
+    # spec-templates/DOR.md/advance_story_stage) or *Accepted*/Done (end of
+    # it) with garbage/missing content (title reused as another item's ID,
+    # blank or still-placeholder user story, no acceptance criteria).
+    if is_story_done(status) or str(status).strip().lower() == "ready":
         issues = _story_readiness_issues(item, is_epic)
         if issues:
             return {
                 "status": "error",
                 "message": (
-                    "Fails Definition of Done (see spec-templates/DOD.md) - not written: "
-                    + "; ".join(issues) + ". Fix the content before marking this Done."
+                    f"Fails Definition of Ready/Done (see spec-templates/DOR.md, DOD.md) for status "
+                    f"'{status}' - not written: " + "; ".join(issues) + ". Fix the content and retry."
                 ),
                 "issues": issues,
             }
@@ -505,3 +560,158 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
         return {"status": "ok", "path": str(story_path)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title: str) -> Dict[str, Any] | None:
+    """
+    The nearest User Story before story_id/title in product_backlog order -
+    backlog order is priority order (see RELEASE.md "Story workflow").
+    Epics are skipped: they aren't advanced through the 5-stage pipeline
+    themselves, so they shouldn't block a real story behind them.
+    """
+    stories_only = [x for x in product_backlog if x.get("type", "User Story") != "Epic"]
+    idx = next(
+        (i for i, x in enumerate(stories_only) if x.get("id") == story_id or x.get("title") == title),
+        None,
+    )
+    if idx is None or idx == 0:
+        return None
+    return stories_only[idx - 1]
+
+
+def _sync_roadmap_for_story(story_id: str, tool_context) -> Dict[str, Any]:
+    """
+    Re-renders the roadmap's Stories block for story_id's version (falling
+    back to the "Backlog (unplanned)" section, which already exists in the
+    ROADMAP.md template, if the story was never assigned one via
+    plan_backlog_item) - including every other story sharing that version,
+    since update_roadmap replaces the whole Stories block for a version in
+    one pass, not a single line.
+    """
+    s = tool_context.state
+    backlog = s.get("product_backlog", []) or []
+    match = next((x for x in backlog if x.get("id") == story_id or x.get("title") == story_id), None)
+    version = (match or {}).get("version") or "Backlog (unplanned)"
+    peers = [
+        (x.get("id") or x.get("title"))
+        for x in backlog
+        if x.get("type", "User Story") != "Epic" and (x.get("version") or "Backlog (unplanned)") == version
+    ]
+    if story_id not in peers:
+        peers.append(story_id)
+    return update_roadmap(version, stories=peers, tool_context=tool_context)
+
+
+def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict[str, Any]:
+    """
+    The single, mandatory mechanism for moving a story through the fixed
+    Ready -> Implemented -> Reviewed -> Tested -> Accepted pipeline (see
+    RELEASE.md "Story workflow" and spec-templates/DOD.md, DOR.md).
+
+    Enforces, in code rather than by asking nicely in a prompt (which
+    repeatedly wasn't enough on its own in real eval runs):
+    - Stages complete strictly in order - no skipping.
+    - Only the stage's owning role (STAGE_OWNERS, agents/scrum_team/
+      helpers.py) may complete it.
+    - Stories are worked one at a time, top to bottom, in backlog priority
+      order: the immediately-preceding story (product_backlog order) must
+      already be Accepted.
+
+    Updates the story's own state AND specs/ROADMAP.md's per-stage
+    checkboxes atomically in one call, instead of relying on the agent to
+    remember a separate "now go update the roadmap" step.
+    """
+    from .scrum import save_state_to_repo
+
+    if stage not in STORY_STAGES:
+        return {"status": "error", "message": f"Unknown stage '{stage}'. Must be one of {STORY_STAGES}."}
+
+    s = tool_context.state
+    agent_name = getattr(tool_context, "agent_name", None)
+    expected_owner = STAGE_OWNERS[stage]
+    if agent_name and agent_name != expected_owner:
+        return {
+            "status": "error",
+            "message": (
+                f"Stage '{stage}' can only be completed by {expected_owner}, not {agent_name}. "
+                "See RELEASE.md \"Story workflow\"."
+            ),
+        }
+
+    sprint_backlog = list(s.get("sprint_backlog", []))
+    product_backlog = list(s.get("product_backlog", []))
+    sprint_idx = next((i for i, x in enumerate(sprint_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    if sprint_idx is None and product_idx is None:
+        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+
+    sprint_item = sprint_backlog[sprint_idx] if sprint_idx is not None else {}
+    product_item = product_backlog[product_idx] if product_idx is not None else {}
+    story_id = product_item.get("id") or sprint_item.get("id") or title_or_id
+    title = product_item.get("title") or sprint_item.get("title") or title_or_id
+    stages_completed = set(_story_stages_completed(product_item, sprint_item))
+
+    target_idx = STORY_STAGES.index(stage)
+    missing = [st for st in STORY_STAGES[:target_idx] if st not in stages_completed]
+    if missing:
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot mark '{story_id}' as {stage} - it hasn't completed {missing} yet. "
+                f"Stages complete strictly in order: {STORY_STAGES}."
+            ),
+        }
+    if stage in stages_completed:
+        return {
+            "status": "ok",
+            "message": f"{story_id} already marked {stage}.",
+            "stages_completed": sorted(stages_completed, key=STORY_STAGES.index),
+        }
+
+    preceding = _preceding_story(product_backlog, story_id, title)
+    if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot advance '{story_id}' to {stage} - the higher-priority story "
+                f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
+                "Stories are worked one at a time, top to bottom, in backlog priority order."
+            ),
+        }
+
+    stages_completed.add(stage)
+    ordered_stages = sorted(stages_completed, key=STORY_STAGES.index)
+    update = {"stages_completed": ordered_stages, "status": stage}
+
+    if sprint_idx is not None:
+        sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
+        s["sprint_backlog"] = sprint_backlog
+    if product_idx is not None:
+        product_backlog[product_idx] = {**product_backlog[product_idx], **update}
+        s["product_backlog"] = product_backlog
+
+    save_state_to_repo(tool_context)
+
+    merged_item = {**product_item, **sprint_item, **update, "id": story_id, "title": title}
+    story_md_result = _update_story_markdown(merged_item, tool_context)
+    roadmap_result = _sync_roadmap_for_story(story_id, tool_context)
+
+    # The stage IS recorded in state at this point regardless (state was
+    # already saved above) - but this call must not report "ok" if the
+    # roadmap/story-file sync it promises didn't actually happen. Silently
+    # reporting success while specs/ROADMAP.md stays stale is exactly the
+    # failure mode this whole mechanism exists to close.
+    synced = story_md_result.get("status") == "ok" and roadmap_result.get("status") == "ok"
+    return {
+        "status": "ok" if synced else "error",
+        "message": None if synced else (
+            f"'{story_id}' is recorded as {stage} in state, but syncing specs/ROADMAP.md and/or "
+            "the story file failed - see story_markdown/roadmap_sync for details. Retry so the "
+            "roadmap actually reflects this."
+        ),
+        "story_id": story_id,
+        "stage": stage,
+        "stages_completed": ordered_stages,
+        "story_markdown": story_md_result,
+        "roadmap_sync": roadmap_result,
+    }
