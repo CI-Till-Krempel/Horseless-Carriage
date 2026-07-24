@@ -152,6 +152,8 @@ from google.adk.agents.llm_agent import LlmAgent, CallbackContext
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.tool_context import ToolContext
 
 from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level
 from .prompts import (
@@ -596,10 +598,49 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
                     pass
     return None
 
+# --- Tool Dispatch Error Handling ---
+
+def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, error: Exception) -> Optional[Dict[str, Any]]:
+    """
+    OnToolErrorCallback: without this, a model calling a tool name that isn't
+    in its *own* role's tools=[...] list (e.g. ProductOwner hallucinating
+    write_file, which only DevTeam/QualityGuardian actually have) crashes the
+    entire ADK run with a bare ValueError - a single hallucinated tool name
+    from one sub-agent otherwise aborts the whole multi-sprint session. ADK
+    itself already distinguishes this exact case: when tool dispatch fails
+    because the name isn't found at all, it synthesizes a placeholder
+    `BaseTool(description="Tool not found")` before invoking this callback
+    (see google.adk.flows.llm_flows.functions._execute_single_function_call_async) -
+    that placeholder, not string-matching the exception message, is the
+    signal used below. Returning a dict here turns that crash into an
+    ordinary tool-response event the calling agent sees and can recover
+    from (e.g. by using one of its real tools, or transfer_to_agent), instead
+    of aborting the session.
+
+    A real exception raised *inside* an actual tool call (tool.description is
+    the tool's genuine description, not this placeholder) is a bug in that
+    tool, not a permissions problem - returning None here lets it propagate
+    and fail loudly, same as before this callback existed.
+    """
+    if tool.description != "Tool not found":
+        return None
+    agent_name = getattr(tool_context, "agent_name", None) or "this agent"
+    return {
+        "status": "error",
+        "message": (
+            f"Tool '{tool.name}' is not available to {agent_name} - it is not in this role's "
+            "tool list, so this call cannot be made. Check the tools listed in your own system "
+            "instruction and use one of those instead; if this genuinely requires a capability "
+            "only another role has, use transfer_to_agent to hand off to that role rather than "
+            "trying to call its tools directly."
+        ),
+    }
+
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
     "after_model_callback": [update_token_usage_callback, history_management_after_callback],
+    "on_tool_error_callback": on_tool_error_callback,
 }
 
 # --- Sub agents (role specialists) ---
@@ -767,7 +808,8 @@ root_agent = LlmAgent(
         history_management_callback
     ],
     after_model_callback=[
-        update_token_usage_callback, 
+        update_token_usage_callback,
         history_management_after_callback
     ],
+    on_tool_error_callback=on_tool_error_callback,
 )

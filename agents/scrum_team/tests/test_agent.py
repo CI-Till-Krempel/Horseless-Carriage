@@ -3,16 +3,19 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from google.adk.agents.llm_agent import LlmAgent
+from google.adk.tools.base_tool import BaseTool
 from agents.scrum_team.agent import (
     product_owner,
     scrum_master,
     dev_team,
     qa_agent,
     architect,
+    quality_guardian,
     root_agent,
     check_cost_budget_callback,
     update_token_usage_callback,
     sprint_status_injection_callback,
+    on_tool_error_callback,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -149,6 +152,53 @@ class TestAgent(unittest.TestCase):
         self.assertIn("Test Goal", text)
         self.assertIn("1/2 items completed", text)
         self.assertIn("500,000 tokens used", text)
+
+
+class TestOnToolErrorCallback(unittest.TestCase):
+    """
+    Acceptance Criteria: a sub-agent calling a tool name that isn't in its own
+    role's tools=[...] list must not crash the whole ADK run. ADK's own
+    dispatch code (google.adk.flows.llm_flows.functions) raises a bare
+    ValueError and synthesizes a placeholder BaseTool(description="Tool not
+    found") for exactly this case before invoking on_tool_error_callback -
+    this is a real production incident (ProductOwner hallucinating
+    write_file, which only DevTeam/QualityGuardian have, aborted an entire
+    eval run with a raw traceback instead of the agent recovering).
+    """
+
+    def test_returns_error_dict_for_tool_not_found_placeholder(self):
+        tool = BaseTool(name="write_file", description="Tool not found")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        error = ValueError("Tool 'write_file' not found. Available tools: ...")
+
+        result = on_tool_error_callback(tool, {}, tool_context, error)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("write_file", result["message"])
+        self.assertIn("ProductOwner", result["message"])
+        self.assertIn("transfer_to_agent", result["message"])
+
+    def test_returns_none_for_a_real_tool_execution_error(self):
+        """
+        A genuine bug inside an actual tool (its real description, not the
+        "Tool not found" placeholder) must still propagate and fail loudly -
+        this callback only softens dispatch-time "not found" errors, not
+        real exceptions from legitimate tool calls.
+        """
+        tool = BaseTool(name="write_file", description="Write a file to the repo.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        error = RuntimeError("disk full")
+
+        result = on_tool_error_callback(tool, {}, tool_context, error)
+
+        self.assertIsNone(result)
+
+    def test_registered_on_every_agent(self):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+            self.assertEqual(agent.on_tool_error_callback, on_tool_error_callback)
 
 
 if __name__ == "__main__":
