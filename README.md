@@ -176,6 +176,24 @@ This repository provides the agent implementation under `agents/scrum_team/`. Th
 
 Exactly how you *run* the agent depends on the host app / runner you plug it into (for example, an ADK-based runner). The key point is that `root_agent` is the entrypoint and it orchestrates the rest.
 
+## Human Interaction Levels
+
+How much of a human is actually in the loop is configurable via `INTERACTION_LEVEL` (`.env`) - see
+[docs/INTERACTION-LEVELS.md](docs/INTERACTION-LEVELS.md) for the full breakdown. Four levels:
+
+| Level | The human's role |
+|---|---|
+| `Product` (default) | Product Owner stand-in: task-level priorities, developer questions. |
+| `Stakeholder` | Business stakeholder: business needs, release order, feature approval, review feedback. |
+| `CEO` | Approves only the sprint budget; reads the sprint report as a management summary. |
+| `EVAL` | No human at all - fixed-length automated evaluation runs (see `run_eval.py`). |
+
+This isn't just documentation - it changes which `record_human_approval` gate is mechanically
+required before the team may implement stories (`advance_story_stage(..., "Implemented")`) or
+release an increment (`create_release_pr`), and how much detail `create_sprint_report` actually
+renders (full technical detail at Product/EVAL, business-framed at Stakeholder, budget-and-headlines
+only at CEO); see the linked doc for the exact mapping.
+
 ## Notes
 
 - If `LITELLM_PROXY_API_BASE` is set, the agents assume “proxy mode” and use LiteLLM via the proxy endpoint.
@@ -263,7 +281,9 @@ Concretely, in this codebase (see "Story workflow" below for the full feature th
   with an empty/placeholder title, user story, or acceptance criteria - it doesn't just ask the
   model to check `spec-templates/DOD.md`/`DOR.md` first. `check_build()` actually attempts to
   install the project's dependencies rather than asking QA to "verify the build works" by reading
-  the code.
+  the code. `create_sprint_report` refuses to run at all unless a *new* retro action or impediment
+  was logged since the last report - a real run had the Scrum Master role go uninvoked for 5
+  sprints straight because "retro is mandatory" was stated but never actually enforced.
 - **No bypass path left open.** Enforcing order/ownership in one tool (`advance_story_stage`) is
   only real enforcement if every other way to change the same state is closed off too -
   `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status` directly to a
@@ -378,6 +398,12 @@ Completed the core implementation of the GitHub integration and established the 
 - **This is a recommendation only - it is NOT applied automatically.** A human must approve it and
   set it manually (`SPRINT_TOKEN_BUDGET` / `EVAL_SPRINT_TOKEN_BUDGET`; see "Budget Management" above).
 
+## Retrospective Actions (including efficiency improvements)
+- Tag Architect on any story touching the data model before marking it Ready (Owner: ProductOwner, Status: open)
+
+## Impediments
+No impediments logged.
+
 ## Story Estimates vs Actual Tokens
 - US-0012: estimate=50000, actual=62345
 
@@ -393,6 +419,12 @@ sprint actually looks budget-starved (near/at its token cap **and** stories left
 there's unused budget headroom left over, it says so instead and points at process/quality issues
 rather than the budget. Nothing here ever changes `SPRINT_TOKEN_BUDGET`/`budgets.total` itself - a
 human has to act on the suggestion deliberately.
+
+Unlike every other section, "Retrospective Actions"/"Impediments" aren't just rendered - the whole
+report generation is gated on them. `create_sprint_report` refuses to run at all unless a *new*
+retro action or impediment has been logged since the last successful report (see RELEASE.md "Sprint
+retrospective enforcement"), so if you see a report at all, at least one of these two sections is
+guaranteed to have real, new content - never both saying "none" at once.
 
 #### Admin UI
 Log in to `http://localhost:4000/ui/` to see real-time cost tracking and budget status for the `scrum-sprint-budget`.

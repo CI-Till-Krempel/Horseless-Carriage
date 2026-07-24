@@ -7,6 +7,7 @@ from agents.scrum_team.tools.scrum import (
     add_impediment,
     add_retro_action,
     plan_sprint_backlog_item,
+    record_human_approval,
 )
 from agents.scrum_team.tools.requirements import (
     upsert_story,
@@ -149,6 +150,53 @@ class TestScrumTools(unittest.TestCase):
         add_retro_action("Improve testing", "ScrumMaster", "CI passes", tool_context=tool_context)
         self.assertEqual(tool_context.state["retro_actions"][0]["action"], "Improve testing")
 
+    def test_add_impediment_rejects_generic_placeholder_text(self):
+        """
+        Acceptance Criteria (ISSUE-0009): blank/generic/too-short impediment
+        text is rejected outright, not silently accepted as a real one.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_impediment("stuff", "ScrumMaster", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tool_context.state["impediment_log"], [])
+
+    def test_add_retro_action_rejects_generic_placeholder_text(self):
+        """Acceptance Criteria (ISSUE-0009): same guard for retro actions."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action("communicate better", "ScrumMaster", "n/a", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tool_context.state["retro_actions"], [])
+
+    def test_record_human_approval(self):
+        """
+        Acceptance Criteria (ISSUE-0001): a human approval event is recorded
+        and distinguishable by type.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = record_human_approval("sprint", "Reviewed goal and backlog", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["human_approvals"][0]["type"], "sprint")
+
+    def test_record_human_approval_rejects_unknown_type(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = record_human_approval("bogus", "", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+
+    def test_record_human_approval_accepts_budget_type(self):
+        """
+        Acceptance Criteria (interaction levels, see docs/INTERACTION-LEVELS.md): "budget" is a
+        valid approval_type - required instead of "sprint" at the CEO level.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = record_human_approval("budget", "Approved sprint budget", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["human_approvals"][0]["type"], "budget")
+
     def test_update_roadmap_records_touched_path(self):
         """
         Acceptance Criteria (US-0009):
@@ -181,6 +229,36 @@ class TestScrumTools(unittest.TestCase):
         # plan_sprint_backlog_item doesn't move it from backlog, it just adds to sprint_backlog
         plan_sprint_backlog_item("ST-1", {"plan": "test"}, tool_context=tool_context)
         self.assertEqual(tool_context.state["sprint_backlog"][0]["title"], "ST-1")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    def test_plan_sprint_backlog_item_rejects_new_work_while_release_pending(self, mock_md):
+        """
+        Acceptance Criteria (ISSUE-0010): a genuinely new sprint_backlog item is
+        refused while the previous sprint's retro/report happened but its
+        release PR never completed and it still has unaccepted stories -
+        accepted again once create_release_pr succeeds (clearing the flag).
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_report_pending_release"] = True
+        tool_context.state["sprint_backlog"] = [
+            {"id": "ST-1", "title": "Old Story", "stages_completed": ["Ready", "Implemented"]}
+        ]
+
+        result = plan_sprint_backlog_item("ST-2", {"plan": "test"}, tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("create_release_pr", result["message"])
+        self.assertEqual(len(tool_context.state["sprint_backlog"]), 1)
+
+        # Updating an existing item is unaffected - only new items are gated.
+        result = plan_sprint_backlog_item("ST-1", {"plan": "test"}, tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+
+        # Once the release actually goes out, new work is accepted again.
+        tool_context.state["sprint_report_pending_release"] = False
+        result = plan_sprint_backlog_item("ST-2", {"plan": "test"}, tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(tool_context.state["sprint_backlog"]), 2)
 
 
 if __name__ == "__main__":

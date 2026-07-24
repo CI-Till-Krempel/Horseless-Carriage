@@ -153,7 +153,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.models.lite_llm import LiteLlm
 
-from .helpers import get_process_overhead_percentage, is_story_done
+from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level
 from .prompts import (
     ORCHESTRATOR_PROMPT,
     PO_PROMPT,
@@ -168,12 +168,14 @@ from .tools import (
     log_decision,
     upsert_story,
     upsert_epic,
+    upsert_issue,
     update_roadmap,
     plan_backlog_item,
     set_priority,
     advance_story_stage,
     add_impediment,
     add_retro_action,
+    record_human_approval,
     plan_sprint_backlog_item,
     git_push,
     gh_pr_create,
@@ -467,6 +469,8 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
 - Token Usage: {token_usage:,} / {token_limit:,} tokens used.
 - USD Budget Limit: ${usd_limit:.2f}
 - Repository: {state.repo.get('url', 'Not configured')} ({state.repo.get('branch', 'N/A')})
+- Interaction Level: {get_interaction_level()} (see docs/INTERACTION-LEVELS.md - controls which
+  record_human_approval type, if any, is required before implementing stories / releasing)
 """
     # Inject as a system message at the beginning of the contents
     llm_request.contents.insert(0, types.Content(role="system", parts=[types.Part(text=status_summary)]))
@@ -608,6 +612,7 @@ product_owner = LlmAgent(
         init_scrum_state,
         upsert_story,
         upsert_epic,
+        upsert_issue,
         update_roadmap,
         plan_backlog_item,
         advance_story_stage,
@@ -617,6 +622,7 @@ product_owner = LlmAgent(
         gh_release_create,
         create_sprint_report,
         create_release_pr,
+        record_human_approval,
         read_doc,
         list_docs,
         upsert_prd,
@@ -635,6 +641,8 @@ scrum_master = LlmAgent(
         init_scrum_state,
         add_impediment,
         add_retro_action,
+        upsert_issue,
+        record_human_approval,
         log_decision,
         update_budgets,
         get_budget_status,
@@ -722,6 +730,7 @@ quality_guardian = LlmAgent(
     tools=[
         calculate_kpis,
         update_sprint_report_with_kpis,
+        upsert_issue,
     ],
     **COMMON_AGENT_CALLBACKS,
 )

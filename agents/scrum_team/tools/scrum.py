@@ -5,7 +5,7 @@ import json
 from typing import Any, Dict, List
 from .base import _configured_repo_root, _state_file_path, _project_root, _hc_version
 from .migrations import migrate_state
-from ..helpers import blocks_direct_status_set
+from ..helpers import blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked
 
 DEFAULT_DOD = [
     "Code reviewed",
@@ -37,6 +37,16 @@ REPO_STATE_KEYS = [
     "messages",
     "transcript",
     "hc_version",
+    "retro_baseline",
+    "human_approvals",
+    "sprint_approval_baseline",
+    "release_approval_baseline",
+    "dev_touch_baseline",
+    "last_check_build",
+    "pr_review_calls",
+    "architect_review_baseline",
+    "qa_review_baseline",
+    "sprint_report_pending_release",
 ]
 # Deliberately excluded from the above: github_token, github_app,
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
@@ -72,6 +82,16 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("token_usage", {"total": 0, "agents": {}})
     s.setdefault("story_estimates", {})
     s.setdefault("transcript", [])
+    s.setdefault("retro_baseline", 0)
+    s.setdefault("human_approvals", [])
+    s.setdefault("sprint_approval_baseline", 0)
+    s.setdefault("release_approval_baseline", 0)
+    s.setdefault("dev_touch_baseline", 0)
+    s.setdefault("last_check_build", None)
+    s.setdefault("pr_review_calls", {})
+    s.setdefault("architect_review_baseline", 0)
+    s.setdefault("qa_review_baseline", 0)
+    s.setdefault("sprint_report_pending_release", False)
 
     # 1. Try to load from repo if present first, so environment can override
     try:
@@ -209,6 +229,15 @@ def add_impediment(description: str, owner: str, tool_context=None) -> Dict[str,
     """
     Add an impediment to impediment_log.
     """
+    if is_low_quality_retro_text(description):
+        return {
+            "status": "error",
+            "message": (
+                "description is blank, a generic placeholder, or too short to be a concrete "
+                "impediment (see SM_PROMPT's RETROSPECTIVE REASONING) - describe what actually "
+                "blocked the process this sprint."
+            ),
+        }
     s = tool_context.state
     imp = {"description": description.strip(), "owner": owner.strip(), "status": "open"}
     s["impediment_log"] = list(s.get("impediment_log", [])) + [imp]
@@ -219,6 +248,16 @@ def add_retro_action(action: str, owner: str, success_metric: str, tool_context=
     """
     Add an action item from retrospectives.
     """
+    if is_low_quality_retro_text(action) or is_low_quality_retro_text(success_metric):
+        return {
+            "status": "error",
+            "message": (
+                "action/success_metric is blank, a generic placeholder ('communicate better' and "
+                "similar), or too short - SM_PROMPT's RETROSPECTIVE REASONING requires an action "
+                "tied to what actually happened this sprint, with a real success metric, not a "
+                "formality to unblock create_sprint_report."
+            ),
+        }
     s = tool_context.state
     entry = {
         "action": action.strip(),
@@ -229,6 +268,36 @@ def add_retro_action(action: str, owner: str, success_metric: str, tool_context=
     s["retro_actions"] = list(s.get("retro_actions", [])) + [entry]
     _ = save_state_to_repo(tool_context)
     return {"status": "ok", "retro_action": entry}
+
+_APPROVAL_TYPES = ("sprint", "release", "budget")
+
+
+def record_human_approval(approval_type: str, note: str = "", tool_context=None) -> Dict[str, Any]:
+    """
+    Records an explicit human approval event (see ORCHESTRATOR_PROMPT's
+    ITERATION MODE: "A sprint can ONLY start after explicit human review and
+    approval of the sprint goal and sprint backlog", and PO/SM_PROMPT's
+    "Ensure Human Review is done for each increment") - the mechanical
+    counterpart `advance_story_stage(..., "Implemented")` and
+    `create_release_pr` (see ISSUE-0001) actually check for, instead of
+    trusting the model's own assertion that a human reviewed something.
+    - approval_type: "sprint" (this sprint's goal + backlog), "release"
+      (this increment, before create_release_pr), or "budget" (this
+      sprint's token/USD budget - required instead of "sprint" at the CEO
+      interaction level). Which of these is actually required by the two
+      gates above depends on INTERACTION_LEVEL - see
+      docs/INTERACTION-LEVELS.md and
+      agents/scrum_team/helpers.py's required_pre_implementation_approval/
+      required_pre_release_approval. A rejected gate's own error message
+      names exactly which type to call this with.
+    """
+    if approval_type not in _APPROVAL_TYPES:
+        return {"status": "error", "message": f"Unknown approval_type '{approval_type}'. Must be one of {_APPROVAL_TYPES}."}
+    s = tool_context.state
+    entry = {"type": approval_type, "note": note.strip()}
+    s["human_approvals"] = list(s.get("human_approvals", [])) + [entry]
+    _ = save_state_to_repo(tool_context)
+    return {"status": "ok", "approval": entry}
 
 def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
@@ -273,6 +342,14 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
             break
 
     if not updated_item:
+        # ISSUE-0010: this is a genuinely new sprint_backlog item (not an
+        # update to one already there) - refuse it if the previous sprint's
+        # close sequence (retro/report done, but release PR never
+        # completed) is still hanging open.
+        block_msg = new_sprint_item_blocked(s)
+        if block_msg:
+            return {"status": "error", "message": block_msg}
+
         # Inherit title/user_story/acceptance_criteria/type from the matching
         # product_backlog entry (PO-owned, via upsert_story) rather than
         # defaulting title to the bare lookup key - that default is exactly

@@ -219,6 +219,64 @@ silently failed would be exactly the kind of gap this mechanism exists to close.
 there's no longer a separate "now go tell the roadmap" step for a story once it's moving through
 stages at all.
 
+### Sprint retrospective enforcement
+
+A real eval run (0.1.0-run8) completed all 5 sprints - every story was implemented, reviewed,
+tested, and accepted correctly - yet the Scrum Master role was never invoked even once across the
+whole run: every `transfer_to_agent` call targeted ProductOwner, DevTeam, Architect, or QA. The
+Orchestrator's prompt said the retrospective was mandatory and listed it as the last step of the
+sprint-close sequence, but nothing actually stopped the sprint from "closing" without it - it was
+simply the easiest step to skip, so it always got skipped, in 5 out of 5 sprints.
+
+`create_sprint_report` (`agents/scrum_team/tools/budget.py`) now mechanically refuses to write a
+report unless a *new* retro action or impediment has been logged since the last successful report:
+`len(retro_actions) + len(impediment_log)` is compared against a `retro_baseline` snapshot taken
+the last time the check passed, so a stale entry from three sprints ago can't trivially satisfy
+this sprint's requirement forever - `add_retro_action`/`add_impediment` must produce something new,
+every sprint. On success the baseline is updated to the new total. The rejection message tells the
+caller (Product Owner) exactly what's missing and to transfer to Scrum Master first - turning a
+skippable prompt instruction into a hand-off the tooling itself forces.
+
+### Human interaction levels
+
+`record_human_approval`'s two gates (`advance_story_stage(..., "Implemented")` and
+`create_release_pr`, see ISSUE-0001 above) originally hard-coded exactly two approval types:
+`"sprint"` before implementing, `"release"` before releasing. That's the right shape for a human
+embedded as Product Owner or acting as a business stakeholder, but it doesn't fit every real usage:
+a CEO-level sponsor who only cares about spend shouldn't have to review every sprint's backlog to
+unblock the team, and a fully automated evaluation run (`run_eval.py`) has no human to call
+`record_human_approval` at all - which is exactly why `run_eval.py`'s scripted messages had to
+socially-engineer the model into calling it based on prompt text alone ("treat the sprint as
+pre-approved"), rather than that being mechanically true.
+
+`INTERACTION_LEVEL` (`agents/scrum_team/helpers.py`'s `get_interaction_level()`, see
+`docs/INTERACTION-LEVELS.md`) generalizes the two hard-coded gates into a level-driven lookup
+(`required_pre_implementation_approval`/`required_pre_release_approval`) instead:
+
+| Level | Pre-implementation | Pre-release |
+|---|---|---|
+| Product / Stakeholder | `"sprint"` | `"release"` |
+| CEO | `"budget"` | none |
+| EVAL | none | none |
+
+`record_human_approval` itself gained a third `approval_type`, `"budget"`, for the CEO level - no
+new state field was needed: the existing `sprint_approval_baseline`/`release_approval_baseline`
+"must be NEW since last time" snapshots (in `create_sprint_report`/`create_release_pr`) now compare
+against whichever type the active level actually requires, computed fresh from the environment each
+time rather than persisted - a misconfigured or unset `INTERACTION_LEVEL` falls back to `Product`,
+the most-supervised level, instead of silently disabling every gate. `run_eval.py` now sets
+`INTERACTION_LEVEL=EVAL` explicitly, so the "no human in the loop" property of an eval run is
+mechanically guaranteed rather than resting entirely on the model obeying scripted prompt text.
+
+`create_sprint_report` also branches on level via `report_detail_level()`, rather than always
+rendering the same unconditional content: `full` (Product, EVAL) keeps everything, `business`
+(Stakeholder) drops per-agent token usage and transcript excerpts, `executive` (CEO) renders budget
+and headline outcomes only. This is in the report-generation code itself, not left to the PO agent's
+prompt-following, so a human at a given level gets a consistently-shaped report regardless of how
+that call happened to be phrased - and no data is silently dropped: an omitted section is still named
+explicitly under a "Full Process Detail" heading, pointing at `.hc/state.json` where it still lives
+in full.
+
 ## Team performance evaluation
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
