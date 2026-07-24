@@ -90,7 +90,7 @@ def configure_github_app(app_id: str, private_key: str, installation_id: str, to
     except Exception as e:
         return {"status": "error", "message": f"Failed to get installation access token: {e}"}
 
-def git_push(branch: str, commit_message: str = "chore: update", add_all: bool = True, tool_context=None) -> Dict[str, Any]:
+def git_push(branch: str, commit_message: str = "chore: update", add_all: bool = True, allow_protected: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Stage changes (optionally), commit, and push the current working tree to the given branch.
     Non-interactive; returns command outputs.
@@ -98,8 +98,23 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
       (e.g. "eval-<run-id>/<branch>") so branches from different runs sharing
       one eval repo stay distinguishable - see _with_eval_branch_prefix. No-op
       in real usage.
+    - allow_protected: escape hatch for the one legitimate direct-push case
+      (seed_repository's initial bootstrap commit, before any other branch
+      exists to PR from). Defaults False - see ISSUE-0006: DEV_PROMPT's
+      "the configured default branch is PROTECTED... cannot push to it
+      directly" had no code backing it at all before this.
     """
     branch = _with_eval_branch_prefix(branch)
+    protected_branch = _default_push_branch(tool_context)
+    if branch == protected_branch and not allow_protected:
+        return {
+            "status": "error",
+            "message": (
+                f"Refusing to push directly to '{protected_branch}' - it's the configured "
+                "protected default branch (see DEV_PROMPT). Push to a feature branch and open a "
+                "Pull Request via gh_pr_create/create_release_pr instead."
+            ),
+        }
     repo_root = str(_configured_repo_root(tool_context))
 
     # Ensure branch exists locally
@@ -325,6 +340,21 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
     """
     Create a Pull Request for the release increment.
     """
+    # ISSUE-0001: "Ensure Human Review is done for each increment" had no
+    # code backing it - refuse until a fresh "release" approval was
+    # recorded via record_human_approval since the last release PR.
+    state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
+    release_approvals = sum(1 for a in state.get("human_approvals", []) if a.get("type") == "release")
+    if release_approvals <= state.get("release_approval_baseline", 0):
+        return {
+            "status": "error",
+            "message": (
+                "Cannot create a release PR before this increment has a fresh human approval - "
+                "call record_human_approval('release', ...) first (see ORCHESTRATOR_PROMPT "
+                "SPRINT REVIEW & RELEASE)."
+            ),
+        }
+
     sprint_tracking_check = _diff_release_against_sprint_tracking(tool_context=tool_context)
     stage_result = _stage_sprint_tracked_changes(sprint_tracking_check, tool_context=tool_context)
     # add_all=False: only the paths _stage_sprint_tracked_changes just
@@ -344,6 +374,13 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
     # failing because `base` doesn't exist on the remote yet, which is
     # exactly what silently produced zero PRs for a whole eval run before.
     ok = push_res.get("status") == "ok" and pr_res.get("status") == "ok"
+    if ok:
+        # Bumping only on success mirrors retro_baseline: a failed PR
+        # creation shouldn't consume this increment's approval, and
+        # sprint_report_pending_release only clears once the release
+        # actually went out (see ISSUE-0010).
+        state["release_approval_baseline"] = release_approvals
+        state["sprint_report_pending_release"] = False
     return {
         "status": "ok" if ok else "error",
         "push": push_res,
@@ -353,6 +390,22 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
         "flagged_for_review": stage_result["flagged_for_review"],
         "warnings": sprint_tracking_check["warnings"] + stage_result["warnings"],
     }
+
+def _record_pr_review_call(tool_context) -> None:
+    """
+    Counts a gh_pr_review/gh_pr_comment call per calling role, so
+    advance_story_stage's Reviewed/Tested gates (ISSUE-0005) can tell "a
+    role claimed this stage" apart from "a role actually left a review
+    comment on the PR".
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return
+    agent_name = getattr(tool_context, "agent_name", None)
+    if not agent_name:
+        return
+    calls = dict(tool_context.state.get("pr_review_calls", {}))
+    calls[agent_name] = calls.get(agent_name, 0) + 1
+    tool_context.state["pr_review_calls"] = calls
 
 def gh_pr_comment(body: str, pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
     """
@@ -366,6 +419,8 @@ def gh_pr_comment(body: str, pr_id: str | int | None = None, tool_context=None) 
         cmd.append(str(pr_id))
     cmd += ["--body", prefixed_body]
     r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    if r.get("status") == "ok":
+        _record_pr_review_call(tool_context)
     return r
 
 def gh_pr_review(body: str, event: str = "COMMENT", pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
@@ -381,6 +436,8 @@ def gh_pr_review(body: str, event: str = "COMMENT", pr_id: str | int | None = No
         cmd.append(str(pr_id))
     cmd += ["--body", prefixed_body, f"--{event.lower()}"]
     r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    if r.get("status") == "ok":
+        _record_pr_review_call(tool_context)
     return r
 
 def gh_pr_check_logs(pr_id: str | int | None = None, check_name: str | None = None, tool_context=None) -> Dict[str, Any]:

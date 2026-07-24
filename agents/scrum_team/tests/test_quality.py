@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from agents.scrum_team.tools.quality import (
     calculate_kpis,
     update_sprint_report,
+    check_build,
     _execute_test_suite_coverage,
     _compute_code_complexity,
     _scan_security_vulnerabilities,
@@ -388,6 +389,7 @@ class TestQualityTools(unittest.TestCase):
         mock_run.side_effect = [_TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
 
         with patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"):
             kpis = calculate_kpis(tool_context=tool_context)
@@ -411,6 +413,42 @@ class TestQualityTools(unittest.TestCase):
         }
         update_sprint_report(kpis=kpis, tool_context=tool_context)
         self.assertEqual(tool_context.state["sprint_report_kpis"], kpis)
+
+    @patch("agents.scrum_team.tools.quality._configured_repo_root")
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_check_build_persists_result_for_the_tested_gate(self, mock_run, mock_repo_root):
+        """
+        Acceptance Criteria (ISSUE-0004): check_build's result is persisted
+        into state so advance_story_stage's Tested gate can verify it
+        actually ran and passed, instead of trusting QA's own say-so.
+        """
+        from pathlib import Path
+        import tempfile
+
+        mock_run.return_value = {"status": "ok", "stdout": "", "stderr": ""}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "requirements.txt").write_text("pytest\n")
+            mock_repo_root.return_value = Path(tmp_dir)
+            check_build(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["last_check_build"], {"checked": "requirements.txt", "passing": True})
+
+    @patch("agents.scrum_team.tools.quality._configured_repo_root")
+    def test_check_build_persists_not_checked_result(self, mock_repo_root):
+        from pathlib import Path
+        import tempfile
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            mock_repo_root.return_value = Path(tmp_dir)
+            check_build(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["last_check_build"], {"checked": None, "passing": None})
 
 
 if __name__ == "__main__":

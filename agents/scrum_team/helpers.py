@@ -63,3 +63,64 @@ def blocks_direct_status_set(status) -> bool:
       writing new data this way is not.
     """
     return is_pipeline_stage_name(status) or is_story_done(status)
+
+
+# Paths under these prefixes are spec/process documents, not application
+# source code - see ISSUE-0002 (advance_story_stage's "Implemented" gate
+# needs to tell "wrote real code" apart from "wrote a story markdown file").
+_NON_SOURCE_PREFIXES = ("specs/", "spec-templates/", ".hc/")
+
+
+def is_source_file(rel_path: str) -> bool:
+    return isinstance(rel_path, str) and not rel_path.startswith(_NON_SOURCE_PREFIXES)
+
+
+# Placeholder/generic retro content the model can produce to trivially
+# satisfy create_sprint_report's retro_baseline gate (which only checks
+# *count*, not quality) without actually doing the concrete reflection
+# SM_PROMPT's RETROSPECTIVE REASONING section asks for - see ISSUE-0009.
+_MIN_RETRO_FIELD_LEN = 8
+_GENERIC_RETRO_PHRASES = {
+    "communicate better", "improve communication", "do better", "be more careful",
+    "work harder", "n/a", "none", "tbd", "todo", "stuff", "improve process",
+}
+
+
+def is_low_quality_retro_text(text) -> bool:
+    """True if text is blank, a known generic placeholder, or too short to be a concrete reflection."""
+    if not isinstance(text, str):
+        return True
+    cleaned = text.strip().lower().rstrip(".")
+    return len(cleaned) < _MIN_RETRO_FIELD_LEN or cleaned in _GENERIC_RETRO_PHRASES
+
+
+def new_sprint_item_blocked(state: dict) -> str | None:
+    """
+    Returns a rejection message if a previous sprint's close sequence was
+    left incomplete, else None. "Incomplete" here means
+    `sprint_report_pending_release` is set (create_sprint_report succeeded -
+    so the retro/report step did happen, see retro_baseline - but
+    create_release_pr never followed) and that prior sprint still has
+    planned stories short of Accepted. See ISSUE-0010.
+
+    Only meant to gate genuinely *new* sprint_backlog items - an ongoing
+    sprint planning several stories before any of them reach Accepted is
+    normal, not a skipped close sequence, so callers must only apply this
+    to an item that isn't already in sprint_backlog.
+    """
+    if not state.get("sprint_report_pending_release"):
+        return None
+    unfinished = [
+        x for x in (state.get("sprint_backlog") or [])
+        if x.get("type", "User Story") != "Epic" and "Accepted" not in (x.get("stages_completed") or [])
+    ]
+    if not unfinished:
+        return None
+    unfinished_ids = [x.get("id") or x.get("title") for x in unfinished]
+    return (
+        "Cannot plan new sprint work - the previous sprint's retrospective/report was completed "
+        "but create_release_pr was never called (or didn't succeed) for it, and it still has "
+        f"stories short of Accepted ({unfinished_ids}). Finish the previous sprint's release "
+        "(create_release_pr) before starting new work - see ORCHESTRATOR_PROMPT SPRINT CLOSE "
+        "SEQUENCE."
+    )

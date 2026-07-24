@@ -263,7 +263,9 @@ Concretely, in this codebase (see "Story workflow" below for the full feature th
   with an empty/placeholder title, user story, or acceptance criteria - it doesn't just ask the
   model to check `spec-templates/DOD.md`/`DOR.md` first. `check_build()` actually attempts to
   install the project's dependencies rather than asking QA to "verify the build works" by reading
-  the code.
+  the code. `create_sprint_report` refuses to run at all unless a *new* retro action or impediment
+  was logged since the last report - a real run had the Scrum Master role go uninvoked for 5
+  sprints straight because "retro is mandatory" was stated but never actually enforced.
 - **No bypass path left open.** Enforcing order/ownership in one tool (`advance_story_stage`) is
   only real enforcement if every other way to change the same state is closed off too -
   `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status` directly to a
@@ -378,6 +380,12 @@ Completed the core implementation of the GitHub integration and established the 
 - **This is a recommendation only - it is NOT applied automatically.** A human must approve it and
   set it manually (`SPRINT_TOKEN_BUDGET` / `EVAL_SPRINT_TOKEN_BUDGET`; see "Budget Management" above).
 
+## Retrospective Actions (including efficiency improvements)
+- Tag Architect on any story touching the data model before marking it Ready (Owner: ProductOwner, Status: open)
+
+## Impediments
+No impediments logged.
+
 ## Story Estimates vs Actual Tokens
 - US-0012: estimate=50000, actual=62345
 
@@ -393,6 +401,12 @@ sprint actually looks budget-starved (near/at its token cap **and** stories left
 there's unused budget headroom left over, it says so instead and points at process/quality issues
 rather than the budget. Nothing here ever changes `SPRINT_TOKEN_BUDGET`/`budgets.total` itself - a
 human has to act on the suggestion deliberately.
+
+Unlike every other section, "Retrospective Actions"/"Impediments" aren't just rendered - the whole
+report generation is gated on them. `create_sprint_report` refuses to run at all unless a *new*
+retro action or impediment has been logged since the last successful report (see RELEASE.md "Sprint
+retrospective enforcement"), so if you see a report at all, at least one of these two sections is
+guaranteed to have real, new content - never both saying "none" at once.
 
 #### Admin UI
 Log in to `http://localhost:4000/ui/` to see real-time cost tracking and budget status for the `scrum-sprint-budget`.

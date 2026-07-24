@@ -44,9 +44,20 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         if abs_path.exists() and not overwrite:
             return {"status": "error", "message": f"File exists: {path}"}
+        # ISSUE-0008: overwrite=True still silently clobbers pre-existing,
+        # unrelated content with no signal to the caller - surface it
+        # (without blocking; overwrite=True is an explicit, deliberate ask)
+        # so an agent has a chance to notice an accidental overwrite.
+        overwrote_existing_content = False
+        if abs_path.exists():
+            try:
+                previous = abs_path.read_text(encoding="utf-8", errors="replace")
+                overwrote_existing_content = previous != content
+            except OSError:
+                pass
         abs_path.write_text(content, encoding="utf-8")
         _record_touched_file(path, tool_context)
-        return {"status": "ok", "path": str(abs_path)}
+        return {"status": "ok", "path": str(abs_path), "overwrote_existing_content": overwrote_existing_content}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -304,6 +315,10 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
                 branch=_default_push_branch(tool_context),
                 commit_message="chore: initial seed of README, specs and templates",
                 add_all=True,
+                # The very first commit to a fresh repo has no other branch
+                # to PR from yet - the one legitimate exception to
+                # git_push's protected-branch guard (see ISSUE-0006).
+                allow_protected=True,
                 tool_context=tool_context
             )
             return {"status": "ok", "seeded": files_seeded, "push": push_res}

@@ -219,6 +219,24 @@ silently failed would be exactly the kind of gap this mechanism exists to close.
 there's no longer a separate "now go tell the roadmap" step for a story once it's moving through
 stages at all.
 
+### Sprint retrospective enforcement
+
+A real eval run (0.1.0-run8) completed all 5 sprints - every story was implemented, reviewed,
+tested, and accepted correctly - yet the Scrum Master role was never invoked even once across the
+whole run: every `transfer_to_agent` call targeted ProductOwner, DevTeam, Architect, or QA. The
+Orchestrator's prompt said the retrospective was mandatory and listed it as the last step of the
+sprint-close sequence, but nothing actually stopped the sprint from "closing" without it - it was
+simply the easiest step to skip, so it always got skipped, in 5 out of 5 sprints.
+
+`create_sprint_report` (`agents/scrum_team/tools/budget.py`) now mechanically refuses to write a
+report unless a *new* retro action or impediment has been logged since the last successful report:
+`len(retro_actions) + len(impediment_log)` is compared against a `retro_baseline` snapshot taken
+the last time the check passed, so a stale entry from three sprints ago can't trivially satisfy
+this sprint's requirement forever - `add_retro_action`/`add_impediment` must produce something new,
+every sprint. On success the baseline is updated to the new total. The rejection message tells the
+caller (Product Owner) exactly what's missing and to transfer to Scrum Master first - turning a
+skippable prompt instruction into a hand-off the tooling itself forces.
+
 ## Team performance evaluation
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically

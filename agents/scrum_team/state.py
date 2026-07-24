@@ -35,3 +35,13 @@ class ScrumState(BaseModel):
     transcript: List[Dict[str, Any]] = Field(default_factory=list)
     sprint_files_touched: List[str] = Field(default_factory=list)
     hc_version: str = "unknown"
+    retro_baseline: int = 0
+    human_approvals: List[Dict[str, Any]] = Field(default_factory=list)
+    sprint_approval_baseline: int = 0
+    release_approval_baseline: int = 0
+    dev_touch_baseline: int = 0
+    last_check_build: Optional[Dict[str, Any]] = None
+    pr_review_calls: Dict[str, int] = Field(default_factory=dict)
+    architect_review_baseline: int = 0
+    qa_review_baseline: int = 0
+    sprint_report_pending_release: bool = False

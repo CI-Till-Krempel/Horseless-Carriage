@@ -7,10 +7,12 @@ from .scrum import (
     add_impediment,
     add_retro_action,
     plan_sprint_backlog_item,
+    record_human_approval,
 )
 from .requirements import (
     upsert_story,
     upsert_epic,
+    upsert_issue,
     update_roadmap,
     plan_backlog_item,
     upsert_backlog_item,

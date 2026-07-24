@@ -80,6 +80,25 @@ class TestSprintFilesTouched(unittest.TestCase):
         write_file("specs/requirements/PRD-test.md", "v2", overwrite=True, tool_context=self.tool_context)
         self.assertEqual(self.tool_context.state["sprint_files_touched"], ["specs/requirements/PRD-test.md"])
 
+    def test_write_file_flags_overwrite_of_different_content(self):
+        """
+        Acceptance Criteria (ISSUE-0008): overwriting a file whose existing
+        content differs is surfaced, not silently clobbered.
+        """
+        write_file("notes/foo.md", "original", tool_context=self.tool_context)
+        result = write_file("notes/foo.md", "changed", overwrite=True, tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["overwrote_existing_content"])
+
+    def test_write_file_overwrite_with_identical_content_is_not_flagged(self):
+        write_file("notes/foo.md", "same", tool_context=self.tool_context)
+        result = write_file("notes/foo.md", "same", overwrite=True, tool_context=self.tool_context)
+        self.assertFalse(result["overwrote_existing_content"])
+
+    def test_write_file_new_file_is_not_flagged(self):
+        result = write_file("notes/new.md", "content", tool_context=self.tool_context)
+        self.assertFalse(result["overwrote_existing_content"])
+
     def test_upsert_prd_records_touched_path(self):
         upsert_prd("This is a PRD.", "test.md", tool_context=self.tool_context)
         self.assertIn("specs/requirements/PRD-test.md", self.tool_context.state["sprint_files_touched"])

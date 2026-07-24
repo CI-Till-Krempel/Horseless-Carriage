@@ -100,6 +100,7 @@ class TestBudgetTools(unittest.TestCase):
         mock_getenv.return_value = "15.0"
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
         self.assertIn("Process Overhead: 15.0%", report["report"])
 
@@ -115,6 +116,7 @@ class TestBudgetTools(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["hc_version"] = "0.1.0"
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
 
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
 
@@ -130,6 +132,7 @@ class TestBudgetTools(unittest.TestCase):
         mock_getenv.return_value = "15.0"
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()  # hc_version defaults to "unknown"
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
 
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
 
@@ -149,6 +152,7 @@ class TestBudgetTools(unittest.TestCase):
         mock_repo_root.return_value = Path("/fake/repo")
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
         tool_context.state["transcript"] = [
             {"agent_name": "ProductOwner", "role": "model", "content": "Prioritized the backlog."},
             {"agent_name": "DevTeam", "role": "model", "content": "Implemented the feature."},
@@ -175,10 +179,68 @@ class TestBudgetTools(unittest.TestCase):
         mock_getenv.return_value = "15.0"
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()  # transcript defaults to []
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
 
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
 
         self.assertIn("No transcript available yet", report)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_without_new_retro_or_impediment(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria: create_sprint_report must refuse to close the
+        sprint unless a retro action or impediment was logged since the
+        last successful report - a real eval run's Scrum Master went
+        un-invoked for 5 sprints straight with nothing catching it.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("report", result)
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_accepts_impediment_alone(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria: an impediment (not just a retro action)
+        satisfies the requirement, and is rendered in its own section.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["impediment_log"] = [{"description": "Blocked on X", "owner": "SM", "status": "open"}]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("Blocked on X", result["report"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_requires_new_signal_each_sprint(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria: retro_actions/impediment_log accumulate across
+        the whole run, so a stale entry from a prior sprint must not
+        trivially satisfy this sprint's requirement forever after.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "sprint 1 retro", "owner": "SM", "status": "open"}]
+
+        first = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+        self.assertEqual(first["status"], "ok")
+
+        # No new retro action added for sprint 2 - must be rejected even
+        # though retro_actions is non-empty (it's the same stale entry).
+        second = create_sprint_report("summary 2", ["accomplishment 2"], tool_context=tool_context)
+        self.assertEqual(second["status"], "error")
 
 
 if __name__ == "__main__":

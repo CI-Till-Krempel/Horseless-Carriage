@@ -5,14 +5,22 @@ import re
 from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file
-from ..helpers import is_story_done, STORY_STAGES, STAGE_OWNERS, blocks_direct_status_set
+from ..helpers import is_story_done, STORY_STAGES, STAGE_OWNERS, blocks_direct_status_set, is_source_file
 
-# Matches a bare item ID (US-0001, EP-0002, ...) and nothing else. Guards
-# against building a filename like "US-0007-US-0001.md" when a story was
-# (mis)titled with another item's ID instead of a real description - seen
-# in real eval runs (0.1.0-run4/run5's specs/stories/US-0010-US-009.md,
-# US-0007-US-0001.md, etc.).
-_BARE_ID_PATTERN = re.compile(r"^[A-Za-z]{2,4}-\d{2,6}$")
+# Matches a bare item ID (US-0001, EP-0002, ISSUE-0003, ...) and nothing
+# else. Guards against building a filename like "US-0007-US-0001.md" when a
+# story was (mis)titled with another item's ID instead of a real
+# description - seen in real eval runs (0.1.0-run4/run5's
+# specs/stories/US-0010-US-009.md, US-0007-US-0001.md, etc.).
+_BARE_ID_PATTERN = re.compile(r"^[A-Za-z]{2,6}-\d{2,6}$")
+
+# Backlog item type -> ID prefix. "User Story" (the implicit default for
+# any unrecognized/absent type) isn't listed here on purpose - see
+# upsert_backlog_item's prefix lookup.
+_ID_PREFIXES = {
+    "Epic": "EP",
+    "Issue": "ISSUE",
+}
 
 # Matches a "filled-in" user story with every slot left empty (e.g. "As a ,
 # I want , so that .") - distinct from the template's own placeholder text,
@@ -22,8 +30,15 @@ _BARE_ID_PATTERN = re.compile(r"^[A-Za-z]{2,4}-\d{2,6}$")
 _BLANK_USER_STORY_PATTERN = re.compile(r"^as a\s*,\s*i want\s*,\s*so that\s*\.?\s*$", re.IGNORECASE)
 _PLACEHOLDER_USER_STORY = "As a <role>, I want <capability>, so that <benefit>."
 
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
-def _story_readiness_issues(item: Dict[str, Any], is_epic: bool) -> List[str]:
+
+def _normalize_title_for_dup_check(title: str) -> str:
+    """Case/punctuation-insensitive key for near-exact title matches (see ISSUE-0008)."""
+    return _NON_ALNUM_RE.sub("", (title or "").lower())
+
+
+def _story_readiness_issues(item: Dict[str, Any], is_epic: bool, is_issue: bool = False) -> List[str]:
     """
     Mechanical content-completeness check, applied when a story is being
     marked Done (see spec-templates/DOD.md) - a doc-only checklist the model
@@ -36,7 +51,11 @@ def _story_readiness_issues(item: Dict[str, Any], is_epic: bool) -> List[str]:
     title = (item.get("title") or "").strip()
     if not title or _BARE_ID_PATTERN.match(title):
         issues.append("title is missing or is just another item's ID, not a real description")
-    if not is_epic:
+    if is_issue:
+        overview = (item.get("overview") or item.get("description") or "").strip()
+        if not overview:
+            issues.append("overview/description is empty - describe the concrete gap this issue documents")
+    elif not is_epic:
         user_story = (item.get("user_story") or "").strip()
         if not user_story or user_story == _PLACEHOLDER_USER_STORY or _BLANK_USER_STORY_PATTERN.match(user_story):
             issues.append("user_story is missing, still the template placeholder, or has every slot left blank")
@@ -83,6 +102,21 @@ def upsert_epic(epic: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     epic["type"] = "Epic"
     return upsert_backlog_item(epic, tool_context=tool_context)
+
+def upsert_issue(issue: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
+    """
+    Requirements Management: Add or update an Issue by ID or Title (ISSUE-XXXX,
+    auto-generated if not provided). An Issue documents a concrete gap
+    (e.g. a mandatory process rule that isn't actually enforced in code) -
+    it's a requirement type, but goes through the same story development
+    process as a User Story once picked up: `advance_story_stage` treats it
+    like any other non-Epic backlog item (Ready -> Implemented -> Reviewed
+    -> Tested -> Accepted), just documented and filed under
+    `specs/requirements/` instead of `specs/stories/` - see
+    spec-templates/requirements/TEMPLATE-ISSUE.md.
+    """
+    issue["type"] = "Issue"
+    return upsert_backlog_item(issue, tool_context=tool_context)
 
 def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = None, tool_context=None) -> Dict[str, Any]:
     """
@@ -249,7 +283,7 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     
     # If ID is missing or is a placeholder, generate a new one
     item_type = item.get("type", "User Story")
-    prefix = "EP" if item_type == "Epic" else "US"
+    prefix = _ID_PREFIXES.get(item_type, "US")
     placeholder = f"{prefix}-XXXX"
     
     if not item_id or item_id == placeholder:
@@ -262,9 +296,30 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     def matches(x: Dict[str, Any]) -> bool:
         return (item_id and x.get("id") == item_id) or (title and x.get("title") == title)
 
+    # ISSUE-0008: warn (don't block - a naive check would false-positive on
+    # legitimately similar titles) when this title is a near-exact match of
+    # a *different* existing item's title, so duplicate/conflicting story
+    # files are at least surfaced instead of silently created.
+    duplicate_warning = None
+    if title:
+        norm_title = _normalize_title_for_dup_check(title)
+        if norm_title:
+            for x in backlog:
+                if matches(x):
+                    continue
+                if _normalize_title_for_dup_check(x.get("title", "")) == norm_title:
+                    duplicate_warning = (
+                        f"Title is a near-exact match of existing item '{x.get('id') or x.get('title')}' "
+                        "- check specs/ (see list_docs/read_doc) for an existing story/epic/issue "
+                        "before creating a new one."
+                    )
+                    break
+
+    old_version = None
     updated_item = None
     for i, x in enumerate(backlog):
         if matches(x):
+            old_version = x.get("version")
             backlog[i] = {**x, **item}
             s["product_backlog"] = backlog
             updated_item = backlog[i]
@@ -275,12 +330,35 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
         updated_item = item
 
     save_state_to_repo(tool_context)
+
+    # ISSUE-0007: a story's version can be set directly here, bypassing
+    # plan_backlog_item - without this, specs/ROADMAP.md would silently
+    # never learn about it, the same class of bug as the already-fixed
+    # direct-status bypass (see blocks_direct_status_set), just for
+    # version instead of status. Priority needs no equivalent sync: nothing
+    # in specs/ROADMAP.md is rendered from priority.
+    new_version = updated_item.get("version")
+    if new_version and new_version != old_version:
+        _ = _sync_roadmap_for_story(item_id or title, tool_context)
+
     story_md_result = _update_story_markdown(updated_item, tool_context)
     if story_md_result.get("status") != "ok":
         # Surface the failure (e.g. a Definition-of-Ready rejection) instead
         # of silently discarding it, as this used to do unconditionally.
-        return {"status": "error", "message": story_md_result.get("message"), "item": updated_item, "story_markdown": story_md_result}
-    return {"status": "ok", "updated": (updated_item != item), "item": updated_item, "story_markdown": story_md_result}
+        return {
+            "status": "error",
+            "message": story_md_result.get("message"),
+            "item": updated_item,
+            "story_markdown": story_md_result,
+            "duplicate_warning": duplicate_warning,
+        }
+    return {
+        "status": "ok",
+        "updated": (updated_item != item),
+        "item": updated_item,
+        "story_markdown": story_md_result,
+        "duplicate_warning": duplicate_warning,
+    }
 
 def _generate_next_id(prefix: str, tool_context=None) -> str:
     s = tool_context.state
@@ -326,17 +404,26 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
 
 def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
     """
-    Scan specs/stories/*.md and update state.
+    Scan specs/stories/*.md and specs/requirements/ISSUE-*.md (Issues are
+    filed under requirements/, see upsert_issue, but go through this same
+    story-sync path since they're driven through the same advance_story_stage
+    pipeline) and update state.
     """
     repo_root = _configured_repo_root(tool_context)
     stories_dir = repo_root / "specs" / "stories"
-    if not stories_dir.exists():
-        return {"status": "ok", "message": "No stories directory found."}
+    requirements_dir = repo_root / "specs" / "requirements"
+    candidates = []
+    if stories_dir.exists():
+        candidates.extend(stories_dir.glob("*.md"))
+    if requirements_dir.exists():
+        candidates.extend(requirements_dir.glob("ISSUE-*.md"))
+    if not candidates:
+        return {"status": "ok", "message": "No stories or issues directory found."}
     s = tool_context.state
     backlog = list(s.get("product_backlog", []))
     sprint_backlog = list(s.get("sprint_backlog", []))
     found_stories = []
-    for fp in stories_dir.glob("*.md"):
+    for fp in candidates:
         if fp.name.startswith("TEMPLATE-") or fp.name == "README.md":
             continue
         content = fp.read_text(encoding="utf-8", errors="replace")
@@ -436,6 +523,9 @@ def _parse_story_markdown(content: str) -> Dict[str, Any]:
         elif line.strip().startswith("- Epic ID:"):
             data["id"] = line.split(":", 1)[1].strip()
             data["type"] = "Epic"
+        elif line.strip().startswith("- Issue ID:"):
+            data["id"] = line.split(":", 1)[1].strip()
+            data["type"] = "Issue"
         elif line.strip().startswith("- Title:"):
             data["title"] = line.split(":", 1)[1].strip()
         elif line.strip().startswith("- Status:"):
@@ -459,25 +549,41 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     
     item_type = item.get("type", "User Story")
     is_epic = item_type == "Epic"
-    
-    id_prefix = "EP" if is_epic else "US"
-    template_name = "TEMPLATE-EPIC.md" if is_epic else "TEMPLATE-USER-STORY.md"
+    is_issue = item_type == "Issue"
+
+    id_prefix = _ID_PREFIXES.get(item_type, "US")
+    if is_epic:
+        template_name = "TEMPLATE-EPIC.md"
+    elif is_issue:
+        template_name = "TEMPLATE-ISSUE.md"
+    else:
+        template_name = "TEMPLATE-USER-STORY.md"
     id_placeholder = f"{id_prefix}-XXXX"
-    title_placeholder = "<short epic title>" if is_epic else "<short story title>"
-    
+    if is_epic:
+        title_placeholder = "<short epic title>"
+    elif is_issue:
+        title_placeholder = "<short issue title>"
+    else:
+        title_placeholder = "<short story title>"
+
     item_id = item.get("id")
     if not item_id or item_id == id_placeholder:
         item_id = _generate_next_id(id_prefix, tool_context)
         item["id"] = item_id
-        
+
     title = item.get("title", "Untitled")
     filename_title = "Untitled" if _BARE_ID_PATTERN.match(title.strip()) else title
     filename = f"{item_id}-{filename_title.replace(' ', '-').replace('/', '-')}.md"
-    story_path = repo_root / "specs" / "stories" / filename
+    # Issues document a process/tooling gap rather than a product feature, so
+    # they're filed under specs/requirements/ (see
+    # spec-templates/requirements/TEMPLATE-ISSUE.md) instead of
+    # specs/stories/ - same pipeline (advance_story_stage), different shelf.
+    dest_subdir = "requirements" if is_issue else "stories"
+    story_path = repo_root / "specs" / dest_subdir / filename
 
-    template_path = repo_root / "spec-templates" / "stories" / template_name
+    template_path = repo_root / "spec-templates" / dest_subdir / template_name
     if not template_path.exists():
-        template_path = _project_root() / "spec-templates" / "stories" / template_name
+        template_path = _project_root() / "spec-templates" / dest_subdir / template_name
 
     if not template_path.exists():
         return {"status": "error", "message": f"Template {template_name} not found."}
@@ -492,7 +598,7 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     # it) with garbage/missing content (title reused as another item's ID,
     # blank or still-placeholder user story, no acceptance criteria).
     if is_story_done(status) or str(status).strip().lower() == "ready":
-        issues = _story_readiness_issues(item, is_epic)
+        issues = _story_readiness_issues(item, is_epic, is_issue)
         if issues:
             return {
                 "status": "error",
@@ -507,11 +613,11 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     template_content = _strip_agent_safeguard_comments(template_path.read_text(encoding="utf-8", errors="replace"))
     priority = item.get("priority", "Must")
     
-    # User story text for stories, or overview for epics
+    # User story text for stories, or overview for epics/issues
     user_story = item.get("user_story", "")
     overview = item.get("overview", "") or item.get("description", "")
-    
-    if not user_story and not is_epic:
+
+    if not user_story and not is_epic and not is_issue:
          user_story = "As a <role>, I want <capability>, so that <benefit>."
     
     ac = item.get("acceptance_criteria", [])
@@ -534,6 +640,8 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     
     if is_epic:
         content = content.replace("<Describe the high-level business value and scope of this epic>", overview)
+    elif is_issue:
+        content = content.replace("<Describe the concrete gap - e.g. a mandatory process rule that isn't actually enforced in code>", overview)
     else:
         content = content.replace("As a <role>, I want <capability>, so that <benefit>.", user_story)
     
@@ -679,6 +787,97 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
             ),
         }
 
+    # Stage-specific content/process gates (ISSUE-0001 through ISSUE-0005,
+    # ISSUE-0010) - advance_story_stage's ordering/ownership checks above
+    # don't verify anything actually happened at the stage being claimed;
+    # these do. Each baseline is bumped only once the transition actually
+    # succeeds (see below), following the same "must be NEW since last
+    # time" pattern as create_sprint_report's retro_baseline.
+    source_touch_count = None
+    architect_review_count = None
+    qa_review_count = None
+    if stage == "Implemented":
+        sprint_approvals = sum(1 for a in s.get("human_approvals", []) if a.get("type") == "sprint")
+        if sprint_approvals <= s.get("sprint_approval_baseline", 0):
+            return {
+                "status": "error",
+                "message": (
+                    "Cannot mark a story Implemented before this sprint's goal and backlog have a "
+                    "fresh human approval - call record_human_approval('sprint', ...) first (see "
+                    "ORCHESTRATOR_PROMPT ITERATION MODE)."
+                ),
+            }
+        if s.get("sprint_report_pending_release"):
+            return {
+                "status": "error",
+                "message": (
+                    "A sprint report was already created but create_release_pr hasn't succeeded "
+                    "yet for it - finish the release before implementing further stories (see "
+                    "ORCHESTRATOR_PROMPT SPRINT CLOSE SEQUENCE)."
+                ),
+            }
+        is_spike = bool(product_item.get("spike") or sprint_item.get("spike"))
+        touched = s.get("sprint_files_touched", []) or []
+        source_touch_count = sum(1 for f in touched if is_source_file(f))
+        if not is_spike and source_touch_count <= s.get("dev_touch_baseline", 0):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Implemented - no real source file has been written "
+                    "via write_file since the last story was Implemented (story/spec markdown "
+                    "doesn't count). Write the actual code, or set {'spike': true} on this backlog "
+                    "item if it's a genuine planning/spike story with no code to write."
+                ),
+            }
+        estimates = s.get("story_estimates", {}) or {}
+        est_entry = estimates.get(story_id) or estimates.get(title) or estimates.get(title_or_id)
+        if not isinstance(est_entry, dict) or est_entry.get("actual") is None:
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Implemented - actual tokens spent haven't been "
+                    "logged yet. Call log_story_tokens(title_or_id, actual_tokens) first."
+                ),
+            }
+    elif stage == "Reviewed":
+        pr_calls = s.get("pr_review_calls", {}) or {}
+        architect_review_count = pr_calls.get("Architect", 0)
+        if architect_review_count <= s.get("architect_review_baseline", 0):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Reviewed - no gh_pr_review/gh_pr_comment call from "
+                    "Architect has been recorded since the last story was Reviewed. Leave an actual "
+                    "review comment on the PR first."
+                ),
+            }
+    elif stage == "Tested":
+        pr_calls = s.get("pr_review_calls", {}) or {}
+        qa_review_count = pr_calls.get("QA", 0)
+        if qa_review_count <= s.get("qa_review_baseline", 0):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - no gh_pr_review/gh_pr_comment call from QA "
+                    "has been recorded since the last story was Tested. Leave an actual review "
+                    "comment on the PR first."
+                ),
+            }
+        last_build = s.get("last_check_build")
+        if not last_build:
+            return {
+                "status": "error",
+                "message": f"Cannot mark '{story_id}' Tested - check_build() hasn't been called yet. Call it first.",
+            }
+        if last_build.get("passing") is False:
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - the last check_build() result failed. Fix "
+                    "the build and call check_build() again until it passes before retrying."
+                ),
+            }
+
     stages_completed.add(stage)
     ordered_stages = sorted(stages_completed, key=STORY_STAGES.index)
     update = {"stages_completed": ordered_stages, "status": stage}
@@ -689,6 +888,16 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
     if product_idx is not None:
         product_backlog[product_idx] = {**product_backlog[product_idx], **update}
         s["product_backlog"] = product_backlog
+
+    # Bump the relevant baseline now that the transition actually happened -
+    # the story's own stage IS recorded in state regardless of the
+    # markdown/roadmap sync outcome below, so these bump unconditionally too.
+    if stage == "Implemented" and source_touch_count is not None:
+        s["dev_touch_baseline"] = source_touch_count
+    elif stage == "Reviewed" and architect_review_count is not None:
+        s["architect_review_baseline"] = architect_review_count
+    elif stage == "Tested" and qa_review_count is not None:
+        s["qa_review_baseline"] = qa_review_count
 
     save_state_to_repo(tool_context)
 

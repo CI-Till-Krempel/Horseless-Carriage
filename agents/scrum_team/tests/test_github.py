@@ -162,6 +162,65 @@ class TestGitHubTools(unittest.TestCase):
             tool_context=tool_context,
         )
 
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_refuses_to_push_directly_to_protected_branch(self, mock_run):
+        """
+        Acceptance Criteria (ISSUE-0006): git_push refuses a push straight
+        to the configured default branch instead of running it.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["repo"] = {"default_branch": "main"}
+
+        result = git_push(branch="main", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_allow_protected_escape_hatch(self, mock_run):
+        """
+        Acceptance Criteria (ISSUE-0006): seed_repository's initial bootstrap
+        commit is the one legitimate exception - allow_protected=True lets
+        it through.
+        """
+        mock_run.return_value = {"status": "ok"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["repo"] = {"default_branch": "main"}
+
+        result = git_push(branch="main", allow_protected=True, tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_run.assert_called()
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_review_records_pr_review_call(self, mock_run):
+        """
+        Acceptance Criteria (ISSUE-0005): a successful gh_pr_review call is
+        counted per calling role, so advance_story_stage's Reviewed/Tested
+        gates can tell a claimed stage apart from an actual review.
+        """
+        mock_run.return_value = {"status": "ok"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.agent_name = "Architect"
+
+        gh_pr_review(body="Looks good", tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["pr_review_calls"]["Architect"], 1)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_comment_records_pr_review_call(self, mock_run):
+        mock_run.return_value = {"status": "ok"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.agent_name = "QA"
+
+        gh_pr_comment(body="Found an issue", tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["pr_review_calls"]["QA"], 1)
+
     def test_repo_status(self):
         """
         Acceptance Criteria:
@@ -246,6 +305,22 @@ class TestGitHubTools(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.github.gh_pr_create")
     @patch("agents.scrum_team.tools.github.git_push")
+    def test_create_release_pr_rejects_without_fresh_release_approval(self, mock_git_push, mock_gh_pr_create):
+        """
+        Acceptance Criteria (ISSUE-0001): create_release_pr refuses without
+        a fresh record_human_approval("release", ...) since the last one.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = create_release_pr(title="Release", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_git_push.assert_not_called()
+        mock_gh_pr_create.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run")
     def test_create_release_pr_surfaces_mismatch_warning_without_blocking(self, mock_run, mock_git_push, mock_gh_pr_create):
         """
@@ -261,6 +336,7 @@ class TestGitHubTools(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["sprint_files_touched"] = ["specs/stories/US-0010-Foo.md"]
+        tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
 
         result = create_release_pr(title="Release", body="body", tool_context=tool_context)
 
@@ -334,6 +410,7 @@ class TestGitHubTools(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["sprint_files_touched"] = ["specs/stories/US-0011-Foo.md"]
+        tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
 
         result = create_release_pr(title="Release", body="body", tool_context=tool_context)
 

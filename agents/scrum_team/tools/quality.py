@@ -220,14 +220,22 @@ def check_build(tool_context=None) -> Dict[str, Any]:
         cmd = ["npm", "install", "--dry-run"]
         result = _run(cmd, cwd=str(repo_root), tool_context=tool_context)
     else:
-        return {
+        result = {
             "status": "ok",
             "checked": None,
             "passing": None,
             "message": "No requirements.txt or package.json found - no recognized dependency manifest to check.",
         }
+        if tool_context and getattr(tool_context, "state", None):
+            tool_context.state["last_check_build"] = {"checked": None, "passing": None}
+        return result
 
     passing = result.get("status") == "ok"
+    # Persisted so advance_story_stage's "Tested" gate (ISSUE-0004) can
+    # verify check_build actually ran and passed, instead of trusting QA's
+    # own say-so that it did.
+    if tool_context and getattr(tool_context, "state", None):
+        tool_context.state["last_check_build"] = {"checked": checked, "passing": passing}
     return {
         "status": "ok" if passing else "error",
         "checked": checked,
