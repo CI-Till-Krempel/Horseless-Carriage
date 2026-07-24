@@ -186,6 +186,17 @@ class TestScrumTools(unittest.TestCase):
         result = record_human_approval("bogus", "", tool_context=tool_context)
         self.assertEqual(result["status"], "error")
 
+    def test_record_human_approval_accepts_budget_type(self):
+        """
+        Acceptance Criteria (interaction levels, see docs/INTERACTION-LEVELS.md): "budget" is a
+        valid approval_type - required instead of "sprint" at the CEO level.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = record_human_approval("budget", "Approved sprint budget", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["human_approvals"][0]["type"], "budget")
+
     def test_update_roadmap_records_touched_path(self):
         """
         Acceptance Criteria (US-0009):

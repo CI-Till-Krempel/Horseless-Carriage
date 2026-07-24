@@ -1,9 +1,96 @@
 # agents/scrum_team/helpers.py
+from __future__ import annotations
 import os
 
 def get_process_overhead_percentage() -> float:
     """Gets the process overhead percentage from environment variables."""
     return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
+
+
+# --- Human interaction levels (see docs/INTERACTION-LEVELS.md) ---
+# Controls which of the three human-approval types (sprint/release/budget -
+# see record_human_approval, agents/scrum_team/tools/scrum.py) is actually
+# required, mechanically, before the team may implement stories or release
+# an increment. Configured via the INTERACTION_LEVEL environment variable
+# (see .env.example) - there is deliberately no state field for this: it's
+# read fresh from the environment wherever it's needed (same pattern as
+# get_process_overhead_percentage above), so it can't drift from what's
+# actually configured for the running process.
+INTERACTION_LEVELS = ("Product", "Stakeholder", "CEO", "EVAL")
+_DEFAULT_INTERACTION_LEVEL = "Product"
+
+# Which record_human_approval(approval_type, ...) must have a fresh entry
+# (see the sprint_approval_baseline/release_approval_baseline "must be NEW"
+# pattern already used elsewhere) before advance_story_stage(...,
+# "Implemented") / create_release_pr may proceed, at each interaction level.
+# None means "not required at this level - the team proceeds on its own
+# judgment," not "any approval type satisfies it."
+_PRE_IMPLEMENTATION_APPROVAL_BY_LEVEL = {
+    "Product": "sprint",
+    "Stakeholder": "sprint",
+    "CEO": "budget",
+    "EVAL": None,
+}
+_PRE_RELEASE_APPROVAL_BY_LEVEL = {
+    "Product": "release",
+    "Stakeholder": "release",
+    "CEO": None,
+    "EVAL": None,
+}
+
+
+def get_interaction_level() -> str:
+    """
+    Reads INTERACTION_LEVEL from the environment (case-insensitive),
+    falling back to "Product" - the most-supervised level - if unset or not
+    one of INTERACTION_LEVELS, rather than silently disabling every
+    human-approval gate on a typo'd value.
+    """
+    raw = (os.getenv("INTERACTION_LEVEL") or "").strip()
+    for level in INTERACTION_LEVELS:
+        if raw.lower() == level.lower():
+            return level
+    return _DEFAULT_INTERACTION_LEVEL
+
+
+def required_pre_implementation_approval(level: str | None = None) -> str | None:
+    """approval_type that must be freshly recorded before a story may reach Implemented at this interaction level (see docs/INTERACTION-LEVELS.md), or None if this level requires none."""
+    return _PRE_IMPLEMENTATION_APPROVAL_BY_LEVEL.get(level or get_interaction_level())
+
+
+def required_pre_release_approval(level: str | None = None) -> str | None:
+    """Same as required_pre_implementation_approval, for create_release_pr."""
+    return _PRE_RELEASE_APPROVAL_BY_LEVEL.get(level or get_interaction_level())
+
+
+# How much detail create_sprint_report actually renders for the human at
+# each interaction level (see docs/INTERACTION-LEVELS.md) - distinct from
+# the approval-gate mappings above: a Stakeholder/CEO human still needs the
+# team's retrospective to have genuinely happened (create_sprint_report's
+# retro_baseline gate applies at every level, unconditionally), they just
+# don't need every internal/technical detail rendered in the report they
+# personally read.
+# - "full": everything - per-agent token usage, retro/impediment detail,
+#   story-level estimates, full transcript excerpts. For Product (embedded
+#   day-to-day) and EVAL (the report is analyzed by tooling afterwards, not
+#   read by a human at all - trimming it would only lose signal).
+# - "business": drops internal/technical numbers (per-agent token usage,
+#   transcript excerpts) a business stakeholder has no use for, keeps
+#   everything about what was delivered and how the process went.
+# - "executive": budget and headline outcomes only - a CEO approves spend,
+#   not process detail; everything else is one line pointing at where the
+#   full detail still lives (specs/reports/), never silently discarded.
+_REPORT_DETAIL_LEVEL_BY_LEVEL = {
+    "Product": "full",
+    "Stakeholder": "business",
+    "CEO": "executive",
+    "EVAL": "full",
+}
+
+
+def report_detail_level(level: str | None = None) -> str:
+    """"full" | "business" | "executive" - see _REPORT_DETAIL_LEVEL_BY_LEVEL."""
+    return _REPORT_DETAIL_LEVEL_BY_LEVEL.get(level or get_interaction_level(), "full")
 
 # Backlog item status values that count as "finished" for progress tracking
 # (sprint_status_injection_callback, sprint-length feedback, etc). Case-

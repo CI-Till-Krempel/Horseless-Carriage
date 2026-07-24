@@ -5,7 +5,14 @@ import re
 from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file
-from ..helpers import is_story_done, STORY_STAGES, STAGE_OWNERS, blocks_direct_status_set, is_source_file
+from ..helpers import (
+    is_story_done,
+    STORY_STAGES,
+    STAGE_OWNERS,
+    blocks_direct_status_set,
+    is_source_file,
+    required_pre_implementation_approval,
+)
 
 # Matches a bare item ID (US-0001, EP-0002, ISSUE-0003, ...) and nothing
 # else. Guards against building a filename like "US-0007-US-0001.md" when a
@@ -797,16 +804,22 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
     architect_review_count = None
     qa_review_count = None
     if stage == "Implemented":
-        sprint_approvals = sum(1 for a in s.get("human_approvals", []) if a.get("type") == "sprint")
-        if sprint_approvals <= s.get("sprint_approval_baseline", 0):
-            return {
-                "status": "error",
-                "message": (
-                    "Cannot mark a story Implemented before this sprint's goal and backlog have a "
-                    "fresh human approval - call record_human_approval('sprint', ...) first (see "
-                    "ORCHESTRATOR_PROMPT ITERATION MODE)."
-                ),
-            }
+        # Which approval type (if any) is required depends on the configured
+        # INTERACTION_LEVEL (see docs/INTERACTION-LEVELS.md) - e.g. "budget"
+        # instead of "sprint" at the CEO level, none at all for EVAL.
+        required_approval = required_pre_implementation_approval()
+        if required_approval:
+            approvals = sum(1 for a in s.get("human_approvals", []) if a.get("type") == required_approval)
+            if approvals <= s.get("sprint_approval_baseline", 0):
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark a story Implemented - this interaction level requires a fresh "
+                        f"'{required_approval}' human approval for this sprint - call "
+                        f"record_human_approval('{required_approval}', ...) first (see "
+                        "docs/INTERACTION-LEVELS.md)."
+                    ),
+                }
         if s.get("sprint_report_pending_release"):
             return {
                 "status": "error",

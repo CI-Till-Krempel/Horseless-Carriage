@@ -319,6 +319,24 @@ class TestGitHubTools(unittest.TestCase):
         mock_git_push.assert_not_called()
         mock_gh_pr_create.assert_not_called()
 
+    @patch("agents.scrum_team.tools.github._diff_release_against_sprint_tracking", return_value={"status": "ok", "warnings": [], "tracked_files": [], "changed_files": []})
+    @patch("agents.scrum_team.tools.github._stage_sprint_tracked_changes", return_value={"staged_files": [], "flagged_for_review": [], "warnings": []})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github.git_push", return_value={"status": "ok", "branch": "release/increment"})
+    def test_create_release_pr_requires_no_approval_at_ceo_and_eval_levels(
+        self, mock_git_push, mock_gh_pr_create, mock_stage, mock_diff
+    ):
+        """
+        Acceptance Criteria (interaction levels, see docs/INTERACTION-LEVELS.md): CEO and EVAL
+        levels don't gate create_release_pr on any human approval at all.
+        """
+        for level in ("CEO", "EVAL"):
+            with patch.dict("os.environ", {"INTERACTION_LEVEL": level}, clear=True):
+                tool_context = MagicMock()
+                tool_context.state = ScrumState().model_dump()
+                result = create_release_pr(title="Release", body="body", tool_context=tool_context)
+                self.assertEqual(result["status"], "ok")
+
     @patch("agents.scrum_team.tools.github.gh_pr_create")
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run")

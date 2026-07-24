@@ -242,6 +242,101 @@ class TestBudgetTools(unittest.TestCase):
         second = create_sprint_report("summary 2", ["accomplishment 2"], tool_context=tool_context)
         self.assertEqual(second["status"], "error")
 
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_states_active_interaction_level(self, mock_write_file):
+        """
+        Acceptance Criteria (interaction levels, see docs/INTERACTION-LEVELS.md): the report is
+        stamped with the level that generated it, so it's traceable for a CEO-level human relying
+        on it as their only visibility into the sprint.
+        """
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "CEO"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = ScrumState().model_dump()
+            tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+
+            report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+            self.assertIn("Interaction Level: CEO", report)
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_bumps_baseline_for_the_active_levels_approval_type(self, mock_write_file):
+        """
+        Acceptance Criteria: at the CEO level, closing the sprint report snapshots the count of
+        "budget" approvals (not "sprint"), since that's the type advance_story_stage's Implemented
+        gate will require next.
+        """
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "CEO"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = ScrumState().model_dump()
+            tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+            tool_context.state["human_approvals"] = [
+                {"type": "sprint", "note": "irrelevant at CEO level"},
+                {"type": "budget", "note": "approved"},
+            ]
+
+            result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(tool_context.state["sprint_approval_baseline"], 1)
+
+    def _report_with_full_content(self, level):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["impediment_log"] = [{"description": "Blocked on X", "owner": "SM", "status": "open"}]
+        tool_context.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tool_context.state["token_usage"] = {"total": 100, "agents": {"DevTeam": 60, "QA": 40}}
+        tool_context.state["transcript"] = [{"agent_name": "DevTeam", "content": "Implemented the thing"}]
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": level}, clear=True), \
+             patch("agents.scrum_team.tools.docs.write_file"):
+            return create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+    def test_create_sprint_report_full_detail_at_product_and_eval_levels(self):
+        """
+        Acceptance Criteria (interaction levels): Product and EVAL render every section, unchanged
+        from the report's original, unconditional behavior.
+        """
+        for level in ("Product", "EVAL"):
+            report = self._report_with_full_content(level)
+            self.assertIn("### Per-Agent Token Usage", report)
+            self.assertIn("- DevTeam: 60", report)
+            self.assertIn("## Retrospective Actions", report)
+            self.assertIn("## Impediments", report)
+            self.assertIn("## Story Estimates vs Actual Tokens", report)
+            self.assertIn("Most recent contribution per agent", report)
+            self.assertNotIn("Full Process Detail", report)
+
+    def test_create_sprint_report_business_detail_at_stakeholder_level(self):
+        """
+        Acceptance Criteria: Stakeholder keeps process/business content (retro, impediments,
+        estimates) but drops internal technical numbers (per-agent usage, transcript excerpts).
+        """
+        report = self._report_with_full_content("Stakeholder")
+        self.assertIn("## Retrospective Actions", report)
+        self.assertIn("## Impediments", report)
+        self.assertIn("## Story Estimates vs Actual Tokens", report)
+        self.assertNotIn("### Per-Agent Token Usage", report)
+        self.assertNotIn("Most recent contribution per agent", report)
+        self.assertIn("## Full Process Detail", report)
+        self.assertIn("Per-Agent Token Usage", report.split("## Full Process Detail")[1])
+
+    def test_create_sprint_report_executive_detail_at_ceo_level(self):
+        """
+        Acceptance Criteria: CEO gets budget + headline outcomes only - retro/impediment/estimate/
+        transcript detail is omitted, with a pointer to where it's still available.
+        """
+        report = self._report_with_full_content("CEO")
+        self.assertNotIn("### Per-Agent Token Usage", report)
+        self.assertNotIn("## Retrospective Actions", report)
+        self.assertNotIn("## Impediments", report)
+        self.assertNotIn("## Story Estimates vs Actual Tokens", report)
+        self.assertNotIn("## Conversation Transcript", report)
+        self.assertIn("## Budget and Usage", report)
+        self.assertIn("Sprint Length Feedback", report)
+        self.assertIn("## Full Process Detail", report)
+        for section in ("Per-Agent Token Usage", "Retrospective Actions", "Impediments", "Story Estimates vs Actual Tokens", "Conversation Transcript"):
+            self.assertIn(section, report.split("## Full Process Detail")[1])
+
 
 if __name__ == "__main__":
     unittest.main()

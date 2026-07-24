@@ -4,6 +4,7 @@ import os
 import json
 from typing import Any, Dict
 from .base import _configured_repo_root, _run, _default_push_branch, _with_eval_branch_prefix, _with_eval_title_prefix
+from ..helpers import required_pre_release_approval
 
 def configure_github_repo(repo_url: str, local_path: str = "", default_branch: str | None = None, tool_context=None) -> Dict[str, Any]:
     """
@@ -341,19 +342,26 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
     Create a Pull Request for the release increment.
     """
     # ISSUE-0001: "Ensure Human Review is done for each increment" had no
-    # code backing it - refuse until a fresh "release" approval was
-    # recorded via record_human_approval since the last release PR.
+    # code backing it - refuse until a fresh approval was recorded via
+    # record_human_approval since the last release PR. Which approval type
+    # (if any) is required depends on INTERACTION_LEVEL (see
+    # docs/INTERACTION-LEVELS.md) - e.g. none at all at the CEO/EVAL levels,
+    # where a human doesn't review each release individually.
     state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
-    release_approvals = sum(1 for a in state.get("human_approvals", []) if a.get("type") == "release")
-    if release_approvals <= state.get("release_approval_baseline", 0):
-        return {
-            "status": "error",
-            "message": (
-                "Cannot create a release PR before this increment has a fresh human approval - "
-                "call record_human_approval('release', ...) first (see ORCHESTRATOR_PROMPT "
-                "SPRINT REVIEW & RELEASE)."
-            ),
-        }
+    required_approval = required_pre_release_approval()
+    release_approvals = None
+    if required_approval:
+        release_approvals = sum(1 for a in state.get("human_approvals", []) if a.get("type") == required_approval)
+        if release_approvals <= state.get("release_approval_baseline", 0):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot create a release PR - this interaction level requires a fresh "
+                    f"'{required_approval}' human approval for this increment - call "
+                    f"record_human_approval('{required_approval}', ...) first (see "
+                    "docs/INTERACTION-LEVELS.md)."
+                ),
+            }
 
     sprint_tracking_check = _diff_release_against_sprint_tracking(tool_context=tool_context)
     stage_result = _stage_sprint_tracked_changes(sprint_tracking_check, tool_context=tool_context)
@@ -379,7 +387,8 @@ def create_release_pr(title: str, body: str, branch: str = "release/increment", 
         # creation shouldn't consume this increment's approval, and
         # sprint_report_pending_release only clears once the release
         # actually went out (see ISSUE-0010).
-        state["release_approval_baseline"] = release_approvals
+        if required_approval and release_approvals is not None:
+            state["release_approval_baseline"] = release_approvals
         state["sprint_report_pending_release"] = False
     return {
         "status": "ok" if ok else "error",

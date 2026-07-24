@@ -269,6 +269,9 @@ def add_retro_action(action: str, owner: str, success_metric: str, tool_context=
     _ = save_state_to_repo(tool_context)
     return {"status": "ok", "retro_action": entry}
 
+_APPROVAL_TYPES = ("sprint", "release", "budget")
+
+
 def record_human_approval(approval_type: str, note: str = "", tool_context=None) -> Dict[str, Any]:
     """
     Records an explicit human approval event (see ORCHESTRATOR_PROMPT's
@@ -278,11 +281,18 @@ def record_human_approval(approval_type: str, note: str = "", tool_context=None)
     counterpart `advance_story_stage(..., "Implemented")` and
     `create_release_pr` (see ISSUE-0001) actually check for, instead of
     trusting the model's own assertion that a human reviewed something.
-    - approval_type: "sprint" (this sprint's goal + backlog) or "release"
-      (this increment, before create_release_pr).
+    - approval_type: "sprint" (this sprint's goal + backlog), "release"
+      (this increment, before create_release_pr), or "budget" (this
+      sprint's token/USD budget - required instead of "sprint" at the CEO
+      interaction level). Which of these is actually required by the two
+      gates above depends on INTERACTION_LEVEL - see
+      docs/INTERACTION-LEVELS.md and
+      agents/scrum_team/helpers.py's required_pre_implementation_approval/
+      required_pre_release_approval. A rejected gate's own error message
+      names exactly which type to call this with.
     """
-    if approval_type not in ("sprint", "release"):
-        return {"status": "error", "message": f"Unknown approval_type '{approval_type}'. Must be 'sprint' or 'release'."}
+    if approval_type not in _APPROVAL_TYPES:
+        return {"status": "error", "message": f"Unknown approval_type '{approval_type}'. Must be one of {_APPROVAL_TYPES}."}
     s = tool_context.state
     entry = {"type": approval_type, "note": note.strip()}
     s["human_approvals"] = list(s.get("human_approvals", [])) + [entry]

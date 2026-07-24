@@ -86,6 +86,34 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
+    def test_implemented_requires_budget_approval_at_ceo_level(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (interaction levels, see docs/INTERACTION-LEVELS.md): at the CEO
+        level, a "sprint" approval is not enough - a fresh "budget" approval is required instead.
+        """
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "CEO"}, clear=True):
+            tc = _tool_context("DevTeam", ["Ready"])
+            tc.state["sprint_files_touched"] = ["app/main.py"]
+            tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+
+            tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+            result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+            self.assertEqual(result["status"], "error")
+            self.assertIn("budget", result["message"])
+
+            tc.state["human_approvals"] = [{"type": "budget", "note": "ok"}]
+            result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+            self.assertEqual(result["status"], "ok")
+
+    def test_implemented_requires_no_approval_at_eval_level(self, mock_save, mock_md, mock_roadmap):
+        """Acceptance Criteria: EVAL level requires no human approval at all."""
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            tc = _tool_context("DevTeam", ["Ready"])
+            tc.state["sprint_files_touched"] = ["app/main.py"]
+            tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+            result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+            self.assertEqual(result["status"], "ok")
+
     def test_reviewed_requires_architect_review_call(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = advance_story_stage("US-0001", "Reviewed", tool_context=tc)

@@ -74,6 +74,13 @@ def _configure_env(args: argparse.Namespace) -> None:
     # _with_eval_title_prefix to tag every branch/PR this run creates with
     # its run id - never set in real/production usage.
     os.environ["EVAL_RUN_ID"] = args.run_id
+    # See docs/INTERACTION-LEVELS.md - this run has no human in the loop at
+    # all (see this module's docstring), so neither advance_story_stage's
+    # "Implemented" gate nor create_release_pr's gate should require any
+    # record_human_approval call; _kickoff_message/_sprint_message telling
+    # the model to "treat the sprint as pre-approved" is now reinforced by a
+    # mechanical guarantee, not just prompt text the model has to trust.
+    os.environ["INTERACTION_LEVEL"] = "EVAL"
     # Bootstrap only: the Orchestrator's very first call runs before any
     # virtual key exists (see check_cost_budget_callback's Orchestrator
     # exemption in agents/scrum_team/agent.py). Every other agent stays
