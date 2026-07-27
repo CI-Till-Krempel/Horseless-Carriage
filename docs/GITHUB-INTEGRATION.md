@@ -45,6 +45,63 @@ To have the agents act as a distinct entity in your **Workspace Repo** (e.g., Kr
     *   Click **Generate a private key**, and keep the `.pem` file content ready.
 5.  **Configure**: Provide these 3 items to the `ScrumOrchestrator` Setup Wizard (or to `setup_llm.py`'s Git identity / state repository prompts - see [Setup](SETUP.md)). It will handle the rest!
 
+# Branching Model (GitFlow)
+
+Once configured, the team never pushes straight to a single branch of your Workspace Repo -
+it works through a full GitFlow model with two protected integration branches and a
+feature branch per story.
+
+## The two integration branches
+
+- **`main`** - the configured default branch (`repo.default_branch` in state, or the
+  `GITHUB_REPO_BRANCH` env var; defaults to `main`).
+- **`develop`** - the configured integration branch for ongoing work (`repo.develop_branch`
+  in state, or the `GITHUB_DEVELOP_BRANCH` env var; defaults to `develop`).
+
+Both are protected: `git_push` refuses a direct push to either one outright, regardless of
+which agent calls it. `configure_github_repo` bootstraps both when setting up a fresh repo -
+if only one exists yet (or the repo is entirely empty), it creates whichever is missing from
+the other's current commit, so `develop` and `main` always start out pointing at the same
+history. `seed_repository`'s initial scaffolding commit (README, `spec-templates/`) then lands
+on `develop`, not `main` - `main` stays at the pre-seed state until the first sprint PR merges
+into it.
+
+## Story-level: feature branches
+
+Every story is implemented on its own branch, never directly on `develop`:
+
+1. **Dev Team** calls `start_feature_branch(story_id, slug)` before writing any code - this
+   branches `feature/<story_id>-<slug>` off the latest `develop` and opens it immediately as a
+   **draft** PR back into `develop`.
+2. Dev Team implements the story on that branch (`write_file` + `git_push`), and once CI is
+   green calls `mark_pr_ready_for_review()` to drop the draft status.
+3. **Architect** reviews it (`advance_story_stage(..., "Reviewed")`), then **QA** verifies it
+   (`check_build()`, `advance_story_stage(..., "Tested")`).
+4. Once a story is marked Tested, **QA** calls `merge_story_pr()` to merge that story's feature
+   branch into `develop` - this is what actually makes the story part of the integration branch
+   the next sprint PR will pick up. See [Architecture](ARCHITECTURE.md) for the full 5-stage
+   story pipeline this attaches to.
+
+`merge_story_pr()` respects real branch-protection/required-checks by default (no forced
+`--admin` merge) - a story-level merge is expected to behave like any other reviewed PR merge.
+
+## Sprint-level: the "sprint PR" (`develop` -> `main`)
+
+Once a sprint's planned stories have progressed as far through the pipeline as the sprint
+allows, **Product Owner** opens the sprint PR from `develop` into `main` via
+`create_release_pr(title, body)` - by then, every story that's ready has already been merged
+into `develop` individually, so this PR is the integration point for the whole sprint, not a
+fresh diff to assemble.
+
+Whether that PR merges automatically or waits for a human depends on the configured
+`INTERACTION_LEVEL` (see [Interaction Levels](INTERACTION-LEVELS.md)) - `create_release_pr`
+itself refuses to run without a fresh `record_human_approval("release", ...)` at levels that
+require one. In the team-performance evaluation harness (`INTERACTION_LEVEL=EVAL`, no human in
+the loop at all), the harness auto-merges this one PR itself, standing in for that approval gate
+- see [RELEASE.md](../RELEASE.md) "Team performance evaluation" for exactly how that harness
+isolates each run's own `main`/`develop` pair so runs never contaminate each other or your real
+branches.
+
 # This repo's own GitHub scaffolding
 
 Separate from the GitHub *integration* above (how the agents authenticate against
