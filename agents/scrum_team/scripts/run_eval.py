@@ -362,31 +362,48 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         message = types.Content(role="user", parts=[types.Part(text=text)])
         state_delta = {"sprint_report": ""} if attempt == 0 else None
 
-        async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=message, state_delta=state_delta):
-            record = {"author": event.author, "text": None, "tool_calls": [], "tool_responses": []}
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if getattr(part, "text", None):
-                        record["text"] = part.text
-                        final_text = part.text
-                    # Capture args/response, not just the tool name - the
-                    # actual substance of what an agent wrote (a PR comment
-                    # body, a sprint report, source code passed to
-                    # write_file) lives there. A cheap model often makes a
-                    # tool call with little or no accompanying free text, so
-                    # name-only logging looked like "just tool calls, no
-                    # conversation" even though the real content was one
-                    # field over the whole time.
-                    if getattr(part, "function_call", None):
-                        fc = part.function_call
-                        record["tool_calls"].append({"name": fc.name, "args": dict(fc.args) if fc.args else {}})
-                    if getattr(part, "function_response", None):
-                        fr = part.function_response
-                        response = fr.response if isinstance(fr.response, dict) else {"value": fr.response}
-                        record["tool_responses"].append({"name": fr.name, "response": response})
-            events.append(record)
-            if len(events) >= max_events or time.monotonic() >= deadline:
-                break
+        try:
+            async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=message, state_delta=state_delta):
+                record = {"author": event.author, "text": None, "tool_calls": [], "tool_responses": []}
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if getattr(part, "text", None):
+                            record["text"] = part.text
+                            final_text = part.text
+                        # Capture args/response, not just the tool name - the
+                        # actual substance of what an agent wrote (a PR comment
+                        # body, a sprint report, source code passed to
+                        # write_file) lives there. A cheap model often makes a
+                        # tool call with little or no accompanying free text, so
+                        # name-only logging looked like "just tool calls, no
+                        # conversation" even though the real content was one
+                        # field over the whole time.
+                        if getattr(part, "function_call", None):
+                            fc = part.function_call
+                            record["tool_calls"].append({"name": fc.name, "args": dict(fc.args) if fc.args else {}})
+                        if getattr(part, "function_response", None):
+                            fr = part.function_response
+                            response = fr.response if isinstance(fr.response, dict) else {"value": fr.response}
+                            record["tool_responses"].append({"name": fr.name, "response": response})
+                events.append(record)
+                if len(events) >= max_events or time.monotonic() >= deadline:
+                    break
+        except ValueError as e:
+            # A cheap/fast model occasionally hallucinates a transfer_to_agent
+            # call targeting its own currently-active agent (e.g. DevTeam ->
+            # DevTeam). ADK's own transfer-resolution (_transfer_utils.py)
+            # validates this and raises before any of our tool-error-callback
+            # machinery ever runs (on_tool_error_callback in agent.py only
+            # covers dispatch-time "tool not found" errors - a different ADK
+            # code path that never sees this one). Re-raise anything else so a
+            # real bug doesn't get silently swallowed here.
+            if "cannot transfer to itself" not in str(e):
+                raise
+            print(f"WARNING: ADK rejected a self-transfer mid-turn ({e}) - ending this sprint's turn early.", file=sys.stderr)
+            stop_reason = "adk_self_transfer_error"
+            session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session_id)
+            sprint_report = session.state.get("sprint_report")
+            break
 
         session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session_id)
         sprint_report = session.state.get("sprint_report")
