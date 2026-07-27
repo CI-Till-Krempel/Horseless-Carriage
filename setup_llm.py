@@ -14,11 +14,15 @@ Walks you through:
   4. Writing the result into .env and into the active litellm.yaml (or, for
      the local/Ollama provider, into config/model-templates/litellm.local-ollama.yaml).
   5. Setting the Git user name/email used for commits the agent makes on
-     your behalf, a human interaction level, and sprint token/USD budgets +
+     your behalf, and setting up the STATE_REPO_PATH "state repository"
+     itself: creates the directory if missing, then either clones
+     GITHUB_REPO_URL into it (if empty and a URL is given) or initializes a
+     fresh local git repo there - so it's ready to use with no extra manual
+     steps (see README.md "State Repository").
+  6. Setting a human interaction level and sprint token/USD budgets +
      maximum process overhead percentage (see docs/INTERACTION-LEVELS.md and
-     .env.example's "Git Configuration" / "Sprint Budget & Resource
-     Configuration").
-  6. Starting the db + litellm (+ ollama) containers and sending one real,
+     .env.example's "Sprint Budget & Resource Configuration").
+  7. Starting the db + litellm (+ ollama) containers and sending one real,
      minimal test request through the proxy to confirm the new
      configuration actually works end-to-end.
 
@@ -107,11 +111,87 @@ def prompt_number(label: str, default_value: str, pattern: str) -> str:
     return prompt_text(label, default_value, pattern, "Please enter a number.")
 
 
+def _setup_state_repo(env_path: Path) -> None:
+    """Prompts for STATE_REPO_PATH (the team's "source of truth" repo - see
+    README.md "State Repository") and gets it into a working state with no
+    further manual steps: creates the directory if missing, and either
+    clones GITHUB_REPO_URL into it (if it's empty and a URL is given) or
+    initializes a fresh local git repo there. Leaves an already-initialized
+    directory alone."""
+    print()
+    print("--- State repository ---")
+    print("A dedicated git repo where the team's Scrum artifacts (specs, roadmap,")
+    print("reports) get written - see README.md \"State Repository\".")
+
+    current_path = lib_env.read_env_var(env_path, "STATE_REPO_PATH")
+    path_str = prompt_text("State repository path", current_path or "../Horseless-Carriage-State")
+    state_repo_path = Path(path_str).expanduser().resolve()
+
+    current_url = lib_env.read_env_var(env_path, "GITHUB_REPO_URL")
+    current_branch = lib_env.read_env_var(env_path, "GITHUB_REPO_BRANCH")
+    repo_url = prompt_text(
+        "GitHub repo URL to clone into it (leave blank to just set up a local-only repo for now)",
+        current_url or "",
+    )
+    branch = prompt_text("Default branch", current_branch or "main")
+
+    if shutil.which("git") is None:
+        warn("'git' command not found - skipping state repository setup.")
+        print(f"Once git is installed, create {state_repo_path} yourself (see README.md \"State Repository\").")
+        lib_env.update_env_var(env_path, "STATE_REPO_PATH", str(state_repo_path))
+        if repo_url:
+            lib_env.update_env_var(env_path, "GITHUB_REPO_URL", repo_url)
+        lib_env.update_env_var(env_path, "GITHUB_REPO_BRANCH", branch)
+        return
+
+    state_repo_path.mkdir(parents=True, exist_ok=True)
+    is_git_repo = (state_repo_path / ".git").is_dir()
+    is_empty = not any(state_repo_path.iterdir())
+
+    if is_git_repo:
+        info(f"{state_repo_path} is already a git repository - leaving it as-is.")
+        if repo_url:
+            existing_remote = subprocess.run(
+                ["git", "-C", str(state_repo_path), "remote", "get-url", "origin"],
+                capture_output=True, text=True,
+            ).stdout.strip()
+            if existing_remote and existing_remote != repo_url:
+                warn(f"Its 'origin' remote ({existing_remote}) does not match the URL you entered ({repo_url}) - left unchanged.")
+    elif repo_url and is_empty:
+        info(f"Cloning {repo_url} into {state_repo_path}...")
+        try:
+            subprocess.run(["git", "clone", "--branch", branch, repo_url, str(state_repo_path)], check=True)
+        except subprocess.CalledProcessError:
+            warn("git clone failed - check the URL and that your git/gh credentials are set up.")
+            print(f"Clone it manually once that's sorted: git clone {repo_url} {state_repo_path}")
+    elif repo_url and not is_empty:
+        warn(f"{state_repo_path} already has files in it and isn't a git repository - not cloning automatically.")
+        print(f"To make it a clone of {repo_url}, move its contents aside and re-run this script.")
+    else:
+        info(f"Initializing a local git repository at {state_repo_path} (no GitHub remote yet)...")
+        subprocess.run(["git", "init", "-b", branch, str(state_repo_path)], check=False)
+        print("No GitHub repo URL given, so there's no 'origin' remote yet - the agent needs")
+        print("one to push branches/open PRs. Add it whenever you're ready:")
+        print(f"  cd {state_repo_path} && git remote add origin <your-repo-url> && git push -u origin {branch}")
+
+    # Required by check_state_repo.py / the agents regardless of which path
+    # above was taken - safe to create even on an existing/cloned repo.
+    (state_repo_path / "specs").mkdir(parents=True, exist_ok=True)
+
+    lib_env.update_env_var(env_path, "STATE_REPO_PATH", str(state_repo_path))
+    if repo_url:
+        lib_env.update_env_var(env_path, "GITHUB_REPO_URL", repo_url)
+    lib_env.update_env_var(env_path, "GITHUB_REPO_BRANCH", branch)
+
+    print(f"State repository ready at: {state_repo_path}")
+
+
 def prompt_project_settings(env_path: Path) -> None:
-    """Git identity + human interaction level + sprint budget/overhead
-    prompts. Same vars as .env.example / .env.local.example's "Git
-    Configuration", "Human Interaction Level", and "Sprint Budget & Resource
-    Configuration" sections - see docs/INTERACTION-LEVELS.md."""
+    """Git identity + state repository + human interaction level + sprint
+    budget/overhead prompts. Same vars as .env.example / .env.local.example's
+    "Git Configuration", "Project Configuration", "Human Interaction Level",
+    and "Sprint Budget & Resource Configuration" sections - see
+    docs/INTERACTION-LEVELS.md."""
     print()
     print("--- Git identity ---")
     print("Used for commits the agent makes on your behalf.")
@@ -126,6 +206,8 @@ def prompt_project_settings(env_path: Path) -> None:
         r"^[^@\s]+@[^@\s]+\.[^@\s]+$", "Please enter a valid email address.",
     )
     lib_env.update_env_var(env_path, "GIT_USER_EMAIL", git_email)
+
+    _setup_state_repo(env_path)
 
     print()
     print("--- Human interaction level ---")

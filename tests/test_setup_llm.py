@@ -1,10 +1,12 @@
 import json
+import subprocess
 import urllib.error
 from unittest import mock
 
 import pytest
 import yaml
 
+import lib_env
 import setup_llm
 
 
@@ -183,3 +185,115 @@ class TestFetchOpenaiModels:
         monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _fake_urlopen_response(body))
         result = setup_llm.fetch_openai_models("fake-key")
         assert result == ["gpt-4.1", "gpt-4o-mini", "gpt-4o"]
+
+
+@pytest.fixture
+def fake_git_remote(tmp_path):
+    """A local bare git repo with one commit on 'main' - a clone source that
+    needs no network access, standing in for a real GitHub remote."""
+    remote_dir = tmp_path / "fake-remote.git"
+    subprocess.run(["git", "init", "--quiet", "--bare", str(remote_dir)], check=True)
+
+    seed_dir = tmp_path / "_seed"
+    subprocess.run(["git", "init", "--quiet", "-b", "main", str(seed_dir)], check=True)
+    subprocess.run(["git", "-C", str(seed_dir), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(seed_dir), "config", "user.name", "Test"], check=True)
+    (seed_dir / "README.md").write_text("hello\n")
+    subprocess.run(["git", "-C", str(seed_dir), "add", "README.md"], check=True)
+    subprocess.run(["git", "-C", str(seed_dir), "commit", "--quiet", "-m", "seed"], check=True)
+    subprocess.run(["git", "-C", str(seed_dir), "remote", "add", "origin", str(remote_dir)], check=True)
+    subprocess.run(["git", "-C", str(seed_dir), "push", "--quiet", "-u", "origin", "main"], check=True)
+
+    return str(remote_dir)
+
+
+def _run_setup_state_repo(monkeypatch, env_path, answers):
+    it = iter(answers)
+    monkeypatch.setattr("builtins.input", lambda _: next(it))
+    setup_llm._setup_state_repo(env_path)
+
+
+class TestSetupStateRepo:
+    def test_clones_into_empty_directory(self, tmp_path, fake_git_remote, monkeypatch):
+        target = tmp_path / "clone-target"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), fake_git_remote, "main"])
+
+        assert (target / ".git").is_dir()
+        assert (target / "README.md").is_file()  # cloned content, proves it's a real clone
+        assert (target / "specs").is_dir()
+        assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(target)
+        assert lib_env.read_env_var(env_path, "GITHUB_REPO_URL") == fake_git_remote
+        assert lib_env.read_env_var(env_path, "GITHUB_REPO_BRANCH") == "main"
+
+    def test_git_init_when_no_url_given(self, tmp_path, monkeypatch):
+        target = tmp_path / "init-target"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        assert (target / ".git").is_dir()
+        assert (target / "specs").is_dir()
+        assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(target)
+        assert lib_env.read_env_var(env_path, "GITHUB_REPO_URL") == ""
+        assert lib_env.read_env_var(env_path, "GITHUB_REPO_BRANCH") == "main"
+
+    def test_leaves_existing_git_repo_alone_but_still_ensures_specs(self, tmp_path, fake_git_remote, monkeypatch, capsys):
+        target = tmp_path / "already-git"
+        target.mkdir()
+        subprocess.run(["git", "init", "--quiet", "-b", "main", str(target)], check=True)
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), fake_git_remote, "main"])
+
+        assert "already a git repository" in capsys.readouterr().out
+        assert (target / "specs").is_dir()
+
+    def test_warns_on_remote_mismatch_but_does_not_change_it(self, tmp_path, fake_git_remote, monkeypatch, capsys):
+        target = tmp_path / "mismatched"
+        target.mkdir()
+        subprocess.run(["git", "init", "--quiet", "-b", "main", str(target)], check=True)
+        subprocess.run(["git", "-C", str(target), "remote", "add", "origin", "https://example.com/other.git"], check=True)
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), fake_git_remote, "main"])
+
+        result = capsys.readouterr()
+        assert "does not match" in result.out + result.err
+        remote = subprocess.run(
+            ["git", "-C", str(target), "remote", "get-url", "origin"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert remote == "https://example.com/other.git"  # left unchanged
+
+    def test_warns_on_dirty_nongit_directory_and_does_not_clone(self, tmp_path, fake_git_remote, monkeypatch, capsys):
+        target = tmp_path / "dirty"
+        target.mkdir()
+        (target / "existing.txt").write_text("do not touch")
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), fake_git_remote, "main"])
+
+        result = capsys.readouterr()
+        out = result.out + result.err
+        assert "already has files" in out
+        assert not (target / ".git").is_dir()
+        assert (target / "existing.txt").read_text() == "do not touch"
+
+    def test_clone_failure_warns_instead_of_crashing(self, tmp_path, monkeypatch, capsys):
+        # A local, nonexistent path fails fast with no network involved -
+        # avoids any real network dependency/flakiness in this test.
+        target = tmp_path / "bad-clone-target"
+        bogus_source = tmp_path / "nonexistent-source.git"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), str(bogus_source), "main"])
+
+        result = capsys.readouterr()
+        out = result.out + result.err
+        assert "git clone failed" in out
+        assert not (target / ".git").is_dir()
+
+    def test_git_missing_skips_setup_but_still_writes_env(self, tmp_path, monkeypatch):
+        target = tmp_path / "no-git-target"
+        env_path = tmp_path / ".env"
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: None)
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        assert not target.exists()
+        assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(target)
