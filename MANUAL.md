@@ -5,9 +5,9 @@
 > case.
 
 This is a task-oriented guide to actually using Horseless Carriage. For "what's in
-this repo" and installation mechanics, see [README.md](README.md) and
-[PREFLIGHT.md](PREFLIGHT.md) — this manual assumes setup is done and focuses on how
-to work with the team day to day.
+this repo" see [README.md](README.md); for installation mechanics see
+[docs/SETUP.md](docs/SETUP.md) and [PREFLIGHT.md](PREFLIGHT.md) — this manual
+assumes setup is done and focuses on how to work with the team day to day.
 
 ## 1. What you're running
 
@@ -51,7 +51,7 @@ conversation rather than jumping into sprint work:
    branch.
 3. It asks how the agents should authenticate to GitHub — a **personal account**
    (commits/PRs show as you) or a **GitHub App** (commits/PRs show as a distinct
-   "Agent" identity). See README.md ["GitHub Integration"](README.md#github-integration)
+   "Agent" identity). See [GitHub Integration](docs/GITHUB-INTEGRATION.md#github-integration)
    for how to set either up in `.env`.
 4. It seeds your target repo (README, `specs/` structure, templates) and creates
    per-agent LiteLLM virtual keys so spend is tracked and budget-capped per role.
@@ -255,8 +255,9 @@ needed beyond what `docker-compose.yaml` already provides.
 
 ## 10. Where to go next
 
-- [README.md](README.md) — architecture diagram, full env var reference, GitHub
-  setup options.
+- [README.md](README.md) — project overview and links to every doc below.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — architecture diagram, story-workflow pipeline.
+- [docs/GITHUB-INTEGRATION.md](docs/GITHUB-INTEGRATION.md) — GitHub setup options, agent identity.
 - [RELEASE.md](RELEASE.md) — how Horseless Carriage itself is versioned/released,
   and how its own team-performance evaluation harness works.
 - [SECURITY.md](SECURITY.md) — secret handling, what's never persisted, how to

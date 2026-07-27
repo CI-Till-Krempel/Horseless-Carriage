@@ -70,7 +70,7 @@ Only the Orchestrator is exempt, since it needs one bootstrap call to create
 everyone else's key in the first place — see the tests in `test_agent.py`
 (`test_check_cost_budget_callback_blocks_agent_without_virtual_key`,
 `test_check_cost_budget_callback_exempts_orchestrator_bootstrap`) for the exact
-boundary. See README.md ["Budget Management"](README.md#budget-management) and
+boundary. See [Budget Management](docs/BUDGET.md) and
 MANUAL.md §5 for user-facing detail.
 
 ## Secrets used by CI (`.github/workflows/eval.yml`)

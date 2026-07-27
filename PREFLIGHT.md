@@ -2,7 +2,7 @@
 
 This document provides a checklist to ensure your environment is correctly set up before running the Horseless Carriage agent.
 
-> **On Windows?** See README.md's [Setting up on Windows](README.md#setting-up-on-windows) for
+> **On Windows?** See [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) for
 > prerequisites first (Python, Docker Desktop, Git, `gh`) - everything below then works the same
 > way, using `python` instead of `python3`.
 
@@ -22,9 +22,9 @@ This document provides a checklist to ensure your environment is correctly set u
 - [ ] **`LITELLM_MASTER_KEY` is set:**
   - This is required for the LiteLLM proxy.
 - [ ] **`STATE_REPO_PATH` is set and the directory exists:**
-  - This is your team's "source of truth" repo (see README.md "State Repository"). `run.py` and `doctor.py` hard-fail without it. Create the directory if it doesn't exist yet: `mkdir -p <path>`.
+  - This is your team's "source of truth" repo (see [State Repository](docs/STATE-REPOSITORY.md)). `run.py` and `doctor.py` hard-fail without it. `setup_llm.py` sets this up for you interactively; to create it by hand: `mkdir -p <path>`.
 - [ ] **A GitHub authentication method is configured:**
-  - Either `GITHUB_TOKEN` (personal access token), or all three of `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` (GitHub App). See README.md "GitHub Integration" for how to choose.
+  - Either `GITHUB_TOKEN` (personal access token), or all three of `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` (GitHub App). See [GitHub Integration](docs/GITHUB-INTEGRATION.md) for how to choose.
 
 ## 3. Services
 
@@ -54,4 +54,4 @@ python3 run.py cli      # Interactive CLI session instead
 python3 run.py daemon   # Add to either of the above to run detached
 ```
 
-See README.md "Running the Agent" for details on each mode.
+See [Running the Agent](docs/RUNNING.md) for details on each mode.
