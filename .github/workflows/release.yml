@@ -11,9 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run tests
-        run: |
-          chmod +x run_tests.sh
-          ./run_tests.sh
+        run: python3 run_tests.py
       - name: Publish GitHub Release
         run: gh release create "${{ github.ref_name }}" --generate-notes
         env:

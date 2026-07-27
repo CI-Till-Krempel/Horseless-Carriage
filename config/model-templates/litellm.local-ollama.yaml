@@ -1,0 +1,66 @@
+# "Local" model template - every scrum-team role is served by ONE self-hosted
+# Ollama model instead of a commercial API. No API keys, no external network
+# calls; used by docker-compose.local.yaml (see ollama.Dockerfile /
+# ollama-entrypoint.sh for how the model gets pulled).
+#
+# Default model: llama3.1:8b - supports tool calling (required for the
+# agents' function-calling tools) and runs on most local machines: CPU-only
+# with ~16GB RAM, or comfortably on any modern GPU. To match different
+# hardware, replace "llama3.1:8b" in every `model:` line below AND set the
+# matching OLLAMA_MODEL in docker-compose.local.yaml / .env.local.example so
+# the container pulls the same tag:
+#   - Low-RAM / CPU-only (~8GB):     llama3.2:3b
+#   - Default (~16GB RAM or a GPU):  llama3.1:8b   <- this file's default
+#   - Powerful GPU (24GB+ VRAM):     qwen2.5:14b or llama3.1:70b
+model_list:
+  - model_name: scrum-orchestrator
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-po
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-sm
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-dev
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-qa
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-arch
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-quality
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-eval-cheap
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-test-mock
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: sk-123
+      mock_response: "This is a permanent mock response for integration testing."
+
+general_settings:
+  num_retries: 3
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
+  store_prompts_in_spend_logs: true

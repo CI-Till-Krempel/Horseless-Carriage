@@ -1,0 +1,65 @@
+# "Cloud" model template - every scrum-team role served by Anthropic Claude
+# via a commercial API key (ANTHROPIC_API_KEY). To use this instead of the
+# default Gemini setup, either copy this file over the root litellm.yaml, or
+# point docker-compose.yaml's `litellm` service volume mount at this file
+# (and make sure ANTHROPIC_API_KEY is set in your .env - already passed
+# through to the litellm container in docker-compose.yaml).
+#
+# Model tiering below mirrors litellm.yaml's structure (one model for the
+# main roles, a cheaper/faster one for scrum-eval-cheap); adjust the
+# `model:` values to whatever Claude models are current/available on your
+# account.
+model_list:
+  - model_name: scrum-orchestrator
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: scrum-po
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: scrum-sm
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: scrum-dev
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: scrum-qa
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: scrum-arch
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: scrum-quality
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Cheap/fast alias every role is pointed at during an automated eval run
+  # (see agents/scrum_team/scripts/run_eval.py, RELEASE.md).
+  - model_name: scrum-eval-cheap
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: scrum-test-mock
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: sk-123
+      mock_response: "This is a permanent mock response for integration testing."
+
+general_settings:
+  num_retries: 3
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
+  store_prompts_in_spend_logs: true
