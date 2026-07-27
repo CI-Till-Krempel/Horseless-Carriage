@@ -13,7 +13,6 @@ This script will:
 Stdlib-only, works identically on macOS/Linux/Windows.
 """
 
-import os
 import shutil
 import subprocess
 import sys
@@ -31,16 +30,17 @@ def warn(msg: str) -> None:
     print(f"WARNING: {msg}")
 
 
-def main() -> None:
-    repo_root = Path(__file__).resolve().parent
-    os.chdir(repo_root)
+def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
+    """Runs every check against repo_root (no chdir, so this is safe to call
+    from tests against a tmp_path fixture). Returns a process exit code."""
+    repo_root = Path(repo_root)
 
     print("--- Running Horseless Carriage Doctor ---")
 
     # 1. Check for Docker and Docker Compose
     if shutil.which("docker") is None:
         error("'docker' command not found. Please install Docker.")
-        sys.exit(1)
+        return 1
 
     compose_ok = False
     if shutil.which("docker-compose") is not None:
@@ -54,23 +54,23 @@ def main() -> None:
             compose_ok = False
     if not compose_ok:
         error("'docker-compose' or 'docker compose' command not found. Please install Docker Compose.")
-        sys.exit(1)
+        return 1
 
     # 2. Check .env file
-    env_path = Path(".env")
+    env_path = repo_root / ".env"
     if not env_path.is_file():
         error(".env file not found. Please copy .env.example to .env and fill in the values.")
-        sys.exit(1)
+        return 1
 
     env = lib_env.load_env_file(env_path)
 
     if not env.get("LITELLM_MASTER_KEY"):
         error("LITELLM_MASTER_KEY is not set in .env. Please set it.")
-        sys.exit(1)
+        return 1
 
     if not env.get("STATE_REPO_PATH"):
         error("STATE_REPO_PATH is not set in .env. Please set it.")
-        sys.exit(1)
+        return 1
 
     if not env.get("GIT_USER_NAME"):
         warn("GIT_USER_NAME is not set in .env. Defaulting to 'DevTeam'.")
@@ -98,9 +98,9 @@ def main() -> None:
     if not state_repo_path.is_dir():
         error(f"The directory specified by STATE_REPO_PATH does not exist: {state_repo_path}")
         print("Please create this directory before running the agent.")
-        sys.exit(1)
+        return 1
 
-    sessions_dir = Path("sessions")
+    sessions_dir = repo_root / "sessions"
     if not sessions_dir.is_dir():
         print("NOTE: 'sessions' directory not found. Creating it...")
         sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +119,7 @@ def main() -> None:
     print()
     print("--- LLM Configuration ---")
 
-    active_provider = lib_llm_test.llm_active_provider(Path("litellm.yaml"))
+    active_provider = lib_llm_test.llm_active_provider(repo_root / "litellm.yaml")
     print(f"Active provider (litellm.yaml): {active_provider}")
 
     key_var = lib_llm_test.llm_provider_key_var(active_provider)
@@ -130,16 +130,16 @@ def main() -> None:
     elif active_provider == "local" and not env.get("OLLAMA_MODEL"):
         print("NOTE: OLLAMA_MODEL is not set in .env - the ollama container will default to llama3.1:8b.")
 
-    if lib_llm_test.llm_wait_for_proxy("http://localhost:4000", 5):
-        print("LiteLLM proxy: reachable at http://localhost:4000")
+    if lib_llm_test.llm_wait_for_proxy(proxy_base_url, 5):
+        print(f"LiteLLM proxy: reachable at {proxy_base_url}")
         print("Sending a live test request to scrum-po (this uses a real, minimal request against your configured model)...")
-        ok, detail = lib_llm_test.llm_test_alias("http://localhost:4000", env.get("LITELLM_MASTER_KEY", ""), "scrum-po", 30)
+        ok, detail = lib_llm_test.llm_test_alias(proxy_base_url, env.get("LITELLM_MASTER_KEY", ""), "scrum-po", 30)
         if ok:
             print(f"LLM connectivity: OK - {detail}")
         else:
             warn(f"LLM connectivity test failed - {detail}")
     else:
-        print("NOTE: LiteLLM proxy not reachable at http://localhost:4000 (containers not running?).")
+        print(f"NOTE: LiteLLM proxy not reachable at {proxy_base_url} (containers not running?).")
         if active_provider == "local":
             print("  Start it with: docker compose -f docker-compose.local.yaml up -d db litellm ollama")
         else:
@@ -148,6 +148,11 @@ def main() -> None:
     print()
     print("--- Doctor Check Complete ---")
     print("Setup looks good. You can now run the agent with: python3 run.py")
+    return 0
+
+
+def main() -> None:
+    sys.exit(run(Path(__file__).resolve().parent))
 
 
 if __name__ == "__main__":

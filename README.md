@@ -24,6 +24,7 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 - `run_tests.py` — script to run tests.
 - `doctor.py` — a script to validate your setup, including a live check that the configured LLM provider/model is actually reachable and responding.
 - `check_state_repo.py` — a script to validate the state repository.
+- `tests/` — pytest suite for the host-scripts above (no Docker required); see "Testing" below.
 
   All of the scripts above are stdlib-only Python (no pip install required) so they run identically on macOS/Linux/Windows via `python3 <script>.py` (`python <script>.py` on Windows - see [Setting up on Windows](#setting-up-on-windows)) - the actual agent workload always runs inside the Linux `agent` container regardless of host OS, so these host-side scripts are the only place platform mattered.
 - `PREFLIGHT.md` — a pre-flight checklist to ensure your environment is correctly set up.
@@ -221,9 +222,35 @@ Sessions are managed by the ADK framework to ensure continuity across restarts:
 
 ## Testing
 
-### Unit and Integration Tests
+`python3 run_tests.py` runs everything in one command - both suites below,
+the host-script suite first (fails fast, no need to wait for Docker if it's
+broken):
 
-To run the complete test suite (both unit and integration tests) using Docker Compose:
+```bash
+python3 run_tests.py
+```
+
+### Host-script tests (`tests/`)
+
+Covers the setup/doctor tooling itself (`lib_env.py`, `lib_llm_test.py`,
+`setup_llm.py`, `doctor.py`, `check_state_repo.py`, `run.py`) - `.env`
+read/write correctness, LiteLLM model-YAML generation for all 4 providers,
+each provider's live-model-list fetch/filtering logic (mocked HTTP), and
+every guard-clause branch in `doctor.py`/`check_state_repo.py`. Runs
+directly on the host, no Docker required (that's the point - these scripts
+must work before any container exists) and no real network calls (a local
+mock HTTP server stands in for the LiteLLM proxy). Requires `pytest`
+(`pip install pytest` or `pip install -r requirements.txt`) - the only
+place in this project where a host-side pip install is needed. Run just
+this suite with:
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+### Agent test suite (`agents/scrum_team/tests`, via Docker Compose)
+
+To run the complete agent test suite (both unit and integration tests) using Docker Compose:
 
 ```bash
 python3 run_tests.py

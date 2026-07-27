@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Runs all tests (unit and integration) using Docker Compose.
+Runs all tests: the host-script test suite (tests/ - lib_env, lib_llm_test,
+setup_llm, doctor, check_state_repo, run; no Docker required) plus the
+existing agent test suite (agents/scrum_team/tests, via Docker Compose).
 
 Tests never need real secrets (unit tests mock all external calls, and the
 integration test only talks to the local litellm proxy against a mocked
-model). Always run against .env.test so a real .env is never required or
-touched.
+model). The agent suite always runs against .env.test so a real .env is
+never required or touched.
 """
 
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -19,7 +22,17 @@ import lib_env
 
 def main() -> None:
     os.chdir(Path(__file__).resolve().parent)
-    print("--- Running All Tests (Unit + Integration) ---")
+
+    print("--- Running host-script tests (tests/, no Docker required) ---")
+    if importlib.util.find_spec("pytest") is None:
+        print("ERROR: pytest is not installed. Install it with: pip install pytest")
+        sys.exit(1)
+    result = subprocess.run([sys.executable, "-m", "pytest", "-v", "tests/"])
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+    print()
+    print("--- Running agent test suite (agents/scrum_team/tests, via Docker Compose) ---")
 
     if shutil.which("docker") is None:
         print("ERROR: 'docker' command not found. Please install Docker.")
