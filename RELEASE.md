@@ -338,26 +338,41 @@ of only being noticed anecdotally.
   comparable across versions. Don't edit it to make a run look better; if the
   scenario genuinely needs to change, that's its own deliberate, explained commit.
 - **Isolated public state repo**: `CI-Till-Krempel/horseless-carriage-eval-todo-app`.
-  Every run creates a fresh branch (`eval/<version>-run<N>`) rather than touching
-  `main`, so runs never contaminate each other or the real target repo you'd use
-  for actual work. This branch is pushed to the remote immediately after being
-  created, before the team does anything - `gh_pr_create`/`create_release_pr`
-  default their PR `base` to it, and `gh pr create --base <branch>` fails
+  Every run creates its own isolated GitFlow `main`+`develop` branch pair
+  (`eval/<version>-run<N>/main`, `eval/<version>-run<N>/develop`) rather than
+  touching the eval repo's real default branch, so runs never contaminate each
+  other or the real target repo you'd use for actual work (see
+  `_prepare_local_clone` in `run_eval.py`, and `_develop_branch_name`/
+  `_default_push_branch` in `tools/base.py`, which read the run's isolated
+  values via `GITHUB_REPO_BRANCH`/`GITHUB_DEVELOP_BRANCH`). Both branches are
+  pushed to the remote immediately after being created, before the team does
+  anything - `gh_pr_create`/`start_feature_branch`/`create_release_pr` default
+  their PR `base` to one or the other, and `gh pr create --base <branch>` fails
   outright if that branch doesn't exist on the remote yet. Without this,
   0.1.0-run4 produced feature branches but zero PRs for the whole run - silently,
   since `create_release_pr` used to always report `"status": "ok"` regardless of
   whether the underlying push/PR-create actually succeeded (also fixed).
+  Story-level work happens on `feature/<story-id>-<slug>` branches opened as
+  draft PRs into `develop` (`start_feature_branch`), merged by QA's own
+  `merge_story_pr` call once a story reaches Tested - real behavior, no harness
+  involvement. `create_release_pr` (called every sprint, now the `develop` ->
+  `main` "sprint PR") is the one PR the harness itself auto-merges, standing in
+  for the human-approval gate real usage requires for it (see below).
 - **Driver**: `agents/scrum_team/scripts/run_eval.py` runs the team through 5
   sprints headlessly (no human in the loop) via ADK's `Runner` API directly,
-  using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and a
-  budget sized for a full run (`--token-budget`/`--usd-budget`, reusing the
-  same guardrails from ["Budget Management"](docs/BUDGET.md)) -
-  defaulted per sprint from `EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_SPRINT_USD_BUDGET`
-  in `.env` (currently 2,600,000 tokens/$3 per sprint, calibrated against a
-  real run that hit 2,070,364 tokens in a single sprint) rather than a flat
-  total, since the token check is cumulative for the whole session and never
-  resets: one sprint blowing a flat total silently starves every later sprint
-  of any further LLM calls.
+  using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and budgets
+  from `EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_SPRINT_USD_BUDGET` in `.env` (reusing the
+  same guardrails from ["Budget Management"](docs/BUDGET.md)), currently
+  2,600,000 tokens/$3 per sprint (calibrated against a real run that hit
+  2,070,364 tokens in a single sprint). The **token** budget resets at the start
+  of every sprint (`_run_one_sprint`'s `state_delta` zeroes `token_usage`, the
+  harness-side equivalent of the `reset_sprint_budget` tool used in
+  interactive/real usage) and `--token-budget` is used as-is, per sprint - a
+  sprint that used most of its budget no longer starves later sprints, unlike
+  before this was fixed. The **USD** budget stays a whole-run cumulative ceiling
+  by design (`--usd-budget` still scales by `--sprints`) - it's enforced by the
+  LiteLLM proxy's shared `scrum-sprint-budget` object, a real financial cap that
+  intentionally isn't per-sprint.
   On top of that, `--max-duration-minutes` (default 40) is an independent
   wall-clock safety net: if the token/USD guardrails somehow don't stop things
   (a bug, an unexpected model behavior), the run still stops gracefully - it
@@ -375,9 +390,13 @@ of only being noticed anecdotally.
   up and waits for `/health/readiness` first, so this never triggers there and
   `--dev-mode` is never needed in CI.
   Because there's no human to approve PRs, it auto-merges any PR that opens
-  against the eval branch once each sprint's invocation finishes — a deliberate,
-  documented simplification of the real "Human Review is mandatory" flow, not a
-  silent one. Before merging each sprint's PR(s), it posts that sprint's full
+  against the run's `main` (the sprint-level `develop` -> `main` PR) once each
+  sprint's invocation finishes — a deliberate, documented simplification of the
+  real "Human Review is mandatory" flow, not a silent one. Story-level
+  `feature` -> `develop` PRs are left alone by this auto-merge (narrowed by
+  `base_branch` in `_merge_open_prs`) since QA's own `merge_story_pr` call
+  already merges those during the sprint, matching real usage. Before merging
+  each sprint's PR(s), it posts that sprint's full
   raw agent activity log (every event's author/text and each tool call's actual
   arguments/response, not just the tool name - a cheap model often makes a
   tool call with little or no accompanying free text, so name-only logging
@@ -389,23 +408,27 @@ of only being noticed anecdotally.
   full version - every sprint's complete transcript, all events, no cap - is
   written to `transcript.md` and uploaded as its own CI artifact (see
   `_format_full_transcript`, eval.yml's "Upload report artifact" step) rather
-  than only ever existing inside the run manifest. Every branch/PR
-  the team creates during an eval run is tagged with the run id
+  than only ever existing inside the run manifest. Every ad-hoc branch/PR the
+  team creates during an eval run (feature branches) is tagged with the run id
   (`eval-<run-id>/<branch>`, `[eval-<run-id>]` PR title prefix - see
   `_with_eval_branch_prefix`/`_with_eval_title_prefix` in
   `agents/scrum_team/tools/base.py`), set via `EVAL_RUN_ID` and never present
   in real usage, so branches/PRs from different runs sharing the eval repo
   stay distinguishable and the auto-merge only ever matches PRs actually
-  targeting *this* run's branch.
+  targeting *this* run's `main`. The `main`/`develop` pair themselves use a
+  different, harness-set naming scheme (`eval/<run-id>/main`,
+  `eval/<run-id>/develop` - see above) rather than this prefix, since they're
+  resolved directly via `GITHUB_REPO_BRANCH`/`GITHUB_DEVELOP_BRANCH`, not
+  treated as ad-hoc branches.
 - **Analysis**: `agents/scrum_team/scripts/run_eval_analysis.py` sends the final
   code/specs/sprint-reports to a judge LLM call against a fixed rubric (code
   quality, requirements quality, team efficiency) and writes a report with the
   top problems and suggested fixes, ranked by severity. The report is opened as
-  its own small, run-id-tagged PR against the eval branch and self-merged (the
+  its own small, run-id-tagged PR against the run's `main` and self-merged (the
   harness's own concluding action, after the run itself is already done) rather
   than pushed directly, so it goes through the same PR mechanism as everything
   else and shows up as the run's final PR - and is also uploaded as a CI
-  artifact. It then opens a second, run-id-tagged PR from the whole eval branch
+  artifact. It then opens a second, run-id-tagged PR from the run's `main`
   (by now containing every sprint's merged work plus that report commit)
   against the eval repo's actual default branch, as a single place to review
   everything the run produced - and deliberately leaves it **open, never

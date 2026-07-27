@@ -139,24 +139,26 @@ class TestSprintFilesTouched(unittest.TestCase):
 
 class TestSeedRepositoryBranch(unittest.TestCase):
     """
-    Acceptance Criteria (eval harness): seed_repository's initial commit
-    must land on the configured default branch, not a hardcoded "main",
-    so an isolated eval run doesn't contaminate the eval repo's real main.
+    Acceptance Criteria (GitFlow): seed_repository's initial commit must
+    land on the configured develop branch, not a hardcoded "develop" or
+    the default/main branch, so an isolated eval run doesn't contaminate
+    the eval repo's real develop/main - all work starts on develop, main
+    stays at the pre-seed state until the first sprint PR merges.
     """
 
     @patch("agents.scrum_team.tools.github.git_push")
-    def test_seed_repository_pushes_to_configured_default_branch(self, mock_git_push):
+    def test_seed_repository_pushes_to_configured_develop_branch(self, mock_git_push):
         mock_git_push.return_value = {"status": "ok"}
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        tool_context.state["repo"] = {"default_branch": "eval/run-1"}
+        tool_context.state["repo"] = {"default_branch": "eval/run-1/main", "develop_branch": "eval/run-1/develop"}
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch("agents.scrum_team.tools.docs._configured_repo_root", return_value=Path(tmp_dir)):
                 seed_repository(tool_context=tool_context)
 
         mock_git_push.assert_called_once()
-        self.assertEqual(mock_git_push.call_args.kwargs["branch"], "eval/run-1")
+        self.assertEqual(mock_git_push.call_args.kwargs["branch"], "eval/run-1/develop")
 
 
 if __name__ == "__main__":

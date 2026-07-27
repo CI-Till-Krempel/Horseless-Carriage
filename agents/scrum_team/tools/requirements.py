@@ -717,6 +717,37 @@ def _sync_roadmap_for_story(story_id: str, tool_context) -> Dict[str, Any]:
     return update_roadmap(version, stories=peers, tool_context=tool_context)
 
 
+def sync_all_active_stories_to_roadmap(tool_context) -> Dict[str, Any]:
+    """
+    Re-syncs specs/ROADMAP.md for EVERY version present in product_backlog,
+    not just one story's peers (see _sync_roadmap_for_story above) - there's
+    no single story to key off of when there's no agent turn left to name
+    one. Used as a mechanical, non-agent-callable last-gasp sync when the
+    sprint's token budget runs out mid-turn (see
+    _sync_and_commit_roadmap_on_exhaustion in agent.py's
+    check_cost_budget_callback), so specs/ROADMAP.md documents wherever
+    every story actually landed, not just whichever one happened to be in
+    progress when the callback tripped.
+    """
+    s = tool_context.state
+    backlog = s.get("product_backlog", []) or []
+    versions: Dict[str, List[str]] = {}
+    for x in backlog:
+        if x.get("type", "User Story") == "Epic":
+            continue
+        version = x.get("version") or "Backlog (unplanned)"
+        versions.setdefault(version, []).append(x.get("id") or x.get("title"))
+
+    results = {}
+    overall_ok = True
+    for version, story_ids in versions.items():
+        res = update_roadmap(version, stories=story_ids, tool_context=tool_context)
+        results[version] = res
+        if res.get("status") != "ok":
+            overall_ok = False
+    return {"status": "ok" if overall_ok else "error", "versions_synced": list(versions.keys()), "results": results}
+
+
 def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict[str, Any]:
     """
     The single, mandatory mechanism for moving a story through the fixed

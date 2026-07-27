@@ -58,6 +58,33 @@ def log_token_usage(agent_name: str, tokens: int, tool_context=None) -> Dict[str
     save_state_to_repo(tool_context)
     return {"status": "ok", "usage": usage}
 
+def reset_sprint_budget(tool_context=None) -> Dict[str, Any]:
+    """
+    Resets the LOGICAL token budget for a new sprint. SPRINT_TOKEN_BUDGET is
+    a per-sprint allowance, not a cumulative total for the whole engagement -
+    without this, token_usage.total only ever grows, so a sprint that used
+    most of the budget silently starves every later sprint of any further
+    LLM calls (check_cost_budget_callback compares token_usage.total against
+    the same never-reset budgets.total). Call this once, at the start of
+    every sprint after the first, before Sprint Planning.
+
+    Deliberately does NOT touch budgets.total_usd: the USD guardrail is an
+    intentional whole-run financial ceiling enforced by the LiteLLM proxy's
+    shared scrum-sprint-budget object (see BUDGET.md), not a per-sprint one.
+
+    Also clears the exhaustion-sync guard (see check_cost_budget_callback in
+    agent.py) so a new sprint's exhaustion, if it happens, syncs the roadmap
+    again rather than being silently skipped because a *previous* sprint
+    already tripped it once.
+    """
+    from .scrum import save_state_to_repo
+    s = tool_context.state
+    s["token_usage"] = {"total": 0, "agents": {}}
+    s["budget_exhaustion_synced"] = False
+    save_state_to_repo(tool_context)
+    return {"status": "ok", "token_usage": s["token_usage"]}
+
+
 def log_story_tokens(title_or_id: str, actual_tokens: int, tool_context=None) -> Dict[str, Any]:
     """
     Records the actual tokens spent implementing a story, alongside its

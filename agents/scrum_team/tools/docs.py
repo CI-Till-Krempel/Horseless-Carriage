@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch
+from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name
 
 def _strip_agent_safeguard_comments(text: str) -> str:
     """
@@ -311,12 +311,16 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
 
         # Initial commit and push
         if files_seeded:
+            # Targets develop, not main (_default_push_branch) - GitFlow: all
+            # work starts on develop, main only receives merged sprint PRs
+            # (create_release_pr). configure_github_repo already ensures
+            # both branches exist before this ever runs.
             push_res = git_push(
-                branch=_default_push_branch(tool_context),
+                branch=_develop_branch_name(tool_context),
                 commit_message="chore: initial seed of README, specs and templates",
                 add_all=True,
                 # The very first commit to a fresh repo has no other branch
-                # to PR from yet - the one legitimate exception to
+                # to PR from yet - one of the legitimate exceptions to
                 # git_push's protected-branch guard (see ISSUE-0006).
                 allow_protected=True,
                 tool_context=tool_context

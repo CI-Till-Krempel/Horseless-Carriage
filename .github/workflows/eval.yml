@@ -36,7 +36,11 @@ jobs:
           VERSION=$(cat VERSION)
           RUN_ID="${VERSION}-run${{ github.run_number }}"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "branch=eval/$RUN_ID" >> "$GITHUB_OUTPUT"
+          # GitFlow: run_eval.py bootstraps both eval/$RUN_ID/main and
+          # eval/$RUN_ID/develop (the latter derived internally from
+          # --run-id) - this is the run's main, where sprint PRs land and
+          # what the final human-review overview PR is opened from.
+          echo "branch=eval/$RUN_ID/main" >> "$GITHUB_OUTPUT"
 
       - name: Write eval environment file
         env:
