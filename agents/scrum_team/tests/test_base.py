@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents.scrum_team.tools.base import _hc_version, _default_push_branch, _run, _redact_cmd
+from agents.scrum_team.tools.base import _hc_version, _default_push_branch, _develop_branch_name, _run, _redact_cmd
 from agents.scrum_team.state import ScrumState
 
 
@@ -47,6 +47,30 @@ class TestDefaultPushBranch(unittest.TestCase):
         tool_context.state = {"repo": {"default_branch": "eval/run-2"}}
         with patch.dict("os.environ", {"GITHUB_REPO_BRANCH": "eval/run-1"}, clear=True):
             self.assertEqual(_default_push_branch(tool_context=tool_context), "eval/run-2")
+
+
+class TestDevelopBranchName(unittest.TestCase):
+    """
+    Acceptance Criteria (GitFlow): _develop_branch_name mirrors
+    _default_push_branch's resolution order exactly (state config ->
+    GITHUB_DEVELOP_BRANCH env var -> "develop"), so an isolated eval/test
+    run can point feature-branch PRs at its own develop branch without
+    contaminating the real one.
+    """
+
+    def test_defaults_to_develop_with_nothing_configured(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(_develop_branch_name(tool_context=None), "develop")
+
+    def test_uses_github_develop_branch_env_var(self):
+        with patch.dict("os.environ", {"GITHUB_DEVELOP_BRANCH": "eval/run-1/develop"}, clear=True):
+            self.assertEqual(_develop_branch_name(tool_context=None), "eval/run-1/develop")
+
+    def test_prefers_state_configured_develop_branch_over_env(self):
+        tool_context = MagicMock()
+        tool_context.state = {"repo": {"develop_branch": "eval/run-2/develop"}}
+        with patch.dict("os.environ", {"GITHUB_DEVELOP_BRANCH": "eval/run-1/develop"}, clear=True):
+            self.assertEqual(_develop_branch_name(tool_context=tool_context), "eval/run-2/develop")
 
 
 class TestRedactCmd(unittest.TestCase):
