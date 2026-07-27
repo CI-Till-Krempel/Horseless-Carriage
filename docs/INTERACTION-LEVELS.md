@@ -102,5 +102,5 @@ conversational judgment (see ORCHESTRATOR_PROMPT's INTERACTION-LEVEL DETAIL, PO_
 something a mechanical gate can verify the way `check_build()` can check "did the build pass". If a
 real run surfaces the team ignoring this distinction as a repeatable problem, file it as an Issue
 (`upsert_issue`, `specs/requirements/`) the same way every other prompt-only gap in this project has
-been - see the `README.md` "Design Principle: Enforce Mandatory Process Mechanically, Not Just by
-Prompting" section.
+been - see [ARCHITECTURE.md](ARCHITECTURE.md) "Design Principle: Enforce Mandatory Process
+Mechanically, Not Just by Prompting" section.

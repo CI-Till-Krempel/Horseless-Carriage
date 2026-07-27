@@ -187,7 +187,7 @@ release.
 Real eval runs repeatedly showed the same failure pattern: stories left with placeholder/empty
 content but marked "Done" anyway, and `specs/ROADMAP.md` never reflecting completed work - because
 the only enforcement was prompt text asking the agents nicely to follow a checklist, and a cheap
-model under budget pressure just... didn't, reliably. See README.md "Story workflow" for the full
+model under budget pressure just... didn't, reliably. See docs/ARCHITECTURE.md "Story workflow" for the full
 human-facing writeup (the stage table, the checklist mapping in `spec-templates/DOD.md`/`DOR.md`);
 this section is the operational summary the agent prompts themselves point back to.
 
@@ -331,7 +331,7 @@ of only being noticed anecdotally.
   sprints headlessly (no human in the loop) via ADK's `Runner` API directly,
   using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and a
   budget sized for a full run (`--token-budget`/`--usd-budget`, reusing the
-  same guardrails from ["Budget Management"](README.md#budget-management)) -
+  same guardrails from ["Budget Management"](docs/BUDGET.md)) -
   defaulted per sprint from `EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_SPRINT_USD_BUDGET`
   in `.env` (currently 2,600,000 tokens/$3 per sprint, calibrated against a
   real run that hit 2,070,364 tokens in a single sprint) rather than a flat
@@ -348,7 +348,7 @@ of only being noticed anecdotally.
   **Local runs only** (`GITHUB_ACTIONS` unset): before spending anything, the
   script checks that the LiteLLM proxy is actually reachable, not just
   configured - the USD guardrail above lives entirely in the proxy (see
-  README.md "Budget Management") and silently does not apply without it. If
+  docs/BUDGET.md) and silently does not apply without it. If
   it's not reachable, the script prints a loud warning and refuses to proceed
   unless `--dev-mode` is passed, acknowledging that only the local token-count
   guardrail is protecting the run. `eval.yml`'s CI job always brings the proxy
