@@ -10,6 +10,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install host-script test dependencies
+        run: pip install pytest pyyaml
       - name: Run tests
         run: python3 run_tests.py
       - name: Publish GitHub Release

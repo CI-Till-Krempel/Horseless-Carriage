@@ -24,8 +24,10 @@ def main() -> None:
     os.chdir(Path(__file__).resolve().parent)
 
     print("--- Running host-script tests (tests/, no Docker required) ---")
-    if importlib.util.find_spec("pytest") is None:
-        print("ERROR: pytest is not installed. Install it with: pip install pytest")
+    missing = [pkg for pkg in ("pytest", "yaml") if importlib.util.find_spec(pkg) is None]
+    if missing:
+        pip_names = " ".join("pyyaml" if pkg == "yaml" else pkg for pkg in missing)
+        print(f"ERROR: missing test dependencies: {', '.join(missing)}. Install with: pip install {pip_names}")
         sys.exit(1)
     result = subprocess.run([sys.executable, "-m", "pytest", "-v", "tests/"])
     if result.returncode != 0:
