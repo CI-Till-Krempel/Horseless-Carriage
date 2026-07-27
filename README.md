@@ -10,15 +10,23 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
   - `tools/` — a package of lightweight “Scrum artifact” tools (backlog, github, budget, docs, etc.).
   - `__init__.py` — exports `root_agent`.
 
-- `litellm.yaml` — model aliases used by the agents (e.g., `scrum-po`, `scrum-dev`, etc.).
-- `docker-compose.yaml` — runs a local LiteLLM proxy on port `4000` using `litellm.yaml`.
+- `litellm.yaml` — model aliases used by the agents (e.g., `scrum-po`, `scrum-dev`, etc.), currently wired to Google Gemini.
+- `config/model-templates/` — the same role→model mapping as standalone, swappable templates: `litellm.cloud-gemini.yaml` (a reference copy of the active `litellm.yaml`), `litellm.cloud-anthropic.yaml` (every role on Anthropic Claude), `litellm.cloud-openai.yaml` (every role on OpenAI), and `litellm.local-ollama.yaml` (every role served by one self-hosted Ollama model, no commercial API). Swap providers by copying the desired template over `litellm.yaml` (or repointing `docker-compose.yaml`'s `litellm` volume mount) - the role→alias names (`scrum-po`, `scrum-dev`, etc.) are identical across all of them, so no agent code changes are needed.
+- `docker-compose.yaml` — runs a local LiteLLM proxy on port `4000` using `litellm.yaml` (the cloud/Gemini setup).
+- `docker-compose.local.yaml` / `ollama.Dockerfile` / `ollama-entrypoint.sh` — a fully local alternative stack that adds a self-hosted Ollama container and points LiteLLM at `litellm.local-ollama.yaml` instead; no commercial LLM keys required. Run with `docker compose -f docker-compose.local.yaml up`.
 - `.env.example` — environment variables for provider keys + LiteLLM proxy configuration.
+- `.env.local.example` — the same, for the fully local Ollama stack (no provider keys needed).
 - `requirements.txt` — Python dependencies.
-- `setup.sh` — setup script for the project.
-- `run.sh` — run script for the agent.
-- `run_tests.sh` — script to run tests.
-- `doctor.sh` — a script to validate your setup.
-- `check_state_repo.sh` — a script to validate the state repository.
+- `setup_llm.py` — interactive script to pick an LLM provider/model (fetching the provider's *current* model list via its own API), set the human interaction level + sprint budgets, write the result into `.env` + the active `litellm.yaml`/template, and run a live end-to-end test against it. Run this before or after `setup_project.py`.
+- `lib_llm_test.py` / `lib_env.py` — shared helpers (proxy liveness check, live test-request against a model alias; safe `.env` read/write) used by `setup_llm.py`, `doctor.py`, and the other scripts below.
+- `setup_project.py` — setup script for the project (named to avoid colliding with the `setup.py`/setuptools convention).
+- `run.py` — run script for the agent.
+- `run_tests.py` — script to run tests.
+- `doctor.py` — a script to validate your setup, including a live check that the configured LLM provider/model is actually reachable and responding.
+- `check_state_repo.py` — a script to validate the state repository.
+- `tests/` — pytest suite for the host-scripts above (no Docker required); see "Testing" below.
+
+  All of the scripts above are stdlib-only Python (no pip install required) so they run identically on macOS/Linux/Windows via `python3 <script>.py` (`python <script>.py` on Windows - see [Setting up on Windows](#setting-up-on-windows)) - the actual agent workload always runs inside the Linux `agent` container regardless of host OS, so these host-side scripts are the only place platform mattered.
 - `PREFLIGHT.md` — a pre-flight checklist to ensure your environment is correctly set up.
 - `MANUAL.md` — a user manual: concepts, day-to-day usage, and common workflows.
 - `RELEASE.md` — how this repo itself is versioned and released (SemVer + GitFlow), and how the team-performance evaluation harness works.
@@ -39,16 +47,53 @@ A multi-agent Scrum team at your disposal—implemented as a small set of role-f
 
 ## Setup
 
-Run the setup script:
+> **Windows users:** install the prerequisites in [Setting up on Windows](#setting-up-on-windows)
+> below first, then follow steps 1-2 the same way, using `python` instead of `python3`.
+
+### 1. Guided LLM/project setup: `setup_llm.py`
 
 ```bash
-./setup.sh
+python3 setup_llm.py
+```
+
+This interactively walks you through everything specific to *this* run of
+the team:
+
+1. **Provider**: Google Gemini, Anthropic Claude, OpenAI, or fully local via
+   Ollama.
+2. **API key** (cloud providers only) - reuses an existing key from `.env` if
+   present, otherwise prompts for one.
+3. **Model**: fetches the provider's *current* model list via its own API
+   (not a hardcoded/stale list) and lets you pick a main model for all
+   scrum-team roles, plus an optional cheaper/faster model for the automated
+   eval harness's `scrum-eval-cheap` alias. The local/Ollama provider instead
+   offers a curated pick-list (Ollama has no such API) or a manual tag.
+4. **Git identity** (user name/email used for commits the agent makes on
+   your behalf), **human interaction level** (`Product` / `Stakeholder` /
+   `CEO` / `EVAL` - see [docs/INTERACTION-LEVELS.md](docs/INTERACTION-LEVELS.md)),
+   and **sprint budgets** (token budget, USD budget, max process overhead
+   percentage).
+5. Writes all of the above into `.env` and the active `litellm.yaml` (or,
+   for the local provider, `config/model-templates/litellm.local-ollama.yaml`).
+6. **Live test**: starts the `db` + `litellm` (+ `ollama`) containers and
+   sends one real, minimal request through the proxy to confirm the new
+   configuration actually works end-to-end, before you invest time running
+   the full team against it.
+
+Re-run it any time to switch provider/model or adjust budgets - it reuses
+whatever's already in `.env` as the default for each prompt.
+
+### 2. Project/infrastructure setup: `setup_project.py`
+
+```bash
+python3 setup_project.py
 ```
 
 This will:
 1. Check for Docker and Docker Compose.
 2. Guide you through GitHub CLI setup.
-3. Create a `.env` file from the template (if it doesn't exist).
+3. Create a `.env` file from the template (if it doesn't exist - `setup_llm.py`
+   above will already have created and populated it in most cases).
 4. Start the database and LiteLLM containers.
 
 After running setup, please edit the `.env` file to add your specific API keys and configuration.
@@ -56,17 +101,78 @@ After running setup, please edit the `.env` file to add your specific API keys a
 Before running the agent, it is recommended to run the doctor script to validate your setup:
 
 ```bash
-./doctor.sh
+python3 doctor.py
 ```
+
+### Setting up on Windows
+
+All of this project's host-side tooling (`setup_llm.py`, `setup_project.py`, `doctor.py`, `run.py`,
+`run_tests.py`, `check_state_repo.py`) is plain stdlib Python - no bash, no WSL2 required. The only
+part of the stack that ever needed a Unix shell was the old setup scripts, which this replaces
+entirely; Docker Desktop may still use WSL2 internally as its own backend, but that's automatic and
+not something you need to set up yourself.
+
+**Prerequisites:**
+
+1. **Python 3.9+** - install from [python.org](https://www.python.org/downloads/) (check "Add
+   python.exe to PATH" during setup) or via `winget install Python.Python.3.12`. Windows installs
+   register the `python` command (and the `py` launcher) - **not** `python3` - so use `python
+   setup_llm.py` etc. instead of `python3 ...` everywhere in this README.
+2. **Docker Desktop** - [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop/).
+   Requires virtualization enabled; Docker Desktop will offer to set up the WSL2 backend for you on
+   first run (Hyper-V is the alternative backend). After installing, open a *new* terminal and verify
+   with `docker --version` and `docker compose version`.
+3. **Git for Windows** - [git-scm.com/download/win](https://git-scm.com/download/win/) - needed on
+   the host to `git clone` your target state repository before pointing `STATE_REPO_PATH` at it; the
+   agent's own commits happen using the separate git already installed inside the `agent` container.
+4. **GitHub CLI (`gh`)** - [cli.github.com](https://cli.github.com/), or `winget install GitHub.cli`,
+   then `gh auth login`.
+
+**Running the scripts** - identical from PowerShell, cmd.exe, or Git Bash (pick whichever terminal
+you're comfortable with):
+
+```powershell
+python setup_llm.py
+python setup_project.py
+python doctor.py
+python run.py
+```
+
+**A few Windows-specific things to know:**
+
+- **`STATE_REPO_PATH`**: a normal Windows path works in `.env`, e.g.
+  `STATE_REPO_PATH=C:\Users\you\horseless-carriage-state` or `STATE_REPO_PATH=C:/Users/you/horseless-carriage-state`
+  (Python's `pathlib` accepts either). Whichever drive it's on must be shared with Docker Desktop
+  (Settings -> Resources -> File Sharing) for the `docker-compose.yaml` bind mount to work.
+- **Copying `.env` templates manually** (only needed if you skip `setup_llm.py`/`setup_project.py`,
+  which already do this for you): PowerShell's `copy` works like Unix `cp` - `copy .env.example .env`;
+  the same command works in cmd.exe too.
+- **Firewall prompts**: the first `docker compose up` may trigger a Windows Defender Firewall prompt
+  for the ports LiteLLM (`4000`), the ADK web UI (`8000`), and - for the local/Ollama setup only -
+  Ollama (`11434`) listen on. Allow access on your private network.
+- **Long path limits**: this only affects tooling running directly on the Windows host, never inside
+  the Linux `agent` container (which has no such limit). If you ever hit it anyway, enable long paths
+  with `git config --system core.longpaths true`.
+
+### Running fully local (no commercial LLM)
+
+To run the whole team against a self-hosted [Ollama](https://ollama.com) model instead of Gemini/OpenAI/Anthropic — no provider API keys, no external network calls once the model is pulled:
+
+```bash
+cp .env.local.example .env        # Windows: copy .env.local.example .env
+docker compose -f docker-compose.local.yaml up
+```
+
+This starts the same `db` + `litellm` + `agent` services as `docker-compose.yaml`, plus an `ollama` container that pulls its model on first start (see `ollama-entrypoint.sh`). Every `scrum-*` role alias is routed to that one model — see `config/model-templates/litellm.local-ollama.yaml`. The default model is `llama3.1:8b` (tool-calling support, ~16GB RAM or any modern GPU); to fit different hardware, change the `model:` lines in that file and the matching `OLLAMA_MODEL` in `.env`/`docker-compose.local.yaml` together (see comments in both files for smaller/larger alternatives). Don't run this alongside `docker-compose.yaml` — the two `litellm` service definitions target different config files.
 
 For a more detailed guide, see the [PREFLIGHT.md](PREFLIGHT.md) checklist.
 
 ## Running the Agent
 
-Run the agent using the `run.sh` script:
+Run the agent using the `run.py` script:
 
 ```bash
-./run.sh
+python3 run.py
 ```
 
 This script will:
@@ -75,13 +181,13 @@ This script will:
 3. Build and run the agent container.
 4. Wait for the LiteLLM dashboard (and, in web mode, the ADK web UI) to come up, then open them in your default browser.
 
-`run.sh` supports three modes, which can be combined:
+`run.py` supports three modes, which can be combined:
 
 | Command | Behavior |
 |---|---|
-| `./run.sh` | **Default.** ADK web frontend, foreground, at `http://localhost:8000`. |
-| `./run.sh cli [query...]` | Interactive CLI session in your terminal instead of the web UI. |
-| `./run.sh daemon` | Add to either of the above to run detached (`./run.sh daemon` or `./run.sh cli daemon`). |
+| `python3 run.py` | **Default.** ADK web frontend, foreground, at `http://localhost:8000`. |
+| `python3 run.py cli [query...]` | Interactive CLI session in your terminal instead of the web UI. |
+| `python3 run.py daemon` | Add to either of the above to run detached (`python3 run.py daemon` or `python3 run.py cli daemon`). |
 
 The LiteLLM admin dashboard (`http://localhost:4000/ui`) is opened automatically in every mode.
 
@@ -90,7 +196,7 @@ The LiteLLM admin dashboard (`http://localhost:4000/ui`) is opened automatically
 To run the agent in the background:
 
 ```bash
-./run.sh daemon
+python3 run.py daemon
 ```
 
 To view logs when running in daemon mode:
@@ -110,18 +216,44 @@ The system uses Docker Compose for logging, which captures both orchestrator act
 Sessions are managed by the ADK framework to ensure continuity across restarts:
 - **Persistence**: Conversation history and agent state are stored in the `sessions/` directory as `.session.json` files.
 - **Session Identification**: Each run uses a `SESSION_ID` (defined in `.env`).
-- **Resuming**: The `run.sh` script automatically detects existing session files and uses the `--resume` flag to pick up where the team left off.
+- **Resuming**: The `run.py` script automatically detects existing session files and uses the `--resume` flag to pick up where the team left off.
 - **Interruption**: You can stop the agent at any time (e.g., by pressing `Ctrl+C` in interactive mode). The framework will automatically save the session state to a file on exit.
 - **Metadata**: A shared SQLite database (`sessions/adk_sessions.db`) tracks session lifecycle and metadata, ensuring that even if the container is removed, the session history remains accessible.
 
 ## Testing
 
-### Unit and Integration Tests
-
-To run the complete test suite (both unit and integration tests) using Docker Compose:
+`python3 run_tests.py` runs everything in one command - both suites below,
+the host-script suite first (fails fast, no need to wait for Docker if it's
+broken):
 
 ```bash
-./run_tests.sh
+python3 run_tests.py
+```
+
+### Host-script tests (`tests/`)
+
+Covers the setup/doctor tooling itself (`lib_env.py`, `lib_llm_test.py`,
+`setup_llm.py`, `doctor.py`, `check_state_repo.py`, `run.py`) - `.env`
+read/write correctness, LiteLLM model-YAML generation for all 4 providers,
+each provider's live-model-list fetch/filtering logic (mocked HTTP), and
+every guard-clause branch in `doctor.py`/`check_state_repo.py`. Runs
+directly on the host, no Docker required (that's the point - these scripts
+must work before any container exists) and no real network calls (a local
+mock HTTP server stands in for the LiteLLM proxy). Requires `pytest`
+(`pip install pytest` or `pip install -r requirements.txt`) - the only
+place in this project where a host-side pip install is needed. Run just
+this suite with:
+
+```bash
+python3 -m pytest tests/ -v
+```
+
+### Agent test suite (`agents/scrum_team/tests`, via Docker Compose)
+
+To run the complete agent test suite (both unit and integration tests) using Docker Compose:
+
+```bash
+python3 run_tests.py
 ```
 
 This script executes `pytest` inside the agent container, providing full network access to the LiteLLM and Database services. It includes coverage reporting for the `agents/` package.
@@ -133,7 +265,7 @@ The integration test suite (`test_llm_integration.py`) verifies the end-to-end c
 - **Budget Association**: These keys are correctly linked to the shared `scrum-sprint-budget`.
 - **Proxy Routing**: LLM calls from agents are successfully routed through the LiteLLM Proxy.
 
-For integration tests to function, the `./run_tests.sh` script utilizes `docker compose run`, which automatically starts the necessary dependency containers (`litellm` and `db`) if they are not already active.
+For integration tests to function, the `run_tests.py` script utilizes `docker compose run`, which automatically starts the necessary dependency containers (`litellm` and `db`) if they are not already active.
 
 ## State Repository
 
@@ -154,18 +286,18 @@ Unlike the session history (which is transient and internal), the State Reposito
 
 ### Doctor Script
 
-The `doctor.sh` script validates your local environment, ensuring Docker is running, the `.env` file is correctly configured, and the state repository path is accessible.
+The `doctor.py` script validates your local environment, ensuring Docker is running, the `.env` file is correctly configured, and the state repository path is accessible.
 
 ```bash
-./doctor.sh
+python3 doctor.py
 ```
 
 ### State Repository Check
 
-The `check_state_repo.sh` script verifies that your state repository is in the expected state for the tools to work correctly. It checks for the correct directory structure and ensures no stray template files are present in the `specs` directory.
+The `check_state_repo.py` script verifies that your state repository is in the expected state for the tools to work correctly. It checks for the correct directory structure and ensures no stray template files are present in the `specs` directory.
 
 ```bash
-./check_state_repo.sh
+python3 check_state_repo.py
 ```
 
 ## Using the Scrum team agent

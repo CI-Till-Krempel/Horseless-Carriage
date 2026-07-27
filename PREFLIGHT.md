@@ -2,6 +2,10 @@
 
 This document provides a checklist to ensure your environment is correctly set up before running the Horseless Carriage agent.
 
+> **On Windows?** See README.md's [Setting up on Windows](README.md#setting-up-on-windows) for
+> prerequisites first (Python, Docker Desktop, Git, `gh`) - everything below then works the same
+> way, using `python` instead of `python3`.
+
 ## 1. Environment Setup
 
 - [ ] **Docker is installed:**
@@ -12,13 +16,13 @@ This document provides a checklist to ensure your environment is correctly set u
 ## 2. Configuration
 
 - [ ] **`.env` file exists:**
-  - If not, run `./setup.sh` to create it from `.env.example`.
+  - If not, run `python3 setup_project.py` to create it from `.env.example` (or `python3 setup_llm.py`, which also picks a provider/model interactively).
 - [ ] **API keys are set:**
   - Open the `.env` file and ensure that you have set at least one provider API key (e.g., `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`).
 - [ ] **`LITELLM_MASTER_KEY` is set:**
   - This is required for the LiteLLM proxy.
 - [ ] **`STATE_REPO_PATH` is set and the directory exists:**
-  - This is your team's "source of truth" repo (see README.md "State Repository"). `run.sh` and `doctor.sh` hard-fail without it. Create the directory if it doesn't exist yet: `mkdir -p <path>`.
+  - This is your team's "source of truth" repo (see README.md "State Repository"). `run.py` and `doctor.py` hard-fail without it. Create the directory if it doesn't exist yet: `mkdir -p <path>`.
 - [ ] **A GitHub authentication method is configured:**
   - Either `GITHUB_TOKEN` (personal access token), or all three of `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` (GitHub App). See README.md "GitHub Integration" for how to choose.
 
@@ -40,14 +44,14 @@ This document provides a checklist to ensure your environment is correctly set u
 ## 5. Validation
 
 - [ ] **Run the doctor script:**
-  - Run `./doctor.sh` to validate your setup. Address any errors before proceeding.
+  - Run `python3 doctor.py` to validate your setup. Address any errors before proceeding.
 
 Once all these checks have passed, you are ready to run the agent:
 
 ```bash
-./run.sh          # Web mode (default) - opens the ADK web UI and LiteLLM dashboard
-./run.sh cli      # Interactive CLI session instead
-./run.sh daemon   # Add to either of the above to run detached
+python3 run.py          # Web mode (default) - opens the ADK web UI and LiteLLM dashboard
+python3 run.py cli      # Interactive CLI session instead
+python3 run.py daemon   # Add to either of the above to run detached
 ```
 
 See README.md "Running the Agent" for details on each mode.

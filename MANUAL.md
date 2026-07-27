@@ -163,9 +163,9 @@ Carriage itself* is released — this section is how the agents release the prod
 
 ## 8. Troubleshooting
 
-- **`./doctor.sh`** — checks Docker, `.env` completeness, `STATE_REPO_PATH`
-  existence, and GitHub auth configuration. Run this first.
-- **`./check_state_repo.sh`** — validates your target repo's `specs/` structure and
+- **`python3 doctor.py`** — checks Docker, `.env` completeness, `STATE_REPO_PATH`
+  existence, GitHub auth configuration, and live LLM/LiteLLM proxy connectivity. Run this first.
+- **`python3 check_state_repo.py`** — validates your target repo's `specs/` structure and
   `.hc/state.json`, and flags stray template files that shouldn't be there.
 - **"GitHub tools may fail" warning on startup** — no `GITHUB_TOKEN` or complete
   `GITHUB_APP_*` trio configured. The container still starts (other tools work

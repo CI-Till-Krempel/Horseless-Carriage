@@ -94,10 +94,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install host-script test dependencies
+        run: pip install pytest pyyaml
       - name: Run tests
-        run: |
-          chmod +x run_tests.sh
-          ./run_tests.sh
+        run: python3 run_tests.py
       - name: Publish GitHub Release
         run: gh release create "${{ github.ref_name }}" --generate-notes
         env:
@@ -276,6 +280,31 @@ prompt-following, so a human at a given level gets a consistently-shaped report 
 that call happened to be phrased - and no data is silently dropped: an omitted section is still named
 explicitly under a "Full Process Detail" heading, pointing at `.hc/state.json` where it still lives
 in full.
+
+### Tool dispatch resilience (hallucinated/disallowed tool calls)
+
+A real eval run (2026-07-24, GitHub Actions run 30099595847) crashed outright: ProductOwner called
+`write_file`, a tool only DevTeam/QualityGuardian actually have (see each `LlmAgent`'s `tools=[...]`
+in `agents/scrum_team/agent.py`) - ADK's own dispatch code doesn't route that to the tool function at
+all, it raises a bare `ValueError` ("Tool 'write_file' not found...") that propagates all the way up
+through `runner.run_async` and kills the whole process, discarding every sprint completed so far in
+that run. A single hallucinated tool name from one sub-agent, out of dozens of calls across a
+multi-sprint run, should not be fatal to the entire session.
+
+ADK (2.4.0+) provides exactly the hook for this: `LlmAgent(on_tool_error_callback=...)`. When tool
+dispatch fails because the name isn't found for the calling agent at all, ADK synthesizes a
+placeholder `BaseTool(name=<hallucinated name>, description="Tool not found")` before invoking this
+callback (see `google.adk.flows.llm_flows.functions._execute_single_function_call_async`); if the
+callback returns a dict instead of `None`, that dict becomes the tool's function-response - the model
+sees an ordinary tool-error message and can recover (try a real tool, or `transfer_to_agent`) instead
+of the process aborting. `on_tool_error_callback` (`agents/scrum_team/agent.py`) checks for exactly
+that `"Tool not found"` placeholder (not string-matching the exception text, which could change
+across ADK versions) and returns a message naming the tool, the calling role, and the two ways to
+recover. It's registered on every `LlmAgent` - all six specialists via `COMMON_AGENT_CALLBACKS`, and
+`root_agent` directly (it defines its own callback lists rather than using the shared dict). A
+genuine exception raised *inside* a real tool call (its actual description, not the placeholder) is
+left alone and still propagates - this only softens dispatch-time "tool not found" errors, not real
+bugs.
 
 ## Team performance evaluation
 

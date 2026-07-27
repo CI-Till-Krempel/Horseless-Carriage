@@ -1,3 +1,12 @@
+# Fully local stack: extends docker-compose.yaml's db + litellm + agent setup
+# with a self-hosted Ollama container, so every model call is served locally
+# instead of by a commercial API. No OPENAI_API_KEY / ANTHROPIC_API_KEY /
+# GOOGLE_API_KEY required - see .env.local.example.
+#
+# Run standalone (do not combine with docker-compose.yaml - the litellm
+# service targets a different config file):
+#   cp .env.local.example .env   # or edit your existing .env
+#   docker compose -f docker-compose.local.yaml up
 services:
   db:
     image: postgres:16-alpine
@@ -11,23 +20,39 @@ services:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
+  ollama:
+    build:
+      context: .
+      dockerfile: ollama.Dockerfile
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+    restart: unless-stopped
+    # Uncomment if the host has an NVIDIA GPU (falls back to CPU otherwise):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
     ports:
       - "4000:4000"
     volumes:
-      - ./litellm.yaml:/app/config.yaml:ro
+      - ./config/model-templates/litellm.local-ollama.yaml:/app/config.yaml:ro
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-      # Only needed if litellm.yaml is swapped for one of the
-      # config/model-templates/litellm.cloud-*.yaml provider templates.
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - DATABASE_URL=${DATABASE_URL}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on:
       - db
+      - ollama
     restart: unless-stopped
 
   agent:
@@ -57,7 +82,6 @@ services:
       - STATE_REPO_PATH=${STATE_REPO_PATH}
       - INTERNAL_STATE_REPO_PATH=/app/state_repo
       - LITELLM_PROXY_API_BASE=http://litellm:4000
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
@@ -84,12 +108,6 @@ services:
     tty: true
     command: ["/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh"]
 
-  # -----------------------------------------
-  # For a fully local, no-commercial-LLM setup (self-hosted Ollama instead of
-  # Gemini/OpenAI/Anthropic), use docker-compose.local.yaml instead of this
-  # file: `docker compose -f docker-compose.local.yaml up`. See
-  # config/model-templates/litellm.local-ollama.yaml for the model mapping.
-  # -----------------------------------------
-
 volumes:
   postgres_data:
+  ollama_data:

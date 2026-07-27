@@ -1,7 +1,10 @@
+# "Cloud" model template - extracted from the setup active in the root
+# litellm.yaml today. Every scrum-team role is served by Google Gemini via a
+# commercial API key (GOOGLE_API_KEY). This file is a reference copy for
+# comparison with config/model-templates/litellm.local-ollama.yaml; the file
+# actually mounted by the default docker-compose.yaml is still the root
+# litellm.yaml.
 model_list:
-  # -----------------------------
-  # ACTIVE NOW: Gemini deployments
-  # -----------------------------
   - model_name: scrum-orchestrator
     litellm_params:
       model: gemini/gemini-1.5-pro
@@ -86,12 +89,6 @@ model_list:
         - category: HARM_CATEGORY_DANGEROUS_CONTENT
           threshold: BLOCK_NONE
 
-  - model_name: scrum-test-mock
-    litellm_params:
-      model: openai/gpt-3.5-turbo
-      api_key: sk-123
-      mock_response: "This is a permanent mock response for integration testing."
-
   - model_name: scrum-quality
     litellm_params:
       model: gemini/gemini-1.5-pro
@@ -106,13 +103,6 @@ model_list:
         - category: HARM_CATEGORY_DANGEROUS_CONTENT
           threshold: BLOCK_NONE
 
-  # -----------------------------------------
-  # Team performance evaluation harness (see RELEASE.md, run_eval.py)
-  # A single cheap/fast alias every role is pointed at during an automated
-  # eval run (via the SCRUM_<ROLE>_MODEL env override in get_model_name),
-  # to keep a 5-sprint run's real cost small. Reuses GOOGLE_API_KEY - no
-  # separate secret needed.
-  # -----------------------------------------
   - model_name: scrum-eval-cheap
     litellm_params:
       model: gemini/gemini-flash-lite-latest
@@ -127,18 +117,12 @@ model_list:
         - category: HARM_CATEGORY_DANGEROUS_CONTENT
           threshold: BLOCK_NONE
 
-  # -----------------------------------------
-  # Alternative provider templates live in config/model-templates/ - copy one
-  # over this file (or point docker-compose.yaml's litellm volume mount at
-  # it) to switch providers:
-  #   litellm.cloud-gemini.yaml    - reference copy of this file's active config
-  #   litellm.cloud-anthropic.yaml - every role on Anthropic Claude
-  #   litellm.cloud-openai.yaml    - every role on OpenAI
-  #   litellm.local-ollama.yaml    - self-hosted Ollama, no commercial LLM
-  #                                  (run `docker compose -f docker-compose.local.yaml up`)
-  # -----------------------------------------
+  - model_name: scrum-test-mock
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: sk-123
+      mock_response: "This is a permanent mock response for integration testing."
 
-# Optional: master_key für Auth auf dem Proxy
 general_settings:
   num_retries: 3
   master_key: os.environ/LITELLM_MASTER_KEY
