@@ -11,12 +11,16 @@ Horseless Carriage versions over time. Uses a cheap model tier
 
 Deliberate simplification: there is no human in the loop, but
 create_release_pr/gh_pr_create still open real PRs (this is the team's
-real, unmodified behavior - see DEV_PROMPT/PO_PROMPT). This script
-auto-merges any open PR on the eval branch once its sprint invocation
-finishes, standing in for the "Human Review is mandatory" gate real
-usage requires. That's a real, deliberate change of the eval's
-observed behavior vs. production, and must be called out in the
-generated report, not just quietly relied upon.
+real, unmodified behavior - see DEV_PROMPT/PO_PROMPT). Under GitFlow, this
+run gets its own isolated main+develop branch pair (eval/<run-id>/main,
+eval/<run-id>/develop - see _prepare_local_clone); story-level feature-branch
+PRs are merged by the QA agent's own merge_story_pr call during the sprint
+(real behavior, no harness involvement), while this script auto-merges only
+the sprint-level (develop->main) PR once each sprint's invocation finishes,
+standing in for the "Human Review is mandatory" gate real usage requires for
+that one merge. That's a real, deliberate change of the eval's observed
+behavior vs. production, and must be called out in the generated report,
+not just quietly relied upon.
 
 Usage:
     python3 -m agents.scrum_team.scripts.run_eval --sprints 5 --run-id <id>
@@ -64,10 +68,15 @@ def _configure_env(args: argparse.Namespace) -> None:
     for role in EVAL_ROLES:
         os.environ[f"SCRUM_{role}_MODEL"] = args.model
     os.environ["GITHUB_REPO_URL"] = args.eval_repo_url
+    # GitFlow: args.branch is this run's isolated "main" (sprint PRs merge
+    # into it); args.develop_branch is its "develop" (feature-branch PRs
+    # merge into it) - see _develop_branch_name/_default_push_branch in
+    # tools/base.py, and _prepare_local_clone below which bootstraps both.
     os.environ["GITHUB_REPO_BRANCH"] = args.branch
+    os.environ["GITHUB_DEVELOP_BRANCH"] = args.develop_branch
     os.environ["STATE_REPO_PATH"] = str(args.local_path)
     os.environ["INTERNAL_STATE_REPO_PATH"] = str(args.local_path)
-    os.environ["SESSION_ID"] = f"eval-{args.branch.replace('/', '-')}"
+    os.environ["SESSION_ID"] = f"eval-{args.run_id}"
     os.environ["SPRINT_TOKEN_BUDGET"] = str(args.token_budget)
     os.environ["SPRINT_USD_BUDGET"] = str(args.usd_budget)
     # Read by agents/scrum_team/tools/base.py's _with_eval_branch_prefix /
@@ -91,14 +100,15 @@ def _configure_env(args: argparse.Namespace) -> None:
         os.environ["LITELLM_PROXY_API_KEY"] = os.environ.get("LITELLM_MASTER_KEY", "")
 
 
-def _prepare_local_clone(repo_url: str, branch: str, local_path: Path, github_token: str) -> None:
+def _prepare_local_clone(repo_url: str, main_branch: str, develop_branch: str, local_path: Path, github_token: str) -> None:
     """
     Clones the eval repo fresh (via `gh repo clone`, reusing the already
     gh-authenticated container - see entrypoint.sh - rather than assuming
-    SSH keys are configured for a raw `git clone`) and checks out a new
-    local branch for this run, so the team's very first tool call already
-    operates on the isolated eval branch rather than the eval repo's real
-    main.
+    SSH keys are configured for a raw `git clone`), then bootstraps this
+    run's isolated main+develop branch pair (GitFlow - mirrors what
+    configure_github_repo/_ensure_remote_branch_exists do for real/non-eval
+    usage), so the team's very first tool call already operates on isolated
+    branches rather than the eval repo's real default branch.
     """
     if local_path.exists() and any(local_path.iterdir()):
         raise RuntimeError(f"local_path already exists and is non-empty, refusing to reuse it: {local_path}")
@@ -111,9 +121,11 @@ def _prepare_local_clone(repo_url: str, branch: str, local_path: Path, github_to
     )
     if clone.returncode != 0:
         raise RuntimeError(f"Failed to clone eval repo: {clone.stderr}")
-    checkout = run_git(["checkout", "-b", branch], cwd=local_path, github_token=github_token)
-    if checkout.get("status") != "ok":
-        raise RuntimeError(f"Failed to create eval branch {branch}: {checkout.get('stderr') or checkout.get('message')}")
+
+    # main first (from whatever the clone's current HEAD is) ...
+    checkout_main = run_git(["checkout", "-b", main_branch], cwd=local_path, github_token=github_token)
+    if checkout_main.get("status") != "ok":
+        raise RuntimeError(f"Failed to create eval main branch {main_branch}: {checkout_main.get('stderr') or checkout_main.get('message')}")
     # Push it immediately: gh_pr_create/create_release_pr default `base` to
     # this branch (see _default_push_branch), and `gh pr create --base
     # <branch>` fails outright if <branch> doesn't exist on the remote yet.
@@ -121,17 +133,27 @@ def _prepare_local_clone(repo_url: str, branch: str, local_path: Path, github_to
     # silently (create_release_pr doesn't surface the failure - see its own
     # docstring) and the run finishes having created feature branches but
     # zero PRs, as happened in 0.1.0-run4.
-    push = run_git(["push", "-u", "origin", branch], cwd=local_path, github_token=github_token)
-    if push.get("status") != "ok":
-        raise RuntimeError(f"Failed to push eval branch {branch} to origin: {push.get('stderr') or push.get('message')}")
+    push_main = run_git(["push", "-u", "origin", main_branch], cwd=local_path, github_token=github_token)
+    if push_main.get("status") != "ok":
+        raise RuntimeError(f"Failed to push eval main branch {main_branch} to origin: {push_main.get('stderr') or push_main.get('message')}")
+
+    # ... then develop, branched from that same commit.
+    checkout_develop = run_git(["checkout", "-b", develop_branch], cwd=local_path, github_token=github_token)
+    if checkout_develop.get("status") != "ok":
+        raise RuntimeError(f"Failed to create eval develop branch {develop_branch}: {checkout_develop.get('stderr') or checkout_develop.get('message')}")
+    push_develop = run_git(["push", "-u", "origin", develop_branch], cwd=local_path, github_token=github_token)
+    if push_develop.get("status") != "ok":
+        raise RuntimeError(f"Failed to push eval develop branch {develop_branch} to origin: {push_develop.get('stderr') or push_develop.get('message')}")
 
 
 def _sync_local_clone_to_branch(branch: str, local_path: Path, github_token: str) -> None:
     """
-    Between sprints: bring the local clone back to the eval branch's
-    latest merged state, so the next sprint's "check existing repo
-    content" and new feature branches build on top of everything merged
-    so far, not a stale or diverged local HEAD.
+    Between sprints: bring the local clone back to develop's latest merged
+    state (where ongoing sprint work happens - story-level feature-branch
+    PRs merge into develop via QA's own merge_story_pr call during the
+    sprint), so the next sprint's "check existing repo content" and new
+    feature branches build on top of everything merged so far, not a stale
+    or diverged local HEAD.
     """
     run_git(["fetch", "origin", branch], cwd=local_path, github_token=github_token)
     run_git(["checkout", branch], cwd=local_path, github_token=github_token)
@@ -360,7 +382,17 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
 
         text = message_text if attempt == 0 else _CONTINUE_NUDGE
         message = types.Content(role="user", parts=[types.Part(text=text)])
-        state_delta = {"sprint_report": ""} if attempt == 0 else None
+        # token_usage resets here too, at the first attempt of THIS sprint -
+        # SPRINT_TOKEN_BUDGET/EVAL_SPRINT_TOKEN_BUDGET is a per-sprint
+        # allowance, not cumulative for the whole run (see
+        # check_cost_budget_callback in agent.py); without this, one
+        # expensive sprint silently starves every later sprint of further
+        # LLM calls. Harness-side equivalent of the reset_sprint_budget
+        # tool Scrum Master calls in interactive/real usage.
+        state_delta = (
+            {"sprint_report": "", "token_usage": {"total": 0, "agents": {}}, "budget_exhaustion_synced": False}
+            if attempt == 0 else None
+        )
 
         try:
             async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=message, state_delta=state_delta):
@@ -451,6 +483,7 @@ async def _main_async(args: argparse.Namespace) -> dict:
     manifest = {
         "run_id": args.run_id,
         "branch": args.branch,
+        "develop_branch": args.develop_branch,
         "eval_repo_url": args.eval_repo_url,
         "model": args.model,
         "sprints_requested": args.sprints,
@@ -479,9 +512,13 @@ async def _main_async(args: argparse.Namespace) -> dict:
             manifest["stopped_early"] = True
             manifest["stop_reason"] = "max_duration_exceeded"
 
+        # Only the sprint-level (develop->main) PR is auto-merged here -
+        # base_branch=args.branch (this run's main) narrows _merge_open_prs
+        # so story-level feature->develop PRs are left alone; those are
+        # merged by QA's own merge_story_pr call during the sprint instead.
         merges = _merge_open_prs(args.local_path, args.branch, sprint_result=sprint_result)
         manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number} for m in merges])
-        _sync_local_clone_to_branch(args.branch, args.local_path, args.github_token)
+        _sync_local_clone_to_branch(args.develop_branch, args.local_path, args.github_token)
 
         if sprint_result["stop_reason"] == "max_duration_exceeded":
             break
@@ -495,17 +532,16 @@ def main() -> None:
     parser.add_argument("--sprints", type=int, default=5)
     parser.add_argument("--run-id", required=True, help="Unique identifier for this run, e.g. <hc-version>-<gh-run-number>")
     parser.add_argument("--eval-repo-url", default=DEFAULT_EVAL_REPO_URL)
-    parser.add_argument("--branch", default=None, help="Defaults to eval/<run-id>")
+    parser.add_argument("--branch", default=None, help="This run's isolated 'main' - defaults to eval/<run-id>/main")
+    parser.add_argument("--develop-branch", default=None, help="This run's isolated 'develop' - defaults to eval/<run-id>/develop")
     parser.add_argument("--local-path", default=None, help="Defaults to a fresh temp dir")
     parser.add_argument("--model", default="scrum-eval-cheap")
-    # token_usage is cumulative for the whole session (never resets between
-    # sprints - see check_cost_budget_callback), so this must cover all
-    # sprints combined, not one - a single sprint blowing the *total*
-    # budget permanently starves every later sprint (every LLM call gets
-    # hard-blocked for the rest of the run). Defaulted to None here and
-    # resolved below from EVAL_SPRINT_TOKEN_BUDGET (scaled by --sprints)
-    # once args.sprints is known.
-    parser.add_argument("--token-budget", type=int, default=None, help="Defaults to --sprints * EVAL_SPRINT_TOKEN_BUDGET (see .env)")
+    # token_usage now resets at the start of every sprint (see
+    # _run_one_sprint's state_delta), so this is ONE sprint's allowance, not
+    # the whole run's - unlike --usd-budget below, do NOT scale this by
+    # --sprints. Defaulted to None here and resolved below from
+    # EVAL_SPRINT_TOKEN_BUDGET once args.sprints is known.
+    parser.add_argument("--token-budget", type=int, default=None, help="Defaults to EVAL_SPRINT_TOKEN_BUDGET (see .env) - a per-sprint value, not scaled by --sprints")
     # scrum-eval-cheap is cheap enough that token budget binds first in
     # practice; this stays as the secondary $-denominated safety net.
     # Also resolved below from EVAL_SPRINT_USD_BUDGET, scaled by --sprints.
@@ -532,7 +568,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.branch is None:
-        args.branch = f"eval/{args.run_id}"
+        args.branch = f"eval/{args.run_id}/main"
+    if args.develop_branch is None:
+        args.develop_branch = f"eval/{args.run_id}/develop"
     if args.local_path is None:
         import tempfile
         args.local_path = Path(tempfile.mkdtemp(prefix="hc-eval-"))
@@ -542,15 +580,16 @@ def main() -> None:
         args.report_path = f"eval-run-{args.run_id.replace('/', '-')}.json"
     if args.transcript_path is None:
         args.transcript_path = f"eval-transcript-{args.run_id.replace('/', '-')}.md"
-    # token_usage is cumulative for the whole session (never resets between
-    # sprints - see check_cost_budget_callback), so a flat per-sprint budget
-    # would permanently starve every later sprint once one sprint blew it -
-    # which is why sprints 2-3 of run 0.1.0-run2 (2026-07-21) did nothing (5
-    # events each, identical token count). Scale the per-sprint config value
-    # by --sprints instead of using it as a flat total. The per-sprint
-    # values themselves live in .env (EVAL_SPRINT_TOKEN_BUDGET /
-    # EVAL_SPRINT_USD_BUDGET, next to SPRINT_TOKEN_BUDGET/SPRINT_USD_BUDGET)
-    # rather than here, so recalibrating doesn't require a code change.
+    # token_usage now resets at the start of every sprint (see
+    # _run_one_sprint's state_delta) - SPRINT_TOKEN_BUDGET/
+    # EVAL_SPRINT_TOKEN_BUDGET is a per-sprint allowance, so args.token_budget
+    # is used as-is, NOT scaled by --sprints (previously it was scaled,
+    # compensating for token_usage never resetting - which is also why
+    # sprints 2-3 of run 0.1.0-run2 (2026-07-21) did nothing: one expensive
+    # sprint permanently starved the rest of that run). The per-sprint value
+    # itself lives in .env (EVAL_SPRINT_TOKEN_BUDGET, next to
+    # SPRINT_TOKEN_BUDGET) rather than here, so recalibrating doesn't require
+    # a code change.
     if args.token_budget is None:
         per_sprint_token_budget = os.environ.get("EVAL_SPRINT_TOKEN_BUDGET")
         if not per_sprint_token_budget:
@@ -558,7 +597,11 @@ def main() -> None:
                 "--token-budget not given and EVAL_SPRINT_TOKEN_BUDGET is not "
                 "set - see .env.example's 'Eval Harness Budget Configuration' section."
             )
-        args.token_budget = args.sprints * int(per_sprint_token_budget)
+        args.token_budget = int(per_sprint_token_budget)
+    # The USD budget, unlike the token budget above, stays a whole-run
+    # cumulative ceiling by design (see BUDGET.md/reset_sprint_budget) -
+    # enforced by the LiteLLM proxy's shared scrum-sprint-budget object, not
+    # reset per sprint - so this scaling is unchanged.
     if args.usd_budget is None:
         per_sprint_usd_budget = os.environ.get("EVAL_SPRINT_USD_BUDGET")
         if not per_sprint_usd_budget:
@@ -608,7 +651,7 @@ def main() -> None:
     args.github_token = get_github_token()
 
     _configure_env(args)
-    _prepare_local_clone(args.eval_repo_url, args.branch, args.local_path, args.github_token)
+    _prepare_local_clone(args.eval_repo_url, args.branch, args.develop_branch, args.local_path, args.github_token)
 
     manifest = asyncio.run(_main_async(args))
 

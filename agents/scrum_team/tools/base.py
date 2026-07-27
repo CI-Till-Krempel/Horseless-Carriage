@@ -77,6 +77,26 @@ def _default_push_branch(tool_context=None) -> str:
         pass
     return os.getenv("GITHUB_REPO_BRANCH") or "main"
 
+def _develop_branch_name(tool_context=None) -> str:
+    """
+    The integration branch feature-branch PRs target (GitFlow: feature/* ->
+    develop -> main). Exact mirror of _default_push_branch's resolution
+    order: state config -> GITHUB_DEVELOP_BRANCH env var -> "develop". Like
+    _default_push_branch, an eval run points this at an isolated,
+    run-specific value via GITHUB_DEVELOP_BRANCH rather than relying on
+    _with_eval_branch_prefix (that helper is for ad-hoc branches like
+    feature/* instead - see run_eval.py).
+    """
+    try:
+        if tool_context and getattr(tool_context, "state", None):
+            repo_cfg = tool_context.state.get("repo", {}) or {}
+            branch = repo_cfg.get("develop_branch")
+            if branch:
+                return branch
+    except Exception:
+        pass
+    return os.getenv("GITHUB_DEVELOP_BRANCH") or "develop"
+
 def _configured_repo_root(tool_context=None) -> Path:
     """
     Determine which repository directory to operate in.

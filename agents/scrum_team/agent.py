@@ -197,9 +197,13 @@ from .tools import (
     update_budgets,
     get_budget_status,
     log_token_usage,
+    reset_sprint_budget,
     log_story_tokens,
     create_sprint_report,
     create_release_pr,
+    start_feature_branch,
+    mark_pr_ready_for_review,
+    merge_story_pr,
     gh_pr_check_logs,
     create_litellm_virtual_key,
     read_doc,
@@ -222,6 +226,11 @@ from .tools.budget import (
     recommend_sprint_budget,
     optimize_process_for_budget,
 )
+# Not agent-callable tools (no LlmAgent lists them) - used only by
+# _sync_and_commit_roadmap_on_exhaustion below, the mechanical last-gasp
+# roadmap sync triggered when the sprint budget runs out mid-turn.
+from .tools.requirements import sync_all_active_stories_to_roadmap
+from .tools.base import _configured_repo_root, _run
 from .state import ScrumState, Budgets, TokenUsage
 
 # --- LiteLLM Proxy wiring ---
@@ -305,6 +314,59 @@ def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: 
 
 # --- Budget Enforcement Callbacks ---
 
+def _sync_and_commit_roadmap_on_exhaustion(callback_context: CallbackContext) -> None:
+    """
+    Mechanical, non-agent last-gasp action: once the budget guardrail below
+    starts returning a canned "halted" LlmResponse instead of calling the
+    model, NO agent - including Scrum Master - ever gets a real reasoning
+    turn again this sprint (returning a non-None LlmResponse from a
+    before_model_callback short-circuits the model call entirely; the same
+    canned message just repeats on every subsequent call). A prompt
+    instruction telling Scrum Master to "document the current state" would
+    never actually be seen or acted on. So this runs here instead, in code,
+    the moment exhaustion is first detected this sprint - syncing
+    specs/ROADMAP.md to whatever every story's real stage is and committing
+    it, so task status stays visible even though development just stopped.
+
+    Best-effort: any failure here (no network, git error) must not prevent
+    the caller from still returning its own canned budget-exceeded response.
+    """
+    try:
+        # CallbackContext already exposes .state/.agent_name the same way
+        # tool functions expect tool_context to (used elsewhere in this same
+        # callback), so it can stand in for tool_context here.
+        sync_all_active_stories_to_roadmap(callback_context)
+
+        repo_root = str(_configured_repo_root(callback_context))
+        branch_result = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, tool_context=callback_context)
+        current_branch = (branch_result.get("stdout") or "").strip()
+        if current_branch and current_branch != "HEAD":
+            git_push(
+                branch=current_branch,
+                commit_message="chore: sync roadmap - sprint budget exhausted",
+                allow_protected=True,
+                tool_context=callback_context,
+            )
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Roadmap sync on budget exhaustion failed (non-fatal): {e}")
+
+
+def _sync_roadmap_on_exhaustion_once(callback_context: CallbackContext) -> None:
+    """
+    Guards _sync_and_commit_roadmap_on_exhaustion so it runs exactly once per
+    sprint - every call after the first exhaustion this sprint hits this same
+    callback again (the canned response repeats on every subsequent turn), so
+    without this guard it would redundantly re-sync/re-push on every single
+    one of those. Cleared by reset_sprint_budget / the eval harness's
+    per-sprint state_delta at the start of each new sprint, so exhaustion in
+    a later sprint syncs again.
+    """
+    if callback_context.state.get("budget_exhaustion_synced"):
+        return
+    _sync_and_commit_roadmap_on_exhaustion(callback_context)
+    callback_context.state["budget_exhaustion_synced"] = True
+
+
 def check_cost_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
     """
     BeforeModelCallback: Checks if the team is over budget before allowing an agent to start.
@@ -346,6 +408,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
             
     token_usage = state.token_usage.total
     if token_limit > 0 and token_usage >= token_limit:
+        _sync_roadmap_on_exhaustion_once(callback_context)
         msg = (
             f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
             f"Current usage: {token_usage:,}. Agent execution halted."
@@ -392,6 +455,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
             current_spend = budget_info_list[0].get("spend", 0.0)
 
         if current_spend >= budget_limit:
+            _sync_roadmap_on_exhaustion_once(callback_context)
             msg = (
                 f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
                 f"Current spend: ${current_spend:.2f}. Agent execution halted."
@@ -401,6 +465,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                 model_version=llm_request.model or "unknown"
             )
     except requests.RequestException as e:
+        _sync_roadmap_on_exhaustion_once(callback_context)
         msg = f"❌ [BUDGET ERROR] Could not verify budget status with LiteLLM proxy: {e}. Agent execution halted to prevent unmonitored spending."
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
@@ -688,6 +753,7 @@ scrum_master = LlmAgent(
         update_budgets,
         get_budget_status,
         log_token_usage,
+        reset_sprint_budget,
         gh_pr_status,
         gh_pr_checks,
         gh_pr_comment,
@@ -717,6 +783,8 @@ dev_team = LlmAgent(
         read_doc,
         list_docs,
         create_from_template,
+        start_feature_branch,
+        mark_pr_ready_for_review,
         git_push,
         gh_pr_create,
         gh_pr_status,
@@ -742,6 +810,7 @@ qa_agent = LlmAgent(
         gh_pr_review,
         check_build,
         advance_story_stage,
+        merge_story_pr,
     ],
     **COMMON_AGENT_CALLBACKS,
 )

@@ -12,7 +12,7 @@ Usage:
     python3 -m agents.scrum_team.scripts.run_eval_analysis \
         --manifest eval-run-<id>.json --repo-path <local clone path> \
         --report-path EVAL-REPORT-<id>.md \
-        --run-id <id> --base-branch eval/<id>
+        --run-id <id> --base-branch eval/<id>/main
 """
 from __future__ import annotations
 
@@ -49,13 +49,13 @@ MODEL_PRICING_LOOKUP = {
 
 def _total_tokens_used(manifest: dict) -> int:
     """
-    token_usage.total is cumulative for the whole run, never resets between
-    sprints (see check_cost_budget_callback) - so the run's total is the
-    last sprint's figure, NOT the sum of every sprint row (that would
-    double/triple-count earlier sprints' tokens).
+    token_usage.total now resets at the start of every sprint (see
+    run_eval.py's _run_one_sprint state_delta / reset_sprint_budget) - each
+    sprint row reflects only that sprint's own consumption, so the run's
+    total is the SUM of every sprint row, not the last (biggest) one.
     """
     totals = [(s.get("token_usage") or {}).get("total", 0) for s in manifest.get("sprints", [])]
-    return max(totals, default=0)
+    return sum(totals)
 
 
 def _estimate_cost_range(total_tokens: int, model_alias: str):
