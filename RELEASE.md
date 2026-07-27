@@ -306,7 +306,27 @@ genuine exception raised *inside* a real tool call (its actual description, not 
 left alone and still propagates - this only softens dispatch-time "tool not found" errors, not real
 bugs.
 
-## Team performance evaluation
+### Self-transfer resilience (hallucinated agent-to-self transfers)
+
+A real eval run crashed on sprint 2/5: DevTeam's turn produced a `transfer_to_agent` call naming
+itself as the target. ADK validates transfer targets in a different code path from tool dispatch -
+`resolve_and_derive_transfer_context` (`google.adk.workflow.utils._transfer_utils`) - and raises a
+bare `ValueError` ("Agent 'DevTeam' cannot transfer to itself.") before any tool-callback machinery
+ever runs, so `on_tool_error_callback` above never sees it. Like the hallucinated-tool-name case,
+this propagated straight through `runner.run_async` and killed the whole process.
+
+There's no equivalent ADK callback hook for transfer-resolution errors, so this is handled at the
+call site instead: `_run_one_sprint` (`agents/scrum_team/scripts/run_eval.py`) wraps its
+`async for event in runner.run_async(...)` loop in a `try`/`except ValueError`, matching only on the
+`"cannot transfer to itself"` message (any other `ValueError` still propagates, so a real bug isn't
+silently swallowed). On a match, the sprint ends early with `stop_reason: "adk_self_transfer_error"`
+instead of crashing - the run continues to the next sprint and still produces a full manifest/report,
+the same resilience goal as the tool-dispatch fix above, just via a plain `try`/`except` since ADK
+doesn't expose a hook for this particular failure mode.
+
+This is scoped to the eval harness's own driver loop - it's the only place in this codebase that
+calls `runner.run_async` directly. An interactive/production run goes through ADK's own runner
+(e.g. the ADK web server), which this fix does not touch.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
