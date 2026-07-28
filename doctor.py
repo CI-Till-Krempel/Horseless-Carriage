@@ -119,8 +119,9 @@ def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
     print()
     print("--- LLM Configuration ---")
 
-    active_provider = lib_llm_test.llm_active_provider(repo_root / "litellm.yaml")
-    print(f"Active provider (litellm.yaml): {active_provider}")
+    active_config_path = lib_llm_test.llm_active_config_path(repo_root)
+    active_provider = lib_llm_test.llm_active_provider(active_config_path)
+    print(f"Active provider ({active_config_path.relative_to(repo_root)}): {active_provider}")
 
     key_var = lib_llm_test.llm_provider_key_var(active_provider)
     if key_var:

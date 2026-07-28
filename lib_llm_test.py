@@ -20,6 +20,29 @@ _PROVIDER_KEY_VARS = {
 }
 
 
+def llm_active_config_path(repo_root: Path) -> Path:
+    """Which litellm-config file setup_llm.py most recently wrote: the root
+    litellm.yaml (cloud providers, docker-compose.yaml) or
+    config/model-templates/litellm.local-ollama.yaml (Local/Ollama,
+    docker-compose.local.yaml). setup_llm.py's local-provider flow only
+    ever writes the latter (see write_litellm_yaml/run_local_provider) -
+    never litellm.yaml - so a check that only ever looks at litellm.yaml
+    always reports the last-configured *cloud* provider (or the repo's
+    shipped default) for a Local/Ollama setup, even with GOOGLE_API_KEY
+    never set (GH issue #36).
+
+    Picked by comparing mtimes rather than e.g. a persisted "mode" env
+    var, so switching providers via a later setup_llm.py run is picked up
+    correctly even if an earlier run's leftover env vars (e.g.
+    OLLAMA_MODEL) are still sitting in .env."""
+    repo_root = Path(repo_root)
+    cloud_path = repo_root / "litellm.yaml"
+    local_path = repo_root / "config" / "model-templates" / "litellm.local-ollama.yaml"
+    if local_path.is_file() and (not cloud_path.is_file() or local_path.stat().st_mtime > cloud_path.stat().st_mtime):
+        return local_path
+    return cloud_path
+
+
 def llm_active_provider(yaml_path: Path) -> str:
     """Provider implied by a litellm.yaml-style file's first model entry:
     "gemini" | "anthropic" | "openai" | "local" | "unknown"."""

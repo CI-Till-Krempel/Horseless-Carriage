@@ -1,5 +1,49 @@
+import os
+
 import lib_llm_test
 from conftest import REPO_ROOT
+
+
+class TestLlmActiveConfigPath:
+    """
+    Acceptance Criteria (GH issue #36): setup_llm.py's Local/Ollama flow
+    only ever writes config/model-templates/litellm.local-ollama.yaml,
+    never the root litellm.yaml - so doctor.py/run.py must pick between the
+    two by freshness (mtime), not just always look at litellm.yaml.
+    """
+
+    def _write(self, path, mtime_offset=0):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("model_list: []\n")
+        if mtime_offset:
+            stat = path.stat()
+            os.utime(path, (stat.st_atime, stat.st_mtime + mtime_offset))
+
+    def test_only_cloud_file_exists(self, tmp_path):
+        self._write(tmp_path / "litellm.yaml")
+        result = lib_llm_test.llm_active_config_path(tmp_path)
+        assert result == tmp_path / "litellm.yaml"
+
+    def test_only_local_file_exists(self, tmp_path):
+        self._write(tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml")
+        result = lib_llm_test.llm_active_config_path(tmp_path)
+        assert result == tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+
+    def test_neither_file_exists_defaults_to_cloud_path(self, tmp_path):
+        result = lib_llm_test.llm_active_config_path(tmp_path)
+        assert result == tmp_path / "litellm.yaml"
+
+    def test_local_file_written_more_recently_wins(self, tmp_path):
+        self._write(tmp_path / "litellm.yaml")
+        self._write(tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml", mtime_offset=10)
+        result = lib_llm_test.llm_active_config_path(tmp_path)
+        assert result == tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+
+    def test_stale_local_file_does_not_win_over_fresher_cloud_file(self, tmp_path):
+        self._write(tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml")
+        self._write(tmp_path / "litellm.yaml", mtime_offset=10)
+        result = lib_llm_test.llm_active_config_path(tmp_path)
+        assert result == tmp_path / "litellm.yaml"
 
 
 class TestLlmActiveProvider:

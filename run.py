@@ -26,6 +26,7 @@ import webbrowser
 from pathlib import Path
 
 import lib_env
+import lib_llm_test
 
 LITELLM_DASHBOARD_URL = "http://localhost:4000/ui"
 ADK_WEB_URL = "http://localhost:8000"
@@ -85,6 +86,20 @@ def open_dashboards(mode: str) -> None:
             print(f"WARNING: ADK web frontend did not become ready in time. Open manually: {ADK_WEB_URL}")
 
 
+def compose_file_args(repo_root: Path) -> list:
+    """["-f", "docker-compose.local.yaml"] if a Local/Ollama setup is
+    active, else [] (default docker-compose.yaml). A Local/Ollama setup
+    (see setup_llm.py's run_local_provider) only ever writes
+    config/model-templates/litellm.local-ollama.yaml, never the root
+    litellm.yaml docker-compose.yaml's litellm service mounts - it needs
+    docker-compose.local.yaml (which mounts that file directly, and adds
+    the ollama service) instead, or the agent comes up pointed at whichever
+    cloud provider was last configured (or the repo's shipped default),
+    with no matching API key set (GH issue #36)."""
+    active_provider = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(repo_root))
+    return ["-f", "docker-compose.local.yaml"] if active_provider == "local" else []
+
+
 def main() -> None:
     os.chdir(Path(__file__).resolve().parent)
     mode, daemon, extra_args = parse_args(sys.argv[1:])
@@ -107,7 +122,11 @@ def main() -> None:
         print("Please create this directory and ensure it is correctly set in your .env file.")
         sys.exit(1)
 
+    compose_args = compose_file_args(Path("."))
+
     print(f"--- Starting Horseless Carriage agent via Docker Compose (mode: {mode}) ---")
+    if compose_args:
+        print(f"(Local/Ollama setup detected - using {compose_args[1]})")
 
     proc_env = os.environ.copy()
     proc_env["AGENT_MODE"] = mode
@@ -120,21 +139,22 @@ def main() -> None:
             print("NOTE: 'cli' mode needs an interactive terminal; ignoring 'daemon'.")
         print("Running agent in interactive CLI mode. Press Ctrl+C to exit.")
         # Resumption logic is handled internally by the container's run_agent.sh script.
-        cmd = ["docker", "compose", "run", "--rm", "--build", "agent",
+        cmd = ["docker", "compose", *compose_args, "run", "--rm", "--build", "agent",
                "/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh", *extra_args]
         result = subprocess.run(cmd, env=proc_env)
         sys.exit(result.returncode)
     else:
         if daemon:
-            result = subprocess.run(["docker", "compose", "up", "-d", "--build", "agent"], env=proc_env)
+            result = subprocess.run(["docker", "compose", *compose_args, "up", "-d", "--build", "agent"], env=proc_env)
             if result.returncode != 0:
                 sys.exit(result.returncode)
             thread.join()
             print("Agent container started in daemon mode.")
-            print("To view logs, run: docker compose logs -f agent")
+            logs_cmd = " ".join(["docker", "compose", *compose_args, "logs", "-f", "agent"])
+            print(f"To view logs, run: {logs_cmd}")
         else:
             print("Running ADK web frontend in foreground. Press Ctrl+C to stop.")
-            result = subprocess.run(["docker", "compose", "up", "--build", "agent"], env=proc_env)
+            result = subprocess.run(["docker", "compose", *compose_args, "up", "--build", "agent"], env=proc_env)
             sys.exit(result.returncode)
 
 

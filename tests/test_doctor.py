@@ -191,6 +191,33 @@ class TestLlmConfigurationSection:
         out = capsys.readouterr().out
         assert "docker-compose.local.yaml up -d db litellm ollama" in out
 
+    def test_local_ollama_setup_detected_via_model_templates_file(self, valid_repo, monkeypatch, capsys):
+        """
+        Regression test (GH issue #36): setup_llm.py's Local/Ollama flow
+        writes config/model-templates/litellm.local-ollama.yaml, NEVER the
+        root litellm.yaml (which stays whatever cloud provider was set up
+        before, or the repo's shipped default - "gemini" here, from
+        valid_repo's fixture). Before this fix, doctor.py always looked at
+        the stale root file and reported "gemini" + warned about a missing
+        GOOGLE_API_KEY, even though a real local/Ollama setup was active
+        and GOOGLE_API_KEY was never needed at all.
+        """
+        _patch_proxy_unreachable(monkeypatch)
+        local_yaml = valid_repo / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_yaml.parent.mkdir(parents=True, exist_ok=True)
+        local_yaml.write_text(
+            "model_list:\n"
+            "  - model_name: scrum-po\n"
+            "    litellm_params:\n"
+            "      model: ollama/llama3.1:8b\n"
+            "      api_base: http://ollama:11434\n"
+        )
+        doctor.run(valid_repo)
+        out = capsys.readouterr().out
+        assert "Active provider (config/model-templates/litellm.local-ollama.yaml): local" in out
+        assert "GOOGLE_API_KEY is not set" not in out
+        assert "docker-compose.local.yaml up -d db litellm ollama" in out
+
     def test_proxy_reachable_and_test_succeeds(self, valid_repo, mock_proxy, capsys):
         base_url, behavior = mock_proxy
         env = valid_repo / ".env"
