@@ -8,6 +8,7 @@ from .scrum import (
     add_retro_action,
     plan_sprint_backlog_item,
     record_human_approval,
+    start_sprint,
 )
 from .requirements import (
     upsert_story,

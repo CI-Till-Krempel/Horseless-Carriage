@@ -299,6 +299,41 @@ def record_human_approval(approval_type: str, note: str = "", tool_context=None)
     _ = save_state_to_repo(tool_context)
     return {"status": "ok", "approval": entry}
 
+def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Sets `sprint_goal` to kick off a new sprint - the mechanical counterpart
+    of ORCHESTRATOR_PROMPT's ITERATION MODE ("the team works in iterations"):
+    before this tool existed, nothing in the codebase ever set `sprint_goal`
+    to a real value (`init_scrum_state` only ever defaults it to ""), so a
+    user saying "let's start the sprint" produced narrated text but no
+    persisted sprint at all - see ISSUE-0011.
+    - Rejects a blank/generic/too-short goal (mirrors `is_low_quality_retro_text`'s
+      guard on retro text) - a real sprint goal states what this sprint is
+      actually meant to achieve, not a placeholder.
+    - Refuses to start while the previous sprint's close sequence is left
+      unfinished (`new_sprint_item_blocked` - see ISSUE-0010), for the same
+      reason `plan_sprint_backlog_item` refuses new backlog items in that
+      state: starting a new sprint goal is exactly the kind of "new sprint
+      work" that gate exists to catch, and doing it while the previous
+      sprint's release is still hanging open leaves that stuck permanently.
+    """
+    if is_low_quality_retro_text(goal):
+        return {
+            "status": "error",
+            "message": (
+                "goal is blank, a generic placeholder, or too short to be a real sprint goal - "
+                "state what this sprint is actually meant to achieve."
+            ),
+        }
+    s = tool_context.state
+    block_msg = new_sprint_item_blocked(s)
+    if block_msg:
+        return {"status": "error", "message": block_msg}
+    s["sprint_goal"] = goal.strip()
+    _ = save_state_to_repo(tool_context)
+    return {"status": "ok", "sprint_goal": s["sprint_goal"]}
+
+
 def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     Add/update an item in sprint_backlog with implementation plan fields.
