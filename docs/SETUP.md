@@ -132,6 +132,42 @@ This starts the same `db` + `litellm` + `agent` services as `docker-compose.yaml
 
 For a more detailed guide, see the [PREFLIGHT.md](../PREFLIGHT.md) checklist.
 
+## GPU Support
+
+The fully-local Ollama stack (above) runs CPU-only by default. To enable NVIDIA GPU acceleration,
+merge in the GPU override file instead of hand-editing `docker-compose.local.yaml` (a previous
+version of this file asked you to uncomment a commented-out YAML block in place, which is easy to
+get subtly wrong - indentation, a stray `#` left behind - with no feedback beyond "GPU still isn't
+being used"):
+
+```bash
+docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml up
+```
+
+**Prerequisites** (the override file alone does nothing without these):
+- An NVIDIA GPU with up-to-date drivers.
+- **Windows (Docker Desktop)**: enable the WSL2 backend (Settings -> General -> "Use the WSL 2 based
+  engine") and install an NVIDIA driver on the Windows host itself (not inside WSL) that supports
+  [CUDA on WSL](https://docs.nvidia.com/cuda/wsl-user-guide/index.html). Docker Desktop 4.x+ then
+  exposes the GPU to containers automatically - no separate `nvidia-container-toolkit` install is
+  needed on Windows specifically.
+- **Linux**: install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+  and restart Docker.
+
+**Verify it actually worked** - don't assume the override file alone is sufficient; a driver/WSL2
+misconfiguration on the host will silently leave Ollama running on CPU with no error from Docker:
+
+```bash
+docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml exec ollama nvidia-smi
+```
+
+This should list your GPU. You can also check what Ollama itself detected at startup - look for
+`library=cuda` (GPU found) vs. `library=cpu` (fell back) in its own log:
+
+```bash
+docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml logs ollama | grep "inference compute"
+```
+
 ## Human Interaction Levels
 
 How much of a human is actually in the loop is configurable via `INTERACTION_LEVEL` (`.env`, set

@@ -7,6 +7,9 @@
 # service targets a different config file):
 #   cp .env.local.example .env   # or edit your existing .env
 #   docker compose -f docker-compose.local.yaml up
+# For NVIDIA GPU acceleration, merge in docker-compose.gpu.yaml instead of
+# hand-editing this file (see docs/SETUP.md's "GPU Support" section):
+#   docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml up
 services:
   db:
     image: postgres:16-alpine
@@ -36,14 +39,10 @@ services:
     environment:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
     restart: unless-stopped
-    # Uncomment if the host has an NVIDIA GPU (falls back to CPU otherwise):
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    # CPU-only by default. For NVIDIA GPU acceleration, merge in
+    # docker-compose.gpu.yaml with an extra -f flag instead of hand-editing
+    # this file - see docs/SETUP.md's "GPU Support" section for prerequisites
+    # and how to verify the GPU was actually detected.
 
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
