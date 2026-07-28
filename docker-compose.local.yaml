@@ -49,12 +49,10 @@ services:
       # bursty workloads where unloading between uses is actually desired.
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
     restart: unless-stopped
-
     # CPU-only by default. For NVIDIA GPU acceleration, merge in
     # docker-compose.gpu.yaml with an extra -f flag instead of hand-editing
     # this file - see docs/SETUP.md's "GPU Support" section for prerequisites
     # and how to verify the GPU was actually detected.
-
     # No CPU/RAM limits are set here deliberately: Docker only restricts a
     # container's resource use if you explicitly configure `deploy.resources
     # .limits`, which this file doesn't - by default this container can
@@ -62,15 +60,7 @@ services:
     # (Settings -> Resources -> Advanced on the host), which is the actual
     # lever for "give Ollama more of the machine" - see docs/SETUP.md's
     # "Performance Tuning" section.
-    # Uncomment if the host has an NVIDIA GPU (falls back to CPU otherwise):
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-              
+
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
     ports:
