@@ -70,7 +70,7 @@ for what `doctor.py` checks.
 ## Setting up on Windows
 
 All of this project's host-side tooling (`setup_llm.py`, `setup_project.py`, `doctor.py`, `run.py`,
-`run_tests.py`, `check_state_repo.py`) is plain stdlib Python - no bash, no WSL2 required. The only
+`run_tests.py`, `check_state_repo.py`, `rebuild_images.py`) is plain stdlib Python - no bash, no WSL2 required. The only
 part of the stack that ever needed a Unix shell was the old setup scripts, which this replaces
 entirely; Docker Desktop may still use WSL2 internally as its own backend, but that's automatic and
 not something you need to set up yourself.
@@ -145,6 +145,9 @@ This starts the same `db` + `litellm` + `agent` services as `docker-compose.yaml
   increase the CPU/memory allocated to the Docker VM itself; that allocation, not anything in this
   repo, is the actual ceiling.
 - See also [GPU Support](#gpu-support) below for hardware-accelerated inference.
+- **Picked up a Dockerfile/entrypoint change and it doesn't seem to apply?** `python3 rebuild_images.py`
+  force-rebuilds the `ollama` (and `agent`) image, pulling fresh base images - `run.py`'s own
+  `--build` only rebuilds layers Docker's cache considers stale, which won't catch everything.
 
 For a more detailed guide, see the [PREFLIGHT.md](../PREFLIGHT.md) checklist.
 
