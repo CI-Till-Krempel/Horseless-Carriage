@@ -167,6 +167,28 @@ class TestRunConfigurationTest:
         assert "some specific real docker error" in out
         assert "is the Docker daemon running?" not in out
 
+    def test_offers_to_stop_an_existing_stack_before_starting(self, tmp_path, monkeypatch):
+        """A leftover stack from an earlier run must get a chance to be
+        stopped+recreated before this starts a new one on top of it (see
+        lib_docker.maybe_stop_existing_stack) - and that check must happen
+        for the right compose file (docker-compose.local.yaml for a local
+        provider) before the actual `up -d` call, not after."""
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+
+        calls = []
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: calls.append(("stop_check", compose_args)))
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path)
+
+        assert len(calls) == 1
+        _, compose_args = calls[0]
+        assert compose_args[:2] == ["-f", "docker-compose.local.yaml"]
+
 
 def _fake_urlopen_response(body_dict):
     data = json.dumps(body_dict).encode()

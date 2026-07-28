@@ -24,8 +24,13 @@ services:
     build:
       context: .
       dockerfile: ollama.Dockerfile
-    ports:
-      - "11434:11434"
+    # No host port mapping: litellm reaches this container over Compose's
+    # internal network at http://ollama:11434 (see
+    # config/model-templates/litellm.local-ollama.yaml) - nothing needs to
+    # reach it from the host. Publishing 11434:11434 anyway just fails the
+    # whole `docker compose up` outright if the host already has a native
+    # Ollama install listening on its default port, which is a likely
+    # combination for anyone trying this provider out.
     volumes:
       - ollama_data:/root/.ollama
     environment:
