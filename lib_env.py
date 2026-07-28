@@ -36,7 +36,14 @@ def update_env_var(path: Path, key: str, value: str) -> None:
     line = f'{key}="{value}"'
     pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
     if pattern.search(text):
-        text = pattern.sub(line, text, count=1)
+        # Replacement given as a function, not a string: re.sub() parses a
+        # string replacement for backreferences (\1, \g<name>, ...), so a
+        # value containing a literal backslash sequence it doesn't
+        # recognize (e.g. a Windows path like "C:\Users\...", where \U
+        # isn't a valid escape) raises `re.PatternError: bad escape \U`
+        # instead of being inserted verbatim. A function's return value is
+        # never re-parsed this way.
+        text = pattern.sub(lambda _match: line, text, count=1)
     else:
         if text and not text.endswith("\n"):
             text += "\n"

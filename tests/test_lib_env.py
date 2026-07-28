@@ -59,6 +59,22 @@ class TestReadWriteEnvVar:
         lines = env_file.read_text().splitlines()
         assert lines == ['FIRST="no-trailing-newline"', 'SECOND="value"']
 
+    def test_overwriting_existing_key_with_windows_path_does_not_crash(self, tmp_path):
+        """
+        Regression test (GH issue #31): a Windows path like
+        "C:\\Users\\..." contains "\\U", which re.sub() misparses as an
+        invalid backreference escape when the replacement is given as a
+        string, raising `re.PatternError: bad escape \\U` - this only
+        showed up when the key already existed (the replace path, not the
+        append path), which is why setup_llm.py crashed on a second
+        _setup_state_repo() write, not the first.
+        """
+        env_file = tmp_path / ".env"
+        lib_env.update_env_var(env_file, "STATE_REPO_PATH", "old-value")
+        windows_path = r"C:\Users\till\Documents\GitHub\heinzelmann"
+        lib_env.update_env_var(env_file, "STATE_REPO_PATH", windows_path)
+        assert lib_env.read_env_var(env_file, "STATE_REPO_PATH") == windows_path
+
 
 class TestGenSecret:
     def test_returns_a_reasonably_long_hex_string(self):
