@@ -111,8 +111,10 @@ python run.py
   which already do this for you): PowerShell's `copy` works like Unix `cp` - `copy .env.example .env`;
   the same command works in cmd.exe too.
 - **Firewall prompts**: the first `docker compose up` may trigger a Windows Defender Firewall prompt
-  for the ports LiteLLM (`4000`), the ADK web UI (`8000`), and - for the local/Ollama setup only -
-  Ollama (`11434`) listen on. Allow access on your private network.
+  for the ports LiteLLM (`4000`) and the ADK web UI (`8000`) listen on. Allow access on your private
+  network. The local/Ollama setup's `ollama` container is not published to the host at all (litellm
+  reaches it over Compose's internal network), so it triggers no such prompt - if you have a native
+  Ollama install listening on its default `11434`, it's untouched and won't conflict.
 - **Long path limits**: this only affects tooling running directly on the Windows host, never inside
   the Linux `agent` container (which has no such limit). If you ever hit it anyway, enable long paths
   with `git config --system core.longpaths true`.
