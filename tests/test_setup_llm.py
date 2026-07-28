@@ -62,6 +62,29 @@ class TestSelectModel:
         with pytest.raises(SystemExit):
             setup_llm.select_model("Pick", ["a", "b", "c"])
 
+    def test_current_in_options_becomes_default_and_marked(self, monkeypatch, capsys):
+        prompts = []
+        monkeypatch.setattr("builtins.input", lambda p="": prompts.append(p) or "")
+        result = setup_llm.select_model("Pick", ["a", "b", "c"], current="b")
+        assert result == "b"
+        assert "2) b (current)" in capsys.readouterr().out
+        assert prompts == ["Pick [2]: "]
+
+    def test_current_in_options_can_still_be_overridden(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "1")
+        assert setup_llm.select_model("Pick", ["a", "b", "c"], current="b") == "a"
+
+    def test_current_not_in_options_kept_on_empty_input(self, monkeypatch):
+        prompts = []
+        monkeypatch.setattr("builtins.input", lambda p="": prompts.append(p) or "")
+        result = setup_llm.select_model("Pick", ["a", "b", "c"], current="deprecated-model")
+        assert result == "deprecated-model"
+        assert prompts == ["Pick [deprecated-model]: "]
+
+    def test_current_not_in_options_still_allows_numbered_choice(self, monkeypatch):
+        monkeypatch.setattr("builtins.input", lambda _: "2")
+        assert setup_llm.select_model("Pick", ["a", "b", "c"], current="deprecated-model") == "b"
+
 
 class TestDetectCheapHint:
     def test_finds_hint_case_insensitively(self):
@@ -134,6 +157,134 @@ class TestWriteLitellmYaml:
         assert out_file.is_file()
 
 
+class TestCurrentModelForRole:
+    """
+    Acceptance Criteria: re-running setup_llm.py must prefill the model
+    prompts with whatever's already configured (read back from a file this
+    script itself previously wrote via write_litellm_yaml/emit_model_entry)
+    instead of always defaulting to the freshly fetched list's first entry.
+    """
+
+    def test_reads_back_main_role_model(self, tmp_path):
+        out_file = tmp_path / "litellm.yaml"
+        setup_llm.write_litellm_yaml("gemini", "gemini-2.5-pro", "gemini-2.5-flash", out_file)
+        assert setup_llm.current_model_for_role(out_file, "scrum-po") == "gemini-2.5-pro"
+
+    def test_reads_back_cheap_role_model(self, tmp_path):
+        out_file = tmp_path / "litellm.yaml"
+        setup_llm.write_litellm_yaml("openai", "gpt-4o", "gpt-4o-mini", out_file)
+        assert setup_llm.current_model_for_role(out_file, "scrum-eval-cheap") == "gpt-4o-mini"
+
+    def test_ollama_tag_with_colon_is_read_back_whole(self, tmp_path):
+        out_file = tmp_path / "litellm.yaml"
+        setup_llm.write_litellm_yaml("local", "llama3.1:8b", "llama3.1:8b", out_file)
+        assert setup_llm.current_model_for_role(out_file, "scrum-po") == "llama3.1:8b"
+
+    def test_missing_file_returns_empty_string(self, tmp_path):
+        assert setup_llm.current_model_for_role(tmp_path / "does-not-exist.yaml", "scrum-po") == ""
+
+    def test_role_not_present_returns_empty_string(self, tmp_path):
+        out_file = tmp_path / "litellm.yaml"
+        setup_llm.write_litellm_yaml("gemini", "gemini-2.5-pro", "gemini-2.5-flash", out_file)
+        assert setup_llm.current_model_for_role(out_file, "scrum-nonexistent-role") == ""
+
+
+class TestDetectNvidiaGpu:
+    def test_macos_is_always_false(self, monkeypatch):
+        monkeypatch.setattr(setup_llm.sys, "platform", "darwin")
+        assert setup_llm.detect_nvidia_gpu() is False
+
+    def test_missing_binary_is_false(self, monkeypatch):
+        monkeypatch.setattr(setup_llm.sys, "platform", "linux")
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda _cmd: None)
+        assert setup_llm.detect_nvidia_gpu() is False
+
+    def test_binary_present_and_reports_a_gpu_is_true(self, monkeypatch):
+        monkeypatch.setattr(setup_llm.sys, "platform", "linux")
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda _cmd: "/usr/bin/nvidia-smi")
+        monkeypatch.setattr(
+            setup_llm.subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="NVIDIA GeForce RTX 4090\n"),
+        )
+        assert setup_llm.detect_nvidia_gpu() is True
+
+    def test_binary_present_but_errors_is_false(self, monkeypatch):
+        monkeypatch.setattr(setup_llm.sys, "platform", "linux")
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda _cmd: "/usr/bin/nvidia-smi")
+        monkeypatch.setattr(
+            setup_llm.subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess([], 1, stdout=""),
+        )
+        assert setup_llm.detect_nvidia_gpu() is False
+
+    def test_binary_present_but_empty_output_is_false(self, monkeypatch):
+        monkeypatch.setattr(setup_llm.sys, "platform", "linux")
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda _cmd: "/usr/bin/nvidia-smi")
+        monkeypatch.setattr(
+            setup_llm.subprocess, "run",
+            lambda *a, **k: subprocess.CompletedProcess([], 0, stdout="   \n"),
+        )
+        assert setup_llm.detect_nvidia_gpu() is False
+
+    def test_exception_running_nvidia_smi_does_not_crash_and_is_false(self, monkeypatch):
+        monkeypatch.setattr(setup_llm.sys, "platform", "linux")
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda _cmd: "/usr/bin/nvidia-smi")
+
+        def raise_timeout(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=10)
+        monkeypatch.setattr(setup_llm.subprocess, "run", raise_timeout)
+        assert setup_llm.detect_nvidia_gpu() is False
+
+
+class TestGpuDefaultEnable:
+    """
+    Acceptance Criteria: an explicit prior choice (re-running setup_llm.py)
+    takes priority over the fresh detection result - prefilling the user's
+    own current setup wins over a recommendation.
+    """
+
+    def test_no_prior_choice_follows_detection_true(self):
+        assert setup_llm.gpu_default_enable(gpu_detected=True, current_value="") is True
+
+    def test_no_prior_choice_follows_detection_false(self):
+        assert setup_llm.gpu_default_enable(gpu_detected=False, current_value="") is False
+
+    def test_prior_true_wins_even_if_now_undetected(self):
+        assert setup_llm.gpu_default_enable(gpu_detected=False, current_value="true") is True
+
+    def test_prior_false_wins_even_if_now_detected(self):
+        assert setup_llm.gpu_default_enable(gpu_detected=True, current_value="false") is False
+
+
+class TestCurrentInteractionLevelChoice:
+    """
+    Acceptance Criteria: re-running setup_llm.py must default the Human
+    Interaction Level prompt to whatever's already configured, not always
+    reset to "1" (Product) regardless of the existing .env.
+    """
+
+    def test_no_env_file_defaults_to_product(self, tmp_path):
+        assert setup_llm.current_interaction_level_choice(tmp_path / ".env") == "1"
+
+    def test_reads_back_stakeholder(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "INTERACTION_LEVEL", "Stakeholder")
+        assert setup_llm.current_interaction_level_choice(env_path) == "2"
+
+    def test_reads_back_ceo(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "INTERACTION_LEVEL", "CEO")
+        assert setup_llm.current_interaction_level_choice(env_path) == "3"
+
+    def test_unrecognized_value_defaults_to_product(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "INTERACTION_LEVEL", "Bogus")
+        assert setup_llm.current_interaction_level_choice(env_path) == "1"
+
+
 class TestRunConfigurationTest:
     """
     Acceptance Criteria (GH issue #36): when `docker compose up -d` fails,
@@ -188,6 +339,42 @@ class TestRunConfigurationTest:
         assert len(calls) == 1
         _, compose_args = calls[0]
         assert compose_args[:2] == ["-f", "docker-compose.local.yaml"]
+
+    def test_gpu_enabled_adds_gpu_compose_file(self, tmp_path, monkeypatch):
+        """OLLAMA_GPU_ENABLED=true in .env must merge in docker-compose.gpu.yaml
+        for the live test too, not just for run.py later - a GPU
+        misconfiguration should surface here, not only after setup."""
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+
+        calls = []
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: calls.append(compose_args))
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "OLLAMA_GPU_ENABLED", "true")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path)
+
+        assert calls[0][:4] == ["-f", "docker-compose.local.yaml", "-f", "docker-compose.gpu.yaml"]
+
+    def test_gpu_disabled_omits_gpu_compose_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+
+        calls = []
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: calls.append(compose_args))
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "OLLAMA_GPU_ENABLED", "false")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path)
+
+        assert calls[0][:2] == ["-f", "docker-compose.local.yaml"]
+        assert "docker-compose.gpu.yaml" not in calls[0]
 
 
 def _fake_urlopen_response(body_dict):

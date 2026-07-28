@@ -10,21 +10,28 @@ Walks you through:
      not stuck picking from a hardcoded/stale list.
   3. Picking a main model (used by all scrum-team roles) and, for cloud
      providers, an optional cheaper/faster model for the automated eval
-     harness's "scrum-eval-cheap" alias.
-  4. Writing the result into .env and into the active litellm.yaml (or, for
+     harness's "scrum-eval-cheap" alias. Re-running this script prefills
+     whatever's already configured as the default, rather than always
+     resetting to the freshly fetched list's first (newest) entry.
+  4. For the local/Ollama provider only: detecting whether this machine has
+     a usable NVIDIA GPU (via nvidia-smi) and asking whether to enable GPU
+     acceleration, recommending "yes" if one was detected - see docs/SETUP.md's
+     "GPU Support" section.
+  5. Writing the result into .env and into the active litellm.yaml (or, for
      the local/Ollama provider, into config/model-templates/litellm.local-ollama.yaml).
-  5. Setting the Git user name/email used for commits the agent makes on
+  6. Setting the Git user name/email used for commits the agent makes on
      your behalf, and setting up the STATE_REPO_PATH "state repository"
      itself: creates the directory if missing, then either clones
      GITHUB_REPO_URL into it (if empty and a URL is given) or initializes a
      fresh local git repo there - so it's ready to use with no extra manual
      steps (see README.md "State Repository").
-  6. Setting a human interaction level and sprint token/USD budgets +
+  7. Setting a human interaction level and sprint token/USD budgets +
      maximum process overhead percentage (see docs/INTERACTION-LEVELS.md and
-     .env.example's "Sprint Budget & Resource Configuration").
-  7. Starting the db + litellm (+ ollama) containers and sending one real,
-     minimal test request through the proxy to confirm the new
-     configuration actually works end-to-end.
+     .env.example's "Sprint Budget & Resource Configuration") - also
+     prefilled from whatever's already configured on a re-run.
+  8. Starting the db + litellm (+ ollama, + the GPU override if enabled)
+     containers and sending one real, minimal test request through the
+     proxy to confirm the new configuration actually works end-to-end.
 
 This script only touches LLM/provider configuration. Run setup_project.py
 separately (before or after this) for the Docker/GitHub CLI checks.
@@ -241,6 +248,22 @@ def _setup_state_repo(env_path: Path) -> None:
     print(f"State repository ready at: {state_repo_path}")
 
 
+_INTERACTION_LEVEL_CHOICES = {"1": "Product", "2": "Stakeholder", "3": "CEO", "4": "EVAL"}
+
+
+def current_interaction_level_choice(env_path: Path) -> str:
+    """Which numbered choice ("1"-"4") to default the Human Interaction
+    Level prompt to - whichever matches INTERACTION_LEVEL already set in
+    .env, or "1" (Product) if unset/unrecognized. Re-running setup_llm.py
+    previously always defaulted back to "1" here regardless of what was
+    already configured."""
+    current = lib_env.read_env_var(env_path, "INTERACTION_LEVEL")
+    for choice_key, level in _INTERACTION_LEVEL_CHOICES.items():
+        if level == current:
+            return choice_key
+    return "1"
+
+
 def prompt_project_settings(env_path: Path) -> None:
     """Git identity + state repository + human interaction level + sprint
     budget/overhead prompts. Same vars as .env.example / .env.local.example's
@@ -268,12 +291,18 @@ def prompt_project_settings(env_path: Path) -> None:
     print("--- Human interaction level ---")
     print("How much of a human needs to be in the loop before the team may")
     print("implement stories / release an increment (see docs/INTERACTION-LEVELS.md):")
-    print("  1) Product     - most supervised (default)")
-    print("  2) Stakeholder")
-    print("  3) CEO")
-    print("  4) EVAL        - fully automated, no human gate (used by the eval harness)")
-    level_choice = input("Choice [1]: ").strip() or "1"
-    interaction_level = {"1": "Product", "2": "Stakeholder", "3": "CEO", "4": "EVAL"}.get(level_choice)
+    default_choice = current_interaction_level_choice(env_path)
+    level_descriptions = {
+        "1": "Product     - most supervised",
+        "2": "Stakeholder",
+        "3": "CEO",
+        "4": "EVAL        - fully automated, no human gate (used by the eval harness)",
+    }
+    for choice_key, desc in level_descriptions.items():
+        marker = " (current)" if choice_key == default_choice else ""
+        print(f"  {choice_key}) {desc}{marker}")
+    level_choice = input(f"Choice [{default_choice}]: ").strip() or default_choice
+    interaction_level = _INTERACTION_LEVEL_CHOICES.get(level_choice)
     if interaction_level is None:
         die(f"Invalid choice: {level_choice}")
     lib_env.update_env_var(env_path, "INTERACTION_LEVEL", interaction_level)
@@ -374,17 +403,32 @@ def fetch_openai_models(key: str) -> list:
 
 # --- Interactive numbered-menu selection over a fetched/curated list ---
 
-def select_model(label: str, options: list) -> str:
+def select_model(label: str, options: list, current: str = "") -> str:
+    """Prints a numbered menu of `options` plus a manual-entry choice.
+    `current` (the model already configured by a previous setup_llm.py
+    run, if any) is marked "(current)" when it's in `options`, and used as
+    the no-input default either way - even when it's not in `options`
+    (e.g. a freshly-fetched/curated list that no longer includes it),
+    pressing Enter keeps it rather than silently resetting to option 1."""
+    default_idx = None
     for i, m in enumerate(options, 1):
-        print(f"  {i:2d}) {m}")
+        marker = " (current)" if current and m == current else ""
+        print(f"  {i:2d}) {m}{marker}")
+        if current and m == current:
+            default_idx = i
     custom_idx = len(options) + 1
     print(f"  {custom_idx:2d}) Enter a model id manually")
-    choice = input(f"{label} [1]: ").strip() or "1"
-    if choice == str(custom_idx):
-        return input("Enter model id: ").strip()
-    if choice.isdigit() and 1 <= int(choice) <= len(options):
-        return options[int(choice) - 1]
-    die(f"Invalid selection: {choice}")
+
+    default_display = str(default_idx) if default_idx else (current or "1")
+    choice = input(f"{label} [{default_display}]: ").strip() or default_display
+    if choice.isdigit():
+        n = int(choice)
+        if n == custom_idx:
+            return input("Enter model id: ").strip()
+        if 1 <= n <= len(options):
+            return options[n - 1]
+        die(f"Invalid selection: {choice}")
+    return choice  # a free-typed model id - covers keeping a `current` not in `options`
 
 
 def detect_cheap_hint(options: list):
@@ -433,6 +477,59 @@ def write_litellm_yaml(provider: str, main_model: str, cheap_model: str, out_fil
     Path(out_file).write_text("\n".join(parts), encoding="utf-8")
 
 
+def current_model_for_role(yaml_path: Path, role: str) -> str:
+    """Best-effort: the bare model tag (provider/ prefix stripped) already
+    configured for `role` in a litellm.yaml-style file this script
+    previously wrote (see emit_model_entry) - "" if the file doesn't exist
+    or doesn't mention this role yet. Used to prefill the model-selection
+    prompts with whatever's already configured on a re-run, instead of
+    always defaulting back to a freshly fetched list's first entry."""
+    yaml_path = Path(yaml_path)
+    if not yaml_path.is_file():
+        return ""
+    text = yaml_path.read_text(encoding="utf-8")
+    m = re.search(
+        rf"-\s*model_name:\s*{re.escape(role)}\s*\n\s*litellm_params:\s*\n\s*model:\s*[a-zA-Z0-9_.\-]+/(\S+)",
+        text,
+    )
+    return m.group(1) if m else ""
+
+
+# --- GPU detection (Local/Ollama provider only) ---
+
+def detect_nvidia_gpu() -> bool:
+    """Best-effort, cross-platform check for a usable NVIDIA GPU: runs
+    `nvidia-smi` (installed alongside the NVIDIA driver on Windows/Linux)
+    and treats a successful, non-empty result as "yes". Never raises - a
+    missing binary, a driver issue, or any other failure just means "no
+    GPU detected", not a setup error. Always "no" on macOS: Docker Desktop
+    for Mac has no NVIDIA GPU passthrough support at all (see docs/SETUP.md's
+    "GPU Support" section)."""
+    if sys.platform == "darwin":
+        return False
+    if shutil.which("nvidia-smi") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def gpu_default_enable(gpu_detected: bool, current_value: str) -> bool:
+    """Whether to default the "enable GPU?" prompt to yes: an explicit
+    prior choice (re-running setup_llm.py) takes priority over the fresh
+    detection result - prefilling the user's own current setup wins over a
+    recommendation. Detection only drives the default on a first-time
+    configuration (current_value not yet "true"/"false")."""
+    if current_value in ("true", "false"):
+        return current_value == "true"
+    return gpu_detected
+
+
 # --- Bring up db + litellm (+ ollama for the local provider) and send one
 # real, minimal (max_tokens=5) request through the proxy to the "scrum-po"
 # alias, to confirm the configuration just written actually works.
@@ -460,6 +557,8 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path) -> N
     if provider == "local":
         compose_args = ["-f", "docker-compose.local.yaml"]
         extra_service = "ollama"
+        if lib_env.read_env_var(env_path, "OLLAMA_GPU_ENABLED") == "true":
+            compose_args += ["-f", "docker-compose.gpu.yaml"]
 
     services = ["db", "litellm"] + ([extra_service] if extra_service else [])
 
@@ -548,12 +647,21 @@ def run_cloud_provider(provider: str, key_var: str, fetch_fn, provider_label: st
                 break
             print("API key cannot be empty.")
 
+    # Read back whatever this provider's own template file already has
+    # configured (from a previous run), so re-running this script prefills
+    # the current setup instead of always defaulting to the freshly
+    # fetched list's first (newest) entry.
+    template_path = Path(f"config/model-templates/litellm.cloud-{provider}.yaml")
+    current_main = current_model_for_role(template_path, "scrum-po")
+    current_cheap = current_model_for_role(template_path, "scrum-eval-cheap")
+
     info(f"Fetching current model list from {provider_label}...")
     models = fetch_fn(api_key)
 
     if not models:
         warn("Could not fetch a model list (bad key, network issue, or no matching models).")
-        main_model = input("Enter a model id to use for every role manually: ").strip()
+        prompt_suffix = f" [{current_main}]" if current_main else ""
+        main_model = input(f"Enter a model id to use for every role manually{prompt_suffix}: ").strip() or current_main
         if not main_model:
             die("No model id given.")
         cheap_model = main_model
@@ -562,27 +670,16 @@ def run_cloud_provider(provider: str, key_var: str, fetch_fn, provider_label: st
         models = models[:25]
         print()
         print(f"Current models available from {provider_label} (most recent first):")
-        main_model = select_model("Model for all scrum-team roles", models)
+        main_model = select_model("Model for all scrum-team roles", models, current=current_main)
 
         print()
         hint = detect_cheap_hint(models)
         print("Optionally pick a cheaper/faster model for the eval harness's 'scrum-eval-cheap' alias.")
         if hint:
             print(f"(Option {hint} looks like a lighter-weight model.)")
-        print(f"Press Enter to just reuse {main_model} everywhere.")
-        for i, m in enumerate(models, 1):
-            print(f"  {i:2d}) {m}")
-        custom_idx = len(models) + 1
-        print(f"  {custom_idx:2d}) Enter a model id manually")
-        cheap_choice = input(f"Choice [Enter = reuse {main_model}]: ").strip()
-        if not cheap_choice:
-            cheap_model = main_model
-        elif cheap_choice == str(custom_idx):
-            cheap_model = input("Enter model id: ").strip()
-        elif cheap_choice.isdigit() and 1 <= int(cheap_choice) <= len(models):
-            cheap_model = models[int(cheap_choice) - 1]
-        else:
-            die(f"Invalid selection: {cheap_choice}")
+        default_cheap = current_cheap or main_model
+        print(f"Press Enter to keep {default_cheap} (currently configured, or same as the main model).")
+        cheap_model = select_model("Model for scrum-eval-cheap", models, current=default_cheap)
 
     lib_env.update_env_var(env_path, key_var, api_key)
     lib_env.ensure_master_key(env_path)
@@ -623,10 +720,33 @@ def run_local_provider() -> None:
     print("cloud providers do, so pick from a curated list (or enter any tag from")
     print("https://ollama.com/library manually). All roles + the eval harness share")
     print("this one model.")
-    model = select_model("Local model (tool-calling support recommended)", OLLAMA_CURATED_MODELS)
+    current_model = lib_env.read_env_var(env_path, "OLLAMA_MODEL")
+    model = select_model(
+        "Local model (tool-calling support recommended)", OLLAMA_CURATED_MODELS, current=current_model,
+    )
 
     lib_env.update_env_var(env_path, "OLLAMA_MODEL", model)
     lib_env.ensure_master_key(env_path)
+
+    print()
+    print("--- GPU acceleration ---")
+    gpu_detected = detect_nvidia_gpu()
+    if gpu_detected:
+        print("An NVIDIA GPU was detected on this machine (nvidia-smi ran successfully) -")
+        print("enabling it is recommended: inference will be substantially faster than CPU-only.")
+    else:
+        print("No NVIDIA GPU was detected (nvidia-smi isn't available, or found no device) -")
+        print("Ollama will run CPU-only regardless of this setting on this machine.")
+    current_gpu = lib_env.read_env_var(env_path, "OLLAMA_GPU_ENABLED")
+    default_enable = gpu_default_enable(gpu_detected, current_gpu)
+    default_label = "Y/n" if default_enable else "y/N"
+    gpu_answer = input(f"Enable NVIDIA GPU acceleration? [{default_label}]: ").strip().lower()
+    gpu_enabled = gpu_answer.startswith("y") if gpu_answer else default_enable
+    if gpu_enabled and not gpu_detected:
+        warn("Enabling GPU support without a detected NVIDIA GPU - Ollama will likely fail to start.")
+        print("See docs/SETUP.md's \"GPU Support\" section for prerequisites (drivers, the WSL2")
+        print("backend on Windows, the NVIDIA Container Toolkit on Linux).")
+    lib_env.update_env_var(env_path, "OLLAMA_GPU_ENABLED", "true" if gpu_enabled else "false")
 
     write_litellm_yaml("local", model, model, Path("config/model-templates/litellm.local-ollama.yaml"))
 
@@ -634,13 +754,15 @@ def run_local_provider() -> None:
     print("--- Done ---")
     print("Provider: Local / Ollama")
     print(f"Model (all roles + eval harness): {model}")
+    print(f"GPU acceleration: {'enabled' if gpu_enabled else 'disabled'}")
     print("Written to: .env, config/model-templates/litellm.local-ollama.yaml")
 
     run_configuration_test("local", model, env_path)
 
     print()
     print("Next steps:")
-    print("  docker compose -f docker-compose.local.yaml up")
+    gpu_flag = " -f docker-compose.gpu.yaml" if gpu_enabled else ""
+    print(f"  docker compose -f docker-compose.local.yaml{gpu_flag} up")
 
 
 def main() -> None:
