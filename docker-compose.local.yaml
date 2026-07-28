@@ -35,7 +35,24 @@ services:
       - ollama_data:/root/.ollama
     environment:
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      # Ollama's own default is 5m: it unloads the model from memory after 5
+      # minutes idle, then pays the full load time again on the next
+      # request. This container's only job is serving this one model to
+      # this one team continuously for the life of the sprint, so unloading
+      # between requests is pure overhead, not a resource saving - keep it
+      # resident for the container's whole lifetime instead (-1 = never
+      # unload; see https://github.com/ollama/ollama/blob/main/docs/faq.md).
+      # Override in .env if you're sharing this Ollama instance for other,
+      # bursty workloads where unloading between uses is actually desired.
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
     restart: unless-stopped
+    # No CPU/RAM limits are set here deliberately: Docker only restricts a
+    # container's resource use if you explicitly configure `deploy.resources
+    # .limits`, which this file doesn't - by default this container can
+    # already use as much CPU/RAM as Docker Desktop's own VM is allocated
+    # (Settings -> Resources -> Advanced on the host), which is the actual
+    # lever for "give Ollama more of the machine" - see docs/SETUP.md's
+    # "Performance Tuning" section.
     # Uncomment if the host has an NVIDIA GPU (falls back to CPU otherwise):
     # deploy:
     #   resources:
