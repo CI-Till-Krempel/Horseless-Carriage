@@ -47,6 +47,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import lib_docker
 import lib_env
 import lib_llm_test
 
@@ -461,6 +462,15 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path) -> N
         extra_service = "ollama"
 
     services = ["db", "litellm"] + ([extra_service] if extra_service else [])
+
+    # A leftover stack from an earlier run (or from switching between
+    # docker-compose.yaml and docker-compose.local.yaml, which share the
+    # same default project name and several service names) can make
+    # `docker compose up` fail outright with no obvious cause - offer a
+    # controlled reset before that happens (GH discussion on local Ollama
+    # setups).
+    lib_docker.maybe_stop_existing_stack([*compose_args, "--env-file", str(env_path)])
+
     info(f"Starting {' + '.join(services)} (docker compose {' '.join(compose_args)} up -d)...")
     cmd = ["docker", "compose", *compose_args, "--env-file", str(env_path), "up", "-d", *services]
     try:

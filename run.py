@@ -25,6 +25,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+import lib_docker
 import lib_env
 import lib_llm_test
 
@@ -131,19 +132,29 @@ def main() -> None:
     proc_env = os.environ.copy()
     proc_env["AGENT_MODE"] = mode
 
-    thread = threading.Thread(target=open_dashboards, args=(mode,), daemon=True)
-    thread.start()
-
     if mode == "cli":
         if daemon:
             print("NOTE: 'cli' mode needs an interactive terminal; ignoring 'daemon'.")
         print("Running agent in interactive CLI mode. Press Ctrl+C to exit.")
+        thread = threading.Thread(target=open_dashboards, args=(mode,), daemon=True)
+        thread.start()
         # Resumption logic is handled internally by the container's run_agent.sh script.
         cmd = ["docker", "compose", *compose_args, "run", "--rm", "--build", "agent",
                "/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh", *extra_args]
         result = subprocess.run(cmd, env=proc_env)
         sys.exit(result.returncode)
     else:
+        # A leftover stack from an earlier run (or from switching between
+        # docker-compose.yaml and docker-compose.local.yaml, which share
+        # the same default project name and several service names) can
+        # make `docker compose up` fail outright with no obvious cause -
+        # offer a controlled reset before that happens (GH discussion on
+        # local Ollama setups).
+        lib_docker.maybe_stop_existing_stack(compose_args)
+
+        thread = threading.Thread(target=open_dashboards, args=(mode,), daemon=True)
+        thread.start()
+
         if daemon:
             result = subprocess.run(["docker", "compose", *compose_args, "up", "-d", "--build", "agent"], env=proc_env)
             if result.returncode != 0:
