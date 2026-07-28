@@ -8,6 +8,7 @@ from agents.scrum_team.tools.scrum import (
     add_retro_action,
     plan_sprint_backlog_item,
     record_human_approval,
+    start_sprint,
 )
 from agents.scrum_team.tools.requirements import (
     upsert_story,
@@ -259,6 +260,58 @@ class TestScrumTools(unittest.TestCase):
         result = plan_sprint_backlog_item("ST-2", {"plan": "test"}, tool_context=tool_context)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(len(tool_context.state["sprint_backlog"]), 2)
+
+    def test_start_sprint_sets_sprint_goal(self):
+        """
+        Acceptance Criteria (ISSUE-0011): start_sprint is the only tool that
+        ever sets sprint_goal to a real value, and it persists the change.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        self.assertEqual(tool_context.state["sprint_goal"], "")
+
+        result = start_sprint("Ship the Heinzelmann control-server MVP", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["sprint_goal"], "Ship the Heinzelmann control-server MVP")
+
+    def test_start_sprint_rejects_blank_or_placeholder_goal(self):
+        """Acceptance Criteria (ISSUE-0011): mirrors is_low_quality_retro_text's guard."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = start_sprint("", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tool_context.state["sprint_goal"], "")
+
+        result = start_sprint("n/a", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tool_context.state["sprint_goal"], "")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    def test_start_sprint_rejects_new_work_while_release_pending(self, mock_md):
+        """
+        Acceptance Criteria (ISSUE-0010/0011): starting a new sprint's goal is
+        "new sprint work" for new_sprint_item_blocked's purposes - refused
+        while the previous sprint's release PR never completed, accepted once
+        it does.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_report_pending_release"] = True
+        tool_context.state["sprint_backlog"] = [
+            {"id": "ST-1", "title": "Old Story", "stages_completed": ["Ready", "Implemented"]}
+        ]
+
+        result = start_sprint("Ship the next increment", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("create_release_pr", result["message"])
+        self.assertEqual(tool_context.state["sprint_goal"], "")
+
+        tool_context.state["sprint_report_pending_release"] = False
+        result = start_sprint("Ship the next increment", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["sprint_goal"], "Ship the next increment")
 
 
 if __name__ == "__main__":
