@@ -21,28 +21,43 @@ def is_placeholder(value: str) -> bool:
 
 
 def read_env_var(path: Path, key: str) -> str:
-    """Reads a single KEY="value" (or KEY=value) line; "" if missing/not found."""
+    """Reads a single KEY="value" (or KEY='value', or bare KEY=value) line;
+    "" if missing/not found. Strips at most one matching pair of quotes,
+    same convention as load_env_file() below."""
     if not Path(path).is_file():
         return ""
     text = Path(path).read_text(encoding="utf-8")
-    m = re.search(rf'^{re.escape(key)}=\"?([^"\n]*)\"?$', text, re.MULTILINE)
-    return m.group(1) if m else ""
+    m = re.search(rf"^{re.escape(key)}=(.*)$", text, re.MULTILINE)
+    if not m:
+        return ""
+    raw = m.group(1)
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        return raw[1:-1]
+    return raw
 
 
 def update_env_var(path: Path, key: str, value: str) -> None:
-    """Sets KEY="value" in the file, replacing an existing line or appending one."""
+    """Sets KEY='value' in the file, replacing an existing line or appending
+    one. Uses single quotes, not double: this file is also read directly by
+    Docker Compose for `${VAR}`-style interpolation (e.g. STATE_REPO_PATH's
+    volume mount in docker-compose.yaml), and Compose's own .env parser
+    applies C-style backslash-escape processing to DOUBLE-quoted values only
+    - an unescaped Windows path like "C:\\Users\\till\\..." silently
+    corrupts (\\t becomes an actual tab, other \\X sequences just lose their
+    backslash) instead of erroring, which is what broke the container's
+    volume mount in GH issue #34. Single-quoted values are treated as
+    fully literal by both Compose and this module's own read_env_var."""
     path = Path(path)
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    line = f'{key}="{value}"'
+    line = f"{key}='{value}'"
     pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
     if pattern.search(text):
         # Replacement given as a function, not a string: re.sub() parses a
         # string replacement for backreferences (\1, \g<name>, ...), so a
         # value containing a literal backslash sequence it doesn't
-        # recognize (e.g. a Windows path like "C:\Users\...", where \U
-        # isn't a valid escape) raises `re.PatternError: bad escape \U`
-        # instead of being inserted verbatim. A function's return value is
-        # never re-parsed this way.
+        # recognize would otherwise raise `re.PatternError: bad escape`
+        # instead of being inserted verbatim (see GH issue #31). A
+        # function's return value is never re-parsed this way.
         text = pattern.sub(lambda _match: line, text, count=1)
     else:
         if text and not text.endswith("\n"):

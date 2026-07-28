@@ -57,7 +57,7 @@ class TestReadWriteEnvVar:
         env_file.write_text('FIRST="no-trailing-newline"')  # deliberately no \n
         lib_env.update_env_var(env_file, "SECOND", "value")
         lines = env_file.read_text().splitlines()
-        assert lines == ['FIRST="no-trailing-newline"', 'SECOND="value"']
+        assert lines == ['FIRST="no-trailing-newline"', "SECOND='value'"]
 
     def test_overwriting_existing_key_with_windows_path_does_not_crash(self, tmp_path):
         """
@@ -74,6 +74,25 @@ class TestReadWriteEnvVar:
         windows_path = r"C:\Users\till\Documents\GitHub\heinzelmann"
         lib_env.update_env_var(env_file, "STATE_REPO_PATH", windows_path)
         assert lib_env.read_env_var(env_file, "STATE_REPO_PATH") == windows_path
+
+    def test_windows_path_is_written_single_quoted_not_double_quoted(self, tmp_path):
+        """
+        Regression test (GH issue #34): Docker Compose's own .env parser
+        (used to interpolate ${STATE_REPO_PATH} into docker-compose.yaml's
+        volume mount) applies C-style backslash-escape processing to
+        DOUBLE-quoted values only - "C:\\Users\\till\\..." silently
+        corrupted (\\t became an actual tab character, breaking the volume
+        mount with "The filename, directory name, or volume label syntax
+        is incorrect") even though our own read_env_var() round-tripped it
+        fine. Single-quoted values are untouched by Compose's escaping, so
+        update_env_var() must write single quotes, not double.
+        """
+        env_file = tmp_path / ".env"
+        windows_path = r"C:\Users\till\Documents\GitHub\heinzelmann"
+        lib_env.update_env_var(env_file, "STATE_REPO_PATH", windows_path)
+        text = env_file.read_text()
+        assert f"STATE_REPO_PATH='{windows_path}'" in text
+        assert '"' not in text
 
 
 class TestGenSecret:
