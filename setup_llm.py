@@ -111,6 +111,65 @@ def prompt_number(label: str, default_value: str, pattern: str) -> str:
     return prompt_text(label, default_value, pattern, "Please enter a number.")
 
 
+def _git_ssh_host(repo_url: str) -> str | None:
+    """Extracts the host from an SSH-style git URL (git@host:owner/repo.git
+    or ssh://[user@]host/owner/repo.git); None for anything else (e.g. an
+    HTTPS URL), which needs no SSH check."""
+    m = re.match(r"^git@([^:/]+)[:/]", repo_url) or re.match(r"^ssh://(?:[^@/]+@)?([^/:]+)", repo_url)
+    return m.group(1) if m else None
+
+
+def _check_git_ssh_auth(host: str) -> bool:
+    """Best-effort pre-flight check that SSH auth to `host` actually works,
+    before attempting a clone - a missing/misconfigured key or agent (a
+    common stumbling block on Windows, where ssh-agent isn't running by
+    default) otherwise only surfaces as a much more confusing failure deep
+    inside `git clone` itself.
+
+    GitHub (and similar hosts) deliberately exit non-zero from `ssh -T`
+    even on a *successful* auth ("Hi <user>! You've successfully
+    authenticated, but GitHub does not provide shell access."), so success
+    is detected from the output text, not the exit code. Any failure to
+    even run the check (no `ssh` binary, unexpected host behavior, etc.) is
+    treated as "could not verify" rather than "failed" - this is a
+    best-effort hint, not a hard gate, and must never itself crash the
+    setup script."""
+    try:
+        result = subprocess.run(
+            ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"git@{host}"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return True
+    output = (result.stdout + result.stderr).lower()
+    if "successfully authenticated" in output:
+        return True
+    if "permission denied" in output or "could not resolve hostname" in output:
+        return False
+    return True
+
+
+def _clone_state_repo(repo_url: str, branch: str, state_repo_path: Path) -> None:
+    """Clones repo_url into state_repo_path. For an SSH-style URL, checks
+    SSH auth first (see _check_git_ssh_auth) so a broken key/agent gets a
+    clear, actionable message instead of a raw git error - and, either way,
+    never raises: any failure is reported with manual-clone instructions
+    rather than crashing the rest of setup_llm.py."""
+    ssh_host = _git_ssh_host(repo_url)
+    if ssh_host and not _check_git_ssh_auth(ssh_host):
+        warn(f"SSH authentication to '{ssh_host}' doesn't seem to be set up - skipping the clone.")
+        print(f"Once `ssh -T git@{ssh_host}` reports \"successfully authenticated\", clone manually:")
+        print(f"  git clone {repo_url} {state_repo_path}")
+        return
+
+    info(f"Cloning {repo_url} into {state_repo_path}...")
+    try:
+        subprocess.run(["git", "clone", "--branch", branch, repo_url, str(state_repo_path)], check=True)
+    except subprocess.CalledProcessError:
+        warn("git clone failed - check the URL and that your git/gh credentials are set up.")
+        print(f"Clone it manually once that's sorted: git clone {repo_url} {state_repo_path}")
+
+
 def _setup_state_repo(env_path: Path) -> None:
     """Prompts for STATE_REPO_PATH (the team's "source of truth" repo - see
     README.md "State Repository") and gets it into a working state with no
@@ -158,12 +217,7 @@ def _setup_state_repo(env_path: Path) -> None:
             if existing_remote and existing_remote != repo_url:
                 warn(f"Its 'origin' remote ({existing_remote}) does not match the URL you entered ({repo_url}) - left unchanged.")
     elif repo_url and is_empty:
-        info(f"Cloning {repo_url} into {state_repo_path}...")
-        try:
-            subprocess.run(["git", "clone", "--branch", branch, repo_url, str(state_repo_path)], check=True)
-        except subprocess.CalledProcessError:
-            warn("git clone failed - check the URL and that your git/gh credentials are set up.")
-            print(f"Clone it manually once that's sorted: git clone {repo_url} {state_repo_path}")
+        _clone_state_repo(repo_url, branch, state_repo_path)
     elif repo_url and not is_empty:
         warn(f"{state_repo_path} already has files in it and isn't a git repository - not cloning automatically.")
         print(f"To make it a clone of {repo_url}, move its contents aside and re-run this script.")

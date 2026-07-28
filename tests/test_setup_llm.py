@@ -213,6 +213,95 @@ def _run_setup_state_repo(monkeypatch, env_path, answers):
     setup_llm._setup_state_repo(env_path)
 
 
+class TestGitSshHost:
+    def test_scp_style_url(self):
+        assert setup_llm._git_ssh_host("git@github.com:owner/repo.git") == "github.com"
+
+    def test_ssh_scheme_url_with_user(self):
+        assert setup_llm._git_ssh_host("ssh://git@github.com/owner/repo.git") == "github.com"
+
+    def test_ssh_scheme_url_without_user(self):
+        assert setup_llm._git_ssh_host("ssh://github.com/owner/repo.git") == "github.com"
+
+    def test_https_url_returns_none(self):
+        assert setup_llm._git_ssh_host("https://github.com/owner/repo.git") is None
+
+    def test_local_path_returns_none(self):
+        assert setup_llm._git_ssh_host("/tmp/some/local/repo.git") is None
+
+
+class TestCheckGitSshAuth:
+    """
+    Acceptance Criteria (GH issue #30): setup_llm.py must verify SSH auth
+    works before attempting a clone, and must never crash regardless of
+    what the check finds (missing ssh binary, timeout, unrecognized host
+    behavior) - this is a best-effort hint, not a hard gate.
+    """
+
+    def test_successfully_authenticated_output_is_true(self, monkeypatch):
+        # GitHub deliberately exits non-zero here even on real success -
+        # detection must be text-based, not exit-code-based.
+        monkeypatch.setattr(
+            setup_llm.subprocess, "run",
+            lambda *a, **k: mock.Mock(
+                stdout="Hi someone! You've successfully authenticated, but GitHub does not provide shell access.\n",
+                stderr="",
+            ),
+        )
+        assert setup_llm._check_git_ssh_auth("github.com") is True
+
+    def test_permission_denied_output_is_false(self, monkeypatch):
+        monkeypatch.setattr(
+            setup_llm.subprocess, "run",
+            lambda *a, **k: mock.Mock(stdout="", stderr="git@github.com: Permission denied (publickey).\n"),
+        )
+        assert setup_llm._check_git_ssh_auth("github.com") is False
+
+    def test_could_not_resolve_hostname_is_false(self, monkeypatch):
+        monkeypatch.setattr(
+            setup_llm.subprocess, "run",
+            lambda *a, **k: mock.Mock(stdout="", stderr="ssh: Could not resolve hostname bogus.example\n"),
+        )
+        assert setup_llm._check_git_ssh_auth("bogus.example") is False
+
+    def test_ssh_binary_missing_does_not_crash_and_defaults_true(self, monkeypatch):
+        def raise_missing(*a, **k):
+            raise FileNotFoundError("no such file: ssh")
+        monkeypatch.setattr(setup_llm.subprocess, "run", raise_missing)
+        assert setup_llm._check_git_ssh_auth("github.com") is True
+
+    def test_timeout_does_not_crash_and_defaults_true(self, monkeypatch):
+        def raise_timeout(*a, **k):
+            raise subprocess.TimeoutExpired(cmd="ssh", timeout=15)
+        monkeypatch.setattr(setup_llm.subprocess, "run", raise_timeout)
+        assert setup_llm._check_git_ssh_auth("github.com") is True
+
+    def test_unrecognized_output_defaults_true(self, monkeypatch):
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda *a, **k: mock.Mock(stdout="", stderr=""))
+        assert setup_llm._check_git_ssh_auth("github.com") is True
+
+
+class TestCloneStateRepo:
+    def test_skips_clone_and_does_not_crash_when_ssh_auth_fails(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(setup_llm, "_check_git_ssh_auth", lambda host: False)
+        target = tmp_path / "ssh-broken-target"
+
+        setup_llm._clone_state_repo("git@github.com:owner/repo.git", "main", target)
+
+        result = capsys.readouterr()
+        out = result.out + result.err
+        assert "ssh -T git@github.com" in out
+        assert not target.exists()
+
+    def test_https_url_is_never_ssh_checked(self, tmp_path, monkeypatch):
+        def fail_if_called(host):
+            raise AssertionError("_check_git_ssh_auth should not be called for an HTTPS URL")
+        monkeypatch.setattr(setup_llm, "_check_git_ssh_auth", fail_if_called)
+        # Nonexistent local source, so the actual clone attempt fails fast -
+        # only asserting the SSH check itself is skipped for this URL shape.
+        setup_llm._clone_state_repo("https://example.com/owner/repo.git", "main", tmp_path / "target")
+
+
 class TestSetupStateRepo:
     def test_clones_into_empty_directory(self, tmp_path, fake_git_remote, monkeypatch):
         target = tmp_path / "clone-target"
