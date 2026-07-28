@@ -46,6 +46,15 @@ COPY ./eval ./eval
 COPY auth_github.py .
 COPY entrypoint.sh .
 COPY VERSION .
+# Strip any CRLF line endings: on Windows, git's default core.autocrlf=true
+# checks these scripts out with CRLF, which corrupts lines like "set -e"
+# into "set -e\r" - `sh`/`bash` then reads the trailing \r as part of the
+# option string and fails immediately ("entrypoint.sh: 2: set: Illegal
+# option -"). Normalizing here fixes it unconditionally, regardless of the
+# checkout's line endings (see also .gitattributes, which prevents CRLF
+# from being checked out here at all on a fresh clone - this still covers
+# an already-cloned working tree).
+RUN sed -i 's/\r$//' entrypoint.sh agents/scrum_team/scripts/run_agent.sh
 RUN chmod +x agents/scrum_team/scripts/run_agent.sh
 
 # Set the entrypoint for the production container
