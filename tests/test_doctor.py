@@ -63,25 +63,38 @@ def valid_repo(tmp_path, monkeypatch):
 
 
 class TestGuardClauses:
+    """
+    Acceptance Criteria (ISSUE-0021): none of these are early returns
+    anymore - check() keeps going and collects every ActionableItem, so
+    each of these tests must mock the proxy-reachability wait (a later
+    check that now always runs) the same way TestWarningsDoNotBlock/
+    TestLlmConfigurationSection already do, to avoid a real multi-second
+    network wait in the test suite.
+    """
+
     def test_missing_env_file_errors(self, tmp_path, monkeypatch, capsys):
         _patch_which(monkeypatch, docker=True, **{"docker-compose": True})
+        _patch_proxy_unreachable(monkeypatch)
         code = doctor.run(tmp_path)
         assert code == 1
         assert ".env file not found" in capsys.readouterr().out
 
-    def test_missing_litellm_master_key_errors(self, valid_repo, capsys):
+    def test_missing_litellm_master_key_errors(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
         (valid_repo / ".env").write_text(f'STATE_REPO_PATH="{valid_repo / "state_repo"}"\n')
         code = doctor.run(valid_repo)
         assert code == 1
         assert "LITELLM_MASTER_KEY is not set" in capsys.readouterr().out
 
-    def test_missing_state_repo_path_errors(self, valid_repo, capsys):
+    def test_missing_state_repo_path_errors(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
         (valid_repo / ".env").write_text('LITELLM_MASTER_KEY="testkey"\n')
         code = doctor.run(valid_repo)
         assert code == 1
         assert "STATE_REPO_PATH is not set" in capsys.readouterr().out
 
-    def test_state_repo_directory_missing_errors(self, valid_repo, capsys):
+    def test_state_repo_directory_missing_errors(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
         (valid_repo / ".env").write_text(
             'LITELLM_MASTER_KEY="testkey"\nSTATE_REPO_PATH="/definitely/missing/xyz"\n'
         )
@@ -91,6 +104,7 @@ class TestGuardClauses:
 
     def test_docker_missing_errors(self, valid_repo, monkeypatch, capsys):
         _patch_which(monkeypatch)  # nothing available
+        _patch_proxy_unreachable(monkeypatch)
         code = doctor.run(valid_repo)
         assert code == 1
         assert "'docker' command not found" in capsys.readouterr().out
@@ -98,9 +112,88 @@ class TestGuardClauses:
     def test_docker_compose_missing_errors(self, valid_repo, monkeypatch, capsys):
         _patch_which(monkeypatch, docker=True)
         _patch_subprocess_fail(monkeypatch)
+        _patch_proxy_unreachable(monkeypatch)
         code = doctor.run(valid_repo)
         assert code == 1
         assert "'docker-compose' or 'docker compose' command not found" in capsys.readouterr().out
+
+    def test_multiple_errors_are_all_collected_not_just_the_first(self, tmp_path, monkeypatch, capsys):
+        """The whole point of the punch-list refactor: a completely
+        unconfigured repo should surface every blocking problem in one
+        pass, not just the first one encountered."""
+        _patch_which(monkeypatch)  # nothing available: docker, docker-compose, gh all missing
+        _patch_proxy_unreachable(monkeypatch)
+        code = doctor.run(tmp_path)
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "'docker' command not found" in out
+        assert "'docker-compose' or 'docker compose' command not found" in out
+        assert ".env file not found" in out
+        assert "LITELLM_MASTER_KEY is not set" in out
+        assert "STATE_REPO_PATH is not set" in out
+
+
+class TestCheckStructuredResult:
+    """
+    Acceptance Criteria (ISSUE-0021): check() returns a DoctorResult -
+    the actual punch list, not just an exit code - so other scripts
+    (run.py's gatekeeper, setup.py's guided flow) can inspect exactly
+    what's wrong instead of parsing printed text.
+    """
+
+    def test_clean_setup_has_no_items(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        result = doctor.check(valid_repo)
+        assert result.ok is True
+        assert result.has_errors is False
+        assert result.items == []
+
+    def test_errors_and_warnings_are_both_collected_and_classified(self, tmp_path, monkeypatch):
+        _patch_which(monkeypatch)  # nothing available
+        _patch_proxy_unreachable(monkeypatch)
+        result = doctor.check(tmp_path)
+        assert result.has_errors is True
+        assert result.ok is False
+        assert any("docker" in i.message and i.severity == "error" for i in result.errors())
+        # gh missing is a warning, not an error - must not count toward has_errors.
+        assert any("'gh' command not found" in i.message for i in result.warnings())
+        assert all(i.severity == "warning" for i in result.warnings())
+
+    def test_warnings_only_setup_has_no_errors(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace('GIT_USER_NAME="Test"\n', ""))
+        result = doctor.check(valid_repo)
+        assert result.has_errors is False
+        assert result.ok is False
+        assert len(result.warnings()) >= 1
+
+    def test_run_returns_1_iff_result_has_errors(self, tmp_path, valid_repo, monkeypatch):
+        """run() is a thin exit-code wrapper around check() - verify the
+        two stay in lockstep rather than testing run()'s int in isolation
+        everywhere."""
+        _patch_proxy_unreachable(monkeypatch)
+        _patch_which(monkeypatch)  # nothing available - guarantees an error
+        assert doctor.check(tmp_path).has_errors is True
+        assert doctor.run(tmp_path) == 1
+
+        _patch_which(monkeypatch, docker=True, **{"docker-compose": True, "gh": True})
+        assert doctor.check(valid_repo).has_errors is False
+        assert doctor.run(valid_repo) == 0
+
+    def test_print_summary_lists_every_item(self, tmp_path, monkeypatch, capsys):
+        _patch_which(monkeypatch)  # nothing available
+        _patch_proxy_unreachable(monkeypatch)
+        result = doctor.check(tmp_path)
+        capsys.readouterr()  # discard check()'s own output
+        result.print_summary()
+        out = capsys.readouterr().out
+        assert "[ERROR]" in out
+        assert ".env file not found" in out
+
+    def test_print_summary_on_clean_result_says_so(self, capsys):
+        doctor.DoctorResult(items=[]).print_summary()
+        assert "No actionable items" in capsys.readouterr().out
 
 
 class TestWarningsDoNotBlock:
@@ -177,6 +270,17 @@ class TestLlmConfigurationSection:
         out = capsys.readouterr().out
         assert "not reachable" in out
         assert "docker compose up -d db litellm" in out
+
+    def test_skip_llm_probe_never_calls_wait_for_proxy(self, valid_repo, monkeypatch, capsys):
+        """run.py's pre-flight gate passes skip_llm_probe=True since
+        nothing's started yet - the live network check would only ever
+        report "not reachable" and cost several real seconds for nothing."""
+        def fail_if_called(*a, **k):
+            raise AssertionError("llm_wait_for_proxy should not be called when skip_llm_probe=True")
+        monkeypatch.setattr(doctor.lib_llm_test, "llm_wait_for_proxy", fail_if_called)
+        result = doctor.check(valid_repo, skip_llm_probe=True)
+        assert result.has_errors is False
+        assert "Skipping live proxy reachability check" in capsys.readouterr().out
 
     def test_proxy_unreachable_local_hint(self, valid_repo, monkeypatch, capsys):
         _patch_proxy_unreachable(monkeypatch)

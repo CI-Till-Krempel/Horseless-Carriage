@@ -165,6 +165,11 @@ Carriage itself* is released — this section is how the agents release the prod
 
 - **`python3 doctor.py`** — checks Docker, `.env` completeness, `STATE_REPO_PATH`
   existence, GitHub auth configuration, and live LLM/LiteLLM proxy connectivity. Run this first.
+  Collects everything wrong into one "Actionable Items" punch list rather than stopping at the
+  first problem - `run.py` refuses to start at all while any ERROR-level item remains.
+- **`python3 setup_all.py`** — if you'd rather not chase down individual `doctor.py` items by hand,
+  this re-runs the guided setup (provider/model, project checks) and loops on the doctor gate until
+  it's clean, then offers to start the agent.
 - **`python3 check_state_repo.py`** — validates your target repo's `specs/` structure and
   `.hc/state.json`, and flags stray template files that shouldn't be there.
 - **"GitHub tools may fail" warning on startup** — no `GITHUB_TOKEN` or complete

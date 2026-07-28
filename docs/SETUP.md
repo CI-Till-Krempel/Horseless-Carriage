@@ -5,6 +5,17 @@
 > **Windows users:** install the prerequisites in [Setting up on Windows](#setting-up-on-windows)
 > below first, then follow steps 1-2 the same way, using `python` instead of `python3`.
 
+## Guided, all-in-one setup: `setup_all.py`
+
+```bash
+python3 setup_all.py
+```
+
+Runs steps 1-3 below in order, then offers to start the agent (`run.py`) - this is the fastest path
+for a first-time or new-machine setup. Each step is still a fully standalone script (see the
+sections below) if you'd rather run just one of them, or control the pace yourself; `setup_all.py`
+just chains them and adds a fix→retry loop around each one.
+
 ## 1. Guided LLM/project setup: `setup_llm.py`
 
 ```bash
@@ -69,8 +80,8 @@ for what `doctor.py` checks.
 
 ## Setting up on Windows
 
-All of this project's host-side tooling (`setup_llm.py`, `setup_project.py`, `doctor.py`, `run.py`,
-`run_tests.py`, `check_state_repo.py`, `rebuild_images.py`) is plain stdlib Python - no bash, no WSL2 required. The only
+All of this project's host-side tooling (`setup_all.py`, `setup_llm.py`, `setup_project.py`,
+`doctor.py`, `run.py`, `run_tests.py`, `check_state_repo.py`, `rebuild_images.py`) is plain stdlib Python - no bash, no WSL2 required. The only
 part of the stack that ever needed a Unix shell was the old setup scripts, which this replaces
 entirely; Docker Desktop may still use WSL2 internally as its own backend, but that's automatic and
 not something you need to set up yourself.

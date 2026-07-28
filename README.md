@@ -51,11 +51,25 @@ quickly with real guardrails against runaway cost and low-quality output.
 ## Quick start
 
 ```bash
+python3 setup_all.py       # guided setup: every step below, in order, ending with the option to start
+```
+
+Or run each step yourself, if you'd rather control the pace (`setup_all.py` just chains these):
+
+```bash
 python3 setup_llm.py       # pick a provider/model, configure the state repo, set budgets
 python3 setup_project.py   # Docker/GitHub CLI checks, bring up the containers
-python3 doctor.py          # validate everything before you run a real sprint
-python3 run.py             # start the team
+python3 doctor.py          # validate everything before you run a real sprint - see below
+python3 run.py             # start the team (add "dev" for developer mode - see below)
 ```
+
+`doctor.py` acts as a gate in both paths: `run.py` refuses to start at all while any ERROR-level item
+remains (missing `.env`, no state repo, etc.), showing the full punch list of everything that needs
+fixing in one pass rather than one problem per re-run.
+
+`run.py dev` (or answering "yes" to developer mode in `setup_all.py`) rebuilds the `agent`/`ollama`
+images fresh before starting and runs with verbose (`debug`) logging for that invocation - useful
+while iterating on the agent's own code without needing to remember `rebuild_images.py` separately.
 
 Works the same way on macOS, Linux, and Windows (`python` instead of `python3`
 on Windows) — see [Setup](docs/SETUP.md) for the full guided walkthrough,
@@ -95,14 +109,16 @@ including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 - `.env.example` — environment variables for provider keys + LiteLLM proxy configuration.
 - `.env.local.example` — the same, for the fully local Ollama stack (no provider keys needed).
 - `requirements.txt` — Python dependencies.
-- `setup_llm.py` — interactive script to pick an LLM provider/model, configure the state repository, set the human interaction level + sprint budgets, write the result into `.env` + the active `litellm.yaml`/template, and run a live end-to-end test against it. Run this before or after `setup_project.py`.
+- `setup_all.py` — guided, orchestrated setup: runs `setup_llm.py`, then `setup_project.py`, then gates on `doctor.py` (looping fix→retry until there are no more ERROR-level items), then offers to start the agent via `run.py` (including developer mode). Each step below is still a fully standalone script this just chains for a first-time/new-machine setup.
+- `setup_llm.py` — interactive script to pick an LLM provider/model, configure the state repository, set the human interaction level + sprint budgets, write the result into `.env` + the active `litellm.yaml`/template, and run a live end-to-end test against it. For a Local/Ollama setup, also detects a usable NVIDIA GPU and offers to enable GPU acceleration. Re-running it prefills whatever's already configured as the default for every prompt. Run this before or after `setup_project.py`.
 - `lib_llm_test.py` / `lib_env.py` — shared helpers (proxy liveness check, live test-request against a model alias; safe `.env` read/write) used by `setup_llm.py`, `doctor.py`, and the other scripts below.
+- `lib_docker.py` — shared Docker Compose helpers (which compose file(s) are active, stopping a leftover stack before starting a new one) used by `run.py` and `rebuild_images.py`.
 - `setup_project.py` — setup script for the project (named to avoid colliding with the `setup.py`/setuptools convention).
-- `run.py` — run script for the agent.
+- `run.py` — run script for the agent. Gated by `doctor.py` (refuses to start with any ERROR-level item outstanding); `python3 run.py dev` enables developer mode (rebuilds `agent`/`ollama` images fresh before starting, runs with verbose/`debug` logging for that invocation).
 - `run_tests.py` — script to run tests.
-- `doctor.py` — a script to validate your setup, including a live check that the configured LLM provider/model is actually reachable and responding.
+- `doctor.py` — validates your setup (Docker, `.env`, state repo, GitHub auth, live LLM connectivity) and collects every problem into a punch list of actionable items instead of stopping at the first one - `check()` returns the full structured list (used by `run.py`'s gate and `setup_all.py`); `run()`/the CLI stay a simple pass/fail wrapper around it.
 - `check_state_repo.py` — a script to validate the state repository.
-- `rebuild_images.py` — rebuilds the `agent` image (plus `ollama` for a Local/Ollama setup) from scratch, pulling fresh base images. `run.py`'s own `--build` only rebuilds layers Docker's cache considers stale, which never re-pulls a mutable base tag on its own; use this after a base-image update or a Dockerfile change the cache wouldn't otherwise catch.
+- `rebuild_images.py` — rebuilds the `agent` image (plus `ollama` for a Local/Ollama setup) from scratch, pulling fresh base images. `run.py`'s own `--build` only rebuilds layers Docker's cache considers stale, which never re-pulls a mutable base tag on its own; use this after a base-image update or a Dockerfile change the cache wouldn't otherwise catch (or use `python3 run.py dev` to do this automatically every run).
 - `tests/` — pytest suite for the host-scripts above (no Docker required); see [Testing](docs/TESTING.md).
 - `qa/` — manual QA test plans, one per release, run before cutting a release; see [Testing](docs/TESTING.md).
 

@@ -5,6 +5,36 @@ run/setup scripts. Stdlib-only, works identically on macOS/Linux/Windows.
 
 import json
 import subprocess
+from pathlib import Path
+
+import lib_env
+import lib_llm_test
+
+
+def compose_file_args(repo_root: Path) -> list:
+    """["-f", "docker-compose.local.yaml"] (plus ["-f", "docker-compose.gpu.yaml"]
+    if OLLAMA_GPU_ENABLED=true in .env - see setup_llm.py's GPU prompt) for
+    a Local/Ollama setup, else [] (default docker-compose.yaml). A
+    Local/Ollama setup (see setup_llm.py's run_local_provider) only ever
+    writes config/model-templates/litellm.local-ollama.yaml, never the root
+    litellm.yaml docker-compose.yaml's litellm service mounts - it needs
+    docker-compose.local.yaml (which mounts that file directly, and adds
+    the ollama service) instead, or the agent comes up pointed at whichever
+    cloud provider was last configured (or the repo's shipped default),
+    with no matching API key set (GH issue #36).
+
+    Lives here (rather than in run.py, where it originated) so both run.py
+    and rebuild_images.py can call it without one importing the other -
+    rebuild_images.py's developer-mode use from run.py would otherwise be
+    a circular import."""
+    repo_root = Path(repo_root)
+    active_provider = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(repo_root))
+    if active_provider != "local":
+        return []
+    args = ["-f", "docker-compose.local.yaml"]
+    if lib_env.read_env_var(repo_root / ".env", "OLLAMA_GPU_ENABLED") == "true":
+        args += ["-f", "docker-compose.gpu.yaml"]
+    return args
 
 
 def compose_running_services(compose_args: list) -> list:

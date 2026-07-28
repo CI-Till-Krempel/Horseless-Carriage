@@ -10,42 +10,107 @@ This script will:
 5. Check the LLM/LiteLLM proxy configuration (see setup_llm.py) - including a
    live test request if the proxy is already running.
 
+Every problem found is collected into a punch list of ActionableItems (see
+check()) instead of stopping at the first one - a user fixing configuration
+by hand sees everything that needs attention in one pass, not
+fix-one/rerun/discover-the-next-one. This also makes doctor.py usable as a
+pre-flight gate by other scripts (run.py, setup_all.py): call check() directly
+and inspect the result's .has_errors / .items, rather than parsing printed
+text or relying on an exit code alone.
+
 Stdlib-only, works identically on macOS/Linux/Windows.
 """
 
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import lib_env
 import lib_llm_test
 
 
-def error(msg: str) -> None:
-    print(f"ERROR: {msg}")
+@dataclass
+class ActionableItem:
+    """One thing found wrong with the current setup. `severity` is
+    "error" (blocks running the agent) or "warning" (won't block it, but
+    worth fixing)."""
+    severity: str
+    message: str
 
 
-def warn(msg: str) -> None:
-    print(f"WARNING: {msg}")
+@dataclass
+class DoctorResult:
+    """The full punch list from one check() run."""
+    items: list = field(default_factory=list)
+
+    @property
+    def has_errors(self) -> bool:
+        return any(i.severity == "error" for i in self.items)
+
+    @property
+    def ok(self) -> bool:
+        """True if nothing at all was found wrong (no errors, no warnings)."""
+        return not self.items
+
+    def errors(self) -> list:
+        return [i for i in self.items if i.severity == "error"]
+
+    def warnings(self) -> list:
+        return [i for i in self.items if i.severity == "warning"]
+
+    def print_summary(self) -> None:
+        """Prints the consolidated punch list - call after check() if you
+        want the summary on its own (check() already prints it once at the
+        end of its own run, so this is for a caller re-displaying a
+        previously computed result, e.g. setup_all.py re-showing it after a
+        fix-and-retry loop)."""
+        if not self.items:
+            print("No actionable items - setup looks good.")
+            return
+        print("--- Actionable Items ---")
+        for item in self.items:
+            print(f"[{item.severity.upper()}] {item.message}")
 
 
-def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
+def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_llm_probe: bool = False) -> DoctorResult:
     """Runs every check against repo_root (no chdir, so this is safe to call
-    from tests against a tmp_path fixture). Returns a process exit code."""
+    from tests against a tmp_path fixture, or from another script like
+    run.py/setup_all.py). Never stops at the first problem found - every
+    ActionableItem is collected so the caller gets the full punch list in
+    one pass, and a check further down doesn't get skipped just because an
+    earlier one failed (e.g. a missing STATE_REPO_PATH doesn't prevent
+    checking GitHub auth or the LLM proxy).
+
+    skip_llm_probe=True skips the live "is the proxy already reachable"
+    network check (section 6 below still reports the active provider/key
+    configuration either way, which is cheap/local) - for a caller like
+    run.py's pre-flight gate, called before the containers are even
+    started, where that check could only ever report "not reachable" and
+    would otherwise cost several real seconds for no benefit."""
     repo_root = Path(repo_root)
+    items = []
+
+    def error(msg: str) -> None:
+        print(f"ERROR: {msg}")
+        items.append(ActionableItem("error", msg))
+
+    def warn(msg: str) -> None:
+        print(f"WARNING: {msg}")
+        items.append(ActionableItem("warning", msg))
 
     print("--- Running Horseless Carriage Doctor ---")
 
     # 1. Check for Docker and Docker Compose
-    if shutil.which("docker") is None:
+    docker_ok = shutil.which("docker") is not None
+    if not docker_ok:
         error("'docker' command not found. Please install Docker.")
-        return 1
 
     compose_ok = False
     if shutil.which("docker-compose") is not None:
         compose_ok = True
-    else:
+    elif docker_ok:
         try:
             subprocess.run(["docker", "compose", "version"], check=True,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -54,23 +119,19 @@ def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
             compose_ok = False
     if not compose_ok:
         error("'docker-compose' or 'docker compose' command not found. Please install Docker Compose.")
-        return 1
 
     # 2. Check .env file
     env_path = repo_root / ".env"
     if not env_path.is_file():
         error(".env file not found. Please copy .env.example to .env and fill in the values.")
-        return 1
 
     env = lib_env.load_env_file(env_path)
 
     if not env.get("LITELLM_MASTER_KEY"):
         error("LITELLM_MASTER_KEY is not set in .env. Please set it.")
-        return 1
 
     if not env.get("STATE_REPO_PATH"):
         error("STATE_REPO_PATH is not set in .env. Please set it.")
-        return 1
 
     if not env.get("GIT_USER_NAME"):
         warn("GIT_USER_NAME is not set in .env. Defaulting to 'DevTeam'.")
@@ -94,11 +155,12 @@ def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
         print("Please set either GITHUB_TOKEN or (GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID).")
 
     # 4. Check if the directories exist
-    state_repo_path = Path(env["STATE_REPO_PATH"]).expanduser()
-    if not state_repo_path.is_dir():
-        error(f"The directory specified by STATE_REPO_PATH does not exist: {state_repo_path}")
-        print("Please create this directory before running the agent.")
-        return 1
+    state_repo_path_str = env.get("STATE_REPO_PATH")
+    if state_repo_path_str:
+        state_repo_path = Path(state_repo_path_str).expanduser()
+        if not state_repo_path.is_dir():
+            error(f"The directory specified by STATE_REPO_PATH does not exist: {state_repo_path}")
+            print("Please create this directory before running the agent.")
 
     sessions_dir = repo_root / "sessions"
     if not sessions_dir.is_dir():
@@ -131,7 +193,9 @@ def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
     elif active_provider == "local" and not env.get("OLLAMA_MODEL"):
         print("NOTE: OLLAMA_MODEL is not set in .env - the ollama container will default to llama3.1:8b.")
 
-    if lib_llm_test.llm_wait_for_proxy(proxy_base_url, 5):
+    if skip_llm_probe:
+        print("(Skipping live proxy reachability check - not needed here.)")
+    elif lib_llm_test.llm_wait_for_proxy(proxy_base_url, 5):
         print(f"LiteLLM proxy: reachable at {proxy_base_url}")
         print("Sending a live test request to scrum-po (this uses a real, minimal request against your configured model)...")
         ok, detail = lib_llm_test.llm_test_alias(proxy_base_url, env.get("LITELLM_MASTER_KEY", ""), "scrum-po", 30)
@@ -146,10 +210,30 @@ def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
         else:
             print("  Start it with: docker compose up -d db litellm")
 
+    result = DoctorResult(items=items)
+
+    print()
+    result.print_summary()
+
     print()
     print("--- Doctor Check Complete ---")
-    print("Setup looks good. You can now run the agent with: python3 run.py")
-    return 0
+    if result.has_errors:
+        print("Fix the ERROR items above before running the agent.")
+    elif items:
+        print("Setup looks functional, but see the WARNING items above.")
+        print("You can now run the agent with: python3 run.py")
+    else:
+        print("Setup looks good. You can now run the agent with: python3 run.py")
+
+    return result
+
+
+def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
+    """Thin int-returning wrapper around check(), kept for backward
+    compatibility (main() below, and anything that only cares about the
+    exit code) - see check() for the full structured result (the punch
+    list of ActionableItems) that run.py/setup_all.py use directly."""
+    return 1 if check(repo_root, proxy_base_url).has_errors else 0
 
 
 def main() -> None:
