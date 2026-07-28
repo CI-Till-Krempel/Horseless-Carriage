@@ -130,6 +130,22 @@ docker compose -f docker-compose.local.yaml up
 
 This starts the same `db` + `litellm` + `agent` services as `docker-compose.yaml`, plus an `ollama` container that pulls its model on first start (see `ollama-entrypoint.sh`). Every `scrum-*` role alias is routed to that one model — see `config/model-templates/litellm.local-ollama.yaml`. The default model is `llama3.1:8b` (tool-calling support, ~16GB RAM or any modern GPU); to fit different hardware, change the `model:` lines in that file and the matching `OLLAMA_MODEL` in `.env`/`docker-compose.local.yaml` together (see comments in both files for smaller/larger alternatives). Don't run this alongside `docker-compose.yaml` — the two `litellm` service definitions target different config files.
 
+### Performance Tuning
+
+- **Keep the model loaded**: `OLLAMA_KEEP_ALIVE` (`.env`, default `-1`) controls how long an idle
+  model stays in memory before Ollama unloads it - Ollama's own default is `5m`, so without this the
+  container pays the full model-load time again after every 5 minutes of idle time. Since this
+  container serves one model to this one team continuously, `-1` (never unload) is the right default
+  here; only lower it if you're sharing this Ollama instance with other, bursty workloads too where
+  freeing the memory between uses is actually desired.
+- **CPU/RAM**: `docker-compose.local.yaml` deliberately sets no `deploy.resources.limits` on the
+  `ollama` service, so it isn't artificially capped by this repo's own configuration - by default a
+  container can already use as much CPU/RAM as Docker Desktop's own VM is allocated. If Ollama still
+  seems starved, check **Docker Desktop -> Settings -> Resources -> Advanced** on the host and
+  increase the CPU/memory allocated to the Docker VM itself; that allocation, not anything in this
+  repo, is the actual ceiling.
+- See also [GPU Support](#gpu-support) below for hardware-accelerated inference.
+
 For a more detailed guide, see the [PREFLIGHT.md](../PREFLIGHT.md) checklist.
 
 ## GPU Support

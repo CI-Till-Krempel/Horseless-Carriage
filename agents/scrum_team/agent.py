@@ -179,6 +179,7 @@ from .tools import (
     add_retro_action,
     record_human_approval,
     plan_sprint_backlog_item,
+    start_sprint,
     git_push,
     gh_pr_create,
     gh_pr_status,
@@ -745,6 +746,7 @@ scrum_master = LlmAgent(
     instruction=SM_PROMPT,
     tools=[
         init_scrum_state,
+        start_sprint,
         add_impediment,
         add_retro_action,
         upsert_issue,
