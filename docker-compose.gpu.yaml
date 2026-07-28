@@ -1,0 +1,19 @@
+# GPU override for the fully-local Ollama stack (docker-compose.local.yaml).
+# Adds NVIDIA GPU passthrough to the `ollama` service - without this file,
+# Ollama runs CPU-only (and falls back to CPU-only anyway if no compatible
+# GPU/driver is actually reachable from inside the container, even with this
+# file included). See docs/SETUP.md's "GPU Support" section for prerequisites
+# and how to verify the GPU was actually detected, rather than assuming it
+# was just because this file was included.
+#
+# Usage (merge this in with an extra -f, don't run it standalone):
+#   docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml up
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

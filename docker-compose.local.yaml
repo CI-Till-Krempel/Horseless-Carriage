@@ -7,6 +7,9 @@
 # service targets a different config file):
 #   cp .env.local.example .env   # or edit your existing .env
 #   docker compose -f docker-compose.local.yaml up
+# For NVIDIA GPU acceleration, merge in docker-compose.gpu.yaml instead of
+# hand-editing this file (see docs/SETUP.md's "GPU Support" section):
+#   docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml up
 services:
   db:
     image: postgres:16-alpine
@@ -46,6 +49,12 @@ services:
       # bursty workloads where unloading between uses is actually desired.
       - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:--1}
     restart: unless-stopped
+
+    # CPU-only by default. For NVIDIA GPU acceleration, merge in
+    # docker-compose.gpu.yaml with an extra -f flag instead of hand-editing
+    # this file - see docs/SETUP.md's "GPU Support" section for prerequisites
+    # and how to verify the GPU was actually detected.
+
     # No CPU/RAM limits are set here deliberately: Docker only restricts a
     # container's resource use if you explicitly configure `deploy.resources
     # .limits`, which this file doesn't - by default this container can
@@ -54,14 +63,14 @@ services:
     # lever for "give Ollama more of the machine" - see docs/SETUP.md's
     # "Performance Tuning" section.
     # Uncomment if the host has an NVIDIA GPU (falls back to CPU otherwise):
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
-
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+              
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
     ports:
