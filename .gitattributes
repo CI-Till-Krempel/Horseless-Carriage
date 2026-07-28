@@ -1,0 +1,8 @@
+# Shell scripts and Dockerfiles are only ever executed inside Linux
+# containers - a CRLF checkout (Windows' git default, core.autocrlf=true)
+# corrupts a script's "#!/bin/sh" shebang into "#!/bin/sh\r", which the
+# kernel can't resolve as an interpreter, so the container fails outright
+# with "exec <script>: no such file or directory" instead of starting.
+# Force LF regardless of the cloning machine's OS/git config.
+*.sh text eol=lf
+Dockerfile* text eol=lf
