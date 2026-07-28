@@ -134,6 +134,40 @@ class TestWriteLitellmYaml:
         assert out_file.is_file()
 
 
+class TestRunConfigurationTest:
+    """
+    Acceptance Criteria (GH issue #36): when `docker compose up -d` fails,
+    setup_llm.py must show the real error instead of a blind "is the
+    Docker daemon running?" guess - on at least one real Windows run the
+    daemon *was* running and this fired anyway, with the actual cause
+    hidden because stdout/stderr were sent to DEVNULL.
+    """
+
+    def test_compose_up_failure_surfaces_real_stderr(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["docker", "compose", "version"]:
+                return subprocess.CompletedProcess(cmd, 0)
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Error response from daemon: some specific real docker error\n")
+
+        def fake_check_run(cmd, **kwargs):
+            result = fake_run(cmd, **kwargs)
+            if kwargs.get("check") and result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, cmd, output=result.stdout, stderr=result.stderr)
+            return result
+
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_check_run)
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        setup_llm.run_configuration_test("gemini", "gemini-2.5-pro", env_path)
+
+        out = capsys.readouterr().out
+        assert "some specific real docker error" in out
+        assert "is the Docker daemon running?" not in out
+
+
 def _fake_urlopen_response(body_dict):
     data = json.dumps(body_dict).encode()
     cm = mock.MagicMock()

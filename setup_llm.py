@@ -464,10 +464,18 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path) -> N
     info(f"Starting {' + '.join(services)} (docker compose {' '.join(compose_args)} up -d)...")
     cmd = ["docker", "compose", *compose_args, "--env-file", str(env_path), "up", "-d", *services]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
-        warn("Could not start the containers - is the Docker daemon running? Skipping the live test.")
-        print("Once Docker is running, verify with: python3 doctor.py")
+        # capture_output (not DEVNULL): "is the Docker daemon running?" was
+        # a guess masking whatever `docker compose up` actually said - on
+        # at least one real Windows run the daemon WAS running and this
+        # still fired, with the real cause hidden (GH issue #36).
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        warn("Could not start the containers - skipping the live test.")
+        detail = (e.stderr or e.stdout or "").strip()
+        if detail:
+            print(detail)
+        print("If Docker Desktop/the daemon is running and this doesn't explain it, check the")
+        print("error above, then once resolved verify with: python3 doctor.py")
         return
 
     info("Waiting for the LiteLLM proxy to come up...")

@@ -46,6 +46,33 @@ def ok_server():
         thread.join(timeout=5)
 
 
+class TestComposeFileArgs:
+    """
+    Acceptance Criteria (GH issue #36): run.py must launch the agent stack
+    against docker-compose.local.yaml for a Local/Ollama setup - it defines
+    its own litellm/ollama/agent services pointed at
+    config/model-templates/litellm.local-ollama.yaml, unlike the default
+    docker-compose.yaml which always mounts the root litellm.yaml.
+    """
+
+    def test_cloud_setup_uses_default_compose_file(self, tmp_path):
+        (tmp_path / "litellm.yaml").write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: gemini/gemini-2.5-pro\n"
+        )
+        assert run.compose_file_args(tmp_path) == []
+
+    def test_local_setup_uses_local_compose_file(self, tmp_path):
+        local_yaml = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_yaml.parent.mkdir(parents=True)
+        local_yaml.write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: ollama/llama3.1:8b\n"
+        )
+        assert run.compose_file_args(tmp_path) == ["-f", "docker-compose.local.yaml"]
+
+    def test_no_config_at_all_defaults_to_default_compose_file(self, tmp_path):
+        assert run.compose_file_args(tmp_path) == []
+
+
 class TestWaitForHttp:
     def test_reachable_returns_true_immediately(self, ok_server):
         assert run.wait_for_http(ok_server, tries=5) is True
