@@ -153,11 +153,19 @@ For a more detailed guide, see the [PREFLIGHT.md](../PREFLIGHT.md) checklist.
 
 ## GPU Support
 
-The fully-local Ollama stack (above) runs CPU-only by default. To enable NVIDIA GPU acceleration,
-merge in the GPU override file instead of hand-editing `docker-compose.local.yaml` (a previous
-version of this file asked you to uncomment a commented-out YAML block in place, which is easy to
-get subtly wrong - indentation, a stray `#` left behind - with no feedback beyond "GPU still isn't
-being used"):
+The fully-local Ollama stack (above) runs CPU-only by default. `setup_llm.py`'s Local/Ollama flow
+asks about this directly - it detects a usable NVIDIA GPU on this machine (via `nvidia-smi`),
+recommends enabling it if one is found, and writes `OLLAMA_GPU_ENABLED` into `.env` accordingly;
+`run.py` then includes the GPU override file automatically whenever that's set, so day-to-day you
+don't need to think about the flag at all. Re-running `setup_llm.py` re-detects the GPU but defaults
+to whatever you already had configured, not the fresh detection result, so it won't silently flip
+a deliberate choice back.
+
+To enable (or check) it manually - e.g. if you're skipping `setup_llm.py`, or want to run one-off
+commands with it - merge in the GPU override file instead of hand-editing `docker-compose.local.yaml`
+(a previous version of this file asked you to uncomment a commented-out YAML block in place, which
+is easy to get subtly wrong - indentation, a stray `#` left behind - with no feedback beyond "GPU
+still isn't being used"):
 
 ```bash
 docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml up

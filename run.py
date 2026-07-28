@@ -88,17 +88,24 @@ def open_dashboards(mode: str) -> None:
 
 
 def compose_file_args(repo_root: Path) -> list:
-    """["-f", "docker-compose.local.yaml"] if a Local/Ollama setup is
-    active, else [] (default docker-compose.yaml). A Local/Ollama setup
-    (see setup_llm.py's run_local_provider) only ever writes
-    config/model-templates/litellm.local-ollama.yaml, never the root
+    """["-f", "docker-compose.local.yaml"] (plus ["-f", "docker-compose.gpu.yaml"]
+    if OLLAMA_GPU_ENABLED=true in .env - see setup_llm.py's GPU prompt) for
+    a Local/Ollama setup, else [] (default docker-compose.yaml). A
+    Local/Ollama setup (see setup_llm.py's run_local_provider) only ever
+    writes config/model-templates/litellm.local-ollama.yaml, never the root
     litellm.yaml docker-compose.yaml's litellm service mounts - it needs
     docker-compose.local.yaml (which mounts that file directly, and adds
     the ollama service) instead, or the agent comes up pointed at whichever
     cloud provider was last configured (or the repo's shipped default),
     with no matching API key set (GH issue #36)."""
+    repo_root = Path(repo_root)
     active_provider = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(repo_root))
-    return ["-f", "docker-compose.local.yaml"] if active_provider == "local" else []
+    if active_provider != "local":
+        return []
+    args = ["-f", "docker-compose.local.yaml"]
+    if lib_env.read_env_var(repo_root / ".env", "OLLAMA_GPU_ENABLED") == "true":
+        args += ["-f", "docker-compose.gpu.yaml"]
+    return args
 
 
 def main() -> None:

@@ -72,6 +72,39 @@ class TestComposeFileArgs:
     def test_no_config_at_all_defaults_to_default_compose_file(self, tmp_path):
         assert run.compose_file_args(tmp_path) == []
 
+    def test_local_setup_with_gpu_enabled_adds_gpu_compose_file(self, tmp_path):
+        """OLLAMA_GPU_ENABLED=true (set by setup_llm.py's GPU prompt) must
+        merge in docker-compose.gpu.yaml automatically - the user shouldn't
+        need to remember to pass -f docker-compose.gpu.yaml by hand every
+        time they start the agent."""
+        local_yaml = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_yaml.parent.mkdir(parents=True)
+        local_yaml.write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: ollama/llama3.1:8b\n"
+        )
+        (tmp_path / ".env").write_text("OLLAMA_GPU_ENABLED='true'\n")
+        assert run.compose_file_args(tmp_path) == [
+            "-f", "docker-compose.local.yaml", "-f", "docker-compose.gpu.yaml",
+        ]
+
+    def test_local_setup_with_gpu_disabled_omits_gpu_compose_file(self, tmp_path):
+        local_yaml = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_yaml.parent.mkdir(parents=True)
+        local_yaml.write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: ollama/llama3.1:8b\n"
+        )
+        (tmp_path / ".env").write_text("OLLAMA_GPU_ENABLED='false'\n")
+        assert run.compose_file_args(tmp_path) == ["-f", "docker-compose.local.yaml"]
+
+    def test_cloud_setup_ignores_gpu_env_var(self, tmp_path):
+        """OLLAMA_GPU_ENABLED is meaningless for a cloud provider - it must
+        never sneak docker-compose.gpu.yaml into a cloud setup's args."""
+        (tmp_path / "litellm.yaml").write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: gemini/gemini-2.5-pro\n"
+        )
+        (tmp_path / ".env").write_text("OLLAMA_GPU_ENABLED='true'\n")
+        assert run.compose_file_args(tmp_path) == []
+
 
 class TestWaitForHttp:
     def test_reachable_returns_true_immediately(self, ok_server):
