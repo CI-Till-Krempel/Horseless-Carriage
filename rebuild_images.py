@@ -31,8 +31,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-import run
-
 
 def parse_args(argv: list) -> bool:
     """Returns whether --no-cache was passed."""
@@ -50,19 +48,15 @@ def images_to_rebuild(compose_args: list) -> list:
     return services
 
 
-def main() -> None:
-    os.chdir(Path(__file__).resolve().parent)
-    no_cache = parse_args(sys.argv[1:])
-
-    if shutil.which("docker") is None:
-        print("ERROR: 'docker' command not found. Please install Docker.")
-        sys.exit(1)
-
-    compose_args = run.compose_file_args(Path("."))
+def rebuild(compose_args: list, no_cache: bool = False) -> int:
+    """Rebuilds this repo's own images for the given compose_args (see
+    images_to_rebuild) and returns the process exit code. The shared logic
+    behind both this script's own CLI (main(), below) and run.py's
+    developer mode, which calls this directly - a plain `import run` at
+    module level here would create a circular import with run.py importing
+    this module, so compose_args is taken as a parameter instead of this
+    module computing it itself via run.compose_file_args()."""
     services = images_to_rebuild(compose_args)
-
-    if compose_args:
-        print(f"(Local/Ollama setup detected - using {compose_args[1]})")
     print(f"--- Rebuilding: {' + '.join(services)} ---")
 
     cmd = ["docker", "compose", *compose_args, "build", "--pull"]
@@ -71,8 +65,26 @@ def main() -> None:
     cmd.extend(services)
 
     result = subprocess.run(cmd)
-    if result.returncode != 0:
-        sys.exit(result.returncode)
+    return result.returncode
+
+
+def main() -> None:
+    os.chdir(Path(__file__).resolve().parent)
+    no_cache = parse_args(sys.argv[1:])
+
+    if shutil.which("docker") is None:
+        print("ERROR: 'docker' command not found. Please install Docker.")
+        sys.exit(1)
+
+    import run  # local import: see rebuild()'s docstring re: circular imports
+    compose_args = run.compose_file_args(Path("."))
+
+    if compose_args:
+        print(f"(Local/Ollama setup detected - using {compose_args[1]})")
+
+    exit_code = rebuild(compose_args, no_cache=no_cache)
+    if exit_code != 0:
+        sys.exit(exit_code)
 
     print()
     print("Rebuild complete. Restart with: python3 run.py")

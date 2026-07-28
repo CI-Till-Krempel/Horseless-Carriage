@@ -3,15 +3,20 @@
 Run script for the Horseless Carriage project.
 
 This script will:
-1. Load environment variables from .env.
-2. Check for the existence of the state repository path.
-3. Build and run the agent container with session management and logging.
-4. Wait for the dashboards to come up and open them in your default browser.
+1. Use doctor.py as a gatekeeper: refuse to start if the configuration has
+   any blocking problem (missing .env, no state repo, etc.) - see
+   doctor.check().
+2. Build and run the agent container with session management and logging.
+3. Wait for the dashboards to come up and open them in your default browser.
 
 Usage:
   python3 run.py                 Web mode (default): ADK web frontend, foreground.
   python3 run.py cli [query...]  Interactive CLI session instead of the web UI.
   python3 run.py daemon          Add to either of the above to run detached.
+  python3 run.py dev             Add to either of the above for developer mode:
+                                  rebuilds agent/ollama images fresh before
+                                  starting (see rebuild_images.py) and runs
+                                  with LOG_LEVEL=debug for this invocation.
 """
 
 import os
@@ -25,9 +30,9 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+import doctor
 import lib_docker
-import lib_env
-import lib_llm_test
+import rebuild_images
 
 LITELLM_DASHBOARD_URL = "http://localhost:4000/ui"
 ADK_WEB_URL = "http://localhost:8000"
@@ -36,6 +41,7 @@ ADK_WEB_URL = "http://localhost:8000"
 def parse_args(argv):
     mode = "web"
     daemon = False
+    dev = False
     extra = []
     for arg in argv:
         if arg == "web":
@@ -44,9 +50,11 @@ def parse_args(argv):
             mode = "cli"
         elif arg == "daemon":
             daemon = True
+        elif arg == "dev":
+            dev = True
         else:
             extra.append(arg)
-    return mode, daemon, extra
+    return mode, daemon, dev, extra
 
 
 def wait_for_http(url: str, tries: int = 30) -> bool:
@@ -88,46 +96,36 @@ def open_dashboards(mode: str) -> None:
 
 
 def compose_file_args(repo_root: Path) -> list:
-    """["-f", "docker-compose.local.yaml"] (plus ["-f", "docker-compose.gpu.yaml"]
-    if OLLAMA_GPU_ENABLED=true in .env - see setup_llm.py's GPU prompt) for
-    a Local/Ollama setup, else [] (default docker-compose.yaml). A
-    Local/Ollama setup (see setup_llm.py's run_local_provider) only ever
-    writes config/model-templates/litellm.local-ollama.yaml, never the root
-    litellm.yaml docker-compose.yaml's litellm service mounts - it needs
-    docker-compose.local.yaml (which mounts that file directly, and adds
-    the ollama service) instead, or the agent comes up pointed at whichever
-    cloud provider was last configured (or the repo's shipped default),
-    with no matching API key set (GH issue #36)."""
-    repo_root = Path(repo_root)
-    active_provider = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(repo_root))
-    if active_provider != "local":
-        return []
-    args = ["-f", "docker-compose.local.yaml"]
-    if lib_env.read_env_var(repo_root / ".env", "OLLAMA_GPU_ENABLED") == "true":
-        args += ["-f", "docker-compose.gpu.yaml"]
-    return args
+    """Kept as a thin re-export so existing callers/tests can keep
+    referencing run.compose_file_args - the actual logic now lives in
+    lib_docker.compose_file_args (shared with rebuild_images.py's
+    developer-mode use from this module, which would otherwise need a
+    circular import)."""
+    return lib_docker.compose_file_args(repo_root)
 
 
-def main() -> None:
+def main(argv: list = None) -> None:
+    """argv defaults to sys.argv[1:] - callers like setup_all.py that want to
+    hand off to this directly (e.g. after a guided setup, with a chosen
+    mode/dev flag) can pass an explicit list instead of mutating
+    sys.argv themselves."""
     os.chdir(Path(__file__).resolve().parent)
-    mode, daemon, extra_args = parse_args(sys.argv[1:])
+    mode, daemon, dev, extra_args = parse_args(sys.argv[1:] if argv is None else argv)
 
     if shutil.which("docker") is None:
         print("ERROR: 'docker' command not found. Please install Docker.")
         sys.exit(1)
 
-    # 1. Load environment variables from .env
-    env_path = Path(".env")
-    if not env_path.is_file():
-        print("ERROR: .env file not found. Please copy .env.example to .env and fill in the values.")
-        sys.exit(1)
-    print("Loaded environment variables from .env")
-
-    # 2. Check for the existence of the state repository path
-    state_repo_path = lib_env.read_env_var(env_path, "STATE_REPO_PATH")
-    if not state_repo_path or not Path(state_repo_path).expanduser().is_dir():
-        print(f"ERROR: STATE_REPO_PATH is not set or the directory does not exist: {state_repo_path}")
-        print("Please create this directory and ensure it is correctly set in your .env file.")
+    # doctor.py is the gatekeeper: don't even try to start the stack if the
+    # configuration itself is broken. skip_llm_probe=True since nothing's
+    # running yet - a live proxy-reachability check here could only ever
+    # report "not reachable" and would cost several real seconds for
+    # nothing (see doctor.check()'s docstring).
+    result = doctor.check(Path("."), skip_llm_probe=True)
+    if result.has_errors:
+        print()
+        print("Cannot start: fix the ERROR items above, then try again.")
+        print("(python3 doctor.py for full details, or python3 setup_all.py to fix them interactively.)")
         sys.exit(1)
 
     compose_args = compose_file_args(Path("."))
@@ -136,8 +134,17 @@ def main() -> None:
     if compose_args:
         print(f"(Local/Ollama setup detected - using {compose_args[1]})")
 
+    if dev:
+        print("--- Developer mode: rebuilding images before starting ---")
+        rebuild_exit_code = rebuild_images.rebuild(compose_args)
+        if rebuild_exit_code != 0:
+            sys.exit(rebuild_exit_code)
+
     proc_env = os.environ.copy()
     proc_env["AGENT_MODE"] = mode
+    if dev:
+        proc_env["LOG_LEVEL"] = "debug"
+        print("--- Developer mode: LOG_LEVEL overridden to 'debug' for this run ---")
 
     if mode == "cli":
         if daemon:

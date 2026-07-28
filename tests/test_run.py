@@ -8,20 +8,26 @@ import run
 
 class TestParseArgs:
     def test_defaults(self):
-        assert run.parse_args([]) == ("web", False, [])
+        assert run.parse_args([]) == ("web", False, False, [])
 
     def test_cli_mode_with_query_args(self):
-        assert run.parse_args(["cli", "hello", "world"]) == ("cli", False, ["hello", "world"])
+        assert run.parse_args(["cli", "hello", "world"]) == ("cli", False, False, ["hello", "world"])
 
     def test_daemon_flag(self):
-        assert run.parse_args(["daemon"]) == ("web", True, [])
+        assert run.parse_args(["daemon"]) == ("web", True, False, [])
 
     def test_cli_and_daemon_combined(self):
-        assert run.parse_args(["cli", "daemon", "query"]) == ("cli", True, ["query"])
+        assert run.parse_args(["cli", "daemon", "query"]) == ("cli", True, False, ["query"])
 
     def test_last_mode_keyword_wins(self):
         # Mirrors the bash version's plain for-loop scan: later keywords override earlier ones.
-        assert run.parse_args(["cli", "web"]) == ("web", False, [])
+        assert run.parse_args(["cli", "web"]) == ("web", False, False, [])
+
+    def test_dev_flag(self):
+        assert run.parse_args(["dev"]) == ("web", False, True, [])
+
+    def test_dev_daemon_and_cli_combined(self):
+        assert run.parse_args(["cli", "daemon", "dev", "query"]) == ("cli", True, True, ["query"])
 
 
 class _OkHandler(BaseHTTPRequestHandler):
@@ -114,3 +120,150 @@ class TestWaitForHttp:
         # Avoid a real multi-second sleep in the test suite.
         monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
         assert run.wait_for_http("http://127.0.0.1:1", tries=3) is False
+
+
+class _FakeDoctorResult:
+    def __init__(self, has_errors):
+        self.has_errors = has_errors
+
+
+class _FakeThread:
+    """Stands in for threading.Thread in main()-level tests: real Thread +
+    the dashboard-opening background target would otherwise keep running
+    past the mocks' monkeypatch teardown (it's never join()'d in the
+    foreground/daemon startup paths tested here), leaking a background
+    thread that then hits reverted mocks / real network calls and raises
+    inside itself - reported by pytest as an unrelated
+    PytestUnhandledThreadExceptionWarning. Making the thread a no-op
+    entirely sidesteps that instead of racing against it."""
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self):
+        pass
+
+    def join(self, *args, **kwargs):
+        pass
+
+
+class TestMainDoctorGatekeeper:
+    """
+    Acceptance Criteria: doctor.py is the gatekeeper - run.py must not even
+    attempt `docker compose up`/`run` if doctor.check() reports any
+    ERROR-severity item, and must call it with skip_llm_probe=True (nothing
+    is running yet, so a live proxy check here would only ever report "not
+    reachable" and cost several real seconds for nothing).
+    """
+
+    def _common_mocks(self, monkeypatch):
+        monkeypatch.setattr(run.os, "chdir", lambda _path: None)
+        monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
+        monkeypatch.setattr(run.lib_docker, "maybe_stop_existing_stack", lambda *_a: None)
+        monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+
+    def test_exits_before_docker_compose_when_doctor_reports_errors(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+        calls = []
+        monkeypatch.setattr(run.doctor, "check", lambda *a, **k: calls.append(k) or _FakeDoctorResult(has_errors=True))
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("docker compose must not be invoked when doctor reports errors")
+        monkeypatch.setattr(run.subprocess, "run", fail_if_called)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 1
+        assert calls[0].get("skip_llm_probe") is True
+
+    def test_proceeds_when_doctor_reports_no_errors(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+        monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
+        monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return run.subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 0
+        assert captured["cmd"][:2] == ["docker", "compose"]
+
+
+class TestMainDeveloperMode:
+    """
+    Acceptance Criteria: `python3 run.py dev` rebuilds agent/ollama images
+    fresh before starting (see rebuild_images.rebuild) and runs with
+    LOG_LEVEL=debug for that invocation, without needing that persisted to
+    .env.
+    """
+
+    def _common_mocks(self, monkeypatch):
+        monkeypatch.setattr(run.os, "chdir", lambda _path: None)
+        monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
+        monkeypatch.setattr(run.lib_docker, "maybe_stop_existing_stack", lambda *_a: None)
+        monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
+        monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
+
+    def test_dev_mode_rebuilds_before_starting_and_sets_debug_log_level(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py", "dev"])
+
+        rebuild_calls = []
+        monkeypatch.setattr(run.rebuild_images, "rebuild", lambda compose_args, **k: rebuild_calls.append(compose_args) or 0)
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["env"] = kwargs.get("env")
+            return run.subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+
+        assert exc_info.value.code == 0
+        assert len(rebuild_calls) == 1
+        assert captured["env"]["LOG_LEVEL"] == "debug"
+
+    def test_dev_mode_rebuild_failure_stops_before_docker_compose_up(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py", "dev"])
+        monkeypatch.setattr(run.rebuild_images, "rebuild", lambda *a, **k: 1)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("docker compose up must not run if the dev-mode rebuild failed")
+        monkeypatch.setattr(run.subprocess, "run", fail_if_called)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 1
+
+    def test_non_dev_mode_does_not_rebuild_or_override_log_level(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.delenv("LOG_LEVEL", raising=False)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("rebuild_images.rebuild must not be called outside developer mode")
+        monkeypatch.setattr(run.rebuild_images, "rebuild", fail_if_called)
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return run.subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit):
+            run.main()
+        assert "LOG_LEVEL" not in captured["env"]
