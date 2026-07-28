@@ -102,6 +102,7 @@ including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 - `run_tests.py` — script to run tests.
 - `doctor.py` — a script to validate your setup, including a live check that the configured LLM provider/model is actually reachable and responding.
 - `check_state_repo.py` — a script to validate the state repository.
+- `rebuild_images.py` — rebuilds the `agent` image (plus `ollama` for a Local/Ollama setup) from scratch, pulling fresh base images. `run.py`'s own `--build` only rebuilds layers Docker's cache considers stale, which never re-pulls a mutable base tag on its own; use this after a base-image update or a Dockerfile change the cache wouldn't otherwise catch.
 - `tests/` — pytest suite for the host-scripts above (no Docker required); see [Testing](docs/TESTING.md).
 - `qa/` — manual QA test plans, one per release, run before cutting a release; see [Testing](docs/TESTING.md).
 
