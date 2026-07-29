@@ -9,6 +9,9 @@ This script will:
 4. Check gh CLI authentication.
 5. Check the LLM/LiteLLM proxy configuration (see setup_llm.py) - including a
    live test request if the proxy is already running.
+6. If OLLAMA_GPU_ENABLED=true and the ollama container is running, warn
+   loudly if it's actually running on CPU (see lib_docker.ollama_gpu_status)
+   - a driver/WSL2 misconfiguration otherwise fails silently.
 
 Every problem found is collected into a punch list of ActionableItems (see
 check()) instead of stopping at the first one - a user fixing configuration
@@ -27,6 +30,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import lib_docker
 import lib_env
 import lib_llm_test
 
@@ -192,6 +196,20 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             warn(f"{key_var} is not set (or still a placeholder) in .env. Run python3 setup_llm.py to configure it.")
     elif active_provider == "local" and not env.get("OLLAMA_MODEL"):
         print("NOTE: OLLAMA_MODEL is not set in .env - the ollama container will default to llama3.1:8b.")
+
+    if not skip_llm_probe and active_provider == "local" and env.get("OLLAMA_GPU_ENABLED") == "true":
+        compose_args = lib_docker.compose_file_args(repo_root)
+        if "ollama" in lib_docker.compose_running_services(compose_args):
+            gpu_status = lib_docker.ollama_gpu_status(compose_args)
+            if gpu_status == "cpu":
+                print("!" * 70)
+                warn("OLLAMA_GPU_ENABLED=true, but Ollama reports running on CPU (library=cpu) - "
+                     "the GPU is NOT actually being used. Check the driver/WSL2 prerequisites in "
+                     "docs/SETUP.md's \"GPU Support\" section, then verify with: "
+                     "docker compose " + " ".join(compose_args) + " exec ollama nvidia-smi")
+                print("!" * 70)
+            elif gpu_status == "cuda":
+                print("GPU acceleration confirmed: Ollama reports library=cuda.")
 
     if skip_llm_probe:
         print("(Skipping live proxy reachability check - not needed here.)")

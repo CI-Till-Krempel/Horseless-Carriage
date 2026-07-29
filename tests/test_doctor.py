@@ -341,3 +341,81 @@ class TestLlmConfigurationSection:
         assert "LLM connectivity test failed" in out
         assert "401" in out
         assert code == 0  # a failed live test is a warning, not a hard failure
+
+
+class TestOllamaGpuWarning:
+    """Acceptance Criteria (GH issue #49): a driver/WSL2 misconfiguration
+    otherwise leaves Ollama silently running on CPU with no error from
+    Docker - doctor.py must surface this loudly rather than the user only
+    finding out from noticing slow responses."""
+
+    def _local_gpu_repo(self, valid_repo):
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_GPU_ENABLED="true"\n')
+        (valid_repo / "config" / "model-templates").mkdir(parents=True, exist_ok=True)
+        (valid_repo / "config" / "model-templates" / "litellm.local-ollama.yaml").write_text(
+            "model_list:\n"
+            "  - model_name: scrum-po\n"
+            "    litellm_params:\n"
+            "      model: ollama/llama3.1:8b\n"
+            "      api_base: http://ollama:11434\n"
+        )
+        return valid_repo
+
+    def test_warns_loudly_when_ollama_container_falls_back_to_cpu(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: ["ollama"])
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", lambda compose_args: "cpu")
+
+        result = doctor.check(repo)
+        out = capsys.readouterr().out
+
+        assert "GPU" in out and "CPU" in out
+        assert "!" * 10 in out  # a noticeable banner, not just another line among many
+        assert any("running on CPU" in i.message for i in result.warnings())
+
+    def test_confirms_gpu_when_working(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: ["ollama"])
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", lambda compose_args: "cuda")
+
+        result = doctor.check(repo)
+        out = capsys.readouterr().out
+
+        assert "GPU acceleration confirmed" in out
+        assert result.warnings() == []
+
+    def test_no_check_when_gpu_not_enabled(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+
+        def fail_if_called(compose_args):
+            raise AssertionError("ollama_gpu_status should not run when OLLAMA_GPU_ENABLED isn't true")
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.check(valid_repo)  # cloud provider, GPU flag absent entirely
+
+    def test_no_check_when_ollama_container_not_running(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: [])
+
+        def fail_if_called(compose_args):
+            raise AssertionError("ollama_gpu_status should not run when the ollama container isn't up yet")
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.check(repo)
+
+    def test_skip_llm_probe_skips_gpu_check_too(self, valid_repo, monkeypatch, capsys):
+        """run.py's pre-flight gate (skip_llm_probe=True) runs before any
+        container is started - the GPU check would only ever find no
+        running ollama container, exactly like the proxy-reachability
+        check it's gated alongside."""
+        repo = self._local_gpu_repo(valid_repo)
+
+        def fail_if_called(compose_args):
+            raise AssertionError("compose_running_services should not run when skip_llm_probe=True")
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", fail_if_called)
+
+        doctor.check(repo, skip_llm_probe=True)
