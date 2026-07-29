@@ -6,6 +6,7 @@ import requests
 
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.base_tool import BaseTool
+import agents.scrum_team.agent as agent_module
 from agents.scrum_team.agent import (
     product_owner,
     scrum_master,
@@ -19,6 +20,7 @@ from agents.scrum_team.agent import (
     sprint_status_injection_callback,
     on_tool_error_callback,
     _stories_ready_for_next_stage_count,
+    ensure_state_initialized_callback,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -387,6 +389,71 @@ class TestCriticalHaltNotifications(unittest.TestCase):
         self.assertEqual(len(interactions), 1)
         self.assertEqual(interactions[0]["kind"], "critical_error")
         self.assertIn("BUDGET ERROR", interactions[0]["summary"])
+
+
+class TestEnsureStateInitializedCallback(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #72 - "the orchestrator cannot access the
+    config"): config (repo URL, budgets, interaction level) must be loaded
+    from the environment/state repo mechanically, before the model ever
+    gets a turn - not only if the Orchestrator happens to call
+    init_scrum_state() itself first. Registered first in root_agent's
+    before_model_callback list, ahead of check_cost_budget_callback, so a
+    misconfigured/zero SPRINT_USD_BUDGET can't halt the very first turn
+    before init_scrum_state()'s own guardrail (which replaces a 0/negative
+    budget with a sane default) ever runs.
+    """
+
+    def test_calls_init_scrum_state_on_first_call(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = ScrumState().model_dump()
+
+        with patch.object(agent_module, "init_scrum_state") as mock_init:
+            ensure_state_initialized_callback(mock_context, MagicMock())
+
+        mock_init.assert_called_once_with(tool_context=mock_context)
+        self.assertTrue(mock_context.state["_state_auto_initialized"])
+
+    def test_does_not_call_init_scrum_state_again_once_flagged(self):
+        state = ScrumState().model_dump()
+        state["_state_auto_initialized"] = True
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = state
+
+        with patch.object(agent_module, "init_scrum_state") as mock_init:
+            ensure_state_initialized_callback(mock_context, MagicMock())
+
+        mock_init.assert_not_called()
+
+    def test_skips_specialist_agents(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        mock_context.state = ScrumState().model_dump()
+
+        with patch.object(agent_module, "init_scrum_state") as mock_init:
+            ensure_state_initialized_callback(mock_context, MagicMock())
+
+        mock_init.assert_not_called()
+        self.assertNotIn("_state_auto_initialized", mock_context.state)
+
+    def test_init_scrum_state_failure_does_not_raise_and_still_sets_the_flag(self):
+        """A persistently-failing init call (e.g. GitHub App auth down)
+        must not be retried on every single turn forever - the flag is set
+        regardless of success, same as the rest of this callback chain's
+        best-effort error handling."""
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = ScrumState().model_dump()
+
+        with patch.object(agent_module, "init_scrum_state", side_effect=RuntimeError("boom")):
+            ensure_state_initialized_callback(mock_context, MagicMock())  # must not raise
+
+        self.assertTrue(mock_context.state["_state_auto_initialized"])
+
+    def test_registered_first_in_root_agent_before_model_callbacks(self):
+        self.assertEqual(root_agent.before_model_callback[0], ensure_state_initialized_callback)
 
 
 if __name__ == "__main__":

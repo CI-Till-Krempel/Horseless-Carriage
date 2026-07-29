@@ -385,6 +385,42 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str) -> None:
         pass
 
 
+def ensure_state_initialized_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
+    """
+    BeforeModelCallback: mechanically calls init_scrum_state() once per
+    session, before any other before_model_callback (registered first in
+    root_agent's before_model_callback list) - instead of relying on the
+    Orchestrator to proactively call it itself as its own first tool call
+    (GH issue #72: "the orchestrator cannot access the config" - repo URL,
+    budgets, interaction level all showed as unset/zero for an entire
+    session because init_scrum_state() was never actually invoked).
+
+    This also fixes a knock-on effect of that gap: check_cost_budget_callback
+    (which runs right after this one) halts the *entire* session outright -
+    before the model, and therefore the ISSUE-0027 proactive greeting, ever
+    runs - if state.budgets.total_usd is <= 0 and the SPRINT_USD_BUDGET env
+    var also resolves to <= 0. init_scrum_state()'s own "HARD GUARDRAIL"
+    (agents/scrum_team/tools/scrum.py) already replaces a 0/negative budget
+    with a sane default (1M tokens / $10) - but only once it actually runs.
+    Auto-running it here, before that budget check, means a misconfigured
+    or literal-zero SPRINT_USD_BUDGET can no longer silently kill the
+    session before the user ever sees a reply.
+
+    Deliberately does not pass secrets anywhere new - init_scrum_state()
+    already only reads from os.environ / the state repo, the same as if
+    the model had called it itself; this just guarantees it actually runs.
+    """
+    if callback_context.agent_name != "ScrumOrchestrator":
+        return
+    if callback_context.state.get("_state_auto_initialized"):
+        return
+    try:
+        init_scrum_state(tool_context=callback_context)
+    except Exception as e:
+        logger.warning(f"ensure_state_initialized_callback: init_scrum_state() failed (non-fatal): {e}")
+    callback_context.state["_state_auto_initialized"] = True
+
+
 def check_cost_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
     """
     BeforeModelCallback: Checks if the team is over budget before allowing an agent to start.
@@ -1013,8 +1049,9 @@ root_agent = LlmAgent(
     ],
     sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian],
     before_model_callback=[
-        inject_litellm_key_callback, 
-        check_cost_budget_callback, 
+        ensure_state_initialized_callback,
+        inject_litellm_key_callback,
+        check_cost_budget_callback,
         sprint_status_injection_callback,
         history_management_callback
     ],

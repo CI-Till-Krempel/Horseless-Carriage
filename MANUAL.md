@@ -189,6 +189,12 @@ Carriage itself* is released — this section is how the agents release the prod
   per-agent quota is too aggressive for your provider tier; lower it or switch
   `LOG_LEVEL=debug` temporarily to see request volume.
 - **Old virtual keys stopped working** — see [§5](#5-budgets) recovery steps.
+- **Repo/budget config shows as unset, or the session goes silent on the very first message** — state
+  (repo URL, budgets, interaction level) is now loaded automatically before the Orchestrator's first
+  turn each session, so this shouldn't recur; if it does, check that `SPRINT_USD_BUDGET`/
+  `SPRINT_TOKEN_BUDGET` in `.env` aren't explicitly set to `0` (a genuinely unset value already
+  defaults to a safe budget, but an explicit `0` is treated as "no budget" and previously could halt
+  the session before it even started replying).
 - **Orchestrator keeps re-describing the same plan instead of acting** — after 3 replies in a row
   with no tool call at all, a `⏸ [NO ACTION TAKEN - ...]` banner is mechanically prepended to its
   next reply (you'll see it directly in the chat, not just in logs), and it shows up in
