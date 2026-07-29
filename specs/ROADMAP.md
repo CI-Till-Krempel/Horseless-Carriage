@@ -62,6 +62,7 @@ Stories:
 
 ### Backlog (unplanned)
 - [ ] [EP-0007] Deeper LiteLLM Platform Integration
+- [ ] [EP-0008] Concurrency-Safe State and a Working Parallel Loop
 
 ---
 

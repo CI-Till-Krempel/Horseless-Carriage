@@ -32,10 +32,16 @@ around a disposable session created fresh for that one harness run.
 Reusing it against this repo's real, persistent production session (the
 sqlite-backed session a live web/CLI user may simultaneously have open)
 risks two writers racing on the same session.state - a real correctness
-problem, not a paperwork one - and deserves its own focused change once
-that's worked out, not a wallpapered-over shortcut in this one. This
-script safely covers the "notice new work" half; someone still starts the
-agent itself, same as today.
+problem, not a paperwork one. save_state_to_repo()'s git-commit checkpoint
+(ISSUE-0024) is a safety net for *recovering* from that, not a fix for it
+happening in the first place - it still writes each caller's full
+in-memory snapshot unconditionally, so a second writer's save can silently
+discard a first writer's unique changes. Closing that gap (optimistic
+concurrency on state writes, a session lock, then a real headless trigger
+here) is scoped as its own epic - see specs/stories/EP-0008-Concurrency-
+Safe-State-And-A-Working-Parallel-Loop.md - rather than a shortcut in this
+change. This script safely covers the "notice new work" half; someone
+still starts the agent itself, same as today.
 
 Usage:
   python3 watch_roadmap.py          Poll forever (Ctrl+C to stop).

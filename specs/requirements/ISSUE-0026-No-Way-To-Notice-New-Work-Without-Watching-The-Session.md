@@ -63,7 +63,11 @@ something to bolt on as a side effect of this change.
   safely alongside this change. This mirrors the same reasoning already applied to entrypoint.sh's
   signal handling in ISSUE-0024 and GitHub App manifest automation in ISSUE-0023 - a big, explicitly-
   flagged-as-risky ask gets a scoped, safe first slice plus a clearly documented deferral, not a
-  rushed full implementation.
+  rushed full implementation. Filed as `specs/stories/EP-0008-Concurrency-Safe-State-And-A-Working-
+  Parallel-Loop.md`, prompted directly by a PR review comment proposing git-commit-based state updates
+  as the fix - that part (atomic writes + a commit per save) is already done via ISSUE-0024; EP-0008
+  breaks down what's still needed on top of it (optimistic concurrency, session locking) before a
+  headless trigger or real concurrent execution can be safe.
 - `watch_roadmap.py` deliberately does not import anything from `agents/` (the ADK/pydantic-dependent
   package) - it's a plain host-side script, stdlib-only, in the same style as `doctor.py`/
   `lib_docker.py`, so it doesn't need `requirements.txt` installed to run.

@@ -75,10 +75,10 @@ the poll interval, default 300s) - it does **not** start or drive a session itse
 pattern (`agents/scrum_team/scripts/run_eval.py`), which creates a disposable session just for that
 one harness run. Reusing that against this repo's real, persistent production session (the
 sqlite-backed session a live web/CLI user might have open at the same moment) risks two writers
-racing on the same `session.state` - a real correctness problem, not a paperwork one - so it's left
-for a focused follow-up once that's worked out, rather than a shortcut here. You still start the
-agent yourself (`python3 run.py`); this script only saves you from having to keep checking whether
-there's anything new for it to do.
+racing on the same `session.state` - a real correctness problem, not a paperwork one. Closing that gap
+is scoped as its own epic - see `specs/stories/EP-0008-Concurrency-Safe-State-And-A-Working-Parallel-
+Loop.md` - rather than a shortcut here. You still start the agent yourself (`python3 run.py`); this
+script only saves you from having to keep checking whether there's anything new for it to do.
 
 ## Logging & Session Management
 
