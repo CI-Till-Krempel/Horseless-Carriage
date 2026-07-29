@@ -633,29 +633,51 @@ def _trim_transcript(transcript: List[Dict[str, Any]], max_entries: Optional[int
 
 def history_management_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
-    BeforeModelCallback: Injects and synchronizes conversation history for the Orchestrator.
+    BeforeModelCallback: recovers persisted conversation history into a
+    genuinely fresh ADK session, and keeps state.messages synced with
+    whatever the model actually saw this turn.
     """
     if callback_context.agent_name != "ScrumOrchestrator":
         return
 
     state = get_scrum_state(callback_context.state)
-    
-    # 1. Injection logic (only for the very first turn of a run)
-    if not llm_request.previous_interaction_id:
-        if state.messages:
-            history_contents = []
-            for msg in state.messages:
-                # Ensure we have a role and content
-                role = msg.get("role", "user")
-                content_text = msg.get("content", "")
-                if content_text:
-                    history_contents.append(types.Content(role=role, parts=[types.Part(text=content_text)]))
-            
-            if history_contents:
-                # Check if we already have the same messages at the start (avoiding duplicates on resume)
-                # This is a safety check.
-                llm_request.contents = history_contents + llm_request.contents
-                logger.info(f"Resumed {len(history_contents)} messages from conversation history.")
+
+    # 1. Recovery injection - ONLY when ADK's own native session/event
+    # history is itself empty (len(llm_request.contents) <= 1: nothing but
+    # - at most - the bare new user message). google.adk.flows.llm_flows.
+    # contents._ContentLlmRequestProcessor already replays the full
+    # conversation from invocation_context.session.events into
+    # llm_request.contents by default, BEFORE any before_model_callback
+    # (this one included) ever runs - so on any normal, continuing
+    # session, llm_request.contents already has the real history.
+    # Gating this on `not llm_request.previous_interaction_id` (as
+    # before) was wrong: that's falsy on the first internal model call of
+    # *every* new user turn, not just a session's true first turn ever -
+    # so on a normal continuing session, this re-prepended state.messages
+    # on top of history ADK had already supplied, the sync step below then
+    # persisted that doubled view back into state.messages, and the
+    # following turn's already-longer ADK-native history got a FRESH
+    # state.messages replay stacked on top yet again - compounding without
+    # bound (GH issue #70, "loop is broken, orchestrator not starting
+    # sprint": a sprint's worth of duplicated exchanges buried the user's
+    # actual latest instruction under repeated old ones and inflated token
+    # usage every single turn). The check below only fires for the one
+    # case where it's actually needed and never duplicates: a genuinely
+    # fresh ADK session (empty session.events) recovering context from a
+    # persisted state.messages (e.g. after init_scrum_state() just loaded
+    # .hc/state.json into this brand new session).
+    if len(llm_request.contents) <= 1 and state.messages:
+        history_contents = []
+        for msg in state.messages:
+            # Ensure we have a role and content
+            role = msg.get("role", "user")
+            content_text = msg.get("content", "")
+            if content_text:
+                history_contents.append(types.Content(role=role, parts=[types.Part(text=content_text)]))
+
+        if history_contents:
+            llm_request.contents = history_contents + llm_request.contents
+            logger.info(f"Recovered {len(history_contents)} messages from persisted conversation history.")
 
     # 2. Sync state.messages with the current full contents to keep it fresh
     new_history = []
@@ -673,14 +695,72 @@ def history_management_callback(callback_context: CallbackContext, llm_request: 
             except Exception:
                 pass
 
+ORCHESTRATOR_STALL_THRESHOLD = 3
+
+
+def _track_orchestrator_stall(callback_context: CallbackContext, llm_response: LlmResponse) -> None:
+    """
+    Tracks how many consecutive Orchestrator replies in a row have made NO
+    tool call at all - i.e. it's just talking, not actually delegating,
+    saving state, or otherwise mechanically acting (GH issue #70: "loop is
+    broken, orchestrator not starting sprint even though the job is
+    clear"). Once that streak hits ORCHESTRATOR_STALL_THRESHOLD, mechanically
+    prepends a hard-to-miss banner directly onto the visible response text
+    - not just a prompt instruction the model might not follow - and
+    records a blocking interaction (GH issue #53/ISSUE-0025) so a human not
+    reading every reply closely still gets notified. A real tool call (most
+    commonly transfer_to_agent, itself a tool call) resets the streak - the
+    Orchestrator delegating work is exactly the "acting, not just talking"
+    behavior this exists to confirm is actually happening.
+    """
+    made_tool_call = any(getattr(p, "function_call", None) for p in (llm_response.content.parts or []))
+    if made_tool_call:
+        stall_count = 0
+    else:
+        stall_count = (callback_context.state.get("orchestrator_stall_count") or 0) + 1
+    try:
+        callback_context.state["orchestrator_stall_count"] = stall_count
+    except (TypeError, KeyError):
+        try:
+            setattr(callback_context.state, "orchestrator_stall_count", stall_count)
+        except Exception:
+            pass
+
+    if stall_count == ORCHESTRATOR_STALL_THRESHOLD and llm_response.content.parts:
+        banner = (
+            f"⏸ [NO ACTION TAKEN - {stall_count} replies in a row with no tool call] If you "
+            "intend to act (delegate, save state, run a tool), you must actually call it now - "
+            "describing what you would do is not enough.\n\n"
+        )
+        for part in llm_response.content.parts:
+            if part.text:
+                part.text = banner + part.text
+                break
+        try:
+            record_blocking_interaction(
+                "stalled",
+                f"Orchestrator has replied {stall_count} times in a row without calling any tool.",
+                detail="Check the chat - it may be waiting on something, or just talking instead of acting.",
+                tool_context=callback_context,
+            )
+        except Exception:
+            pass
+
+
 def history_management_after_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
     """
     AfterModelCallback: Appends every agent's turn to the shared multi-agent
     transcript, and additionally saves the ScrumOrchestrator's own turns to
     the flat resumable conversation history used for CLI/web session resume.
+    Also tracks whether the Orchestrator is stalling (see
+    _track_orchestrator_stall) before extracting its final text, so a
+    mechanical warning banner (if one was just added) is captured too.
     """
     if not llm_response.content:
         return None
+
+    if callback_context.agent_name == "ScrumOrchestrator":
+        _track_orchestrator_stall(callback_context, llm_response)
 
     text = "".join(p.text for p in llm_response.content.parts if p.text)
     if not text:
