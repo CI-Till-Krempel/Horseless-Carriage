@@ -1,0 +1,63 @@
+[← Back to README](../README.md)
+
+# Blocking Interactions & Notifications
+
+The Scrum team is designed to run unsupervised during a sprint - which means a moment that
+genuinely needs a human (a release blocked on a missing approval, the sprint budget running out)
+can go unnoticed if the human isn't actively watching the session's chat. `blocking_interactions`
+(see `agents/scrum_team/state.py`) is a persisted, checkpointed task list of exactly these moments,
+independent of whatever's currently visible in the transcript - and every time one is recorded, a
+configurable notifier is also fired so it's pushed somewhere a human will actually see it.
+
+## The blocking-interactions list
+
+Recorded via `record_blocking_interaction(kind, summary, detail="", tool_context=None)`
+(`agents/scrum_team/tools/notifications.py`) - `kind` is a short free-text tag (e.g. `"approval"`,
+`"critical_error"`), not a closed enum, so new call sites don't need a code change here. Two things
+already call it automatically:
+
+- `advance_story_stage(..., "Implemented")` and `create_release_pr`, when rejected for lack of a
+  fresh `record_human_approval(...)` - the "absolutely necessary human feedback" case.
+- `check_cost_budget_callback`'s halt branches (token budget exhausted, no USD budget configured,
+  USD budget exhausted, or the LiteLLM proxy's own budget check failing) - the "critical tool error"
+  case, since these halt the whole sprint for every agent until a human intervenes.
+
+Query it with `list_blocking_interactions(include_resolved=False, tool_context=None)` (open items by
+default, or the full history with `include_resolved=True`), and clear one with
+`resolve_blocking_interaction(interaction_id, tool_context=None)` once it's actually been addressed
+(e.g. a fresh approval was recorded, or the underlying issue was fixed). Entries are never deleted,
+only marked resolved - `blocking_interactions` doubles as a history, not just a live queue.
+
+Persisted the same way as `record_human_approval`/`add_impediment`: written into
+`.hc/state.json` and checkpointed to the state repository's local git history on every call (see
+[State Repository § Checkpointing and recovery](STATE-REPOSITORY.md#checkpointing-and-recovery)) -
+so a blocking interaction survives a crash immediately after it's recorded, not just once something
+else happens to save state later.
+
+## The notification plugin interface
+
+`Notifier` (`agents/scrum_team/tools/notifications.py`) is a small base class with one method,
+`notify(interaction: dict) -> None`. A new integration - Slack, email, a generic webhook - is a new
+subclass registered in `NOTIFIER_REGISTRY`; nothing about `record_blocking_interaction` or its
+callers needs to change.
+
+```python
+class SlackNotifier(Notifier):
+    name = "slack"
+
+    def notify(self, interaction: dict) -> None:
+        ...  # post interaction["summary"]/["detail"] to a configured webhook URL
+
+NOTIFIER_REGISTRY["slack"] = SlackNotifier
+```
+
+Which notifiers actually fire is controlled by `NOTIFICATION_PLUGINS` in `.env` - a comma-separated
+list of names from `NOTIFIER_REGISTRY`. Defaults to `"console"` if unset: `ConsoleNotifier` prints a
+hard-to-miss banner to stderr, picked up by `docker compose logs agent` (or a foreground terminal)
+with zero external configuration - the safety net every other notifier is layered on top of, not a
+placeholder to be replaced. An unrecognized name in `NOTIFICATION_PLUGINS` is skipped with a warning
+rather than failing every notification over one typo.
+
+A notifier's own `notify()` failing (network error, bad webhook URL, ...) never prevents the
+blocking interaction itself from being recorded, and never stops any other configured notifier from
+still firing - each is called independently, best-effort.

@@ -178,6 +178,9 @@ from .tools import (
     add_impediment,
     add_retro_action,
     record_human_approval,
+    record_blocking_interaction,
+    resolve_blocking_interaction,
+    list_blocking_interactions,
     plan_sprint_backlog_item,
     start_sprint,
     git_push,
@@ -368,6 +371,20 @@ def _sync_roadmap_on_exhaustion_once(callback_context: CallbackContext) -> None:
     callback_context.state["budget_exhaustion_synced"] = True
 
 
+def _notify_critical_halt(callback_context: CallbackContext, msg: str) -> None:
+    """Records + notifies a blocking interaction (GH issue #53) for a
+    budget-halt event below - these are exactly the "critical tool error"
+    case an unsupervised run needs pushed to a human, not just left as a
+    chat message in a session nobody may be watching. Best-effort: a
+    notification failure must never turn an already-critical halt into an
+    unhandled exception on top."""
+    from .tools.notifications import record_blocking_interaction
+    try:
+        record_blocking_interaction("critical_error", msg, tool_context=callback_context)
+    except Exception:
+        pass
+
+
 def check_cost_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
     """
     BeforeModelCallback: Checks if the team is over budget before allowing an agent to start.
@@ -414,6 +431,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
             f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
             f"Current usage: {token_usage:,}. Agent execution halted."
         )
+        _notify_critical_halt(callback_context, msg)
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -431,6 +449,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     if budget_limit <= 0:
         # If still 0, something is wrong with configuration
         msg = "❌ [CONFIGURATION ERROR] No USD budget limit set for the sprint. Agent execution halted for safety."
+        _notify_critical_halt(callback_context, msg)
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -461,6 +480,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                 f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
                 f"Current spend: ${current_spend:.2f}. Agent execution halted."
             )
+            _notify_critical_halt(callback_context, msg)
             return LlmResponse(
                 content=types.Content(role="model", parts=[types.Part(text=msg)]),
                 model_version=llm_request.model or "unknown"
@@ -468,6 +488,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     except requests.RequestException as e:
         _sync_roadmap_on_exhaustion_once(callback_context)
         msg = f"❌ [BUDGET ERROR] Could not verify budget status with LiteLLM proxy: {e}. Agent execution halted to prevent unmonitored spending."
+        _notify_critical_halt(callback_context, msg)
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -751,6 +772,9 @@ scrum_master = LlmAgent(
         add_retro_action,
         upsert_issue,
         record_human_approval,
+        record_blocking_interaction,
+        resolve_blocking_interaction,
+        list_blocking_interactions,
         log_decision,
         update_budgets,
         get_budget_status,
@@ -861,6 +885,7 @@ root_agent = LlmAgent(
         configure_github_app,
         seed_repository,
         repo_status,
+        list_blocking_interactions,
         save_state_to_repo,
         load_state_from_repo,
         create_litellm_virtual_key,

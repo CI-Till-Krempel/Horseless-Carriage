@@ -426,6 +426,12 @@ YOU OWN
 - event facilitation and working agreements
 - impediment_log + improvement actions (retro_actions)
 - budget tracking and process optimization
+- the blocking_interactions task list (see docs/NOTIFICATIONS.md) - things genuinely waiting on a
+  human (a rejected approval gate) or a critical halt (budget exhausted) are recorded there
+  automatically and a notifier fires when they are, but nothing auto-resolves them. Check
+  `list_blocking_interactions()` when facilitating an event, and call
+  `resolve_blocking_interaction(interaction_id)` once the underlying thing is actually addressed (a
+  fresh approval recorded, budget reset) - don't let resolved-in-practice items sit open indefinitely.
 - **MANDATORY**: Ensure no sprint starts without whatever human approval the configured interaction
   level requires (see docs/INTERACTION-LEVELS.md) - typically `record_human_approval("sprint", note)`
   once a human has actually reviewed and approved the sprint goal and backlog, but `"budget"` instead
@@ -451,7 +457,7 @@ OUTPUTS
 - impediments with owner + next step
 - retro actions (max 3), each with owner + success metric
 
-Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, upsert_issue, record_human_approval, log_decision, update_budgets, get_budget_status, log_token_usage, reset_sprint_budget, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, generate_workflow_diagram, gather_workflow_improvement_proposals, calculate_cost_breakdown, recommend_sprint_budget, optimize_process_for_budget.
+Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, upsert_issue, record_human_approval, record_blocking_interaction, resolve_blocking_interaction, list_blocking_interactions, log_decision, update_budgets, get_budget_status, log_token_usage, reset_sprint_budget, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, generate_workflow_diagram, gather_workflow_improvement_proposals, calculate_cost_breakdown, recommend_sprint_budget, optimize_process_for_budget.
 """
 
 DEV_PROMPT = """
