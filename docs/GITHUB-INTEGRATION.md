@@ -45,6 +45,10 @@ To have the agents act as a distinct entity in your **Workspace Repo** (e.g., Kr
     *   Click **Generate a private key**, and keep the `.pem` file content ready.
 5.  **Configure**: Provide these 3 items to the `ScrumOrchestrator` Setup Wizard (or to `setup_llm.py`'s Git identity / state repository prompts - see [Setup](SETUP.md)). It will handle the rest!
 
+## Verifying access actually works
+
+Whichever method you use, a credential merely being *present* in `.env` doesn't guarantee it can actually read or write the target repo's issues and pull requests - a fine-grained personal access token or a GitHub App installation can restrict those independently of one another. Given `GITHUB_REPO_URL` and a resolvable credential, `doctor.py` performs a live, read-only check: it reads the repo itself, lists its issues, and lists its pull requests, and reports the repo-level `permissions.push` flag as a proxy for write access. It stops short of attempting an actual write (there's no safe, side-effect-free way to test that), so a clean result here is encouraging but not an absolute guarantee every write will succeed.
+
 # Branching Model (GitFlow)
 
 Once configured, the team never pushes straight to a single branch of your Workspace Repo -

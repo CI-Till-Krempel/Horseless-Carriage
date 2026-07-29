@@ -22,8 +22,10 @@ Unlike the session history (which is transient and internal), the State Reposito
 
 ## State Repository Check
 
-The `check_state_repo.py` script verifies that your state repository is in the expected state for the tools to work correctly. It checks for the correct directory structure and ensures no stray template files are present in the `specs` directory.
+The `check_state_repo.py` script verifies that your state repository is in the expected state for the tools to work correctly. It checks for the correct directory structure, ensures no stray template files are present in the `specs` directory, and (if `.hc/state.json` already exists) validates it.
 
 ```bash
 python3 check_state_repo.py
 ```
+
+`setup_all.py`'s guided flow runs this for you right after `setup_llm.py` creates/clones the repository. `doctor.py` also runs the cheap part of this check (the `specs/` directory + stray-template checks, not the heavier `state.json` validation) on every invocation, so a broken state repository shows up in its punch list too - run `check_state_repo.py` directly for the fuller picture doctor.py's summary points you to.

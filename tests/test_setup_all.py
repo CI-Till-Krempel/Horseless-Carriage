@@ -176,6 +176,7 @@ class TestMain:
 
     def _mock_all_steps_succeed(self, monkeypatch):
         monkeypatch.setattr(setup_all.setup_llm, "main", lambda: None)
+        monkeypatch.setattr(setup_all.check_state_repo, "main", lambda: None)
         monkeypatch.setattr(setup_all.setup_project, "main", lambda: None)
         monkeypatch.setattr(setup_all.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
         monkeypatch.setattr(setup_all, "offer_to_start", lambda default_dev: None)
@@ -227,6 +228,39 @@ class TestMain:
         def fail_if_called(default_dev):
             raise AssertionError("offer_to_start must not run if the doctor gate never cleared")
         monkeypatch.setattr(setup_all, "offer_to_start", fail_if_called)
+
+        with pytest.raises(SystemExit) as exc_info:
+            setup_all.main()
+        assert exc_info.value.code == 1
+
+    def test_state_repo_check_runs_after_setup_llm_before_setup_project(self, monkeypatch):
+        """Acceptance Criteria (GH issue #60): check_state_repo.py used to
+        be a step nothing else in the guided flow ever ran for you - it
+        must now run right after setup_llm.py (which creates/clones the
+        state repo) and before setup_project.py."""
+        self._mock_all_steps_succeed(monkeypatch)
+        monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py"])
+        order = []
+        monkeypatch.setattr(setup_all.setup_llm, "main", lambda: order.append("setup_llm"))
+        monkeypatch.setattr(setup_all.check_state_repo, "main", lambda: order.append("check_state_repo"))
+        monkeypatch.setattr(setup_all.setup_project, "main", lambda: order.append("setup_project"))
+
+        setup_all.main()
+
+        assert order == ["setup_llm", "check_state_repo", "setup_project"]
+
+    def test_state_repo_check_failure_stops_before_setup_project(self, monkeypatch):
+        self._mock_all_steps_succeed(monkeypatch)
+        monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py"])
+        monkeypatch.setattr("builtins.input", lambda _p: "n")  # decline the retry prompt
+
+        def failing_check_state_repo():
+            raise SystemExit(1)
+        monkeypatch.setattr(setup_all.check_state_repo, "main", failing_check_state_repo)
+
+        def fail_if_called():
+            raise AssertionError("setup_project.main must not run if check_state_repo failed and the user declined retry")
+        monkeypatch.setattr(setup_all.setup_project, "main", fail_if_called)
 
         with pytest.raises(SystemExit) as exc_info:
             setup_all.main()
