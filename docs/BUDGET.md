@@ -43,6 +43,15 @@ The system implements a **dual-layer budgeting strategy** to ensure both operati
   Orchestrator itself is exempt from this specific check, since it needs one
   bootstrap call to create everyone else's key in the first place — see
   `check_cost_budget_callback` in `agents/scrum_team/agent.py`.
+- **Not meaningful for a local/Ollama setup**: self-hosted models have no real per-token
+  price, so LiteLLM's cost map has no pricing entry for them and `spend` on
+  `scrum-sprint-budget` stays at (or effectively) $0.00 regardless of actual usage — the
+  USD check would otherwise pass trivially forever, giving false confidence that a budget
+  is actually being enforced. `docker-compose.local.yaml` sets `LLM_LOCAL_PROVIDER=true` on
+  the `agent` service specifically so `check_cost_budget_callback` can detect this and skip
+  the USD check outright (rather than run a check that can never meaningfully fail). **The
+  token budget above is the only guardrail that applies to a local/Ollama sprint** — set
+  `SPRINT_TOKEN_BUDGET` accordingly.
 - **Tools**: `update_budgets(total_usd=0.50)`, `create_litellm_virtual_key()`.
 
 ## Monitoring & Reporting

@@ -140,6 +140,13 @@ The guardrail above means every *other* agent stays blocked during this window �
 only the Orchestrator's bootstrap call runs on the temporarily-unbounded key, and
 only for as long as it takes to recreate everyone's keys.
 
+**Running fully local (Ollama)?** The USD budget doesn't apply — a self-hosted
+model has no real per-token price, so LiteLLM's spend for it is always ~$0
+regardless of actual usage. `docker-compose.local.yaml` sets `LLM_LOCAL_PROVIDER=true`
+so the system skips that check automatically rather than let it "pass" with false
+confidence. The **token budget** (`SPRINT_TOKEN_BUDGET`) is your only real guardrail
+in this mode — set it to whatever cap makes sense for your hardware/patience.
+
 ## 6. Trusting the numbers: real KPIs
 
 `calculate_kpis()` reports on:

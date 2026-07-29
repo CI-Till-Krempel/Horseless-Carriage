@@ -122,6 +122,11 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - GIT_USER_NAME=${GIT_USER_NAME}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL}
+      # GH issue #75: self-hosted Ollama models have no real per-token price
+      # behind them, so LiteLLM's spend tracking for them is always ~$0 -
+      # tells check_cost_budget_callback to skip the meaningless remote USD
+      # check and rely on the local token budget instead. See docs/BUDGET.md.
+      - LLM_LOCAL_PROVIDER=true
     depends_on:
       - litellm
     # Keep the container running and allow for interactive sessions

@@ -135,6 +135,36 @@ class TestAgent(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_check_cost_budget_callback_skips_usd_check_for_local_provider(self):
+        """
+        Acceptance Criteria (GH issue #75): self-hosted Ollama models have no
+        real per-token price, so LiteLLM's spend tracking for them is always
+        ~$0 and the remote USD check would pass trivially forever. With
+        LLM_LOCAL_PROVIDER=true, that check (and its network round-trip) is
+        skipped outright - the token budget in step 1 remains the guardrail
+        that actually applies.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total = 1000
+        state.budgets.total_usd = 10.0
+        state.litellm_keys["DevTeam"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        with patch.dict("os.environ", {
+            "LITELLM_MASTER_KEY": "test-master-key",
+            "LITELLM_PROXY_API_BASE": "http://litellm:4000",
+            "LLM_LOCAL_PROVIDER": "true",
+        }):
+            with patch("requests.post") as mock_post:
+                result = check_cost_budget_callback(mock_context, mock_llm_request)
+
+        self.assertIsNone(result)
+        mock_post.assert_not_called()
+        self.assertTrue(mock_context.state["_local_provider_usd_notice_shown"])
+
     def test_sprint_status_injection_callback(self):
         mock_context = MagicMock()
         mock_context.agent_name = "ScrumOrchestrator"
