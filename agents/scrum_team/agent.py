@@ -474,6 +474,24 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
         )
 
     # 2. Check USD Budget (Remote Guardrail via LiteLLM Proxy)
+    if os.environ.get("LLM_LOCAL_PROVIDER") == "true":
+        # GH issue #75: self-hosted Ollama models have no real per-token
+        # price - LiteLLM's cost map has no entry for arbitrary local model
+        # tags, so `spend` on scrum-sprint-budget stays ~$0 regardless of
+        # actual usage, making this check pass trivially forever. Skip it
+        # (and the network round-trip to the proxy) rather than let it stand
+        # in as a guardrail it can't actually provide - the token budget in
+        # step 1 above is the one that meaningfully caps a local sprint. See
+        # docs/BUDGET.md.
+        if not callback_context.state.get("_local_provider_usd_notice_shown"):
+            logger.info(
+                "check_cost_budget_callback: LLM_LOCAL_PROVIDER=true - skipping the remote USD "
+                "budget check (self-hosted models have no real per-token price to track). "
+                "Only the token budget applies for this sprint."
+            )
+            callback_context.state["_local_provider_usd_notice_shown"] = True
+        return None
+
     budget_limit = state.budgets.total_usd
     # Fallback to environment if state is missing/zero
     if budget_limit <= 0:

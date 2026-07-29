@@ -77,6 +77,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - GIT_USER_NAME=${GIT_USER_NAME}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL}
+      - LLM_LOCAL_PROVIDER=false
       # GH issue #76: Docker Compose only passes variables explicitly listed
       # here into the container - it does NOT forward the rest of the host's
       # .env automatically, however plausible that might look. These three
