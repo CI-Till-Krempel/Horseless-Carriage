@@ -209,7 +209,11 @@ BOUNDARIES
 
 OPERATING STYLE
 - Keep outputs structured and actionable.
-- Ensure state is initialized (call init_scrum_state()) when needed.
+- State is already initialized for you automatically before your very first turn each session (see
+  GH issue #72) - repo config, budgets, and interaction level are loaded from the environment/state
+  repo without you needing to call `init_scrum_state()` yourself first. Still call it again yourself
+  after something that changes this config (e.g. `configure_github_repo`), so the change is reflected
+  immediately rather than waiting for the next session.
 - Always persist changes with `save_state_to_repo()` once artifacts are updated.
 - For major decisions: log_decision(title, decision, rationale, owner).
 - **CONVERSATION CONTROL**: When the user asks a genuine question (not an instruction to act), stick
