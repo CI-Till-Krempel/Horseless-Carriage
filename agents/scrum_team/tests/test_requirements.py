@@ -43,6 +43,21 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("human approval", result["message"])
 
+    def test_implemented_rejection_records_blocking_interaction(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (GH issue #53): a story rejected for lack of a
+        fresh human approval is exactly the "absolutely necessary human
+        feedback" case that must be recorded (and notified on), not just
+        left as a tool error return the calling agent might not relay.
+        """
+        tc = _tool_context("DevTeam", ["Ready"])
+        advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(len(tc.state["blocking_interactions"]), 1)
+        interaction = tc.state["blocking_interactions"][0]
+        self.assertEqual(interaction["kind"], "approval")
+        self.assertIn("US-0001", interaction["summary"])
+        self.assertFalse(interaction["resolved"])
+
     def test_implemented_blocked_while_previous_release_pending(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]

@@ -45,3 +45,4 @@ class ScrumState(BaseModel):
     architect_review_baseline: int = 0
     qa_review_baseline: int = 0
     sprint_report_pending_release: bool = False
+    blocking_interactions: List[Dict[str, Any]] = Field(default_factory=list)

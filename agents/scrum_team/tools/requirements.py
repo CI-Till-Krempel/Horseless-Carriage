@@ -842,15 +842,20 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         if required_approval:
             approvals = sum(1 for a in s.get("human_approvals", []) if a.get("type") == required_approval)
             if approvals <= s.get("sprint_approval_baseline", 0):
-                return {
-                    "status": "error",
-                    "message": (
-                        f"Cannot mark a story Implemented - this interaction level requires a fresh "
-                        f"'{required_approval}' human approval for this sprint - call "
-                        f"record_human_approval('{required_approval}', ...) first (see "
-                        "docs/INTERACTION-LEVELS.md)."
-                    ),
-                }
+                message = (
+                    f"Cannot mark a story Implemented - this interaction level requires a fresh "
+                    f"'{required_approval}' human approval for this sprint - call "
+                    f"record_human_approval('{required_approval}', ...) first (see "
+                    "docs/INTERACTION-LEVELS.md)."
+                )
+                from .notifications import record_blocking_interaction
+                record_blocking_interaction(
+                    "approval",
+                    f"Story '{story_id}' is waiting on a '{required_approval}' human approval before it can be marked Implemented.",
+                    detail=message,
+                    tool_context=tool_context,
+                )
+                return {"status": "error", "message": message}
         if s.get("sprint_report_pending_release"):
             return {
                 "status": "error",

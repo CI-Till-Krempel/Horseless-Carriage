@@ -206,6 +206,10 @@ This should list your GPU. You can also check what Ollama itself detected at sta
 docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml logs ollama | grep "inference compute"
 ```
 
+You don't need to run either of these by hand, though: `doctor.py` (and therefore `run.py`'s
+pre-flight gate) already does this check for you whenever `OLLAMA_GPU_ENABLED=true` and the
+`ollama` container is up, and prints a hard-to-miss warning banner if it finds `library=cpu`.
+
 ## Human Interaction Levels
 
 How much of a human is actually in the loop is configurable via `INTERACTION_LEVEL` (`.env`, set

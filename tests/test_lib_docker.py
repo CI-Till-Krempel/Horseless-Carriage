@@ -41,6 +41,40 @@ class TestComposeRunningServices:
         assert lib_docker.compose_running_services([]) == []
 
 
+class TestOllamaGpuStatus:
+    def test_cuda_log_line_returns_cuda(self, monkeypatch):
+        stdout = 'ollama-1  | time=2026-07-29 level=INFO source=gpu.go msg="inference compute" id=0 library=cuda variant=v12 compute=8.9 driver=12.4 name="NVIDIA GeForce RTX 4090" total="24.0 GiB" available="23.1 GiB"\n'
+        monkeypatch.setattr(lib_docker.subprocess, "run", lambda *a, **k: _completed(a[0], 0, stdout))
+        assert lib_docker.ollama_gpu_status([]) == "cuda"
+
+    def test_cpu_log_line_returns_cpu(self, monkeypatch):
+        stdout = 'ollama-1  | time=2026-07-29 level=INFO source=gpu.go msg="inference compute" id=0 library=cpu variant=avx2 compute="" driver=0.0 name="" total="0 B" available="0 B"\n'
+        monkeypatch.setattr(lib_docker.subprocess, "run", lambda *a, **k: _completed(a[0], 0, stdout))
+        assert lib_docker.ollama_gpu_status([]) == "cpu"
+
+    def test_last_matching_line_wins(self, monkeypatch):
+        stdout = (
+            'ollama-1  | msg="inference compute" id=0 library=cpu\n'
+            'ollama-1  | msg="inference compute" id=0 library=cuda\n'
+        )
+        monkeypatch.setattr(lib_docker.subprocess, "run", lambda *a, **k: _completed(a[0], 0, stdout))
+        assert lib_docker.ollama_gpu_status([]) == "cuda"
+
+    def test_no_matching_line_returns_none(self, monkeypatch):
+        monkeypatch.setattr(lib_docker.subprocess, "run", lambda *a, **k: _completed(a[0], 0, "Waiting for Ollama to start...\n"))
+        assert lib_docker.ollama_gpu_status([]) is None
+
+    def test_command_failure_returns_none(self, monkeypatch):
+        monkeypatch.setattr(lib_docker.subprocess, "run", lambda *a, **k: _completed(a[0], 1, "", "some docker error"))
+        assert lib_docker.ollama_gpu_status([]) is None
+
+    def test_docker_not_installed_returns_none_instead_of_raising(self, monkeypatch):
+        def raise_missing(*a, **k):
+            raise FileNotFoundError("no such file: docker")
+        monkeypatch.setattr(lib_docker.subprocess, "run", raise_missing)
+        assert lib_docker.ollama_gpu_status([]) is None
+
+
 class TestMaybeStopExistingStack:
     def test_nothing_running_does_not_prompt(self, monkeypatch, capsys):
         monkeypatch.setattr(lib_docker, "compose_running_services", lambda compose_args: [])
