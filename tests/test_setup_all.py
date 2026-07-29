@@ -124,6 +124,13 @@ class TestRunDoctorGate:
 
 
 class TestOfferToStart:
+    """
+    Acceptance Criteria (ISSUE-0028 dev-mode ordering fix): dev is decided
+    upfront by main() (step 0), not re-asked here - offer_to_start only
+    asks start?/cli?/daemon?, then folds the already-decided dev value
+    into argv.
+    """
+
     def test_declining_does_not_call_run_main(self, monkeypatch):
         monkeypatch.setattr("builtins.input", lambda _p: "n")
 
@@ -131,62 +138,67 @@ class TestOfferToStart:
             raise AssertionError("run.main must not be called if the user declined to start")
         monkeypatch.setattr(setup_all.run, "main", fail_if_called)
 
-        setup_all.offer_to_start(default_dev=False)
+        setup_all.offer_to_start(dev=False)
 
     def test_accepting_defaults_hands_off_to_run_main_with_web_mode(self, monkeypatch):
-        answers = iter(["y", "", "", ""])  # start? / cli? / daemon? / dev?
+        answers = iter(["y", "", ""])  # start? / cli? / daemon?
         monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
         captured = {}
         monkeypatch.setattr(setup_all.run, "main", lambda argv: captured.setdefault("argv", argv))
 
-        setup_all.offer_to_start(default_dev=False)
+        setup_all.offer_to_start(dev=False)
 
         assert captured["argv"] == ["web"]
 
     def test_all_options_enabled_produces_full_argv(self, monkeypatch):
-        answers = iter(["y", "y", "y", "y"])  # start? / cli? / daemon? / dev?
+        answers = iter(["y", "y", "y"])  # start? / cli? / daemon?
         monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
         captured = {}
         monkeypatch.setattr(setup_all.run, "main", lambda argv: captured.setdefault("argv", argv))
 
-        setup_all.offer_to_start(default_dev=False)
+        setup_all.offer_to_start(dev=True)
 
         assert captured["argv"] == ["cli", "daemon", "dev"]
 
-    def test_default_dev_true_is_used_when_dev_question_left_blank(self, monkeypatch):
-        answers = iter(["y", "", "", ""])  # start? / cli? / daemon? / dev? (blank -> default_dev)
+    def test_dev_true_is_folded_into_argv_even_with_defaults(self, monkeypatch):
+        answers = iter(["y", "", ""])  # start? / cli? / daemon?
         monkeypatch.setattr("builtins.input", lambda _p: next(answers))
 
         captured = {}
         monkeypatch.setattr(setup_all.run, "main", lambda argv: captured.setdefault("argv", argv))
 
-        setup_all.offer_to_start(default_dev=True)
+        setup_all.offer_to_start(dev=True)
 
         assert captured["argv"] == ["web", "dev"]
 
 
 class TestMain:
     """
-    Acceptance Criteria: main() chains setup_llm -> setup_project -> the
+    Acceptance Criteria: main() asks about developer mode first (step 0,
+    before any guided step runs - see ISSUE-0028: dev mode must be settled
+    before any container work, not after setup_llm.py's own Local/Ollama
+    live test has already started a container it would go on to rebuild),
+    then chains setup_llm -> check_state_repo -> setup_project -> the
     doctor gate -> offering to start, in that order, stopping (with a
     nonzero exit) if any guided step or the gate ultimately fails.
     """
 
-    def _mock_all_steps_succeed(self, monkeypatch):
-        monkeypatch.setattr(setup_all.setup_llm, "main", lambda: None)
+    def _mock_all_steps_succeed(self, monkeypatch, dev_answer=""):
+        monkeypatch.setattr("builtins.input", lambda _p: dev_answer)
+        monkeypatch.setattr(setup_all.setup_llm, "main", lambda **k: None)
         monkeypatch.setattr(setup_all.check_state_repo, "main", lambda: None)
         monkeypatch.setattr(setup_all.setup_project, "main", lambda: None)
         monkeypatch.setattr(setup_all.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
-        monkeypatch.setattr(setup_all, "offer_to_start", lambda default_dev: None)
+        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev: None)
 
     def test_happy_path_reaches_offer_to_start(self, monkeypatch):
         self._mock_all_steps_succeed(monkeypatch)
         monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py"])
 
         offered = []
-        monkeypatch.setattr(setup_all, "offer_to_start", lambda default_dev: offered.append(default_dev))
+        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev: offered.append(dev))
 
         setup_all.main()
 
@@ -197,17 +209,31 @@ class TestMain:
         monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py", "--dev"])
 
         offered = []
-        monkeypatch.setattr(setup_all, "offer_to_start", lambda default_dev: offered.append(default_dev))
+        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev: offered.append(dev))
 
         setup_all.main()
 
         assert offered == [True]
 
+    def test_dev_mode_answer_is_threaded_into_setup_llm(self, monkeypatch):
+        """The whole point of ISSUE-0028: setup_llm.py's own Local/Ollama
+        live test needs to know about developer mode too, so it can
+        rebuild the ollama image before starting it for that test."""
+        self._mock_all_steps_succeed(monkeypatch, dev_answer="y")
+        monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py"])
+
+        captured = {}
+        monkeypatch.setattr(setup_all.setup_llm, "main", lambda **k: captured.update(k))
+
+        setup_all.main()
+
+        assert captured == {"dev": True}
+
     def test_setup_llm_failure_stops_before_setup_project(self, monkeypatch):
         monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py"])
-        monkeypatch.setattr("builtins.input", lambda _p: "n")  # decline the retry prompt
+        monkeypatch.setattr("builtins.input", lambda _p: "n")  # decline dev mode, then the retry prompt
 
-        def failing_setup_llm():
+        def failing_setup_llm(**kwargs):
             raise SystemExit(1)
         monkeypatch.setattr(setup_all.setup_llm, "main", failing_setup_llm)
 
@@ -225,7 +251,7 @@ class TestMain:
         monkeypatch.setattr(setup_all.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=True))
         monkeypatch.setattr("builtins.input", lambda _p: "n")  # decline the gate's retry prompt
 
-        def fail_if_called(default_dev):
+        def fail_if_called(dev):
             raise AssertionError("offer_to_start must not run if the doctor gate never cleared")
         monkeypatch.setattr(setup_all, "offer_to_start", fail_if_called)
 
@@ -241,7 +267,7 @@ class TestMain:
         self._mock_all_steps_succeed(monkeypatch)
         monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py"])
         order = []
-        monkeypatch.setattr(setup_all.setup_llm, "main", lambda: order.append("setup_llm"))
+        monkeypatch.setattr(setup_all.setup_llm, "main", lambda **k: order.append("setup_llm"))
         monkeypatch.setattr(setup_all.check_state_repo, "main", lambda: order.append("check_state_repo"))
         monkeypatch.setattr(setup_all.setup_project, "main", lambda: order.append("setup_project"))
 

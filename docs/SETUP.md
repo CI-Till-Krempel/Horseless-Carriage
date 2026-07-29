@@ -11,10 +11,12 @@
 python3 setup_all.py
 ```
 
-Runs steps 1-3 below in order, then offers to start the agent (`run.py`) - this is the fastest path
-for a first-time or new-machine setup. Each step is still a fully standalone script (see the
-sections below) if you'd rather run just one of them, or control the pace yourself; `setup_all.py`
-just chains them and adds a fix→retry loop around each one.
+Asks about developer mode first (before any container work happens - a Local/Ollama setup's own live
+test starts a container developer mode would rebuild, so this can't wait until the end), then runs
+steps 1-3 below in order, then offers to start the agent (`run.py`) - this is the fastest path for a
+first-time or new-machine setup. Each step is still a fully standalone script (see the sections below)
+if you'd rather run just one of them, or control the pace yourself; `setup_all.py` just chains them
+and adds a fix→retry loop around each one.
 
 ## 1. Guided LLM/project setup: `setup_llm.py`
 
