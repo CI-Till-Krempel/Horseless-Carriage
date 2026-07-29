@@ -2,6 +2,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+import requests
+
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.tools.base_tool import BaseTool
 from agents.scrum_team.agent import (
@@ -292,6 +294,99 @@ class TestOnToolErrorCallback(unittest.TestCase):
     def test_registered_on_every_agent(self):
         for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
             self.assertEqual(agent.on_tool_error_callback, on_tool_error_callback)
+
+
+class TestCriticalHaltNotifications(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #53): each budget-halt below is exactly
+    the "critical tool error" case an unsupervised run needs pushed to a
+    human as a blocking interaction, not just left as a chat message in a
+    session nobody may be watching.
+
+    _sync_roadmap_on_exhaustion_once is patched away wherever the halt
+    branch under test calls it - it's pre-existing, unrelated behavior
+    (syncing/pushing the roadmap once budget's exhausted) that does real
+    git operations against whatever _configured_repo_root resolves to;
+    neutralizing it here keeps these tests scoped to the notification
+    wiring this issue actually adds.
+    """
+
+    def test_token_budget_exceeded_records_blocking_interaction(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "TestAgent"
+        state = ScrumState()
+        state.budgets.total = 100
+        state.token_usage.total = 150
+        state.litellm_keys["TestAgent"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+            result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNotNone(result)
+        interactions = mock_context.state["blocking_interactions"]
+        self.assertEqual(len(interactions), 1)
+        self.assertEqual(interactions[0]["kind"], "critical_error")
+        self.assertIn("TOKEN BUDGET EXCEEDED", interactions[0]["summary"])
+
+    def test_no_usd_budget_configured_records_blocking_interaction(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "TestAgent"
+        state = ScrumState()
+        state.budgets.total = 1000000
+        state.budgets.total_usd = 0.0
+        state.litellm_keys["TestAgent"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        with patch.dict("os.environ", {"SPRINT_USD_BUDGET": "0"}, clear=True):
+            result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNotNone(result)
+        interactions = mock_context.state["blocking_interactions"]
+        self.assertEqual(len(interactions), 1)
+        self.assertEqual(interactions[0]["kind"], "critical_error")
+        self.assertIn("CONFIGURATION ERROR", interactions[0]["summary"])
+
+    def test_usd_budget_exceeded_records_blocking_interaction(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "TestAgent"
+        state = ScrumState()
+        state.budgets.total = 1000000
+        state.budgets.total_usd = 5.0
+        state.litellm_keys["TestAgent"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
+            with patch("requests.post") as mock_post:
+                mock_post.return_value.json.return_value = [{"spend": 6.0}]
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNotNone(result)
+        interactions = mock_context.state["blocking_interactions"]
+        self.assertEqual(len(interactions), 1)
+        self.assertEqual(interactions[0]["kind"], "critical_error")
+        self.assertIn("USD BUDGET EXCEEDED", interactions[0]["summary"])
+
+    def test_budget_check_request_exception_records_blocking_interaction(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "TestAgent"
+        state = ScrumState()
+        state.budgets.total = 1000000
+        state.budgets.total_usd = 10.0
+        state.litellm_keys["TestAgent"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
+            with patch("requests.post", side_effect=requests.RequestException("boom")):
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNotNone(result)
+        interactions = mock_context.state["blocking_interactions"]
+        self.assertEqual(len(interactions), 1)
+        self.assertEqual(interactions[0]["kind"], "critical_error")
+        self.assertIn("BUDGET ERROR", interactions[0]["summary"])
 
 
 if __name__ == "__main__":
