@@ -18,6 +18,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import lib_docker
+
 
 def main() -> None:
     os.chdir(Path(__file__).resolve().parent)
@@ -64,8 +66,22 @@ def main() -> None:
         print(".env file already exists.")
 
     # 4. Start the database and LiteLLM containers
+    # Use the same compose file(s) setup_llm.py's own live test already
+    # verified working (docker-compose.local.yaml [+ the GPU override] for
+    # a Local/Ollama setup, docker-compose.yaml otherwise) - a bare
+    # `docker compose up` here would target the default docker-compose.yaml
+    # regardless, and since both compose files define a same-named
+    # `litellm` service, Compose would recreate it against the WRONG
+    # (cloud) config, silently undoing what setup_llm.py just configured
+    # and verified (see ISSUE-0028: a real Windows Local/Ollama setup_all.py
+    # run hit exactly this - the subsequent doctor.py gate failed the live
+    # test with "Missing Gemini API key", despite no cloud provider ever
+    # being chosen).
+    compose_args = lib_docker.compose_file_args(Path("."))
     print("Starting database and LiteLLM containers via Docker Compose...")
-    result = subprocess.run(["docker", "compose", "up", "-d", "db", "litellm"])
+    if compose_args:
+        print(f"(Local/Ollama setup detected - using {compose_args[1]})")
+    result = subprocess.run(["docker", "compose", *compose_args, "up", "-d", "db", "litellm"])
     if result.returncode != 0:
         sys.exit(result.returncode)
 
