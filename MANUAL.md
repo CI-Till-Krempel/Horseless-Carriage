@@ -189,6 +189,12 @@ Carriage itself* is released — this section is how the agents release the prod
   per-agent quota is too aggressive for your provider tier; lower it or switch
   `LOG_LEVEL=debug` temporarily to see request volume.
 - **Old virtual keys stopped working** — see [§5](#5-budgets) recovery steps.
+- **Orchestrator keeps re-describing the same plan instead of acting** — after 3 replies in a row
+  with no tool call at all, a `⏸ [NO ACTION TAKEN - ...]` banner is mechanically prepended to its
+  next reply (you'll see it directly in the chat, not just in logs), and it shows up in
+  `list_blocking_interactions()` too - a code-guaranteed signal, not dependent on the model noticing
+  on its own. If you see this banner, tell it plainly to act now (or ask what specifically it's
+  waiting on) rather than restating the same instructions again.
 
 ## 9. Team performance evaluation
 

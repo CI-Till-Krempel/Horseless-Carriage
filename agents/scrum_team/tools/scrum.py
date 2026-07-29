@@ -95,6 +95,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("qa_review_baseline", 0)
     s.setdefault("sprint_report_pending_release", False)
     s.setdefault("blocking_interactions", [])
+    s.setdefault("orchestrator_stall_count", 0)
 
     # 1. Try to load from repo if present first, so environment can override
     try:
