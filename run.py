@@ -109,6 +109,23 @@ def main(argv: list = None) -> None:
     hand off to this directly (e.g. after a guided setup, with a chosen
     mode/dev flag) can pass an explicit list instead of mutating
     sys.argv themselves."""
+    try:
+        _main(argv)
+    except KeyboardInterrupt:
+        # GH issue #74: Ctrl+C during the foreground `docker compose up`
+        # below raised a raw, uncaught KeyboardInterrupt all the way out of
+        # subprocess.run() (on at least one real Windows run, from inside
+        # subprocess.communicate()'s own wait) - a crash-looking traceback
+        # for what both of this function's own "Press Ctrl+C to stop"
+        # messages describe as the normal, expected way to end a foreground
+        # run. Treat it as one: a clean message and a non-error exit code,
+        # not a stack trace.
+        print()
+        print("Stopped.")
+        sys.exit(0)
+
+
+def _main(argv: list = None) -> None:
     os.chdir(Path(__file__).resolve().parent)
     mode, daemon, dev, extra_args = parse_args(sys.argv[1:] if argv is None else argv)
 

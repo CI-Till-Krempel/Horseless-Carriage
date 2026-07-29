@@ -854,6 +854,32 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
                     pass
     return None
 
+# --- Tool Call Visibility ---
+
+def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict[str, Any]]:
+    """
+    BeforeToolCallback: prints a one-line, hard-to-miss notice for every tool
+    call, to stderr - not just whatever a given ADK frontend chooses to
+    render on its own. ADK's own `adk run` CLI REPL
+    (google.adk.cli.cli.run_interactively/run_input_file) only echoes events
+    that carry `.text` - a pure function_call/function_response event has
+    none, so every tool call was completely invisible to anyone watching a
+    foreground CLI session or `docker compose logs agent`, even for gated
+    actions a human might be expected to notice (e.g. a release PR blocked
+    on a missing approval - see create_release_pr in tools/github.py). The
+    ADK web UI renders its own tool-call panel regardless, so this is a
+    harmless duplicate there and the actual fix for CLI/daemon mode.
+
+    Deliberately logs argument *names* only, not values - tool arguments can
+    carry large file contents or PR bodies, and printing full values here
+    would be noisy at best and a way to leak sensitive content into logs at
+    worst. Always returns None: this is a passive trace, never a gate.
+    """
+    agent_name = getattr(tool_context, "agent_name", None) or "?"
+    arg_names = ", ".join(args.keys()) if args else ""
+    print(f"\U0001f527 [{agent_name}] {tool.name}({arg_names})", file=sys.stderr)
+    return None
+
 # --- Tool Dispatch Error Handling ---
 
 def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, error: Exception) -> Optional[Dict[str, Any]]:
@@ -896,6 +922,7 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
 COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
     "after_model_callback": [update_token_usage_callback, history_management_after_callback],
+    "before_tool_callback": log_tool_invocation_callback,
     "on_tool_error_callback": on_tool_error_callback,
 }
 
@@ -1077,5 +1104,6 @@ root_agent = LlmAgent(
         update_token_usage_callback,
         history_management_after_callback
     ],
+    before_tool_callback=log_tool_invocation_callback,
     on_tool_error_callback=on_tool_error_callback,
 )

@@ -127,6 +127,16 @@ services:
       # tells check_cost_budget_callback to skip the meaningless remote USD
       # check and rely on the local token budget instead. See docs/BUDGET.md.
       - LLM_LOCAL_PROVIDER=true
+      # GH issue #76: Docker Compose only passes variables explicitly listed
+      # here into the container - it does NOT forward the rest of the host's
+      # .env automatically, however plausible that might look. These three
+      # were configurable in .env/setup_llm.py but silently never reached
+      # the agent process, always reading back as unset/default regardless
+      # of what was actually configured.
+      - INTERACTION_LEVEL=${INTERACTION_LEVEL}
+      - GITHUB_DEVELOP_BRANCH=${GITHUB_DEVELOP_BRANCH}
+      - NOTIFICATION_PLUGINS=${NOTIFICATION_PLUGINS}
+      - TRANSCRIPT_MAX_ENTRIES=${TRANSCRIPT_MAX_ENTRIES}
     depends_on:
       - litellm
     # Keep the container running and allow for interactive sessions

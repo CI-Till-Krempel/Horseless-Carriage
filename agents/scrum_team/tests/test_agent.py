@@ -19,6 +19,7 @@ from agents.scrum_team.agent import (
     update_token_usage_callback,
     sprint_status_injection_callback,
     on_tool_error_callback,
+    log_tool_invocation_callback,
     _stories_ready_for_next_stage_count,
     ensure_state_initialized_callback,
 )
@@ -326,6 +327,54 @@ class TestOnToolErrorCallback(unittest.TestCase):
     def test_registered_on_every_agent(self):
         for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
             self.assertEqual(agent.on_tool_error_callback, on_tool_error_callback)
+
+
+class TestLogToolInvocationCallback(unittest.TestCase):
+    """
+    Acceptance Criteria (chat-visibility follow-up): every tool call must be
+    visible somewhere a human watching a foreground session would see it -
+    not just in the final model text turn a frontend happens to render.
+    ADK's own `adk run` CLI REPL only echoes events with `.text` content, so
+    a pure function_call event was previously invisible in CLI mode
+    entirely.
+    """
+
+    def test_prints_agent_and_tool_name_to_stderr(self):
+        tool = BaseTool(name="write_file", description="Write a file to the repo.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+
+        with patch("builtins.print") as mock_print:
+            result = log_tool_invocation_callback(tool, {"path": "x.py", "content": "..."}, tool_context)
+
+        self.assertIsNone(result)
+        mock_print.assert_called_once()
+        printed_text = mock_print.call_args[0][0]
+        self.assertIn("DevTeam", printed_text)
+        self.assertIn("write_file", printed_text)
+        self.assertIn("path", printed_text)
+        self.assertEqual(mock_print.call_args.kwargs.get("file"), agent_module.sys.stderr)
+
+    def test_does_not_leak_argument_values(self):
+        """
+        Only argument *names* are logged, never values - tool args can carry
+        large file contents or PR bodies, which must not end up dumped into
+        logs (noise at best, a leak at worst).
+        """
+        tool = BaseTool(name="write_file", description="Write a file to the repo.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        secret_value = "SUPER-SECRET-FILE-CONTENT"
+
+        with patch("builtins.print") as mock_print:
+            log_tool_invocation_callback(tool, {"content": secret_value}, tool_context)
+
+        printed_text = mock_print.call_args[0][0]
+        self.assertNotIn(secret_value, printed_text)
+
+    def test_registered_on_every_agent(self):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+            self.assertEqual(agent.before_tool_callback, log_tool_invocation_callback)
 
 
 class TestCriticalHaltNotifications(unittest.TestCase):
