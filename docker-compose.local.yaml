@@ -107,25 +107,44 @@ services:
       - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_REPO_URL=${GITHUB_REPO_URL}
-      - GITHUB_REPO_BRANCH=${GITHUB_REPO_BRANCH}
+      # GH issue #82: Compose prints a "variable is not set" warning for any
+      # bare ${VAR} reference left unset in .env, even when the code being
+      # run already has a perfectly good default for it (get_interaction_level(),
+      # _default_push_branch(), etc.) - inline `:-default` here matches those
+      # same code-side defaults exactly, so the warning only fires for a var
+      # that's genuinely required with no safe fallback.
+      - GITHUB_REPO_BRANCH=${GITHUB_REPO_BRANCH:-main}
       - GITHUB_APP_ID=${GITHUB_APP_ID}
       - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
       - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
-      - SPRINT_TOKEN_BUDGET=${SPRINT_TOKEN_BUDGET}
+      - SPRINT_TOKEN_BUDGET=${SPRINT_TOKEN_BUDGET:-1000000}
       # TOTAL_USD_BUDGET is the canonical name (GH issue #81) - not actually
       # meaningful in local mode (see LLM_LOCAL_PROVIDER below), but still
       # passed through for consistency; SPRINT_USD_BUDGET is kept alongside
       # it so an existing .env using the older name keeps working via
-      # get_env_with_deprecated_fallback.
-      - TOTAL_USD_BUDGET=${TOTAL_USD_BUDGET}
-      - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET}
-      - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE}
+      # get_env_with_deprecated_fallback. The `:-` (empty, not a real value)
+      # on both is deliberate (GH issue #82): get_env_with_deprecated_fallback
+      # needs to see each one genuinely absent (empty string, falsy) to know
+      # to check the other - a real inline default here would inject a value
+      # into TOTAL_USD_BUDGET even when only the deprecated name was actually
+      # configured, permanently hiding it. This empty default exists purely
+      # to silence Compose's own warning, not to change what value is used.
+      - TOTAL_USD_BUDGET=${TOTAL_USD_BUDGET:-}
+      - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET:-}
+      - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE:-10.0}
       # Per-sprint config for agents/scrum_team/scripts/run_eval.py - see
-      # .env.example's "Eval Harness Budget Configuration" section.
+      # .env.example's "Eval Harness Budget Configuration" section. No inline
+      # default here (unlike the vars above) - run_eval.py's own
+      # parser.error() deliberately requires these explicitly when the eval
+      # harness actually runs, rather than silently falling back to a value
+      # calibrated for a different purpose.
       - EVAL_SPRINT_TOKEN_BUDGET=${EVAL_SPRINT_TOKEN_BUDGET}
-      - EVAL_USD_BUDGET_PER_SPRINT=${EVAL_USD_BUDGET_PER_SPRINT}
-      - EVAL_SPRINT_USD_BUDGET=${EVAL_SPRINT_USD_BUDGET}
-      - SESSION_ID=${SESSION_ID}
+      # Same deprecated-name pair as TOTAL_USD_BUDGET/SPRINT_USD_BUDGET above -
+      # `:-` (empty) only, not a real default, so run_eval.py's own
+      # get_env_with_deprecated_fallback still sees each one genuinely absent.
+      - EVAL_USD_BUDGET_PER_SPRINT=${EVAL_USD_BUDGET_PER_SPRINT:-}
+      - EVAL_SPRINT_USD_BUDGET=${EVAL_SPRINT_USD_BUDGET:-}
+      - SESSION_ID=${SESSION_ID:-my-sprint}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - GIT_USER_NAME=${GIT_USER_NAME}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL}
@@ -140,10 +159,10 @@ services:
       # were configurable in .env/setup_llm.py but silently never reached
       # the agent process, always reading back as unset/default regardless
       # of what was actually configured.
-      - INTERACTION_LEVEL=${INTERACTION_LEVEL}
-      - GITHUB_DEVELOP_BRANCH=${GITHUB_DEVELOP_BRANCH}
-      - NOTIFICATION_PLUGINS=${NOTIFICATION_PLUGINS}
-      - TRANSCRIPT_MAX_ENTRIES=${TRANSCRIPT_MAX_ENTRIES}
+      - INTERACTION_LEVEL=${INTERACTION_LEVEL:-Product}
+      - GITHUB_DEVELOP_BRANCH=${GITHUB_DEVELOP_BRANCH:-develop}
+      - NOTIFICATION_PLUGINS=${NOTIFICATION_PLUGINS:-console}
+      - TRANSCRIPT_MAX_ENTRIES=${TRANSCRIPT_MAX_ENTRIES:-200}
     depends_on:
       - litellm
     # Keep the container running and allow for interactive sessions
