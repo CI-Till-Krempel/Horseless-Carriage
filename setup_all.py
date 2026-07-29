@@ -8,15 +8,21 @@ chains them for a first-time/new-machine setup so you don't have to
 remember the order or run each one by hand.
 
 Steps:
-  1. setup_llm.py     - provider/model/GPU/interaction-level/budget config,
-                        state repository setup, git identity. Prefills
-                        whatever's already configured on a re-run.
-  2. setup_project.py - Docker/GitHub CLI checks, .env skeleton, brings up
-                        db + litellm(+ollama).
-  3. doctor.py        - gate: shows the full punch list of anything left to
-                        fix, and loops (fix -> retry) until there are no
-                        more ERROR-level items, before proceeding.
-  4. Offers to start the agent now via run.py, in whichever mode you want -
+  1. setup_llm.py        - provider/model/GPU/interaction-level/budget config,
+                           state repository setup, git identity. Prefills
+                           whatever's already configured on a re-run.
+  2. check_state_repo.py - verifies the state repository setup_llm.py just
+                           created/cloned is actually in the shape the tools
+                           expect (specs/ directory, no stray templates, a
+                           valid state.json if one already exists) - this
+                           used to be a separate step nothing else ever ran
+                           for you (GH issue #60).
+  3. setup_project.py    - Docker/GitHub CLI checks, .env skeleton, brings up
+                           db + litellm(+ollama).
+  4. doctor.py           - gate: shows the full punch list of anything left
+                           to fix, and loops (fix -> retry) until there are
+                           no more ERROR-level items, before proceeding.
+  5. Offers to start the agent now via run.py, in whichever mode you want -
      including developer mode (rebuilds images fresh, verbose logs).
 
 Usage:
@@ -28,6 +34,7 @@ Usage:
 import sys
 from pathlib import Path
 
+import check_state_repo
 import doctor
 import run
 import setup_llm
@@ -133,6 +140,10 @@ def main() -> None:
 
     if not run_guided_step("setup_llm.py (LLM provider/model)", setup_llm.main):
         print("Stopping here - re-run python3 setup_all.py (or python3 setup_llm.py directly) when ready.")
+        sys.exit(1)
+
+    if not run_guided_step("check_state_repo.py (state repository)", check_state_repo.main):
+        print("Stopping here - re-run python3 setup_all.py (or python3 check_state_repo.py directly) when ready.")
         sys.exit(1)
 
     if not run_guided_step("setup_project.py (Docker/GitHub CLI)", setup_project.main):
