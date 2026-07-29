@@ -9,6 +9,10 @@ from .scrum import (
     plan_sprint_backlog_item,
     record_human_approval,
     start_sprint,
+    get_corrupted_state_raw_content,
+    save_repaired_state,
+    reset_state_from_git,
+    clear_corrupted_state,
 )
 from .requirements import (
     upsert_story,

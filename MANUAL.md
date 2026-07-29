@@ -191,7 +191,11 @@ Carriage itself* is released — this section is how the agents release the prod
   this re-runs the guided setup (provider/model, project checks) and loops on the doctor gate until
   it's clean, then offers to start the agent.
 - **`python3 check_state_repo.py`** — validates your target repo's `specs/` structure and
-  `.hc/state.json`, and flags stray template files that shouldn't be there.
+  `.hc/state.json`, and flags stray template files that shouldn't be there. If `state.json` is
+  corrupted, run it interactively (a real terminal) for a repair/reset/delete menu — see
+  [State Repository § Checkpointing and recovery](docs/STATE-REPOSITORY.md#checkpointing-and-recovery).
+  The Orchestrator itself also offers the same choice in chat (plus an LLM-assisted repair option
+  only it can do) if this ever happens mid-session instead of during setup.
 - **"GitHub tools may fail" warning on startup** — no `GITHUB_TOKEN` or complete
   `GITHUB_APP_*` trio configured. The container still starts (other tools work
   fine); fix `.env` and restart.

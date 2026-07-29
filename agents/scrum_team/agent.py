@@ -198,6 +198,10 @@ from .tools import (
     repo_status,
     save_state_to_repo,
     load_state_from_repo,
+    get_corrupted_state_raw_content,
+    save_repaired_state,
+    reset_state_from_git,
+    clear_corrupted_state,
     update_budgets,
     get_budget_status,
     log_token_usage,
@@ -637,9 +641,26 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
     open_retro_actions = [r for r in (state.retro_actions or []) if (r.get("status") or "open") == "open"]
     ready_for_next_stage = _stories_ready_for_next_stage_count(state)
 
+    # GH issue #85: state_json_corrupted is a raw flag on the state dict
+    # (set by init_scrum_state, not a ScrumState field), not something
+    # get_scrum_state's ScrumState parsing carries - read it directly so a
+    # corrupted-and-unrecoverable state.json is surfaced to the human in
+    # this same first-message context, instead of the session silently
+    # starting blank with no explanation.
+    state_json_corrupted = bool(callback_context.state.get("state_json_corrupted"))
+    corruption_notice = (
+        "\n- ⚠️ STATE.JSON WAS CORRUPTED: could not be loaded, even after searching git history for an "
+        "earlier valid checkpoint - this session started with blank/default state instead. Tell the "
+        "human this happened, then offer to help: get_corrupted_state_raw_content() to attempt an "
+        "LLM-assisted repair (then save_repaired_state()), reset_state_from_git() to search all of git "
+        "history for a usable earlier checkpoint, or clear_corrupted_state() to explicitly discard it "
+        "and confirm starting fresh.\n"
+        if state_json_corrupted else ""
+    )
+
     # Identify active sprint status
     status_summary = f"""
-[SYSTEM CONTEXT: CURRENT SPRINT & BUDGET STATUS]
+[SYSTEM CONTEXT: CURRENT SPRINT & BUDGET STATUS]{corruption_notice}
 - Sprint Goal: {sprint_goal}
 - Sprint Backlog: {completed_items}/{total_items} items completed.
 - Token Usage: {token_usage:,} / {token_limit:,} tokens used.
@@ -1087,6 +1108,10 @@ root_agent = LlmAgent(
         list_blocking_interactions,
         save_state_to_repo,
         load_state_from_repo,
+        get_corrupted_state_raw_content,
+        save_repaired_state,
+        reset_state_from_git,
+        clear_corrupted_state,
         create_litellm_virtual_key,
         update_budgets,
         get_budget_status,

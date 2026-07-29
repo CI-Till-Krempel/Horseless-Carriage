@@ -1,5 +1,9 @@
 # agents/scrum_team/tests/test_scrum.py
+import os
+import shutil
+import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.tools.scrum import (
@@ -9,6 +13,7 @@ from agents.scrum_team.tools.scrum import (
     plan_sprint_backlog_item,
     record_human_approval,
     start_sprint,
+    save_state_to_repo,
 )
 from agents.scrum_team.tools.requirements import (
     upsert_story,
@@ -337,6 +342,81 @@ class TestScrumTools(unittest.TestCase):
         result = start_sprint("Ship the next increment", tool_context=tool_context)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tool_context.state["sprint_goal"], "Ship the next increment")
+
+
+class TestInitScrumStateCorruptionSurfacing(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #85): a state.json that's corrupted AND
+    unrecoverable even from git history must no longer be silently
+    discarded during init_scrum_state - the session used to just quietly
+    start blank with no indication anything was ever wrong. Now it sets a
+    state_json_corrupted flag and records a blocking interaction so a
+    human isn't left in the dark.
+    """
+
+    def setUp(self):
+        self.test_repo = Path("test_repo_init_scrum_state_corruption")
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        self.test_repo.mkdir(exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.test_repo, check=True)
+
+        self.old_internal_path = os.environ.get("INTERNAL_STATE_REPO_PATH")
+        if "INTERNAL_STATE_REPO_PATH" in os.environ:
+            del os.environ["INTERNAL_STATE_REPO_PATH"]
+        os.environ["STATE_REPO_PATH"] = str(self.test_repo.absolute())
+
+    def tearDown(self):
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        if "STATE_REPO_PATH" in os.environ:
+            del os.environ["STATE_REPO_PATH"]
+        if self.old_internal_path:
+            os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
+
+    def test_unrecoverable_corruption_sets_flag_and_records_blocking_interaction(self):
+        state_dir = self.test_repo / ".hc"
+        state_dir.mkdir(parents=True)
+        (state_dir / "state.json").write_text("{not valid json", encoding="utf-8")
+
+        tool_context = MagicMock()
+        tool_context.state = {}
+        result = init_scrum_state(tool_context=tool_context)
+
+        self.assertTrue(result["state_json_corrupted"])
+        self.assertTrue(tool_context.state["state_json_corrupted"])
+        interactions = tool_context.state.get("blocking_interactions", [])
+        self.assertTrue(any(i.get("kind") == "state_corrupted" for i in interactions))
+
+    def test_recoverable_corruption_does_not_set_flag(self):
+        """state.json corrupted, but a good git checkpoint exists - the
+        automatic recovery inside load_state_from_repo already handles
+        this, so it's not the "unrecoverable" case this issue is about."""
+        good_context = MagicMock()
+        good_context.state = {"sprint_goal": "Good state, checkpointed"}
+        save_state_to_repo(tool_context=good_context)
+
+        state_file = self.test_repo / ".hc" / "state.json"
+        state_file.write_text("{not valid json", encoding="utf-8")
+
+        tool_context = MagicMock()
+        tool_context.state = {}
+        result = init_scrum_state(tool_context=tool_context)
+
+        self.assertFalse(result["state_json_corrupted"])
+        self.assertNotIn("state_json_corrupted", tool_context.state)
+
+    def test_no_state_file_at_all_does_not_set_flag(self):
+        """A brand new state repo has no state.json yet - normal, not a
+        corruption case worth flagging."""
+        tool_context = MagicMock()
+        tool_context.state = {}
+        result = init_scrum_state(tool_context=tool_context)
+
+        self.assertFalse(result["state_json_corrupted"])
+        self.assertNotIn("state_json_corrupted", tool_context.state)
 
 
 if __name__ == "__main__":
