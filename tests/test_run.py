@@ -196,6 +196,65 @@ class TestMainDoctorGatekeeper:
         assert captured["cmd"][:2] == ["docker", "compose"]
 
 
+class TestMainKeyboardInterrupt:
+    """
+    Acceptance Criteria (GH issue #74): Ctrl+C during the foreground
+    `docker compose up`/`run` call (subprocess.run's own wait, per a real
+    Windows traceback) must produce a clean "Stopped." message and a
+    non-error exit - not a raw KeyboardInterrupt traceback, which is
+    exactly what both of this module's own "Press Ctrl+C to stop"
+    messages promise is the normal way to end a foreground run.
+    """
+
+    def _common_mocks(self, monkeypatch):
+        monkeypatch.setattr(run.os, "chdir", lambda _path: None)
+        monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
+        monkeypatch.setattr(run.lib_docker, "maybe_stop_existing_stack", lambda *_a: None)
+        monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
+        monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
+
+    def test_ctrl_c_during_foreground_web_mode_exits_cleanly(self, monkeypatch, capsys):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+
+        def fake_run(cmd, **kwargs):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 0
+        assert "Stopped." in capsys.readouterr().out
+
+    def test_ctrl_c_during_cli_mode_exits_cleanly(self, monkeypatch, capsys):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py", "cli"])
+
+        def fake_run(cmd, **kwargs):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 0
+        assert "Stopped." in capsys.readouterr().out
+
+    def test_ctrl_c_during_daemon_mode_exits_cleanly(self, monkeypatch, capsys):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py", "daemon"])
+
+        def fake_run(cmd, **kwargs):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 0
+        assert "Stopped." in capsys.readouterr().out
+
+
 class TestMainDeveloperMode:
     """
     Acceptance Criteria: `python3 run.py dev` rebuilds agent/ollama images
