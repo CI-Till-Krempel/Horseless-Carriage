@@ -16,6 +16,7 @@ from agents.scrum_team.agent import (
     update_token_usage_callback,
     sprint_status_injection_callback,
     on_tool_error_callback,
+    _stories_ready_for_next_stage_count,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -152,6 +153,98 @@ class TestAgent(unittest.TestCase):
         self.assertIn("Test Goal", text)
         self.assertIn("1/2 items completed", text)
         self.assertIn("500,000 tokens used", text)
+
+    def test_sprint_status_injection_surfaces_process_signals(self):
+        """
+        Acceptance Criteria (GH issue #58): the Orchestrator's first-message
+        menu is picked from concrete state signals, not just sprint/budget
+        numbers - product vision, sprint report status, open impediments/
+        retro actions, and stories ready for the next pipeline stage must
+        all be injected too.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        state = ScrumState()
+        state.product_vision = "Build a great product"
+        state.sprint_report = "Sprint 1 report..."
+        state.impediment_log = [{"description": "CI was flaky all week", "owner": "DevTeam", "status": "open"}]
+        state.retro_actions = [{"action": "Pair on reviews", "owner": "Architect", "success_metric": "fewer reverts", "status": "open"}]
+        state.sprint_backlog = [{"id": "ST-1", "stages_completed": ["Ready"]}]
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.previous_interaction_id = None
+        mock_llm_request.contents = []
+
+        sprint_status_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("Build a great product", text)
+        self.assertIn("Sprint Report: already created", text)
+        self.assertIn("Open Impediments: 1", text)
+        self.assertIn("CI was flaky all week", text)
+        self.assertIn("Retro Actions Logged: 1", text)
+        self.assertIn("Pair on reviews", text)
+        self.assertIn("Stories Ready For Next Pipeline Stage: 1", text)
+
+    def test_sprint_status_injection_defaults_when_nothing_set_yet(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = ScrumState().model_dump()
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.previous_interaction_id = None
+        mock_llm_request.contents = []
+
+        sprint_status_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("Product Vision: Not yet defined", text)
+        self.assertIn("Sprint Report: not yet created this sprint", text)
+        self.assertIn("Open Impediments: 0", text)
+        self.assertIn("Retro Actions Logged: 0", text)
+        self.assertIn("Stories Ready For Next Pipeline Stage: 0", text)
+
+    def test_resolved_impediments_and_retro_actions_are_not_counted_as_open(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        state = ScrumState()
+        state.impediment_log = [{"description": "Fixed already", "owner": "DevTeam", "status": "resolved"}]
+        state.retro_actions = [{"action": "Done already", "owner": "SM", "success_metric": "x", "status": "resolved"}]
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.previous_interaction_id = None
+        mock_llm_request.contents = []
+
+        sprint_status_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("Open Impediments: 0", text)
+        self.assertIn("Retro Actions Logged: 0", text)
+
+
+class TestStoriesReadyForNextStageCount(unittest.TestCase):
+    def test_ready_but_not_implemented_counts(self):
+        state = ScrumState()
+        state.sprint_backlog = [{"id": "ST-1", "stages_completed": ["Ready"]}]
+        self.assertEqual(_stories_ready_for_next_stage_count(state), 1)
+
+    def test_fully_accepted_story_does_not_count(self):
+        state = ScrumState()
+        state.product_backlog = [{"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}]
+        self.assertEqual(_stories_ready_for_next_stage_count(state), 0)
+
+    def test_counts_across_both_backlogs(self):
+        state = ScrumState()
+        state.sprint_backlog = [{"id": "ST-1", "stages_completed": ["Ready"]}]
+        state.product_backlog = [{"id": "ST-2", "stages_completed": ["Ready", "Implemented", "Reviewed"]}]
+        self.assertEqual(_stories_ready_for_next_stage_count(state), 2)
+
+    def test_story_with_no_stages_completed_does_not_count(self):
+        state = ScrumState()
+        state.sprint_backlog = [{"id": "ST-1"}]
+        self.assertEqual(_stories_ready_for_next_stage_count(state), 0)
 
 
 class TestOnToolErrorCallback(unittest.TestCase):
