@@ -12,6 +12,7 @@ from ..helpers import (
     get_interaction_level,
     required_pre_implementation_approval,
     report_detail_level,
+    get_env_with_deprecated_fallback,
 )
 
 def update_budgets(total_usd: float = None, tool_context=None) -> Dict[str, Any]:
@@ -132,7 +133,7 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         total_budget_usd = tool_context.state.get("budgets", {}).get("total_usd")
         if not total_budget_usd or total_budget_usd <= 0:
             try:
-                total_budget_usd = float(os.environ.get("SPRINT_USD_BUDGET", 10.0))
+                total_budget_usd = float(get_env_with_deprecated_fallback("TOTAL_USD_BUDGET", "SPRINT_USD_BUDGET") or 10.0)
             except (ValueError, TypeError):
                 total_budget_usd = 10.0
         

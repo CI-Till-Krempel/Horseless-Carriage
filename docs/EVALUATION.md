@@ -29,7 +29,7 @@ what you need:
   and runs the team through 5 sprints headlessly against an isolated public
   eval repo, using the cheap `scrum-eval-cheap` model alias (see the active
   `litellm.yaml` / [Setup](SETUP.md)) and its own [budget guardrails](BUDGET.md)
-  (`EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_SPRINT_USD_BUDGET`).
+  (`EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_USD_BUDGET_PER_SPRINT`).
 - **Local (non-CI) runs** check the LiteLLM proxy is actually reachable before
   spending anything, and refuse to proceed without an explicit `--dev-mode`
   flag if it isn't (since the USD guardrail lives entirely in the proxy).

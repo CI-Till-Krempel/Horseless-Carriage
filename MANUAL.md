@@ -59,7 +59,7 @@ conversation rather than jumping into sprint work:
 
 You can pre-answer most of this non-interactively by filling in `.env` before your
 first run (`GITHUB_REPO_URL`, `STATE_REPO_PATH`, `GITHUB_TOKEN` or the `GITHUB_APP_*`
-trio, `SPRINT_TOKEN_BUDGET`, `SPRINT_USD_BUDGET`) — the wizard will detect what's
+trio, `SPRINT_TOKEN_BUDGET`, `TOTAL_USD_BUDGET`) — the wizard will detect what's
 already set and skip asking for it.
 
 **If a `.hc/state.json` already exists** in your target repo (a second session, or a
@@ -109,15 +109,19 @@ not a bug.
 
 ## 5. Budgets
 
-Two independent limits, enforced two different ways:
+Two independent limits, different scopes, enforced two different ways (see docs/BUDGET.md):
 
-- **Token budget** (`SPRINT_TOKEN_BUDGET`, default 1,000,000) — a logical sprint
-  quota enforced locally, zero-latency, by the ADK framework. Prevents a runaway
-  agent conversation regardless of dollar cost.
-- **USD budget** (`SPRINT_USD_BUDGET`, default $10.00 if unset — but the Scrum
+- **Token budget** (`SPRINT_TOKEN_BUDGET`, default 1,000,000) — **per sprint**, resets
+  automatically at the start of every new sprint. A logical sprint quota enforced
+  locally, zero-latency, by the ADK framework. Prevents a runaway agent conversation
+  within one sprint regardless of dollar cost, but does not by itself cap what a whole
+  multi-sprint engagement could spend.
+- **USD budget** (`TOTAL_USD_BUDGET`, default $10.00 if unset — but the Scrum
   Master's hard guardrail requires an explicit non-zero value before a sprint
-  starts) — enforced by your LiteLLM proxy against the `scrum-sprint-budget` object.
-  This is the authority on real spend.
+  starts) — **whole engagement**, never resets on its own. Enforced by your LiteLLM
+  proxy against the `scrum-sprint-budget` object. This is the authority on real spend,
+  and the real safety net against unexpected cloud costs across many sprints (older
+  name `SPRINT_USD_BUDGET` is still honored if you haven't renamed it yet).
 
 Check live status any time with `get_budget_status`, or the LiteLLM admin UI at
 `http://localhost:4000/ui`. Per-agent spend is trackable there too, since each
@@ -198,7 +202,7 @@ Carriage itself* is released — this section is how the agents release the prod
 - **Old virtual keys stopped working** — see [§5](#5-budgets) recovery steps.
 - **Repo/budget config shows as unset, or the session goes silent on the very first message** — state
   (repo URL, budgets, interaction level) is now loaded automatically before the Orchestrator's first
-  turn each session, so this shouldn't recur; if it does, check that `SPRINT_USD_BUDGET`/
+  turn each session, so this shouldn't recur; if it does, check that `TOTAL_USD_BUDGET`/
   `SPRINT_TOKEN_BUDGET` in `.env` aren't explicitly set to `0` (a genuinely unset value already
   defaults to a safe budget, but an explicit `0` is treated as "no budget" and previously could halt
   the session before it even started replying).

@@ -1,10 +1,50 @@
 # agents/scrum_team/helpers.py
 from __future__ import annotations
 import os
+import sys
 
 def get_process_overhead_percentage() -> float:
     """Gets the process overhead percentage from environment variables."""
     return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
+
+
+# --- Budget env var naming (GH issue #81) ---
+# TOTAL_USD_BUDGET replaces SPRINT_USD_BUDGET as the canonical name for the
+# whole-engagement, never-reset-per-sprint USD ceiling - the old name looked
+# like a per-sprint value (same "SPRINT_" prefix as the genuinely-per-sprint
+# SPRINT_TOKEN_BUDGET, which *does* reset every sprint via reset_sprint_budget),
+# but actually behaves as a cumulative cap for the entire engagement (see
+# BUDGET.md, reset_sprint_budget's docstring in tools/budget.py). Read via
+# get_env_with_deprecated_fallback so an existing .env using the old name
+# keeps working exactly as before - a silent drop here would fall back to
+# this module's own hardcoded default, which could be a *higher* ceiling
+# than what someone deliberately configured under the old name (issue #81:
+# "make sure there is no scenario that can cause unexpected cloud costs").
+_deprecated_env_vars_warned: set = set()
+
+
+def get_env_with_deprecated_fallback(new_name: str, old_name: str) -> str | None:
+    """
+    Reads `new_name` from the environment; if unset/empty, falls back to
+    `old_name` (printing a one-time-per-process deprecation warning to
+    stderr) so a renamed env var never silently reverts to a hardcoded
+    default just because an existing .env still uses the old key. Returns
+    None if neither is set.
+    """
+    value = os.environ.get(new_name)
+    if value:
+        return value
+    old_value = os.environ.get(old_name)
+    if old_value:
+        if old_name not in _deprecated_env_vars_warned:
+            print(
+                f"WARNING: {old_name} is deprecated - please rename it to {new_name} in your .env. "
+                f"Using its value for now.",
+                file=sys.stderr,
+            )
+            _deprecated_env_vars_warned.add(old_name)
+        return old_value
+    return None
 
 
 # --- Human interaction levels (see docs/INTERACTION-LEVELS.md) ---

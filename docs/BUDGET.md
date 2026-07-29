@@ -4,17 +4,41 @@
 
 The system implements a **dual-layer budgeting strategy** to ensure both operational safety and financial control. This approach leverages LiteLLM's native financial enforcement while providing local, high-fidelity control over the logical "Sprint Budget" in tokens.
 
+**Naming (GH issue #81)**: these two limits have different *scopes*, and their env var names say
+so explicitly - `SPRINT_TOKEN_BUDGET` is **per-sprint** (resets automatically every sprint),
+`TOTAL_USD_BUDGET` is a **whole-engagement** ceiling (never resets on its own). The older name
+`SPRINT_USD_BUDGET` is still honored as a deprecated fallback (`get_env_with_deprecated_fallback` in
+`agents/scrum_team/helpers.py`) if you haven't renamed it in your own `.env` yet - its "SPRINT_"
+prefix looked like a per-sprint value even though it never behaved like one, which is exactly the
+ambiguity this rename fixes.
+
 ## 1. Token Budget (ADK Layer)
 - **Unit**: Total tokens (e.g., 1,000,000).
+- **Scope**: **Per sprint.** Resets automatically at the start of every new sprint
+  (`reset_sprint_budget`, or the eval harness's own per-sprint reset) - a sprint that used most of
+  its budget doesn't starve every later sprint.
 - **Enforcement**: Hard-blocked locally, purely from session state/`SPRINT_TOKEN_BUDGET` — no
   call to LiteLLM is involved, so this guardrail applies **even if the LiteLLM proxy isn't
   running**. See step 1 of `check_cost_budget_callback` in `agents/scrum_team/agent.py`
   (usage is recorded by the separate `update_token_usage_callback`).
 - **Automatic Tracking**: The system automatically tracks token usage after every LLM call and attributes it to the specific agent role.
-- **Purpose**: Prevents long-running loops or runaway agent conversations. LiteLLM natively supports rate limits (tokens per minute) but does not provide a hard-stop for a *total cumulative token quota* across an entire sprint. Local enforcement provides immediate, zero-latency feedback and allows for a pure "logical" work limit.
+- **Purpose**: Prevents long-running loops or runaway agent conversations within a single sprint.
+  LiteLLM natively supports rate limits (tokens per minute) but does not provide a hard-stop for a
+  *total cumulative token quota* across an entire sprint. Local enforcement provides immediate,
+  zero-latency feedback and allows for a pure "logical" work limit.
+- **Does not, by itself, cap a whole multi-sprint engagement** - it resets every sprint by design.
+  For a cloud setup, `TOTAL_USD_BUDGET` below is the real whole-engagement ceiling. For a local/Ollama
+  setup, where that USD ceiling doesn't apply at all (see §2's local-provider note), there is
+  currently **no cumulative cap across many sprints** - only each individual sprint's token spend is
+  bounded. See [EP-0009](../specs/stories/EP-0009-Time-And-Throughput-Based-Sprint-Limits-For-Local-Setups.md)
+  for a proposed wall-clock (`SPRINT_TIME_BUDGET_HOURS`) or cumulative-token follow-up to close this
+  gap - not yet implemented.
 
 ## 2. USD Budget (LiteLLM Layer)
 - **Unit**: US Dollars (e.g., $0.50).
+- **Scope**: **Whole engagement.** Never resets automatically, unlike the token budget above -
+  `reset_sprint_budget` deliberately does not touch it (see its docstring in
+  `agents/scrum_team/tools/budget.py`).
 - **Enforcement**: Hard-blocked by the LiteLLM Proxy, plus a real-time pre-call check
   against current spend on the shared `scrum-sprint-budget` object.
 - **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via

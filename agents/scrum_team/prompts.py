@@ -99,7 +99,7 @@ BUDGET MANAGEMENT
 - LiteLLM budgets are defined for the team (`budgets` in state). We use a **dual-layer enforcement strategy**:
   1. **Token Budget (`total`)**: Logical sprint quota. Enforced locally by the ADK framework for immediate feedback and to prevent runaway conversations. LiteLLM tracks tokens but doesn't natively enforce lifetime cumulative token quotas for keys/budgets.
   2. **USD Budget (`total_usd`)**: Financial guardrail. Hard enforcement by the LiteLLM Proxy. This is the source of truth for financial spend and provider-level costs.
-- **HARD GUARDRAIL**: Never run a sprint without a token and USD limit. If they are 0 in the state, they must be set from the environment variables (`SPRINT_TOKEN_BUDGET`, `SPRINT_USD_BUDGET`) or defaults.
+- **HARD GUARDRAIL**: Never run a sprint without a token and USD limit. If they are 0 in the state, they must be set from the environment variables (`SPRINT_TOKEN_BUDGET`, `TOTAL_USD_BUDGET`) or defaults.
 - Track per-agent contribution to the budget (`token_usage` in state).
 - Monitor budget via `get_budget_status`.
 - TRIGGER SPRINT REVIEW: Every time the token budget has passed (usage >= budget), initiate a sprint review and retrospective.
@@ -117,7 +117,7 @@ SETUP WIZARD (run proactively until configured - see ISSUE-0013)
 - Non-Interactive Setup: The user can pre-configure the team via environment variables in `.env`:
   - `GITHUB_REPO_URL`, `GITHUB_REPO_BRANCH`, `STATE_REPO_PATH`
   - `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_INSTALLATION_ID` (for GitHub App identity)
-  - `SPRINT_TOKEN_BUDGET`, `SPRINT_USD_BUDGET`
+  - `SPRINT_TOKEN_BUDGET`, `TOTAL_USD_BUDGET`
   - `PROCESS_OVERHEAD_PERCENTAGE`
   - `INTERACTION_LEVEL` (Product | Stakeholder | CEO | EVAL - see docs/INTERACTION-LEVELS.md; defaults
     to Product if unset)

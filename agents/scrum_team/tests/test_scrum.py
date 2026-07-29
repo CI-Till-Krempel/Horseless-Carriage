@@ -52,6 +52,31 @@ class TestScrumTools(unittest.TestCase):
             init_scrum_state(tool_context=tool_context)
             self.assertEqual(tool_context.state["hc_version"], _hc_version())
 
+    def test_init_scrum_state_reads_total_usd_budget(self):
+        """GH issue #81: TOTAL_USD_BUDGET is the canonical env var name."""
+        with patch.dict("os.environ", {"TOTAL_USD_BUDGET": "2.50"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {}
+            init_scrum_state(tool_context=tool_context)
+            self.assertEqual(tool_context.state["budgets"]["total_usd"], 2.50)
+
+    def test_init_scrum_state_falls_back_to_deprecated_sprint_usd_budget(self):
+        """An existing .env still using SPRINT_USD_BUDGET (not yet renamed to
+        TOTAL_USD_BUDGET) must keep configuring the value it set, not
+        silently fall back to the hard guardrail's $10.00 default."""
+        with patch.dict("os.environ", {"SPRINT_USD_BUDGET": "2.50"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {}
+            init_scrum_state(tool_context=tool_context)
+            self.assertEqual(tool_context.state["budgets"]["total_usd"], 2.50)
+
+    def test_init_scrum_state_prefers_total_usd_budget_over_deprecated_name(self):
+        with patch.dict("os.environ", {"TOTAL_USD_BUDGET": "2.50", "SPRINT_USD_BUDGET": "9.99"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {}
+            init_scrum_state(tool_context=tool_context)
+            self.assertEqual(tool_context.state["budgets"]["total_usd"], 2.50)
+
     def test_upsert_story(self):
         """
         Acceptance Criteria:
