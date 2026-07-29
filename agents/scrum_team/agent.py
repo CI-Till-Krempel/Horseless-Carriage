@@ -155,7 +155,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
-from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level
+from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level, STORY_STAGES
 from .prompts import (
     ORCHESTRATOR_PROMPT,
     PO_PROMPT,
@@ -504,9 +504,31 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
 
 # --- Sprint Status Injection Callback ---
 
+def _stories_ready_for_next_stage_count(state: ScrumState) -> int:
+    """How many backlog items (sprint_backlog + product_backlog) have
+    completed some STORY_STAGES stage but not the very next one - i.e.
+    genuinely ready for another role to pick up (Ready-but-not-Implemented,
+    Reviewed-but-not-Tested, etc.), not just sitting untouched. Feeds the
+    Orchestrator's first-message menu (GH issue #58) - a nonzero count here
+    is a concrete signal for offering "Discuss the sprint backlog" or
+    "Refine User Stories", not something to compute from prose."""
+    count = 0
+    for item in (state.sprint_backlog or []) + (state.product_backlog or []):
+        completed = set(item.get("stages_completed") or [])
+        for i, stage in enumerate(STORY_STAGES[:-1]):
+            if stage in completed and STORY_STAGES[i + 1] not in completed:
+                count += 1
+                break
+    return count
+
+
 def sprint_status_injection_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
-    BeforeModelCallback: Injects current sprint and budget status for the Orchestrator's first message.
+    BeforeModelCallback: Injects current sprint/budget/process status for
+    the Orchestrator's first message - the concrete state signals
+    ORCHESTRATOR_PROMPT's FIRST MESSAGE SUMMARY (GH issue #58) uses to pick
+    which 2-5 next-action options are actually relevant right now, instead
+    of a generic, state-blind greeting.
     """
     if callback_context.agent_name != "ScrumOrchestrator":
         return
@@ -516,19 +538,27 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
         return
 
     state = get_scrum_state(callback_context.state)
-    
+
     sprint_goal = state.sprint_goal or "Not yet defined"
-    
+
     # Calculate backlog progress
     backlog = state.sprint_backlog or []
     total_items = len(backlog)
     completed_items = len([i for i in backlog if is_story_done(i.get("status"))])
-    
+
     # Budget info
     token_usage = state.token_usage.total
     token_limit = state.budgets.total
     usd_limit = state.budgets.total_usd
-    
+
+    # Process signals (GH issue #58): what's actually waiting for attention
+    # right now, not just sprint/budget numbers.
+    product_vision = state.product_vision.strip() if state.product_vision else ""
+    sprint_report_exists = bool((state.sprint_report or "").strip())
+    open_impediments = [i for i in (state.impediment_log or []) if (i.get("status") or "open") == "open"]
+    open_retro_actions = [r for r in (state.retro_actions or []) if (r.get("status") or "open") == "open"]
+    ready_for_next_stage = _stories_ready_for_next_stage_count(state)
+
     # Identify active sprint status
     status_summary = f"""
 [SYSTEM CONTEXT: CURRENT SPRINT & BUDGET STATUS]
@@ -539,6 +569,11 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
 - Repository: {state.repo.get('url', 'Not configured')} ({state.repo.get('branch', 'N/A')})
 - Interaction Level: {get_interaction_level()} (see docs/INTERACTION-LEVELS.md - controls which
   record_human_approval type, if any, is required before implementing stories / releasing)
+- Product Vision: {product_vision or "Not yet defined"}
+- Sprint Report: {"already created for the current sprint - likely mid sprint-close, or ready for a new sprint" if sprint_report_exists else "not yet created this sprint"}
+- Open Impediments: {len(open_impediments)}{f" (most recent: {open_impediments[-1].get('description', '')[:120]})" if open_impediments else ""}
+- Retro Actions Logged: {len(open_retro_actions)}{f" (most recent: {open_retro_actions[-1].get('action', '')[:120]})" if open_retro_actions else ""}
+- Stories Ready For Next Pipeline Stage: {ready_for_next_stage}
 """
     # Inject as a system message at the beginning of the contents
     llm_request.contents.insert(0, types.Content(role="system", parts=[types.Part(text=status_summary)]))
