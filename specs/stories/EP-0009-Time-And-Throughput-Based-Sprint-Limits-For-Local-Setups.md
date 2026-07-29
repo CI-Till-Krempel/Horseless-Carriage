@@ -33,11 +33,38 @@ Proposed, not yet filed as individual stories:
   queued/loading" (relevant for Ollama specifically - `OLLAMA_KEEP_ALIVE` unloading, cold model loads,
   a busy single-GPU box serializing requests) so a slow sprint's cause (agent is genuinely idle/waiting
   on a human vs. the local LLM itself is just slow) is visible rather than conflated.
-- **Sprint-length-in-hours as a first-class limit** - a new, optional wall-clock budget (e.g.
-  `SPRINT_TIME_BUDGET_HOURS`) checked alongside the existing token budget in
-  `check_cost_budget_callback`, halting (or warning) a sprint that's run long in real time regardless
-  of token count - the natural local-setup analogue to the USD budget's role for cloud setups, where
-  "cost" is the thing worth capping directly rather than a token proxy for it.
+- **Sprint-length-in-hours as a first-class limit** - a new, optional wall-clock budget, the natural
+  local-setup analogue to the USD budget's role for cloud setups (where "cost" is the thing worth
+  capping directly, rather than a token count that's only a rough proxy for it). Sketch of the
+  feature:
+  - **Config**: a new `SPRINT_TIME_BUDGET_HOURS` env var (optional - unset means "no time limit",
+    same convention as the other budgets defaulting to sane values when unset). Set alongside
+    `SPRINT_TOKEN_BUDGET` in `.env`/`.env.local.example`, surfaced through `update_budgets`/
+    `get_budget_status` the same way the token/USD budgets already are (`state.budgets` in
+    `agents/scrum_team/state.py` gains a `total_hours`/`elapsed_hours` pair, mirroring `total`/
+    `token_usage.total` for tokens).
+  - **Start-of-sprint anchor**: `start_sprint` (`agents/scrum_team/tools/scrum.py`) records a sprint
+    start timestamp in state, the same moment token/USD budgets are reset for the new sprint - this
+    is the "clock zero" the hour budget counts from, not process-start or container-start (a session
+    can be stopped and resumed mid-sprint - see EP-0008's resume-after-interruption story - so the
+    elapsed-hours figure must be computed from that stored anchor each time, not accumulated only
+    while a process happens to be running).
+  - **Check**: a third step in `check_cost_budget_callback`, alongside the existing token check (step
+    1) and USD/local-provider-skip check (step 2) - compares wall-clock time elapsed since the sprint
+    start anchor against `SPRINT_TIME_BUDGET_HOURS`. Naturally complements
+    `LLM_LOCAL_PROVIDER=true` sprints (ISSUE-0033), where the USD check is already skipped and the
+    token budget alone doesn't map predictably to wall-clock time on slow hardware - but not
+    exclusive to local mode; a cloud sprint that's technically under budget in tokens/dollars but has
+    been running for days is arguably just as worth flagging.
+  - **Halt vs. warn**: per the Notes section below, likely advisory (a visible warning, not a hard
+    stop) rather than a hard halt like the token/USD budgets - "this sprint has been running a long
+    time" doesn't carry the same "keep going and you'll definitely overspend" certainty that token/USD
+    exhaustion does, and a hard stop mid-story over wall-clock time alone could kill legitimately
+    slow-but-progressing work (e.g. a large diff review taking longer than expected).
+  - Pairs naturally with the runtime/throughput metrics story above: once per-call wall-clock time is
+    already being tracked for the throughput metric, the sprint-level "hours elapsed" figure for this
+    budget is a straightforward sum/anchor-diff of the same underlying data, not a second independent
+    mechanism.
 
 ## Acceptance Criteria
 - A local/Ollama sprint has at least one meaningful, non-token-based signal for "this sprint has been
