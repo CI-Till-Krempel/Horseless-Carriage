@@ -285,6 +285,37 @@ class TestCurrentInteractionLevelChoice:
         assert setup_llm.current_interaction_level_choice(env_path) == "1"
 
 
+class TestCurrentProviderChoice:
+    """
+    Acceptance Criteria (GH issue #87): re-running setup_llm.py must default
+    the provider-picker prompt to whatever's currently active, not always
+    require a fresh choice with no fallback - every other prompt in this
+    wizard (interaction level, models, GPU, budgets) already prefills from
+    existing config; this was the one exception.
+    """
+
+    def test_no_config_files_defaults_to_gemini(self, tmp_path):
+        assert setup_llm.current_provider_choice(tmp_path) == "1"
+
+    def test_reads_back_anthropic(self, tmp_path):
+        (tmp_path / "litellm.yaml").write_text("model_list:\n  - model_name: x\n    litellm_params:\n      model: anthropic/claude-3-opus\n")
+        assert setup_llm.current_provider_choice(tmp_path) == "2"
+
+    def test_reads_back_openai(self, tmp_path):
+        (tmp_path / "litellm.yaml").write_text("model_list:\n  - model_name: x\n    litellm_params:\n      model: openai/gpt-4o\n")
+        assert setup_llm.current_provider_choice(tmp_path) == "3"
+
+    def test_reads_back_local(self, tmp_path):
+        local_path = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_path.parent.mkdir(parents=True)
+        local_path.write_text("model_list:\n  - model_name: x\n    litellm_params:\n      model: ollama/llama3.1:8b\n")
+        assert setup_llm.current_provider_choice(tmp_path) == "4"
+
+    def test_unrecognized_config_defaults_to_gemini(self, tmp_path):
+        (tmp_path / "litellm.yaml").write_text("model_list: []\n")
+        assert setup_llm.current_provider_choice(tmp_path) == "1"
+
+
 class TestPromptProjectSettings:
     """
     Acceptance Criteria (GH issue #81): TOTAL_USD_BUDGET is the canonical
