@@ -136,6 +136,67 @@ class TestAgent(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_check_cost_budget_callback_falls_back_to_deprecated_sprint_usd_budget(self):
+        """
+        Acceptance Criteria (GH issue #81): TOTAL_USD_BUDGET is the canonical
+        name, but an existing .env still using SPRINT_USD_BUDGET must keep
+        enforcing the value it set - not silently fall back to the 10.0
+        hardcoded default (a higher, unintended ceiling).
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total = 1000
+        state.budgets.total_usd = 0.0  # unset in state - forces the env fallback path
+        state.litellm_keys["DevTeam"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.model = "test-model"
+        with patch.dict("os.environ", {
+            "LITELLM_MASTER_KEY": "test-master-key",
+            "LITELLM_PROXY_API_BASE": "http://litellm:4000",
+            "SPRINT_USD_BUDGET": "1.00",
+        }, clear=True):
+            with patch("requests.post") as mock_post:
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = [{"spend": 2.00}]  # over the deprecated var's 1.00 limit
+                mock_post.return_value = mock_response
+
+                result = check_cost_budget_callback(mock_context, mock_llm_request)
+
+        self.assertIsNotNone(result)
+        self.assertIn("USD BUDGET EXCEEDED", result.content.parts[0].text)
+        self.assertIn("$1.00", result.content.parts[0].text)
+
+    def test_check_cost_budget_callback_prefers_total_usd_budget_over_deprecated_name(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total = 1000
+        state.budgets.total_usd = 0.0
+        state.litellm_keys["DevTeam"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.model = "test-model"
+        with patch.dict("os.environ", {
+            "LITELLM_MASTER_KEY": "test-master-key",
+            "LITELLM_PROXY_API_BASE": "http://litellm:4000",
+            "TOTAL_USD_BUDGET": "5.00",
+            "SPRINT_USD_BUDGET": "1.00",
+        }, clear=True):
+            with patch("requests.post") as mock_post:
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = [{"spend": 2.00}]  # under TOTAL_USD_BUDGET, over the old name
+                mock_post.return_value = mock_response
+
+                result = check_cost_budget_callback(mock_context, mock_llm_request)
+
+        self.assertIsNone(result)
+
     def test_check_cost_budget_callback_skips_usd_check_for_local_provider(self):
         """
         Acceptance Criteria (GH issue #75): self-hosted Ollama models have no

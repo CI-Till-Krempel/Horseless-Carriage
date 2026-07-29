@@ -112,11 +112,18 @@ services:
       - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
       - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
       - SPRINT_TOKEN_BUDGET=${SPRINT_TOKEN_BUDGET}
+      # TOTAL_USD_BUDGET is the canonical name (GH issue #81) - not actually
+      # meaningful in local mode (see LLM_LOCAL_PROVIDER below), but still
+      # passed through for consistency; SPRINT_USD_BUDGET is kept alongside
+      # it so an existing .env using the older name keeps working via
+      # get_env_with_deprecated_fallback.
+      - TOTAL_USD_BUDGET=${TOTAL_USD_BUDGET}
       - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET}
       - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE}
       # Per-sprint config for agents/scrum_team/scripts/run_eval.py - see
       # .env.example's "Eval Harness Budget Configuration" section.
       - EVAL_SPRINT_TOKEN_BUDGET=${EVAL_SPRINT_TOKEN_BUDGET}
+      - EVAL_USD_BUDGET_PER_SPRINT=${EVAL_USD_BUDGET_PER_SPRINT}
       - EVAL_SPRINT_USD_BUDGET=${EVAL_SPRINT_USD_BUDGET}
       - SESSION_ID=${SESSION_ID}
       - LOG_LEVEL=${LOG_LEVEL:-info}

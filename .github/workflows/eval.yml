@@ -78,9 +78,11 @@ jobs:
             echo "PROCESS_OVERHEAD_PERCENTAGE=20"
             # Mirrors .env.example's "Eval Harness Budget Configuration" -
             # override via repo/environment Settings -> Variables if these
-            # ever need recalibrating without a code change.
-            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ vars.EVAL_SPRINT_TOKEN_BUDGET || '2600000' }}"
-            echo "EVAL_SPRINT_USD_BUDGET=${{ vars.EVAL_SPRINT_USD_BUDGET || '3.0' }}"
+            # ever need recalibrating without a code change. GH issue #81:
+            # 2,600,000 was too tight for later, more complex sprints (a real
+            # run hit ~2.8M and truncated sprints 4-5) - bumped with headroom.
+            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ vars.EVAL_SPRINT_TOKEN_BUDGET || '4000000' }}"
+            echo "EVAL_USD_BUDGET_PER_SPRINT=${{ vars.EVAL_USD_BUDGET_PER_SPRINT || '3.0' }}"
           } > .env.eval
 
       - name: Start dependency services

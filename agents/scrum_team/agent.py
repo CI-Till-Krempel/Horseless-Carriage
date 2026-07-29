@@ -155,7 +155,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
-from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level, STORY_STAGES
+from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level, STORY_STAGES, get_env_with_deprecated_fallback
 from .prompts import (
     ORCHESTRATOR_PROMPT,
     PO_PROMPT,
@@ -493,10 +493,13 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
         return None
 
     budget_limit = state.budgets.total_usd
-    # Fallback to environment if state is missing/zero
+    # Fallback to environment if state is missing/zero. TOTAL_USD_BUDGET is
+    # the canonical name (GH issue #81) - SPRINT_USD_BUDGET is still honored
+    # via get_env_with_deprecated_fallback so an existing .env isn't silently
+    # ignored in favor of the 10.0 hardcoded default below.
     if budget_limit <= 0:
         try:
-            budget_limit = float(os.environ.get("SPRINT_USD_BUDGET", 10.0))
+            budget_limit = float(get_env_with_deprecated_fallback("TOTAL_USD_BUDGET", "SPRINT_USD_BUDGET") or 10.0)
         except (ValueError, TypeError):
             budget_limit = 10.0
 

@@ -119,5 +119,42 @@ class TestBudgetAPI(unittest.TestCase):
         new_call = mock_post.call_args_list[1]
         self.assertEqual(new_call[0][0], "http://litellm:4000/budget/new")
 
+    @patch("requests.post")
+    @patch("os.environ.get")
+    def test_create_litellm_virtual_key_falls_back_to_deprecated_sprint_usd_budget(self, mock_env_get, mock_post):
+        """
+        Acceptance Criteria (GH issue #81): with no budget set in state,
+        create_litellm_virtual_key's own env fallback must still honor the
+        older SPRINT_USD_BUDGET name, not silently use the 10.0 hardcoded
+        default - a real regression this call site has (agent.py's
+        check_cost_budget_callback already covered separately).
+        """
+        def side_effect(key, default=None):
+            env = {
+                "LITELLM_MASTER_KEY": "test-master-key",
+                "LITELLM_PROXY_API_BASE": "http://litellm:4000",
+                "SPRINT_USD_BUDGET": "2.50",
+            }
+            return env.get(key, default)
+        mock_env_get.side_effect = side_effect
+
+        mock_info = MagicMock()
+        mock_info.status_code = 200
+        mock_info.json.return_value = []
+        mock_new = MagicMock()
+        mock_new.status_code = 200
+        mock_gen = MagicMock()
+        mock_gen.status_code = 200
+        mock_gen.json.return_value = {"key": "sk-test-key"}
+        mock_post.side_effect = [mock_info, mock_new, mock_gen]
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()  # budgets.total_usd unset - forces the env fallback
+
+        create_litellm_virtual_key("DevTeam", tool_context=tool_context)
+
+        new_call = mock_post.call_args_list[1]
+        self.assertEqual(new_call[1]["json"]["max_budget"], 2.50)
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _hc_version, _run
 from .migrations import migrate_state
-from ..helpers import blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked
+from ..helpers import blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked, get_env_with_deprecated_fallback
 
 DEFAULT_DOD = [
     "Code reviewed",
@@ -123,7 +123,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
         except (ValueError, TypeError):
             pass
     
-    env_usd_budget = os.environ.get("SPRINT_USD_BUDGET")
+    env_usd_budget = get_env_with_deprecated_fallback("TOTAL_USD_BUDGET", "SPRINT_USD_BUDGET")
     if env_usd_budget:
         try:
             budgets["total_usd"] = float(env_usd_budget)

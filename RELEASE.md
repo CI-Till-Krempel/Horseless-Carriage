@@ -361,10 +361,11 @@ of only being noticed anecdotally.
 - **Driver**: `agents/scrum_team/scripts/run_eval.py` runs the team through 5
   sprints headlessly (no human in the loop) via ADK's `Runner` API directly,
   using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and budgets
-  from `EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_SPRINT_USD_BUDGET` in `.env` (reusing the
+  from `EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_USD_BUDGET_PER_SPRINT` in `.env` (reusing the
   same guardrails from ["Budget Management"](docs/BUDGET.md)), currently
-  2,600,000 tokens/$3 per sprint (calibrated against a real run that hit
-  2,070,364 tokens in a single sprint). The **token** budget resets at the start
+  4,000,000 tokens/$3 per sprint (GH issue #81: 2,600,000 was too tight for later,
+  more complex sprints - a real run hit ~2.8M tokens and truncated sprints 4-5).
+  The **token** budget resets at the start
   of every sprint (`_run_one_sprint`'s `state_delta` zeroes `token_usage`, the
   harness-side equivalent of the `reset_sprint_budget` tool used in
   interactive/real usage) and `--token-budget` is used as-is, per sprint - a

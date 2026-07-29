@@ -285,6 +285,56 @@ class TestCurrentInteractionLevelChoice:
         assert setup_llm.current_interaction_level_choice(env_path) == "1"
 
 
+class TestPromptProjectSettings:
+    """
+    Acceptance Criteria (GH issue #81): TOTAL_USD_BUDGET is the canonical
+    name for the whole-engagement USD ceiling; the local/Ollama flow must
+    skip asking about it entirely (it's a no-op there - ISSUE-0033), while
+    the cloud flow still asks, prefilling from either the new name or the
+    older SPRINT_USD_BUDGET (kept working via get_env_with_deprecated_fallback
+    at runtime, but no longer written forward once this wizard has run).
+    """
+
+    def _run(self, monkeypatch, tmp_path, answers, is_local=False):
+        monkeypatch.setattr(setup_llm, "_setup_state_repo", lambda _p: None)
+        it = iter(answers)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(it))
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        setup_llm.prompt_project_settings(env_path, is_local=is_local)
+        return env_path
+
+    def test_cloud_prompts_for_usd_budget_and_writes_total_usd_budget(self, monkeypatch, tmp_path):
+        # git name, git email, interaction level, token budget, usd budget, overhead
+        answers = ["", "", "", "", "2.50", ""]
+        env_path = self._run(monkeypatch, tmp_path, answers, is_local=False)
+        assert lib_env.read_env_var(env_path, "TOTAL_USD_BUDGET") == "2.50"
+
+    def test_cloud_clears_stale_old_name_after_writing_new_one(self, monkeypatch, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "SPRINT_USD_BUDGET", "9.99")
+        monkeypatch.setattr(setup_llm, "_setup_state_repo", lambda _p: None)
+        answers = iter(["", "", "", "", "", ""])  # accept every default
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+        setup_llm.prompt_project_settings(env_path, is_local=False)
+        assert lib_env.read_env_var(env_path, "TOTAL_USD_BUDGET") == "9.99"
+        assert lib_env.read_env_var(env_path, "SPRINT_USD_BUDGET") == ""
+
+    def test_local_never_prompts_for_usd_budget(self, monkeypatch, tmp_path):
+        # git name, git email, interaction level, token budget, overhead -
+        # no USD budget question in this list; if prompt_project_settings
+        # asked for it anyway, this would raise StopIteration.
+        answers = ["", "", "", "", ""]
+        env_path = self._run(monkeypatch, tmp_path, answers, is_local=True)
+        assert lib_env.read_env_var(env_path, "TOTAL_USD_BUDGET") == "0.50"
+
+    def test_local_still_writes_a_harmless_default(self, monkeypatch, tmp_path):
+        answers = ["", "", "", "", ""]
+        env_path = self._run(monkeypatch, tmp_path, answers, is_local=True)
+        assert lib_env.read_env_var(env_path, "TOTAL_USD_BUDGET")
+
+
 class TestRunConfigurationTest:
     """
     Acceptance Criteria (GH issue #36): when `docker compose up -d` fails,

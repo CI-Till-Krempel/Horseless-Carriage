@@ -40,6 +40,7 @@ from pathlib import Path
 import requests
 
 from agents.scrum_team.scripts._eval_git_utils import get_github_token, run_git, eval_repo_slug
+from agents.scrum_team.helpers import get_env_with_deprecated_fallback
 
 DEFAULT_EVAL_REPO_URL = "git@github.com:CI-Till-Krempel/horseless-carriage-eval-todo-app.git"
 EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH", "QUALITY"]
@@ -78,7 +79,13 @@ def _configure_env(args: argparse.Namespace) -> None:
     os.environ["INTERNAL_STATE_REPO_PATH"] = str(args.local_path)
     os.environ["SESSION_ID"] = f"eval-{args.run_id}"
     os.environ["SPRINT_TOKEN_BUDGET"] = str(args.token_budget)
-    os.environ["SPRINT_USD_BUDGET"] = str(args.usd_budget)
+    # TOTAL_USD_BUDGET is the canonical name (GH issue #81) for the
+    # whole-engagement USD ceiling check_cost_budget_callback enforces -
+    # this harness fully controls the env before the agent stack is
+    # imported, so no deprecated-fallback is needed here (unlike
+    # init_scrum_state/check_cost_budget_callback, which also honor the old
+    # SPRINT_USD_BUDGET name for a real user's existing .env).
+    os.environ["TOTAL_USD_BUDGET"] = str(args.usd_budget)
     # Read by agents/scrum_team/tools/base.py's _with_eval_branch_prefix /
     # _with_eval_title_prefix to tag every branch/PR this run creates with
     # its run id - never set in real/production usage.
@@ -544,8 +551,8 @@ def main() -> None:
     parser.add_argument("--token-budget", type=int, default=None, help="Defaults to EVAL_SPRINT_TOKEN_BUDGET (see .env) - a per-sprint value, not scaled by --sprints")
     # scrum-eval-cheap is cheap enough that token budget binds first in
     # practice; this stays as the secondary $-denominated safety net.
-    # Also resolved below from EVAL_SPRINT_USD_BUDGET, scaled by --sprints.
-    parser.add_argument("--usd-budget", type=float, default=None, help="Defaults to --sprints * EVAL_SPRINT_USD_BUDGET (see .env)")
+    # Also resolved below from EVAL_USD_BUDGET_PER_SPRINT, scaled by --sprints.
+    parser.add_argument("--usd-budget", type=float, default=None, help="Defaults to --sprints * EVAL_USD_BUDGET_PER_SPRINT (see .env)")
     parser.add_argument("--max-events-per-sprint", type=int, default=300, help="Safety cap on ADK events per sprint invocation (excluding continue-nudges)")
     # Wall-clock ceiling for the whole run (all sprints combined), independent
     # of token/USD budget - see _main_async. Default leaves headroom under
@@ -601,12 +608,16 @@ def main() -> None:
     # The USD budget, unlike the token budget above, stays a whole-run
     # cumulative ceiling by design (see BUDGET.md/reset_sprint_budget) -
     # enforced by the LiteLLM proxy's shared scrum-sprint-budget object, not
-    # reset per sprint - so this scaling is unchanged.
+    # reset per sprint - so this scaling is unchanged. EVAL_USD_BUDGET_PER_SPRINT
+    # is the canonical name (GH issue #81 - "per sprint" in the name makes
+    # clear this is a *rate* that gets multiplied by --sprints below, not
+    # itself the whole-run ceiling); EVAL_SPRINT_USD_BUDGET is still read as
+    # a deprecated fallback.
     if args.usd_budget is None:
-        per_sprint_usd_budget = os.environ.get("EVAL_SPRINT_USD_BUDGET")
+        per_sprint_usd_budget = get_env_with_deprecated_fallback("EVAL_USD_BUDGET_PER_SPRINT", "EVAL_SPRINT_USD_BUDGET")
         if not per_sprint_usd_budget:
             parser.error(
-                "--usd-budget not given and EVAL_SPRINT_USD_BUDGET is not "
+                "--usd-budget not given and EVAL_USD_BUDGET_PER_SPRINT is not "
                 "set - see .env.example's 'Eval Harness Budget Configuration' section."
             )
         args.usd_budget = args.sprints * float(per_sprint_usd_budget)

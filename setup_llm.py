@@ -275,12 +275,18 @@ def current_interaction_level_choice(env_path: Path) -> str:
     return "1"
 
 
-def prompt_project_settings(env_path: Path) -> None:
+def prompt_project_settings(env_path: Path, is_local: bool = False) -> None:
     """Git identity + state repository + human interaction level + sprint
     budget/overhead prompts. Same vars as .env.example / .env.local.example's
     "Git Configuration", "Project Configuration", "Human Interaction Level",
     and "Sprint Budget & Resource Configuration" sections - see
-    docs/INTERACTION-LEVELS.md."""
+    docs/INTERACTION-LEVELS.md.
+
+    is_local=True (the local/Ollama flow) skips the USD budget prompt
+    entirely rather than asking a question whose answer never matters - a
+    self-hosted model has no real per-token price, so TOTAL_USD_BUDGET is a
+    no-op there (check_cost_budget_callback skips it outright when
+    LLM_LOCAL_PROVIDER=true - see ISSUE-0033/GH issue #75, #81)."""
     print()
     print("--- Git identity ---")
     print("Used for commits the agent makes on your behalf.")
@@ -320,16 +326,43 @@ def prompt_project_settings(env_path: Path) -> None:
 
     print()
     print("--- Sprint budget & resource configuration ---")
+    print("SPRINT_TOKEN_BUDGET is PER-SPRINT - it resets automatically at the start of")
+    print("every new sprint (see docs/BUDGET.md).")
     current_token_budget = lib_env.read_env_var(env_path, "SPRINT_TOKEN_BUDGET")
-    current_usd_budget = lib_env.read_env_var(env_path, "SPRINT_USD_BUDGET")
-    current_overhead = lib_env.read_env_var(env_path, "PROCESS_OVERHEAD_PERCENTAGE")
-
     token_budget = prompt_number("Sprint token budget", current_token_budget or "1000000", r"^[0-9]+$")
     lib_env.update_env_var(env_path, "SPRINT_TOKEN_BUDGET", token_budget)
 
-    usd_budget = prompt_number("Sprint USD budget", current_usd_budget or "0.50", r"^[0-9]+(\.[0-9]+)?$")
-    lib_env.update_env_var(env_path, "SPRINT_USD_BUDGET", usd_budget)
+    # TOTAL_USD_BUDGET is the canonical name (GH issue #81); fall back to the
+    # older SPRINT_USD_BUDGET when prefilling so re-running this wizard on an
+    # existing .env still shows what was actually configured.
+    current_usd_budget = lib_env.read_env_var(env_path, "TOTAL_USD_BUDGET") or lib_env.read_env_var(env_path, "SPRINT_USD_BUDGET")
 
+    if is_local:
+        # A self-hosted model has no real per-token price, so this budget
+        # would never be enforceable in any meaningful way (ISSUE-0033) -
+        # asking the question would only invite false confidence. Still
+        # written (harmlessly ignored) so .env stays consistent, and any
+        # config from a previous cloud setup on this same .env isn't lost.
+        usd_budget = current_usd_budget or "0.50"
+        print(
+            "TOTAL_USD_BUDGET does not apply to a local/Ollama setup - a self-hosted model has no "
+            "real per-token price, so this is skipped (see docs/BUDGET.md). SPRINT_TOKEN_BUDGET "
+            "above is your real guardrail here."
+        )
+    else:
+        usd_budget = prompt_number(
+            "Total USD budget (whole engagement, does not reset per sprint)",
+            current_usd_budget or "0.50", r"^[0-9]+(\.[0-9]+)?$",
+        )
+    lib_env.update_env_var(env_path, "TOTAL_USD_BUDGET", usd_budget)
+    # SPRINT_USD_BUDGET is no longer read in preference to TOTAL_USD_BUDGET
+    # (get_env_with_deprecated_fallback checks TOTAL_USD_BUDGET first), but a
+    # stale line from before this rename can otherwise look like it's still
+    # the active value on a re-run - clear it so there's only one source of
+    # truth in .env going forward.
+    lib_env.update_env_var(env_path, "SPRINT_USD_BUDGET", "")
+
+    current_overhead = lib_env.read_env_var(env_path, "PROCESS_OVERHEAD_PERCENTAGE")
     overhead = prompt_number("Maximum process overhead percentage", current_overhead or "20", r"^[0-9]+(\.[0-9]+)?$")
     lib_env.update_env_var(env_path, "PROCESS_OVERHEAD_PERCENTAGE", overhead)
 
@@ -337,7 +370,7 @@ def prompt_project_settings(env_path: Path) -> None:
     print(
         f"Set GIT_USER_NAME={git_name}, GIT_USER_EMAIL={git_email}, "
         f"INTERACTION_LEVEL={interaction_level}, SPRINT_TOKEN_BUDGET={token_budget}, "
-        f"SPRINT_USD_BUDGET={usd_budget}, PROCESS_OVERHEAD_PERCENTAGE={overhead}"
+        f"TOTAL_USD_BUDGET={usd_budget}, PROCESS_OVERHEAD_PERCENTAGE={overhead}"
     )
 
 
@@ -735,7 +768,7 @@ def run_local_provider(dev: bool = False) -> None:
         shutil.copy(".env.local.example", env_path)
         info("Created .env from .env.local.example.")
 
-    prompt_project_settings(env_path)
+    prompt_project_settings(env_path, is_local=True)
 
     # Ollama's model library has no stable public "list models" API like the
     # cloud providers do, so this is a curated pick-list rather than a live
