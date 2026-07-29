@@ -4,12 +4,15 @@ Checks if the state repository is in the expected state for the tools to
 work.
 """
 
+import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import lib_env
+
+_HISTORY_WALK_DEPTH = 50
 
 
 def stray_template_files(specs_dir: Path) -> list:
@@ -21,9 +24,81 @@ def stray_template_files(specs_dir: Path) -> list:
     return sorted(specs_dir.glob("TEMPLATE-*.md"))
 
 
-def run(repo_root: Path) -> int:
+def _walk_git_history_for_valid_state_json(state_repo_path: Path) -> str:
+    """Host-side equivalent of agents/scrum_team/tools/scrum.py's
+    _recover_state_json_from_git - walks .hc/state.json's git history
+    (newest first, up to _HISTORY_WALK_DEPTH commits) for the most recent
+    commit whose own snapshot still parses as valid JSON, not just HEAD (a
+    corrupted checkpoint can itself have been committed before anyone
+    noticed). Returns that snapshot's raw text, or None if state_repo_path
+    isn't a git repo, has no commits touching that path, or none of them
+    parse either. Pure host-side git/subprocess - this script runs before
+    the container even exists, so it can't call into agents/scrum_team's
+    own copy of this logic."""
+    if not (state_repo_path / ".git").exists():
+        return None
+    log = subprocess.run(
+        ["git", "log", "--format=%H", "--", ".hc/state.json"],
+        cwd=state_repo_path, capture_output=True, text=True,
+    )
+    if log.returncode != 0:
+        return None
+    shas = [line for line in log.stdout.splitlines() if line.strip()][:_HISTORY_WALK_DEPTH]
+    for sha in shas:
+        show = subprocess.run(
+            ["git", "show", f"{sha}:.hc/state.json"],
+            cwd=state_repo_path, capture_output=True, text=True,
+        )
+        if show.returncode != 0:
+            continue
+        try:
+            json.loads(show.stdout)
+        except Exception:
+            continue
+        return show.stdout
+    return None
+
+
+def _offer_state_repair(state_file: Path, state_repo_path: Path, prompt=input) -> int:
+    """GH issue #85 - "Offer options to repair or delete corrupted state":
+    the interactive remediation menu for a state.json that just failed
+    validation. `prompt` is injectable so tests can drive this without a
+    real terminal."""
+    print()
+    print("What would you like to do?")
+    print("  1) Reset to the last known-good state found in git history")
+    print("  2) Delete state.json and start fresh (the agent reinitializes on its next session)")
+    print("  3) Leave it as-is (fix it manually, or start the agent and let the Orchestrator")
+    print("     attempt an LLM-assisted repair in chat - see docs/STATE-REPOSITORY.md)")
+    choice = prompt("Choice [3]: ").strip() or "3"
+
+    if choice == "1":
+        recovered = _walk_git_history_for_valid_state_json(state_repo_path)
+        if recovered is None:
+            print("ERROR: No usable checkpoint found anywhere in git history for .hc/state.json.")
+            return 1
+        state_file.write_text(recovered, encoding="utf-8")
+        print("Restored state.json from the last known-good checkpoint in git history.")
+        return 0
+
+    if choice == "2":
+        state_file.unlink()
+        print("Deleted the corrupted state.json - the team will start fresh next session.")
+        return 0
+
+    print("Leaving state.json as-is.")
+    return 1
+
+
+def run(repo_root: Path, interactive: bool = None, prompt=input) -> int:
     """Runs every check against repo_root (no chdir, so this is safe to call
-    from tests against a tmp_path fixture). Returns a process exit code."""
+    from tests against a tmp_path fixture). Returns a process exit code.
+
+    interactive defaults to sys.stdin.isatty() (a real terminal) - pass an
+    explicit True/False to override (tests do this, since pytest's stdin
+    isn't a tty either way and shouldn't accidentally block on input()).
+    prompt is threaded down to _offer_state_repair, so tests can drive the
+    repair menu without a real terminal too."""
     repo_root = Path(repo_root)
     print("--- Checking State Repository ---")
 
@@ -89,9 +164,12 @@ def run(repo_root: Path) -> int:
 
         if validation_exit_code != 0:
             print("ERROR: state.json validation failed. Your state might be corrupted or outdated.")
-            print("If you recently updated the project, you might need to manually fix the state.json")
-            print("or initialize a new one.")
-            return 1
+            is_interactive = sys.stdin.isatty() if interactive is None else interactive
+            if not is_interactive:
+                print("If you recently updated the project, you might need to manually fix the state.json")
+                print("or initialize a new one, or re-run this interactively for repair options.")
+                return 1
+            return _offer_state_repair(state_file, state_repo_path, prompt=prompt)
     else:
         print("INFO: .hc/state.json not found. This is normal if the agent hasn't run yet.")
 

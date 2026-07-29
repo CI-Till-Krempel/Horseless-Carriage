@@ -249,6 +249,33 @@ class TestAgent(unittest.TestCase):
         self.assertIn("Test Goal", text)
         self.assertIn("1/2 items completed", text)
         self.assertIn("500,000 tokens used", text)
+        self.assertNotIn("CORRUPTED", text)
+
+    def test_sprint_status_injection_surfaces_corrupted_state_notice(self):
+        """
+        Acceptance Criteria (GH issue #85): if init_scrum_state flagged
+        state_json_corrupted, the human must be told in the very first
+        message - not left to discover a silently-blank session on their
+        own - and the Orchestrator must be pointed at the actual repair
+        tools by name.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        state = ScrumState()
+        mock_context.state = state.model_dump()
+        mock_context.state["state_json_corrupted"] = True
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.previous_interaction_id = None
+        mock_llm_request.contents = []
+
+        sprint_status_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("STATE.JSON WAS CORRUPTED", text)
+        self.assertIn("get_corrupted_state_raw_content", text)
+        self.assertIn("reset_state_from_git", text)
+        self.assertIn("clear_corrupted_state", text)
 
     def test_sprint_status_injection_surfaces_process_signals(self):
         """

@@ -10,6 +10,10 @@ from unittest.mock import MagicMock, patch
 from agents.scrum_team.tools.scrum import (
     save_state_to_repo,
     load_state_from_repo,
+    get_corrupted_state_raw_content,
+    save_repaired_state,
+    reset_state_from_git,
+    clear_corrupted_state,
     REPO_STATE_KEYS,
 )
 from agents.scrum_team.state import ScrumState
@@ -303,6 +307,154 @@ class TestLoadStateGitRecovery(unittest.TestCase):
             self.assertEqual(result["status"], "error")
         finally:
             shutil.rmtree(plain_repo)
+
+    def test_recovers_an_earlier_commit_if_the_latest_one_is_also_corrupted(self):
+        """
+        Acceptance Criteria (GH issue #85): recovery must not stop at HEAD -
+        if the *latest* checkpoint commit's own snapshot is itself
+        corrupted (e.g. a torn write got committed before anyone noticed),
+        an earlier commit may still be perfectly recoverable.
+        """
+        self.tool_context.state["sprint_goal"] = "Good state, checkpoint 1"
+        save_state_to_repo(tool_context=self.tool_context)
+
+        state_file = self.test_repo / ".hc" / "state.json"
+        state_file.write_text("{not valid json - checkpoint 2", encoding="utf-8")
+        subprocess.run(["git", "add", ".hc/state.json"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "commit", "-m", "corrupted checkpoint"], cwd=self.test_repo, check=True)
+
+        fresh_context = MagicMock()
+        fresh_context.state = ScrumState().model_dump()
+        result = load_state_from_repo(tool_context=fresh_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result.get("recovered_from_git"))
+        self.assertEqual(fresh_context.state["sprint_goal"], "Good state, checkpoint 1")
+
+
+class TestStateRepairTools(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #85 - "Offer options to repair or delete
+    corrupted state"): get_corrupted_state_raw_content/save_repaired_state
+    (LLM-assisted repair), reset_state_from_git (search all of git history,
+    not just HEAD), and clear_corrupted_state (delete outright) - each only
+    ever acts on a genuinely corrupted state.json, never on one that
+    already parses fine.
+    """
+
+    def setUp(self):
+        self.test_repo = Path("test_repo_state_repair_tools")
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        self.test_repo.mkdir(exist_ok=True)
+        _init_git_repo(self.test_repo)
+
+        self.old_internal_path = os.environ.get("INTERNAL_STATE_REPO_PATH")
+        if "INTERNAL_STATE_REPO_PATH" in os.environ:
+            del os.environ["INTERNAL_STATE_REPO_PATH"]
+        os.environ["STATE_REPO_PATH"] = str(self.test_repo.absolute())
+
+        self.tool_context = MagicMock()
+        self.tool_context.state = ScrumState().model_dump()
+        self.state_file = self.test_repo / ".hc" / "state.json"
+
+    def tearDown(self):
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        if "STATE_REPO_PATH" in os.environ:
+            del os.environ["STATE_REPO_PATH"]
+        if self.old_internal_path:
+            os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
+
+    def _corrupt_state_file(self):
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text("{not valid json", encoding="utf-8")
+
+    # --- get_corrupted_state_raw_content ---
+
+    def test_get_corrupted_state_raw_content_returns_the_raw_text(self):
+        self._corrupt_state_file()
+        result = get_corrupted_state_raw_content(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["raw_content"], "{not valid json")
+
+    def test_get_corrupted_state_raw_content_refuses_when_not_corrupted(self):
+        save_state_to_repo(tool_context=self.tool_context)
+        result = get_corrupted_state_raw_content(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+
+    def test_get_corrupted_state_raw_content_refuses_when_no_file_exists(self):
+        result = get_corrupted_state_raw_content(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+
+    # --- save_repaired_state ---
+
+    def test_save_repaired_state_persists_a_valid_repair(self):
+        self._corrupt_state_file()
+        result = save_repaired_state({"sprint_goal": "Repaired by the LLM"}, tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(self.tool_context.state["sprint_goal"], "Repaired by the LLM")
+        self.assertEqual(json.loads(self.state_file.read_text(encoding="utf-8"))["sprint_goal"], "Repaired by the LLM")
+
+    def test_save_repaired_state_refuses_when_not_corrupted(self):
+        save_state_to_repo(tool_context=self.tool_context)
+        result = save_repaired_state({"sprint_goal": "Should not apply"}, tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+
+    def test_save_repaired_state_refuses_a_non_dict(self):
+        self._corrupt_state_file()
+        result = save_repaired_state("not a dict", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+
+    def test_save_repaired_state_refuses_data_that_does_not_validate(self):
+        self._corrupt_state_file()
+        # sprint_backlog must be a list of dicts, not a string
+        result = save_repaired_state({"sprint_backlog": "not-a-list"}, tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+
+    # --- reset_state_from_git ---
+
+    def test_reset_state_from_git_recovers_the_last_checkpoint(self):
+        self.tool_context.state["sprint_goal"] = "Good state, checkpointed"
+        save_state_to_repo(tool_context=self.tool_context)
+        self._corrupt_state_file()
+
+        fresh_context = MagicMock()
+        fresh_context.state = ScrumState().model_dump()
+        result = reset_state_from_git(tool_context=fresh_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(fresh_context.state["sprint_goal"], "Good state, checkpointed")
+        self.assertFalse(fresh_context.state["state_json_corrupted"])
+
+    def test_reset_state_from_git_refuses_when_not_corrupted(self):
+        save_state_to_repo(tool_context=self.tool_context)
+        result = reset_state_from_git(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+
+    def test_reset_state_from_git_reports_error_with_no_checkpoint_available(self):
+        self._corrupt_state_file()
+        result = reset_state_from_git(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+
+    # --- clear_corrupted_state ---
+
+    def test_clear_corrupted_state_deletes_the_file(self):
+        self._corrupt_state_file()
+        result = clear_corrupted_state(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(self.state_file.exists())
+        self.assertFalse(self.tool_context.state["state_json_corrupted"])
+
+    def test_clear_corrupted_state_refuses_when_not_corrupted(self):
+        save_state_to_repo(tool_context=self.tool_context)
+        result = clear_corrupted_state(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(self.state_file.exists())
+
+    def test_clear_corrupted_state_refuses_when_no_file_exists(self):
+        result = clear_corrupted_state(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
 
 
 if __name__ == "__main__":

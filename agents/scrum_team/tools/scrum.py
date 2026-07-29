@@ -98,11 +98,22 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("orchestrator_stall_count", 0)
 
     # 1. Try to load from repo if present first, so environment can override
+    state_json_corrupted = False
     try:
         repo_root = _configured_repo_root(tool_context)
         fp = _state_file_path(repo_root)
         if fp.exists():
-            _ = load_state_from_repo(tool_context)
+            load_result = load_state_from_repo(tool_context)
+            # GH issue #85: a corrupted-and-unrecoverable-even-from-git
+            # state.json used to be discarded silently here (this whole
+            # block only ever caught real exceptions, and load_state_from_repo
+            # returns an error dict rather than raising) - the session would
+            # just quietly start blank, with no indication anything was ever
+            # wrong or any chance to intervene. "not found" isn't corruption
+            # (a brand new state repo has no state.json at all - normal, not
+            # an error worth surfacing), so only flag the genuine case.
+            if load_result.get("status") == "error" and "not found" not in load_result.get("message", ""):
+                state_json_corrupted = True
     except Exception:
         pass
 
@@ -178,7 +189,28 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {"status": "ok", "initialized": True}
+    if state_json_corrupted:
+        s["state_json_corrupted"] = True
+        try:
+            from .notifications import record_blocking_interaction
+            record_blocking_interaction(
+                "state_corrupted",
+                "state.json exists but could not be loaded, even after searching git history for an "
+                "earlier valid checkpoint - starting this session with blank/default state instead.",
+                detail=(
+                    "Recovery options: get_corrupted_state_raw_content() to see the raw file yourself "
+                    "(or have the Orchestrator attempt an LLM-assisted repair from it, then "
+                    "save_repaired_state()); reset_state_from_git() to search all of git history (not "
+                    "just the latest commit) for a usable earlier checkpoint; or "
+                    "clear_corrupted_state() to explicitly discard it (this session already started "
+                    "blank - that tool just makes it official rather than implicit)."
+                ),
+                tool_context=tool_context,
+            )
+        except Exception:
+            pass
+
+    return {"status": "ok", "initialized": True, "state_json_corrupted": state_json_corrupted}
 
 def _write_state_atomically(state_path: Path, snapshot: dict) -> None:
     """Write-to-temp-file + os.replace (atomic on POSIX and Windows) rather
@@ -219,20 +251,38 @@ def _parse_state_json(text: str):
         return None
     return data if isinstance(data, dict) else None
 
-def _recover_state_json_from_git(repo_root: Path):
-    """The last checkpoint save_state_to_repo() committed
-    (`git show HEAD:.hc/state.json`), as a dict - or None if repo_root
-    isn't a git repo, there's no commit touching that path yet, or (very
-    unlikely, since it was valid when committed) that commit's own
-    snapshot isn't parseable either. This is the fallback path GH issue
-    #59 asks for: "these checkpoints in git are the fallback option if
-    the state gets corrupted"."""
+_RECOVERY_HISTORY_DEPTH = 50
+
+
+def _recover_state_json_from_git(repo_root: Path, max_commits: int = _RECOVERY_HISTORY_DEPTH):
+    """The most recent commit touching `.hc/state.json` whose own snapshot
+    still parses as valid JSON, as a dict - or None if repo_root isn't a git
+    repo, there's no commit touching that path yet, or none of the last
+    `max_commits` do either. This is the fallback path GH issue #59 asks
+    for: "these checkpoints in git are the fallback option if the state
+    gets corrupted".
+
+    Walks history (newest first) rather than only checking HEAD (GH issue
+    #85: "offer options to repair or delete corrupted state") - if the
+    *latest* checkpoint commit's own snapshot is itself corrupted (e.g. a
+    torn write got committed before anyone noticed), an earlier one may
+    still be perfectly recoverable, and HEAD-only recovery would otherwise
+    give up immediately in exactly that case.
+    """
     if not (repo_root / ".git").exists():
         return None
-    result = _run(["git", "show", "HEAD:.hc/state.json"], cwd=str(repo_root))
-    if result.get("status") != "ok":
+    log_result = _run(["git", "log", "--format=%H", "--", ".hc/state.json"], cwd=str(repo_root))
+    if log_result.get("status") != "ok":
         return None
-    return _parse_state_json(result.get("stdout", ""))
+    shas = [line for line in log_result.get("stdout", "").splitlines() if line.strip()][:max_commits]
+    for sha in shas:
+        show_result = _run(["git", "show", f"{sha}:.hc/state.json"], cwd=str(repo_root))
+        if show_result.get("status") != "ok":
+            continue
+        data = _parse_state_json(show_result.get("stdout", ""))
+        if data is not None:
+            return data
+    return None
 
 def save_state_to_repo(tool_context=None) -> Dict[str, Any]:
     """
@@ -290,6 +340,131 @@ def load_state_from_repo(tool_context=None) -> Dict[str, Any]:
         return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+def _current_state_json_is_corrupted(fp: Path) -> bool:
+    """True if state.json exists and does NOT currently parse as a valid
+    JSON object - the safety check every remediation tool below uses before
+    touching anything, so none of them can be pointed at perfectly good
+    state by mistake (GH issue #85)."""
+    if not fp.exists():
+        return False
+    return _parse_state_json(fp.read_text(encoding="utf-8", errors="replace")) is None
+
+
+def get_corrupted_state_raw_content(tool_context=None) -> Dict[str, Any]:
+    """
+    Returns the raw text of the current, corrupted state.json - the "repair
+    it with help of the LLM" option from GH issue #85. Only ever returns
+    content if state.json is actually currently invalid; refuses otherwise,
+    so this can't be used to go rewrite perfectly good state from scratch.
+    Once you've worked out a corrected version, call
+    save_repaired_state(repaired_state) to persist it.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    fp = _state_file_path(repo_root)
+    if not fp.exists():
+        return {"status": "error", "message": f"No state.json exists yet at {fp} - nothing to repair."}
+    if not _current_state_json_is_corrupted(fp):
+        return {"status": "error", "message": "state.json currently parses fine - nothing to repair."}
+    return {"status": "ok", "path": str(fp), "raw_content": fp.read_text(encoding="utf-8", errors="replace")}
+
+
+def save_repaired_state(repaired_state: dict, tool_context=None) -> Dict[str, Any]:
+    """
+    Persists a hand-repaired (or LLM-reconstructed) replacement for a
+    currently-corrupted state.json - the write side of GH issue #85's
+    "repair it with help of the LLM" option, paired with
+    get_corrupted_state_raw_content() above. Validates against ScrumState
+    first (refusing anything that doesn't parse as a real scrum state, so a
+    bad repair attempt can't make things worse), then writes it atomically,
+    checkpoints it to git, and loads it into the live session so the repair
+    takes effect immediately rather than only on the next restart. Refuses
+    if state.json isn't actually currently corrupted - this repairs a
+    genuine problem, it doesn't overwrite good state.
+    """
+    from ..state import ScrumState
+    from pydantic import ValidationError
+
+    repo_root = _configured_repo_root(tool_context)
+    fp = _state_file_path(repo_root)
+    if fp.exists() and not _current_state_json_is_corrupted(fp):
+        return {"status": "error", "message": "state.json currently parses fine - refusing to overwrite it via save_repaired_state()."}
+    if not isinstance(repaired_state, dict):
+        return {"status": "error", "message": "repaired_state must be a JSON object (dict)."}
+    try:
+        validated = ScrumState(**repaired_state).model_dump()
+    except ValidationError as e:
+        return {"status": "error", "message": f"repaired_state does not validate as a ScrumState: {e}"}
+
+    try:
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        _write_state_atomically(fp, validated)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    _checkpoint_state_commit(repo_root, tool_context)
+    for k, v in validated.items():
+        tool_context.state[k] = v
+    return {"status": "ok", "path": str(fp), "loaded_keys": list(validated.keys())}
+
+
+def reset_state_from_git(tool_context=None) -> Dict[str, Any]:
+    """
+    Explicit, on-demand version of load_state_from_repo()'s automatic
+    git-recovery fallback (GH issue #85's "reset to the state persisted in
+    git" option) - searches all of git history for `.hc/state.json` (not
+    just the automatic path's implicit attempt), restores the newest
+    checkpoint that still parses as valid, writes it back to the working
+    tree, and loads it into the live session. Refuses if state.json isn't
+    actually currently corrupted, since this discards whatever's in the
+    working tree now - not something to do to state that's already fine.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    fp = _state_file_path(repo_root)
+    if fp.exists() and not _current_state_json_is_corrupted(fp):
+        return {"status": "error", "message": "state.json currently parses fine - nothing to reset."}
+
+    data = _recover_state_json_from_git(repo_root)
+    if data is None:
+        return {"status": "error", "message": "No usable checkpoint found anywhere in git history for .hc/state.json."}
+
+    try:
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        _write_state_atomically(fp, data)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    _checkpoint_state_commit(repo_root, tool_context)
+    for k, v in data.items():
+        tool_context.state[k] = v
+    tool_context.state["state_json_corrupted"] = False
+    return {"status": "ok", "path": str(fp), "loaded_keys": list(data.keys())}
+
+
+def clear_corrupted_state(tool_context=None) -> Dict[str, Any]:
+    """
+    Deletes a currently-corrupted state.json (GH issue #85's "clear it
+    completely" option) so the next init_scrum_state() call starts
+    genuinely fresh, rather than the corruption silently lingering on disk.
+    Refuses if state.json isn't actually currently corrupted - this is a
+    deliberate discard of a real problem, not a way to reset perfectly good
+    state.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    fp = _state_file_path(repo_root)
+    if not fp.exists():
+        return {"status": "error", "message": f"No state.json exists at {fp} - nothing to clear."}
+    if not _current_state_json_is_corrupted(fp):
+        return {"status": "error", "message": "state.json currently parses fine - refusing to delete it via clear_corrupted_state()."}
+
+    try:
+        fp.unlink()
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+    tool_context.state["state_json_corrupted"] = False
+    return {"status": "ok", "path": str(fp), "message": "Corrupted state.json cleared - the team will start fresh."}
 
 def log_decision(title: str, decision: str, rationale: str, owner: str, tool_context=None) -> Dict[str, Any]:
     """

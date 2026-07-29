@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 import pytest
@@ -12,6 +13,39 @@ def repo_with_state(tmp_path):
     (state_repo / "specs").mkdir(parents=True)
     (tmp_path / ".env").write_text(f'STATE_REPO_PATH="{state_repo}"\n')
     return tmp_path, state_repo
+
+
+def _fail_validation(monkeypatch):
+    """Makes check_state_repo.run()'s validate_state.py step always report
+    corrupted, via local python3 (no docker-compose.yaml in the fixture
+    repo_root), regardless of state.json's actual real content - the tests
+    below only care about what happens *after* validation fails. Only
+    intercepts the validate_state.py invocation itself; every other
+    subprocess.run call (the git commands _offer_state_repair's "reset from
+    git history" option makes) passes through to the real subprocess.run,
+    since those need to actually work against the fixture's real git repo."""
+    real_run = subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if any("validate_state.py" in str(part) for part in cmd):
+            return subprocess.CompletedProcess(cmd, 1)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(check_state_repo.shutil, "which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "python3" else None)
+    monkeypatch.setattr(check_state_repo.subprocess, "run", fake_run)
+
+
+def _init_git_repo(repo_path):
+    subprocess.run(["git", "init", "-q"], cwd=repo_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_path, check=True)
+
+
+def _commit_state_json(state_repo, content, message):
+    (state_repo / ".hc").mkdir(parents=True, exist_ok=True)
+    (state_repo / ".hc" / "state.json").write_text(content, encoding="utf-8")
+    subprocess.run(["git", "add", ".hc/state.json"], cwd=state_repo, check=True)
+    subprocess.run(["git", "commit", "-m", message], cwd=state_repo, check=True)
 
 
 class TestGuardClauses:
@@ -120,3 +154,101 @@ class TestStateJsonValidation:
         code = check_state_repo.run(repo_root)
         assert code == 0
         assert "Could not find Docker or python3" in capsys.readouterr().out
+
+
+class TestInteractiveStateRepair:
+    """
+    Acceptance Criteria (GH issue #85 - "Offer options to repair or delete
+    corrupted state"): a corrupted state.json, detected interactively,
+    offers a menu of remediation options rather than just failing with a
+    dead-end error message.
+    """
+
+    def test_non_interactive_still_just_fails(self, repo_with_state, monkeypatch, capsys):
+        """The pre-existing non-interactive behavior (e.g. doctor.py/CI)
+        must be unchanged - no prompt, no blocking on input()."""
+        repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{not valid json")
+        _fail_validation(monkeypatch)
+
+        code = check_state_repo.run(repo_root, interactive=False)
+
+        assert code == 1
+        assert "What would you like to do?" not in capsys.readouterr().out
+
+    def test_reset_from_git_history_option(self, repo_with_state, monkeypatch, capsys):
+        repo_root, state_repo = repo_with_state
+        _init_git_repo(state_repo)
+        _commit_state_json(state_repo, json.dumps({"sprint_goal": "Good checkpoint"}), "good checkpoint")
+        (state_repo / ".hc" / "state.json").write_text("{not valid json - corrupted after the good commit")
+        _fail_validation(monkeypatch)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "1")
+
+        assert code == 0
+        restored = json.loads((state_repo / ".hc" / "state.json").read_text())
+        assert restored["sprint_goal"] == "Good checkpoint"
+        assert "Restored state.json from the last known-good checkpoint" in capsys.readouterr().out
+
+    def test_reset_from_git_history_walks_past_a_corrupted_head_commit(self, repo_with_state, monkeypatch):
+        """If the *latest* commit's own snapshot is itself corrupted, an
+        earlier good one must still be found - not just HEAD."""
+        repo_root, state_repo = repo_with_state
+        _init_git_repo(state_repo)
+        _commit_state_json(state_repo, json.dumps({"sprint_goal": "Good checkpoint"}), "good checkpoint")
+        _commit_state_json(state_repo, "{not valid json - this commit is ALSO corrupted", "corrupted checkpoint")
+        (state_repo / ".hc" / "state.json").write_text("{not valid json - current working tree")
+        _fail_validation(monkeypatch)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "1")
+
+        assert code == 0
+        restored = json.loads((state_repo / ".hc" / "state.json").read_text())
+        assert restored["sprint_goal"] == "Good checkpoint"
+
+    def test_reset_from_git_history_reports_error_with_no_checkpoint(self, repo_with_state, monkeypatch, capsys):
+        repo_root, state_repo = repo_with_state
+        _init_git_repo(state_repo)
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{not valid json")
+        _fail_validation(monkeypatch)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "1")
+
+        assert code == 1
+        assert "No usable checkpoint found" in capsys.readouterr().out
+
+    def test_delete_option(self, repo_with_state, monkeypatch, capsys):
+        repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{not valid json")
+        _fail_validation(monkeypatch)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "2")
+
+        assert code == 0
+        assert not (state_repo / ".hc" / "state.json").exists()
+        assert "Deleted the corrupted state.json" in capsys.readouterr().out
+
+    def test_leave_as_is_option(self, repo_with_state, monkeypatch, capsys):
+        repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{not valid json")
+        _fail_validation(monkeypatch)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "3")
+
+        assert code == 1
+        assert (state_repo / ".hc" / "state.json").exists()
+
+    def test_empty_input_defaults_to_leave_as_is(self, repo_with_state, monkeypatch, capsys):
+        repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{not valid json")
+        _fail_validation(monkeypatch)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "")
+
+        assert code == 1
+        assert (state_repo / ".hc" / "state.json").exists()
