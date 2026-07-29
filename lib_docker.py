@@ -4,8 +4,10 @@ run/setup scripts. Stdlib-only, works identically on macOS/Linux/Windows.
 """
 
 import json
+import re
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 import lib_env
 import lib_llm_test
@@ -64,6 +66,28 @@ def compose_running_services(compose_args: list) -> list:
             if name:
                 services.append(name)
     return services
+
+
+def ollama_gpu_status(compose_args: list) -> Optional[str]:
+    """"cuda" or "cpu", per Ollama's own "inference compute" startup log
+    line (see docs/SETUP.md's "GPU Support" section) - or None if this
+    can't be determined right now (ollama not running yet, hasn't logged
+    that line yet, or docker itself is unavailable). A GPU override file
+    merged into the compose command is no guarantee the GPU is actually
+    reachable from inside the container (wrong/missing driver, WSL2 not
+    enabled, etc.) - Docker starts the container either way and Ollama
+    silently falls back to CPU - so this is the only way to tell the two
+    apart short of a human reading `docker compose logs ollama` by hand.
+    Best-effort diagnostic only, never a hard gate."""
+    cmd = ["docker", "compose", *compose_args, "logs", "ollama"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    matches = re.findall(r"inference compute.*?library=(\w+)", result.stdout + result.stderr)
+    return matches[-1] if matches else None
 
 
 def maybe_stop_existing_stack(compose_args: list) -> None:

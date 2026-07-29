@@ -61,7 +61,7 @@ Stories:
   - [ ] [US-0020] Wire Product Docs into Definition of Done
 
 ### Backlog (unplanned)
-- None currently — all identified gaps are scheduled into v0.1/v0.2 above.
+- [ ] [EP-0007] Deeper LiteLLM Platform Integration
 
 ---
 

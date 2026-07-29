@@ -65,3 +65,8 @@ from .workflow import (
     generate_workflow_diagram,
     gather_workflow_improvement_proposals,
 )
+from .notifications import (
+    record_blocking_interaction,
+    resolve_blocking_interaction,
+    list_blocking_interactions,
+)

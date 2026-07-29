@@ -12,6 +12,15 @@ from pathlib import Path
 import lib_env
 
 
+def stray_template_files(specs_dir: Path) -> list:
+    """TEMPLATE-*.md files directly under specs_dir - these belong only in
+    the main project's spec-templates directory, never copied into a state
+    repository. Reused by doctor.py's cheap, always-on version of this
+    check (GH issue #60), separately from the heavier state.json
+    validation below, which only this standalone script runs."""
+    return sorted(specs_dir.glob("TEMPLATE-*.md"))
+
+
 def run(repo_root: Path) -> int:
     """Runs every check against repo_root (no chdir, so this is safe to call
     from tests against a tmp_path fixture). Returns a process exit code."""
@@ -44,7 +53,7 @@ def run(repo_root: Path) -> int:
     print("  [OK] 'specs' directory exists.")
 
     # 4. Check for stray templates
-    stray_templates = sorted(specs_dir.glob("TEMPLATE-*.md"))
+    stray_templates = stray_template_files(specs_dir)
     if stray_templates:
         print("WARNING: Found template files in the state repository. These should only be in the main project's 'spec-templates' directory.")
         print("Please remove the following files from your state repository:")

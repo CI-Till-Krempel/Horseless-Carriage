@@ -88,6 +88,7 @@ including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 | [Budget Management](docs/BUDGET.md) | Token/USD dual-layer budgeting, sprint reports, quality KPIs |
 | [Evaluation](docs/EVALUATION.md) | How the team's own performance is evaluated release over release |
 | [GitHub Integration](docs/GITHUB-INTEGRATION.md) | Agent identity/attribution, Personal Account vs. GitHub App auth, this repo's own GitHub scaffolding |
+| [Notifications](docs/NOTIFICATIONS.md) | The blocking-interactions task list, and the pluggable notifier interface for surfacing them |
 | [PREFLIGHT.md](PREFLIGHT.md) | Pre-flight checklist before your first run |
 | [MANUAL.md](MANUAL.md) | User manual: concepts, day-to-day usage, common workflows |
 | [RELEASE.md](RELEASE.md) | How this repo itself is versioned/released, and the evaluation harness's technical mechanics |

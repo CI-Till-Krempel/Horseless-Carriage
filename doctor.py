@@ -5,10 +5,17 @@ Doctor script for the Horseless Carriage project.
 This script will:
 1. Check for Docker and Docker Compose.
 2. Check if .env exists and contains essential variables.
-3. Check if the STATE_REPO_PATH directory exists.
-4. Check gh CLI authentication.
+3. Check if the STATE_REPO_PATH directory exists, has a 'specs' subdirectory
+   with no stray template files (see check_state_repo.py for the fuller,
+   heavier version of this check, including state.json validation).
+4. Check gh CLI authentication, and - given a GITHUB_REPO_URL and either
+   GITHUB_TOKEN or a resolvable GitHub App token - live read access to that
+   repo's issues and pull requests (see lib_github.py).
 5. Check the LLM/LiteLLM proxy configuration (see setup_llm.py) - including a
    live test request if the proxy is already running.
+6. If OLLAMA_GPU_ENABLED=true and the ollama container is running, warn
+   loudly if it's actually running on CPU (see lib_docker.ollama_gpu_status)
+   - a driver/WSL2 misconfiguration otherwise fails silently.
 
 Every problem found is collected into a punch list of ActionableItems (see
 check()) instead of stopping at the first one - a user fixing configuration
@@ -27,7 +34,10 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import check_state_repo
+import lib_docker
 import lib_env
+import lib_github
 import lib_llm_test
 
 
@@ -154,6 +164,25 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
         warn("No GitHub authentication method fully configured in .env.")
         print("Please set either GITHUB_TOKEN or (GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_INSTALLATION_ID).")
 
+    if not skip_llm_probe and env.get("GITHUB_REPO_URL") and (env.get("GITHUB_TOKEN") or env.get("GITHUB_APP_ID")):
+        owner_repo = lib_github.parse_owner_repo(env["GITHUB_REPO_URL"])
+        if owner_repo is None:
+            warn(f"GITHUB_REPO_URL doesn't look like a github.com repo URL: {env['GITHUB_REPO_URL']!r}")
+        else:
+            owner, repo = owner_repo
+            token, token_source = lib_github.resolve_token(env)
+            if token is None:
+                if token_source == "app":
+                    warn("Could not mint a GitHub App installation token to verify repo access - check "
+                         "GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY/GITHUB_APP_INSTALLATION_ID, and that "
+                         "PyJWT and requests are installed.")
+            else:
+                access_ok, access_detail = lib_github.check_repo_access(owner, repo, token)
+                if access_ok:
+                    print(f"GitHub access: {access_detail}")
+                else:
+                    warn(f"GitHub access: {access_detail}")
+
     # 4. Check if the directories exist
     state_repo_path_str = env.get("STATE_REPO_PATH")
     if state_repo_path_str:
@@ -161,6 +190,17 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
         if not state_repo_path.is_dir():
             error(f"The directory specified by STATE_REPO_PATH does not exist: {state_repo_path}")
             print("Please create this directory before running the agent.")
+        else:
+            specs_dir = state_repo_path / "specs"
+            if not specs_dir.is_dir():
+                warn(f"The state repository at {state_repo_path} has no 'specs' directory yet - "
+                     "run python3 check_state_repo.py for a fuller check.")
+            else:
+                stray_templates = check_state_repo.stray_template_files(specs_dir)
+                if stray_templates:
+                    warn(f"State repository has {len(stray_templates)} stray TEMPLATE-*.md file(s) "
+                         "in 'specs/' that belong only in this project's spec-templates/ directory - "
+                         "run python3 check_state_repo.py for details.")
 
     sessions_dir = repo_root / "sessions"
     if not sessions_dir.is_dir():
@@ -192,6 +232,20 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             warn(f"{key_var} is not set (or still a placeholder) in .env. Run python3 setup_llm.py to configure it.")
     elif active_provider == "local" and not env.get("OLLAMA_MODEL"):
         print("NOTE: OLLAMA_MODEL is not set in .env - the ollama container will default to llama3.1:8b.")
+
+    if not skip_llm_probe and active_provider == "local" and env.get("OLLAMA_GPU_ENABLED") == "true":
+        compose_args = lib_docker.compose_file_args(repo_root)
+        if "ollama" in lib_docker.compose_running_services(compose_args):
+            gpu_status = lib_docker.ollama_gpu_status(compose_args)
+            if gpu_status == "cpu":
+                print("!" * 70)
+                warn("OLLAMA_GPU_ENABLED=true, but Ollama reports running on CPU (library=cpu) - "
+                     "the GPU is NOT actually being used. Check the driver/WSL2 prerequisites in "
+                     "docs/SETUP.md's \"GPU Support\" section, then verify with: "
+                     "docker compose " + " ".join(compose_args) + " exec ollama nvidia-smi")
+                print("!" * 70)
+            elif gpu_status == "cuda":
+                print("GPU acceleration confirmed: Ollama reports library=cuda.")
 
     if skip_llm_probe:
         print("(Skipping live proxy reachability check - not needed here.)")

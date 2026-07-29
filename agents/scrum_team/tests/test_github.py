@@ -294,6 +294,26 @@ class TestGitHubTools(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         mock_gh_pr_create.assert_not_called()
 
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    def test_create_release_pr_rejection_records_blocking_interaction(self, mock_gh_pr_create):
+        """
+        Acceptance Criteria (GH issue #53): a release PR rejected for lack
+        of a fresh human approval is exactly the "absolutely necessary
+        human feedback" case that must be recorded (and notified on), not
+        just left as a tool error return the calling agent might not
+        relay to the human.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        create_release_pr(title="Release", body="body", tool_context=tool_context)
+
+        self.assertEqual(len(tool_context.state["blocking_interactions"]), 1)
+        interaction = tool_context.state["blocking_interactions"][0]
+        self.assertEqual(interaction["kind"], "approval")
+        self.assertIn("Release", interaction["summary"])
+        self.assertFalse(interaction["resolved"])
+
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     def test_create_release_pr_requires_no_approval_at_ceo_and_eval_levels(

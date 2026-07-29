@@ -418,15 +418,20 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     if required_approval:
         release_approvals = sum(1 for a in state.get("human_approvals", []) if a.get("type") == required_approval)
         if release_approvals <= state.get("release_approval_baseline", 0):
-            return {
-                "status": "error",
-                "message": (
-                    f"Cannot create a release PR - this interaction level requires a fresh "
-                    f"'{required_approval}' human approval for this increment - call "
-                    f"record_human_approval('{required_approval}', ...) first (see "
-                    "docs/INTERACTION-LEVELS.md)."
-                ),
-            }
+            message = (
+                f"Cannot create a release PR - this interaction level requires a fresh "
+                f"'{required_approval}' human approval for this increment - call "
+                f"record_human_approval('{required_approval}', ...) first (see "
+                "docs/INTERACTION-LEVELS.md)."
+            )
+            from .notifications import record_blocking_interaction
+            record_blocking_interaction(
+                "approval",
+                f"Release PR '{title}' is waiting on a '{required_approval}' human approval.",
+                detail=message,
+                tool_context=tool_context,
+            )
+            return {"status": "error", "message": message}
 
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)

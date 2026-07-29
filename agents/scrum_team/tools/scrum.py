@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import json
 from typing import Any, Dict, List
-from .base import _configured_repo_root, _state_file_path, _project_root, _hc_version
+from pathlib import Path
+from .base import _configured_repo_root, _state_file_path, _project_root, _hc_version, _run
 from .migrations import migrate_state
 from ..helpers import blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked
 
@@ -47,6 +48,7 @@ REPO_STATE_KEYS = [
     "architect_review_baseline",
     "qa_review_baseline",
     "sprint_report_pending_release",
+    "blocking_interactions",
 ]
 # Deliberately excluded from the above: github_token, github_app,
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
@@ -92,6 +94,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("architect_review_baseline", 0)
     s.setdefault("qa_review_baseline", 0)
     s.setdefault("sprint_report_pending_release", False)
+    s.setdefault("blocking_interactions", [])
 
     # 1. Try to load from repo if present first, so environment can override
     try:
@@ -176,9 +179,66 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
 
     return {"status": "ok", "initialized": True}
 
+def _write_state_atomically(state_path: Path, snapshot: dict) -> None:
+    """Write-to-temp-file + os.replace (atomic on POSIX and Windows) rather
+    than a plain write_text - a process killed mid-write can otherwise
+    leave a torn, half-written state.json behind with no warning (GH issue
+    #59: "ensure the state is always restorable even if the container gets
+    killed"). os.replace either completes fully or not at all, so the
+    previous checkpoint's bytes on disk are never partially overwritten."""
+    tmp_path = state_path.with_name(state_path.name + ".tmp")
+    tmp_path.write_text(json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp_path, state_path)
+
+def _checkpoint_state_commit(repo_root: Path, tool_context=None) -> None:
+    """Best-effort local git commit of .hc/state.json, so every
+    save_state_to_repo() call leaves behind a restorable checkpoint in git
+    history (GH issue #59) - not just whatever bytes are currently sitting
+    in the working tree. Silently does nothing if repo_root isn't a git
+    repo at all (e.g. tests, or a STATE_REPO_PATH that's a plain
+    directory); _run() itself already swallows a "nothing to commit"
+    failure (the overwhelmingly common case - most saves don't actually
+    change anything) without raising, so there's nothing further to catch
+    here. Never pushes - see git_push() for the deliberate,
+    protected-branch-aware remote-push path; this is a purely local safety
+    net."""
+    if not (repo_root / ".git").exists():
+        return
+    _run(["git", "add", ".hc/state.json"], cwd=str(repo_root), tool_context=tool_context)
+    _run(["git", "commit", "-m", "checkpoint: save_state_to_repo"], cwd=str(repo_root), tool_context=tool_context)
+
+def _parse_state_json(text: str):
+    """dict if text is valid JSON representing an object, else None -
+    shared by load_state_from_repo's primary read and its git-recovery
+    fallback below, so both apply the exact same "is this actually usable
+    state" test."""
+    try:
+        data = json.loads(text)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+def _recover_state_json_from_git(repo_root: Path):
+    """The last checkpoint save_state_to_repo() committed
+    (`git show HEAD:.hc/state.json`), as a dict - or None if repo_root
+    isn't a git repo, there's no commit touching that path yet, or (very
+    unlikely, since it was valid when committed) that commit's own
+    snapshot isn't parseable either. This is the fallback path GH issue
+    #59 asks for: "these checkpoints in git are the fallback option if
+    the state gets corrupted"."""
+    if not (repo_root / ".git").exists():
+        return None
+    result = _run(["git", "show", "HEAD:.hc/state.json"], cwd=str(repo_root))
+    if result.get("status") != "ok":
+        return None
+    return _parse_state_json(result.get("stdout", ""))
+
 def save_state_to_repo(tool_context=None) -> Dict[str, Any]:
     """
-    Persist selected scrum state keys into the configured repo.
+    Persist selected scrum state keys into the configured repo, then
+    commit that snapshot to the repo's local git history as a checkpoint
+    (GH issue #59) - see _checkpoint_state_commit for why this is the
+    fallback-if-corrupted mechanism load_state_from_repo below relies on.
     """
     repo_root = _configured_repo_root(tool_context)
     try:
@@ -186,27 +246,47 @@ def save_state_to_repo(tool_context=None) -> Dict[str, Any]:
         state_dir = repo_root / ".hc"
         state_dir.mkdir(parents=True, exist_ok=True)
         snapshot = {k: tool_context.state.get(k) for k in REPO_STATE_KEYS}
-        _state_file_path(repo_root).write_text(json.dumps(snapshot, indent=2, ensure_ascii=False), encoding="utf-8")
-        return {"status": "ok", "path": str(_state_file_path(repo_root))}
+        state_path = _state_file_path(repo_root)
+        _write_state_atomically(state_path, snapshot)
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+    _checkpoint_state_commit(repo_root, tool_context)
+    return {"status": "ok", "path": str(state_path)}
+
 def load_state_from_repo(tool_context=None) -> Dict[str, Any]:
     """
-    Load previously persisted scrum state.
+    Load previously persisted scrum state. Falls back to the last
+    git-committed checkpoint if state.json exists but is corrupted/invalid
+    (GH issue #59), repairing the working-tree file with the recovered
+    content in the process so the next load doesn't hit the same
+    corruption again.
     """
     repo_root = _configured_repo_root(tool_context)
     fp = _state_file_path(repo_root)
     if not fp.exists():
         return {"status": "error", "message": f"State file not found: {fp}"}
     try:
-        data = json.loads(fp.read_text(encoding="utf-8", errors="replace"))
-        if not isinstance(data, dict):
-            return {"status": "error", "message": "Invalid state format in state.json"}
+        data = _parse_state_json(fp.read_text(encoding="utf-8", errors="replace"))
+        recovered_from_git = False
+        if data is None:
+            data = _recover_state_json_from_git(repo_root)
+            recovered_from_git = data is not None
+        if data is None:
+            return {"status": "error", "message": "Invalid state format in state.json, and no recoverable git checkpoint was found"}
+
         data = migrate_state(data, data.get("hc_version", "unknown"))
         for k, v in data.items():
             tool_context.state[k] = v
-        return {"status": "ok", "loaded_keys": list(data.keys())}
+
+        result = {"status": "ok", "loaded_keys": list(data.keys())}
+        if recovered_from_git:
+            result["recovered_from_git"] = True
+            try:
+                _write_state_atomically(fp, data)
+            except Exception:
+                pass
+        return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

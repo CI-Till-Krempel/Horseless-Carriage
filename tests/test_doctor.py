@@ -59,6 +59,10 @@ def valid_repo(tmp_path, monkeypatch):
 
     _patch_which(monkeypatch, docker=True, **{"docker-compose": True, "gh": True})
     _patch_subprocess_ok(monkeypatch)
+    # No test in this file cares about the live GitHub access check by
+    # default (it needs real network) - individual tests in
+    # TestGithubAccessCheck override this again to exercise it directly.
+    monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: (None, ""))
     return tmp_path
 
 
@@ -341,3 +345,195 @@ class TestLlmConfigurationSection:
         assert "LLM connectivity test failed" in out
         assert "401" in out
         assert code == 0  # a failed live test is a warning, not a hard failure
+
+
+class TestStateRepoStructureChecks:
+    """Acceptance Criteria (GH issue #60): doctor.py now runs the cheap,
+    filesystem-only part of check_state_repo.py's checks itself (specs/
+    directory presence, stray TEMPLATE-*.md files) - previously nothing in
+    the guided setup flow ever ran check_state_repo.py at all."""
+
+    def test_valid_repo_has_specs_dir_and_no_warning(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        result = doctor.check(valid_repo)
+        assert not any("specs" in w.message for w in result.warnings())
+
+    def test_missing_specs_dir_warns(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        (state_repo / "specs").rmdir()
+        result = doctor.check(valid_repo)
+        assert any("no 'specs' directory yet" in w.message for w in result.warnings())
+        assert "check_state_repo.py" in capsys.readouterr().out
+
+    def test_stray_templates_warn(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        specs_dir = valid_repo / "state_repo" / "specs"
+        (specs_dir / "TEMPLATE-ISSUE.md").write_text("blueprint")
+        result = doctor.check(valid_repo)
+        assert any("stray TEMPLATE-*.md" in w.message for w in result.warnings())
+        assert "check_state_repo.py" in capsys.readouterr().out
+
+    def test_no_state_repo_path_at_all_skips_specs_check(self, tmp_path, monkeypatch):
+        """Guard clause: don't crash trying to inspect a specs/ dir under a
+        STATE_REPO_PATH that was never even set - that's already its own
+        ERROR item."""
+        _patch_which(monkeypatch, docker=True, **{"docker-compose": True})
+        _patch_proxy_unreachable(monkeypatch)
+        (tmp_path / ".env").write_text('LITELLM_MASTER_KEY="testkey"\n')
+        result = doctor.check(tmp_path)
+        assert not any("specs" in w.message for w in result.warnings())
+
+
+class TestGithubAccessCheck:
+    """Acceptance Criteria (GH issue #60): "without the ability to read
+    from, write to and read/write pull requests and issues, the setup is
+    not complete" - doctor.py now actually verifies this live instead of
+    only checking that a credential is present in .env."""
+
+    def test_no_repo_url_skips_the_check(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace('GITHUB_REPO_URL="git@github.com:example/example.git"\n', ""))
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("resolve_token should not run without a GITHUB_REPO_URL")
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", fail_if_called)
+
+        doctor.check(valid_repo)
+
+    def test_no_auth_configured_skips_the_check(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace('GITHUB_TOKEN="dummy"\n', ""))
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("resolve_token should not run without any auth method configured")
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", fail_if_called)
+
+        doctor.check(valid_repo)
+
+    def test_skip_llm_probe_skips_the_check_too(self, valid_repo, monkeypatch):
+        def fail_if_called(*a, **k):
+            raise AssertionError("resolve_token should not run when skip_llm_probe=True")
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", fail_if_called)
+
+        doctor.check(valid_repo, skip_llm_probe=True)
+
+    def test_unparseable_repo_url_warns(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace(
+            'GITHUB_REPO_URL="git@github.com:example/example.git"\n',
+            'GITHUB_REPO_URL="not-a-github-url"\n',
+        ))
+        result = doctor.check(valid_repo)
+        assert any("doesn't look like a github.com repo URL" in w.message for w in result.warnings())
+
+    def test_full_access_confirmed_prints_and_does_not_warn(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: ("tok", "token"))
+        monkeypatch.setattr(doctor.lib_github, "check_repo_access", lambda o, r, t: (True, "read access to example/example confirmed"))
+        result = doctor.check(valid_repo)
+        assert result.warnings() == []
+        assert "GitHub access: read access to example/example confirmed" in capsys.readouterr().out
+
+    def test_access_problem_warns(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: ("tok", "token"))
+        monkeypatch.setattr(doctor.lib_github, "check_repo_access", lambda o, r, t: (False, "issues read failed (HTTP 403)"))
+        result = doctor.check(valid_repo)
+        assert any("issues read failed" in w.message for w in result.warnings())
+
+    def test_app_token_mint_failure_warns(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        text = env.read_text().replace('GITHUB_TOKEN="dummy"\n', "")
+        text += 'GITHUB_APP_ID="1"\nGITHUB_APP_PRIVATE_KEY="key"\nGITHUB_APP_INSTALLATION_ID="2"\n'
+        env.write_text(text)
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: (None, "app"))
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("check_repo_access should not run without a token")
+        monkeypatch.setattr(doctor.lib_github, "check_repo_access", fail_if_called)
+
+        result = doctor.check(valid_repo)
+        assert any("Could not mint a GitHub App installation token" in w.message for w in result.warnings())
+
+
+class TestOllamaGpuWarning:
+    """Acceptance Criteria (GH issue #49): a driver/WSL2 misconfiguration
+    otherwise leaves Ollama silently running on CPU with no error from
+    Docker - doctor.py must surface this loudly rather than the user only
+    finding out from noticing slow responses."""
+
+    def _local_gpu_repo(self, valid_repo):
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_GPU_ENABLED="true"\n')
+        (valid_repo / "config" / "model-templates").mkdir(parents=True, exist_ok=True)
+        (valid_repo / "config" / "model-templates" / "litellm.local-ollama.yaml").write_text(
+            "model_list:\n"
+            "  - model_name: scrum-po\n"
+            "    litellm_params:\n"
+            "      model: ollama/llama3.1:8b\n"
+            "      api_base: http://ollama:11434\n"
+        )
+        return valid_repo
+
+    def test_warns_loudly_when_ollama_container_falls_back_to_cpu(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: ["ollama"])
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", lambda compose_args: "cpu")
+
+        result = doctor.check(repo)
+        out = capsys.readouterr().out
+
+        assert "GPU" in out and "CPU" in out
+        assert "!" * 10 in out  # a noticeable banner, not just another line among many
+        assert any("running on CPU" in i.message for i in result.warnings())
+
+    def test_confirms_gpu_when_working(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: ["ollama"])
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", lambda compose_args: "cuda")
+
+        result = doctor.check(repo)
+        out = capsys.readouterr().out
+
+        assert "GPU acceleration confirmed" in out
+        assert result.warnings() == []
+
+    def test_no_check_when_gpu_not_enabled(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+
+        def fail_if_called(compose_args):
+            raise AssertionError("ollama_gpu_status should not run when OLLAMA_GPU_ENABLED isn't true")
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.check(valid_repo)  # cloud provider, GPU flag absent entirely
+
+    def test_no_check_when_ollama_container_not_running(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: [])
+
+        def fail_if_called(compose_args):
+            raise AssertionError("ollama_gpu_status should not run when the ollama container isn't up yet")
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.check(repo)
+
+    def test_skip_llm_probe_skips_gpu_check_too(self, valid_repo, monkeypatch, capsys):
+        """run.py's pre-flight gate (skip_llm_probe=True) runs before any
+        container is started - the GPU check would only ever find no
+        running ollama container, exactly like the proxy-reachability
+        check it's gated alongside."""
+        repo = self._local_gpu_repo(valid_repo)
+
+        def fail_if_called(compose_args):
+            raise AssertionError("compose_running_services should not run when skip_llm_probe=True")
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", fail_if_called)
+
+        doctor.check(repo, skip_llm_probe=True)

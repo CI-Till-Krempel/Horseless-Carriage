@@ -155,7 +155,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
-from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level
+from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level, STORY_STAGES
 from .prompts import (
     ORCHESTRATOR_PROMPT,
     PO_PROMPT,
@@ -178,6 +178,9 @@ from .tools import (
     add_impediment,
     add_retro_action,
     record_human_approval,
+    record_blocking_interaction,
+    resolve_blocking_interaction,
+    list_blocking_interactions,
     plan_sprint_backlog_item,
     start_sprint,
     git_push,
@@ -368,6 +371,20 @@ def _sync_roadmap_on_exhaustion_once(callback_context: CallbackContext) -> None:
     callback_context.state["budget_exhaustion_synced"] = True
 
 
+def _notify_critical_halt(callback_context: CallbackContext, msg: str) -> None:
+    """Records + notifies a blocking interaction (GH issue #53) for a
+    budget-halt event below - these are exactly the "critical tool error"
+    case an unsupervised run needs pushed to a human, not just left as a
+    chat message in a session nobody may be watching. Best-effort: a
+    notification failure must never turn an already-critical halt into an
+    unhandled exception on top."""
+    from .tools.notifications import record_blocking_interaction
+    try:
+        record_blocking_interaction("critical_error", msg, tool_context=callback_context)
+    except Exception:
+        pass
+
+
 def check_cost_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
     """
     BeforeModelCallback: Checks if the team is over budget before allowing an agent to start.
@@ -414,6 +431,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
             f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
             f"Current usage: {token_usage:,}. Agent execution halted."
         )
+        _notify_critical_halt(callback_context, msg)
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -431,6 +449,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     if budget_limit <= 0:
         # If still 0, something is wrong with configuration
         msg = "❌ [CONFIGURATION ERROR] No USD budget limit set for the sprint. Agent execution halted for safety."
+        _notify_critical_halt(callback_context, msg)
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -461,6 +480,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                 f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
                 f"Current spend: ${current_spend:.2f}. Agent execution halted."
             )
+            _notify_critical_halt(callback_context, msg)
             return LlmResponse(
                 content=types.Content(role="model", parts=[types.Part(text=msg)]),
                 model_version=llm_request.model or "unknown"
@@ -468,6 +488,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     except requests.RequestException as e:
         _sync_roadmap_on_exhaustion_once(callback_context)
         msg = f"❌ [BUDGET ERROR] Could not verify budget status with LiteLLM proxy: {e}. Agent execution halted to prevent unmonitored spending."
+        _notify_critical_halt(callback_context, msg)
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -504,9 +525,31 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
 
 # --- Sprint Status Injection Callback ---
 
+def _stories_ready_for_next_stage_count(state: ScrumState) -> int:
+    """How many backlog items (sprint_backlog + product_backlog) have
+    completed some STORY_STAGES stage but not the very next one - i.e.
+    genuinely ready for another role to pick up (Ready-but-not-Implemented,
+    Reviewed-but-not-Tested, etc.), not just sitting untouched. Feeds the
+    Orchestrator's first-message menu (GH issue #58) - a nonzero count here
+    is a concrete signal for offering "Discuss the sprint backlog" or
+    "Refine User Stories", not something to compute from prose."""
+    count = 0
+    for item in (state.sprint_backlog or []) + (state.product_backlog or []):
+        completed = set(item.get("stages_completed") or [])
+        for i, stage in enumerate(STORY_STAGES[:-1]):
+            if stage in completed and STORY_STAGES[i + 1] not in completed:
+                count += 1
+                break
+    return count
+
+
 def sprint_status_injection_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
-    BeforeModelCallback: Injects current sprint and budget status for the Orchestrator's first message.
+    BeforeModelCallback: Injects current sprint/budget/process status for
+    the Orchestrator's first message - the concrete state signals
+    ORCHESTRATOR_PROMPT's FIRST MESSAGE SUMMARY (GH issue #58) uses to pick
+    which 2-5 next-action options are actually relevant right now, instead
+    of a generic, state-blind greeting.
     """
     if callback_context.agent_name != "ScrumOrchestrator":
         return
@@ -516,19 +559,27 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
         return
 
     state = get_scrum_state(callback_context.state)
-    
+
     sprint_goal = state.sprint_goal or "Not yet defined"
-    
+
     # Calculate backlog progress
     backlog = state.sprint_backlog or []
     total_items = len(backlog)
     completed_items = len([i for i in backlog if is_story_done(i.get("status"))])
-    
+
     # Budget info
     token_usage = state.token_usage.total
     token_limit = state.budgets.total
     usd_limit = state.budgets.total_usd
-    
+
+    # Process signals (GH issue #58): what's actually waiting for attention
+    # right now, not just sprint/budget numbers.
+    product_vision = state.product_vision.strip() if state.product_vision else ""
+    sprint_report_exists = bool((state.sprint_report or "").strip())
+    open_impediments = [i for i in (state.impediment_log or []) if (i.get("status") or "open") == "open"]
+    open_retro_actions = [r for r in (state.retro_actions or []) if (r.get("status") or "open") == "open"]
+    ready_for_next_stage = _stories_ready_for_next_stage_count(state)
+
     # Identify active sprint status
     status_summary = f"""
 [SYSTEM CONTEXT: CURRENT SPRINT & BUDGET STATUS]
@@ -539,6 +590,11 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
 - Repository: {state.repo.get('url', 'Not configured')} ({state.repo.get('branch', 'N/A')})
 - Interaction Level: {get_interaction_level()} (see docs/INTERACTION-LEVELS.md - controls which
   record_human_approval type, if any, is required before implementing stories / releasing)
+- Product Vision: {product_vision or "Not yet defined"}
+- Sprint Report: {"already created for the current sprint - likely mid sprint-close, or ready for a new sprint" if sprint_report_exists else "not yet created this sprint"}
+- Open Impediments: {len(open_impediments)}{f" (most recent: {open_impediments[-1].get('description', '')[:120]})" if open_impediments else ""}
+- Retro Actions Logged: {len(open_retro_actions)}{f" (most recent: {open_retro_actions[-1].get('action', '')[:120]})" if open_retro_actions else ""}
+- Stories Ready For Next Pipeline Stage: {ready_for_next_stage}
 """
     # Inject as a system message at the beginning of the contents
     llm_request.contents.insert(0, types.Content(role="system", parts=[types.Part(text=status_summary)]))
@@ -751,6 +807,9 @@ scrum_master = LlmAgent(
         add_retro_action,
         upsert_issue,
         record_human_approval,
+        record_blocking_interaction,
+        resolve_blocking_interaction,
+        list_blocking_interactions,
         log_decision,
         update_budgets,
         get_budget_status,
@@ -861,6 +920,7 @@ root_agent = LlmAgent(
         configure_github_app,
         seed_repository,
         repo_status,
+        list_blocking_interactions,
         save_state_to_repo,
         load_state_from_repo,
         create_litellm_virtual_key,
