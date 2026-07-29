@@ -20,10 +20,13 @@ from agents.scrum_team.agent import (
     sprint_status_injection_callback,
     on_tool_error_callback,
     log_tool_invocation_callback,
+    recover_fake_tool_call_callback,
     _stories_ready_for_next_stage_count,
     ensure_state_initialized_callback,
 )
 from agents.scrum_team.state import ScrumState
+from google.genai import types
+from google.adk.models.llm_response import LlmResponse
 
 
 class TestAgent(unittest.TestCase):
@@ -463,6 +466,124 @@ class TestLogToolInvocationCallback(unittest.TestCase):
     def test_registered_on_every_agent(self):
         for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
             self.assertEqual(agent.before_tool_callback, log_tool_invocation_callback)
+
+
+class TestRecoverFakeToolCallCallback(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #89): a model reply that's plain TEXT
+    shaped exactly like a tool call - `{"type": "function", "function":
+    "<name>", "arguments": {...}}` - instead of a real ADK function_call
+    part must be converted into an actual function_call part, mechanically,
+    since a text warning alone did not reliably get a real model to
+    self-correct (one reported session hit this 8 times in a row). Must
+    never touch a genuine prose reply, even one that happens to be valid
+    JSON or mentions a tool by name.
+    """
+
+    def _response_with_text(self, text):
+        return LlmResponse(content=types.Content(role="model", parts=[types.Part(text=text)]))
+
+    def test_converts_exact_fake_tool_call_shape(self):
+        response = self._response_with_text('{"type": "function", "function": "repo_status", "arguments": {}}')
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        parts = response.content.parts
+        self.assertEqual(len(parts), 1)
+        self.assertIsNone(parts[0].text)
+        self.assertEqual(parts[0].function_call.name, "repo_status")
+        self.assertEqual(parts[0].function_call.args, {})
+
+    def test_converts_with_name_and_args_keys(self):
+        """Some models use "name"/"args" instead of "function"/"arguments" -
+        both key spellings must be recovered."""
+        response = self._response_with_text('{"type": "function", "name": "start_sprint", "args": {"goal": "Refine the MVP scope"}}')
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "start_sprint")
+        self.assertEqual(fc.args, {"goal": "Refine the MVP scope"})
+
+    def test_does_not_touch_a_real_function_call(self):
+        response = LlmResponse(content=types.Content(
+            role="model",
+            parts=[types.Part(function_call=types.FunctionCall(name="repo_status", args={}))],
+        ))
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        self.assertEqual(response.content.parts[0].function_call.name, "repo_status")
+
+    def test_does_not_touch_legitimate_prose(self):
+        response = self._response_with_text("Here's the current sprint status and what I'd suggest next.")
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        self.assertEqual(response.content.parts[0].text, "Here's the current sprint status and what I'd suggest next.")
+        self.assertIsNone(response.content.parts[0].function_call)
+
+    def test_does_not_touch_json_that_is_not_the_fake_tool_call_shape(self):
+        response = self._response_with_text('{"status": "ok", "note": "just some unrelated JSON"}')
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        self.assertEqual(response.content.parts[0].text, '{"status": "ok", "note": "just some unrelated JSON"}')
+        self.assertIsNone(response.content.parts[0].function_call)
+
+    def test_does_not_touch_multiple_text_parts(self):
+        response = LlmResponse(content=types.Content(
+            role="model",
+            parts=[
+                types.Part(text='{"type": "function", "function": "repo_status", "arguments": {}}'),
+                types.Part(text="some more text"),
+            ],
+        ))
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        self.assertIsNone(response.content.parts[0].function_call)
+
+    def test_handles_empty_content_without_raising(self):
+        response = LlmResponse(content=None)
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+        recover_fake_tool_call_callback(callback_context, response)  # must not raise
+
+    def test_recovered_call_is_seen_as_a_real_tool_call_by_the_stall_detector(self):
+        """Integration check: once recovered, the stall detector
+        (_track_orchestrator_stall, run via history_management_after_callback)
+        must see this as a real tool call and reset the streak, not count
+        it as yet another stalled reply."""
+        from agents.scrum_team.agent import history_management_after_callback
+
+        response = self._response_with_text('{"type": "function", "function": "repo_status", "arguments": {}}')
+        state = ScrumState()
+        state.orchestrator_stall_count = 2
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+        callback_context.state = state.model_dump()
+
+        recover_fake_tool_call_callback(callback_context, response)
+        history_management_after_callback(callback_context, response)
+
+        self.assertEqual(callback_context.state["orchestrator_stall_count"], 0)
+
+    def test_registered_on_every_agent(self):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+            self.assertIn(recover_fake_tool_call_callback, agent.canonical_after_model_callbacks)
 
 
 class TestCriticalHaltNotifications(unittest.TestCase):

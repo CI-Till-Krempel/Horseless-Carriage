@@ -1,5 +1,6 @@
 # agents/scrum_team/agent.py
 import os
+import json
 import requests
 import logging
 import sys
@@ -557,6 +558,74 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
 
     return None
 
+_FAKE_TOOL_CALL_NAME_KEYS = ("function", "name")
+_FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args")
+
+
+def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> None:
+    """
+    AfterModelCallback: some models occasionally reply with plain TEXT that
+    merely *looks* like a tool call - a JSON object shaped like
+    `{"type": "function", "function": "<tool_name>", "arguments": {...}}` -
+    instead of an actual ADK function_call part, even when the prompt
+    explicitly says not to (see prompts.py's DELEGATION IS MANDATORY, NOT
+    DESCRIPTIVE, which already names this exact pattern as "an improvised
+    JSON blob"). GH issue #89: a real session hit this 8 times in a row
+    with gemini-1.5-pro via the LiteLLM proxy - the existing stall-warning
+    banner (_track_orchestrator_stall) didn't reliably get the model to
+    self-correct, so this is a mechanical backstop rather than relying on
+    the model's behavior changing.
+
+    Mutates llm_response.content.parts *in place* (matching
+    _track_orchestrator_stall's established pattern below, rather than
+    returning a new LlmResponse) - ADK's own flow re-checks this exact
+    object for function_call parts after every after_model_callback runs
+    (see base_llm_flow.py's _handle_after_model_callback ->
+    _postprocess_async) and dispatches them exactly as if the model had
+    used real function-calling, including on_tool_error_callback's
+    existing "tool not found" recovery if the name turns out to be
+    hallucinated - so this converts the model's actual intent into a real,
+    normally-dispatched tool call rather than reimplementing dispatch here.
+
+    Requires an exact, whole-string JSON match against this precise shape
+    (not a substring search) so a legitimate prose reply that merely
+    mentions a tool by name is never mistaken for this pattern - and only
+    fires when there is no real function_call part already (nothing to
+    recover) and exactly one text part (an unambiguous whole reply, not one
+    part of a longer multi-part message).
+    """
+    if not llm_response.content or not llm_response.content.parts:
+        return
+    parts = llm_response.content.parts
+    if any(getattr(p, "function_call", None) for p in parts):
+        return
+    text_parts = [p for p in parts if getattr(p, "text", None)]
+    if len(text_parts) != 1:
+        return
+
+    text = (text_parts[0].text or "").strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return
+    if not isinstance(parsed, dict) or parsed.get("type") != "function":
+        return
+
+    tool_name = next((parsed[k] for k in _FAKE_TOOL_CALL_NAME_KEYS if isinstance(parsed.get(k), str) and parsed[k].strip()), None)
+    tool_args = next((parsed[k] for k in _FAKE_TOOL_CALL_ARGS_KEYS if isinstance(parsed.get(k), dict)), {})
+    if not tool_name:
+        return
+
+    logger.warning(
+        f"recover_fake_tool_call_callback: {callback_context.agent_name} replied with text shaped like "
+        f"a tool call ({tool_name!r}) instead of a real one (GH issue #89) - converting it into an "
+        "actual function call."
+    )
+    llm_response.content.parts = [types.Part(function_call=types.FunctionCall(name=tool_name, args=tool_args))]
+
+
 def update_token_usage_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
     """
     AfterModelCallback: Automatically updates the token usage in session state.
@@ -945,7 +1014,7 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
-    "after_model_callback": [update_token_usage_callback, history_management_after_callback],
+    "after_model_callback": [recover_fake_tool_call_callback, update_token_usage_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
     "on_tool_error_callback": on_tool_error_callback,
 }
@@ -1129,6 +1198,7 @@ root_agent = LlmAgent(
         history_management_callback
     ],
     after_model_callback=[
+        recover_fake_tool_call_callback,
         update_token_usage_callback,
         history_management_after_callback
     ],
