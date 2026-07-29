@@ -81,7 +81,8 @@ for what `doctor.py` checks.
 ## Setting up on Windows
 
 All of this project's host-side tooling (`setup_all.py`, `setup_llm.py`, `setup_project.py`,
-`doctor.py`, `run.py`, `run_tests.py`, `check_state_repo.py`, `rebuild_images.py`) is plain stdlib Python - no bash, no WSL2 required. The only
+`doctor.py`, `run.py`, `run_tests.py`, `check_state_repo.py`, `rebuild_images.py`,
+`watch_roadmap.py`) is plain stdlib Python - no bash, no WSL2 required. The only
 part of the stack that ever needed a Unix shell was the old setup scripts, which this replaces
 entirely; Docker Desktop may still use WSL2 internally as its own backend, but that's automatic and
 not something you need to set up yourself.
