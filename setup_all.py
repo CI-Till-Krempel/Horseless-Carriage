@@ -8,9 +8,19 @@ chains them for a first-time/new-machine setup so you don't have to
 remember the order or run each one by hand.
 
 Steps:
+  0. Developer mode? - asked FIRST, before any container work happens at
+     all: dev mode forces a fresh image rebuild (see rebuild_images.py),
+     and setup_llm.py's own Local/Ollama live test (step 1) already starts
+     a container (ollama) that dev mode would rebuild - asking this only
+     at the very end (as the offer-to-start step used to) meant that live
+     test validated a stale image a later rebuild silently replaced
+     anyway, wasting a real model pull and giving a misleading "it works"
+     signal for an image about to be discarded.
   1. setup_llm.py        - provider/model/GPU/interaction-level/budget config,
                            state repository setup, git identity. Prefills
-                           whatever's already configured on a re-run.
+                           whatever's already configured on a re-run. Told
+                           about developer mode from step 0, so its own
+                           Local/Ollama live test rebuilds ollama first.
   2. check_state_repo.py - verifies the state repository setup_llm.py just
                            created/cloned is actually in the shape the tools
                            expect (specs/ directory, no stray templates, a
@@ -18,16 +28,18 @@ Steps:
                            used to be a separate step nothing else ever ran
                            for you (GH issue #60).
   3. setup_project.py    - Docker/GitHub CLI checks, .env skeleton, brings up
-                           db + litellm(+ollama).
+                           db + litellm(+ollama) (using whichever compose
+                           file the configured provider actually needs -
+                           see setup_project.py's own docstring).
   4. doctor.py           - gate: shows the full punch list of anything left
                            to fix, and loops (fix -> retry) until there are
                            no more ERROR-level items, before proceeding.
   5. Offers to start the agent now via run.py, in whichever mode you want -
-     including developer mode (rebuilds images fresh, verbose logs).
+     developer mode itself was already decided in step 0.
 
 Usage:
   python3 setup_all.py        Interactive, guided walkthrough of all of the above.
-  python3 setup_all.py --dev  Same, but defaults the final "developer mode?"
+  python3 setup_all.py --dev  Same, but defaults step 0's developer-mode
                               question to yes instead of asking cold.
 """
 
@@ -104,7 +116,11 @@ def run_doctor_gate(repo_root: Path) -> bool:
             return False
 
 
-def offer_to_start(default_dev: bool) -> None:
+def offer_to_start(dev: bool) -> None:
+    """dev was already decided upfront in main() (step 0) - not re-asked
+    here, since by this point it's too late for that answer to affect
+    anything (any container work dev mode would want to precede has
+    already happened in earlier steps)."""
     print()
     print("--- Ready to start the agent ---")
     if not confirm("Start the agent now?", default_yes=True):
@@ -113,10 +129,6 @@ def offer_to_start(default_dev: bool) -> None:
 
     mode = "cli" if confirm("Interactive CLI mode instead of the web UI?", default_yes=False) else "web"
     daemon = confirm("Run detached (daemon) instead of in the foreground?", default_yes=False)
-    dev = confirm(
-        "Enable developer mode? (rebuilds agent/ollama images fresh, verbose logs)",
-        default_yes=default_dev,
-    )
 
     argv = [mode]
     if daemon:
@@ -136,9 +148,19 @@ def main() -> None:
     print("standalone script (setup_llm.py, setup_project.py, doctor.py, run.py) if you")
     print("ever want to re-run just one of them directly.")
 
+    # Step 0: developer mode, decided before any container work happens -
+    # see this module's own docstring for why this can't wait until the
+    # end (offer_to_start used to ask this, after setup_llm.py's Local/
+    # Ollama live test had already started a container dev mode would
+    # rebuild).
+    dev = confirm(
+        "Enable developer mode? (rebuilds agent/ollama images fresh, verbose logs)",
+        default_yes=default_dev,
+    )
+
     repo_root = Path(__file__).resolve().parent
 
-    if not run_guided_step("setup_llm.py (LLM provider/model)", setup_llm.main):
+    if not run_guided_step("setup_llm.py (LLM provider/model)", lambda: setup_llm.main(dev=dev)):
         print("Stopping here - re-run python3 setup_all.py (or python3 setup_llm.py directly) when ready.")
         sys.exit(1)
 
@@ -156,7 +178,7 @@ def main() -> None:
         print("Re-run python3 setup_all.py (or python3 doctor.py directly) once they are.")
         sys.exit(1)
 
-    offer_to_start(default_dev)
+    offer_to_start(dev)
 
 
 if __name__ == "__main__":

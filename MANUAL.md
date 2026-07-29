@@ -195,6 +195,12 @@ Carriage itself* is released — this section is how the agents release the prod
   `SPRINT_TOKEN_BUDGET` in `.env` aren't explicitly set to `0` (a genuinely unset value already
   defaults to a safe budget, but an explicit `0` is treated as "no budget" and previously could halt
   the session before it even started replying).
+- **Orchestrator keeps re-describing the same plan instead of acting** — after 3 replies in a row
+  with no tool call at all, a `⏸ [NO ACTION TAKEN - ...]` banner is mechanically prepended to its
+  next reply (you'll see it directly in the chat, not just in logs), and it shows up in
+  `list_blocking_interactions()` too - a code-guaranteed signal, not dependent on the model noticing
+  on its own. If you see this banner, tell it plainly to act now (or ask what specifically it's
+  waiting on) rather than restating the same instructions again.
 
 ## 9. Team performance evaluation
 

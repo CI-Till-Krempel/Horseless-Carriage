@@ -32,9 +32,19 @@ Walks you through:
   8. Starting the db + litellm (+ ollama, + the GPU override if enabled)
      containers and sending one real, minimal test request through the
      proxy to confirm the new configuration actually works end-to-end.
+     For the Local/Ollama provider with --dev passed (or setup_all.py's
+     own upfront developer-mode question - see its docstring), the ollama
+     image is rebuilt fresh (see rebuild_images.py) before this test
+     starts it, rather than testing a stale image a later dev-mode
+     rebuild would just replace anyway.
 
 This script only touches LLM/provider configuration. Run setup_project.py
 separately (before or after this) for the Docker/GitHub CLI checks.
+
+Usage:
+  python3 setup_llm.py        Interactive, guided provider/model setup.
+  python3 setup_llm.py --dev  Same, but (Local/Ollama only) rebuilds the
+                              ollama image fresh before the live test.
 
 Stdlib-only - no pip install required, and works identically on
 macOS/Linux/Windows (that's the whole point of this being Python rather
@@ -57,6 +67,7 @@ from pathlib import Path
 import lib_docker
 import lib_env
 import lib_llm_test
+import rebuild_images
 
 ROLES = [
     "scrum-orchestrator", "scrum-po", "scrum-sm", "scrum-dev",
@@ -543,7 +554,7 @@ def _docker_compose_available() -> bool:
         return False
 
 
-def run_configuration_test(provider: str, model_label: str, env_path: Path) -> None:
+def run_configuration_test(provider: str, model_label: str, env_path: Path, dev: bool = False) -> None:
     print()
     print("--- Testing the new configuration ---")
 
@@ -561,6 +572,20 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path) -> N
             compose_args += ["-f", "docker-compose.gpu.yaml"]
 
     services = ["db", "litellm"] + ([extra_service] if extra_service else [])
+
+    # Developer mode must be settled before any container work, not after:
+    # "ollama" (the only locally-built image this test ever starts - db is
+    # postgres, litellm is a pulled release image) needs to be freshly
+    # rebuilt BEFORE this live test runs against it, not after - otherwise
+    # this test silently validates a stale image that a later dev-mode
+    # rebuild (e.g. via `python3 run.py dev`) replaces anyway, wasting a
+    # real model pull and giving a misleading "it works" signal for an
+    # image about to be discarded.
+    if dev and provider == "local":
+        info("Developer mode: rebuilding the ollama image fresh before starting it for this test...")
+        rebuild_exit_code = rebuild_images.rebuild(compose_args)
+        if rebuild_exit_code != 0:
+            warn("Rebuilding the ollama image failed - continuing with whatever image is already present.")
 
     # A leftover stack from an earlier run (or from switching between
     # docker-compose.yaml and docker-compose.local.yaml, which share the
@@ -704,7 +729,7 @@ def run_cloud_provider(provider: str, key_var: str, fetch_fn, provider_label: st
 
 # --- Local / Ollama flow ---
 
-def run_local_provider() -> None:
+def run_local_provider(dev: bool = False) -> None:
     env_path = Path(".env")
     if not env_path.is_file():
         shutil.copy(".env.local.example", env_path)
@@ -757,7 +782,7 @@ def run_local_provider() -> None:
     print(f"GPU acceleration: {'enabled' if gpu_enabled else 'disabled'}")
     print("Written to: .env, config/model-templates/litellm.local-ollama.yaml")
 
-    run_configuration_test("local", model, env_path)
+    run_configuration_test("local", model, env_path, dev=dev)
 
     print()
     print("Next steps:")
@@ -765,7 +790,14 @@ def run_local_provider() -> None:
     print(f"  docker compose -f docker-compose.local.yaml{gpu_flag} up")
 
 
-def main() -> None:
+def main(dev: bool = False) -> None:
+    """dev=True (see setup_all.py, which asks about developer mode before
+    running this step at all): the Local/Ollama flow's own live test
+    rebuilds the ollama image fresh before starting it, instead of testing
+    a stale image a later dev-mode rebuild would just replace anyway. Cloud
+    providers never touch a locally-built image, so dev has no effect on
+    that path - accepted here regardless so the caller doesn't need to
+    know which path will be taken before the user picks one."""
     os.chdir(Path(__file__).resolve().parent)
 
     print("--- Horseless Carriage: LLM Provider & Model Setup ---")
@@ -784,10 +816,10 @@ def main() -> None:
     elif choice == "3":
         run_cloud_provider("openai", "OPENAI_API_KEY", fetch_openai_models, "OpenAI")
     elif choice == "4":
-        run_local_provider()
+        run_local_provider(dev=dev)
     else:
         die(f"Invalid choice: {choice}")
 
 
 if __name__ == "__main__":
-    main()
+    main(dev="--dev" in sys.argv[1:] or "dev" in sys.argv[1:])

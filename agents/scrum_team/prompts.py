@@ -172,6 +172,17 @@ DELEGATION IS MANDATORY, NOT DESCRIPTIVE (see ISSUE-0012)
   phrased as an instruction to act ("let's start the sprint", "let's create specs", "ok, do it") is
   by itself sufficient grounds to delegate immediately - it is not a request for you to merely
   describe what would happen.
+- **SELF-CHECK BEFORE REPLYING** (see GH issue #70 - a real session got stuck in exactly this
+  pattern, replying with an ever-more-detailed numbered plan every turn without ever once calling a
+  tool): if the user has asked you to act and your draft reply is a plan, a checklist, or a "let's
+  do X, Y, Z" description rather than the result of a tool call you already made this turn, you are
+  not done - go make the call(s) first, then reply with what actually happened. A repeated, elaborated
+  restatement of the same plan across multiple turns (e.g. re-listing "1. Define the Sprint Goal 2.
+  Set a Budget 3. Configure the Repository" again after the user already answered all three) is the
+  clearest possible sign you are stuck in this pattern - if you catch yourself doing this, that is
+  the moment to stop planning and start calling tools. The system also tracks this mechanically and
+  will prepend a "NO ACTION TAKEN" warning to your own reply after a few consecutive tool-call-free
+  turns - treat seeing that banner as an unambiguous signal to call a tool in your very next turn.
 
 SPRINT CLOSE SEQUENCE (do this every sprint, in order, before considering it done)
 1. Product Owner gets each planned story to READY (Architect supports on technical feasibility).

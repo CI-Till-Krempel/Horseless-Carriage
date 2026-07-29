@@ -376,6 +376,84 @@ class TestRunConfigurationTest:
         assert calls[0][:2] == ["-f", "docker-compose.local.yaml"]
         assert "docker-compose.gpu.yaml" not in calls[0]
 
+    def test_dev_mode_rebuilds_ollama_before_starting_it_for_local_provider(self, tmp_path, monkeypatch):
+        """
+        Acceptance Criteria (ISSUE-0028): developer mode must be settled
+        before any container work - if dev=True and the provider is Local/
+        Ollama, the ollama image is rebuilt fresh (rebuild_images.rebuild)
+        BEFORE this test starts a container with it, not after (which
+        would validate a stale image dev mode was about to replace anyway).
+        """
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+
+        events = []
+        monkeypatch.setattr(setup_llm.rebuild_images, "rebuild", lambda compose_args: events.append(("rebuild", compose_args)) or 0)
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: events.append(("stop_check", compose_args)))
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path, dev=True)
+
+        assert [name for name, _ in events] == ["rebuild", "stop_check"]
+        assert events[0][1][:2] == ["-f", "docker-compose.local.yaml"]
+
+    def test_dev_mode_false_does_not_rebuild(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
+
+        def fail_if_called(compose_args):
+            raise AssertionError("rebuild_images.rebuild should not run when dev=False")
+        monkeypatch.setattr(setup_llm.rebuild_images, "rebuild", fail_if_called)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path, dev=False)
+
+    def test_dev_mode_has_no_effect_for_cloud_providers(self, tmp_path, monkeypatch):
+        """Cloud providers never start a locally-built image (litellm is a
+        pulled release image, db is postgres) - dev=True must not trigger
+        a rebuild for them."""
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
+
+        def fail_if_called(compose_args):
+            raise AssertionError("rebuild_images.rebuild should not run for a cloud provider")
+        monkeypatch.setattr(setup_llm.rebuild_images, "rebuild", fail_if_called)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        setup_llm.run_configuration_test("gemini", "gemini-2.5-pro", env_path, dev=True)
+
+    def test_rebuild_failure_warns_but_still_starts_containers(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
+        monkeypatch.setattr(setup_llm.rebuild_images, "rebuild", lambda compose_args: 1)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path, dev=True)
+
+        captured = capsys.readouterr()
+        assert "Rebuilding the ollama image failed" in captured.out + captured.err
+        assert any(c[:2] == ["docker", "compose"] and "up" in c for c in calls)
+
 
 def _fake_urlopen_response(body_dict):
     data = json.dumps(body_dict).encode()
