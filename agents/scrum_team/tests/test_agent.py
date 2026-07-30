@@ -585,6 +585,50 @@ class TestRecoverFakeToolCallCallback(unittest.TestCase):
         for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
             self.assertIn(recover_fake_tool_call_callback, agent.canonical_after_model_callbacks)
 
+    def test_converts_looser_shape_with_no_type_and_properties_key(self):
+        """GH issue #95: a local Ollama model replied with `{"function":
+        "read_doc", "properties": {"path": "..."}}` - no "type" key, and
+        "properties" instead of "arguments"/"args". Must still recover."""
+        response = self._response_with_text('{"function": "read_doc", "properties": {"path": "retro/ProductVision.md"}}')
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "read_doc")
+        self.assertEqual(fc.args, {"path": "retro/ProductVision.md"})
+
+    def test_does_not_touch_bare_name_with_no_type_and_no_args_key(self):
+        """Without either a "type": "function" marker or an args-shaped key,
+        a dict merely containing a "function"/"name" string is too weak a
+        signal to treat as an attempted call - could just be incidental
+        JSON that happens to mention one."""
+        response = self._response_with_text('{"function": "read_doc", "note": "just discussing this tool"}')
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        self.assertIsNone(response.content.parts[0].function_call)
+
+    def test_unwraps_json_envelope_reply(self):
+        """GH issue #91: the same local model wrapped a genuine
+        conversational reply in a JSON envelope - `{"response_type": "info",
+        "message": "..."}` - instead of replying in plain text. This is not
+        a tool-call attempt, so it must be unwrapped to plain text, not
+        converted into a function_call."""
+        response = self._response_with_text(
+            '{"response_type": "info", "message": "The current sprint has not been initialized yet."}'
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "ScrumOrchestrator"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        self.assertIsNone(response.content.parts[0].function_call)
+        self.assertEqual(response.content.parts[0].text, "The current sprint has not been initialized yet.")
+
 
 class TestCriticalHaltNotifications(unittest.TestCase):
     """

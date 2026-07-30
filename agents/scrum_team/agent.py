@@ -559,7 +559,8 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     return None
 
 _FAKE_TOOL_CALL_NAME_KEYS = ("function", "name")
-_FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args")
+_FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args", "properties")
+_JSON_ENVELOPE_MESSAGE_KEYS = ("message", "content", "text")
 
 
 def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> None:
@@ -576,6 +577,23 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
     self-correct, so this is a mechanical backstop rather than relying on
     the model's behavior changing.
 
+    GH issue #95 surfaced a second, looser variant of the same habit from a
+    local Ollama model: `{"function": "read_doc", "properties": {"path":
+    ...}}` - no `"type"` key at all, and `"properties"` instead of
+    `"arguments"`/`"args"`. The original exact-shape match missed this, so
+    the call silently never happened. Treated as the same fake-tool-call
+    pattern whenever `"type"` is absent (or is itself "function"), as long
+    as an explicit args-shaped key is present alongside the name - that
+    second condition keeps a merely-JSON-shaped prose reply (e.g. `{"status":
+    "ok", "note": "..."}`, which has neither) from ever being misread as an
+    attempted call.
+
+    Also recovers a third pattern the same local model produced (also GH
+    issue #91): a genuine conversational reply wrapped in a JSON envelope -
+    `{"response_type": "info", "message": "..."}` - instead of plain text.
+    That isn't a tool-call attempt at all, so it's unwrapped to its
+    human-readable `message` rather than converted into a function_call.
+
     Mutates llm_response.content.parts *in place* (matching
     _track_orchestrator_stall's established pattern below, rather than
     returning a new LlmResponse) - ADK's own flow re-checks this exact
@@ -587,7 +605,7 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
     hallucinated - so this converts the model's actual intent into a real,
     normally-dispatched tool call rather than reimplementing dispatch here.
 
-    Requires an exact, whole-string JSON match against this precise shape
+    Requires an exact, whole-string JSON match against these precise shapes
     (not a substring search) so a legitimate prose reply that merely
     mentions a tool by name is never mistaken for this pattern - and only
     fires when there is no real function_call part already (nothing to
@@ -610,20 +628,31 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
         parsed = json.loads(text)
     except Exception:
         return
-    if not isinstance(parsed, dict) or parsed.get("type") != "function":
+    if not isinstance(parsed, dict):
         return
 
     tool_name = next((parsed[k] for k in _FAKE_TOOL_CALL_NAME_KEYS if isinstance(parsed.get(k), str) and parsed[k].strip()), None)
-    tool_args = next((parsed[k] for k in _FAKE_TOOL_CALL_ARGS_KEYS if isinstance(parsed.get(k), dict)), {})
-    if not tool_name:
+    has_args_key = any(k in parsed for k in _FAKE_TOOL_CALL_ARGS_KEYS)
+    type_is_function = parsed.get("type") == "function"
+    if tool_name and (type_is_function or has_args_key):
+        tool_args = next((parsed[k] for k in _FAKE_TOOL_CALL_ARGS_KEYS if isinstance(parsed.get(k), dict)), {})
+        logger.warning(
+            f"recover_fake_tool_call_callback: {callback_context.agent_name} replied with text shaped like "
+            f"a tool call ({tool_name!r}) instead of a real one (GH issue #89/#95) - converting it into an "
+            "actual function call."
+        )
+        llm_response.content.parts = [types.Part(function_call=types.FunctionCall(name=tool_name, args=tool_args))]
         return
 
-    logger.warning(
-        f"recover_fake_tool_call_callback: {callback_context.agent_name} replied with text shaped like "
-        f"a tool call ({tool_name!r}) instead of a real one (GH issue #89) - converting it into an "
-        "actual function call."
-    )
-    llm_response.content.parts = [types.Part(function_call=types.FunctionCall(name=tool_name, args=tool_args))]
+    if not tool_name and isinstance(parsed.get("response_type"), str):
+        message = next((parsed[k] for k in _JSON_ENVELOPE_MESSAGE_KEYS if isinstance(parsed.get(k), str) and parsed[k].strip()), None)
+        if message:
+            logger.warning(
+                f"recover_fake_tool_call_callback: {callback_context.agent_name} wrapped a plain reply in a "
+                f"JSON envelope ({parsed.get('response_type')!r}) instead of replying in plain text (GH issue "
+                "#91) - unwrapping it to the human-readable message."
+            )
+            text_parts[0].text = message
 
 
 def update_token_usage_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
