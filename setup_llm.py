@@ -656,8 +656,9 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
     max_attempts, wait_between = 1, 0
     if provider == "local":
         # First run downloads the model in the background - can take a
-        # while for larger models, so retry with a generous budget.
-        max_attempts, wait_between = 20, 30
+        # while for larger models, so retry with a generous budget, but
+        # poll often enough to notice readiness quickly (GH issue #90).
+        max_attempts, wait_between = 60, 10
         print("(First run: Ollama is downloading the model - this can take several minutes.)")
 
     info(f"Sending a test request to scrum-po (model: {model_label})...")
