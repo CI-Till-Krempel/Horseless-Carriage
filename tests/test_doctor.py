@@ -537,3 +537,71 @@ class TestOllamaGpuWarning:
         monkeypatch.setattr(doctor.lib_docker, "compose_running_services", fail_if_called)
 
         doctor.check(repo, skip_llm_probe=True)
+
+
+class TestHostOllamaModeCheck:
+    """
+    Acceptance Criteria (GH issue #93): host-Ollama mode has no `ollama`
+    container for the GPU check above to inspect - Ollama runs natively on
+    the host - so doctor.py must check reachability directly instead
+    (lib_docker.host_ollama_reachable), and never run the container-based
+    GPU check for this mode.
+    """
+
+    def _local_host_mode_repo(self, valid_repo):
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_HOST_MODE="true"\n')
+        (valid_repo / "config" / "model-templates").mkdir(parents=True, exist_ok=True)
+        (valid_repo / "config" / "model-templates" / "litellm.local-ollama.yaml").write_text(
+            "model_list:\n"
+            "  - model_name: scrum-po\n"
+            "    litellm_params:\n"
+            "      model: ollama/llama3.1:8b\n"
+            "      api_base: http://host.docker.internal:11434\n"
+        )
+        return valid_repo
+
+    def test_warns_when_host_ollama_unreachable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_host_mode_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda: False)
+
+        result = doctor.check(repo)
+        out = capsys.readouterr().out
+
+        assert "not reachable at http://localhost:11434" in out
+        assert any("not reachable" in w.message for w in result.warnings())
+
+    def test_confirms_when_host_ollama_reachable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_host_mode_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda: True)
+
+        result = doctor.check(repo)
+        out = capsys.readouterr().out
+
+        assert "Host Ollama: reachable" in out
+        assert not any("not reachable" in w.message for w in result.warnings())
+
+    def test_gpu_container_check_not_run_in_host_mode(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_host_mode_repo(valid_repo)
+        env = repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_GPU_ENABLED="true"\n')
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda: True)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("the dockerized-ollama GPU check should not run in host mode")
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", fail_if_called)
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.check(repo)
+
+    def test_skip_llm_probe_skips_host_check_too(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_host_mode_repo(valid_repo)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("host_ollama_reachable should not run when skip_llm_probe=True")
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", fail_if_called)
+
+        doctor.check(repo, skip_llm_probe=True)

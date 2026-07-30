@@ -24,6 +24,12 @@ class TestImagesToRebuild:
     def test_local_setup_also_rebuilds_ollama(self):
         assert rebuild_images.images_to_rebuild(["-f", "docker-compose.local.yaml"]) == ["agent", "ollama"]
 
+    def test_host_ollama_mode_does_not_rebuild_ollama(self):
+        """GH issue #93: host-Ollama mode uses docker-compose.local-hostollama
+        .yaml, which has no `ollama` service at all - Ollama isn't
+        dockerized there, so rebuilding its image would be wasted work."""
+        assert rebuild_images.images_to_rebuild(["-f", "docker-compose.local-hostollama.yaml"]) == ["agent"]
+
 
 class TestRebuild:
     """

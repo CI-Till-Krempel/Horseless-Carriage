@@ -1,11 +1,43 @@
 import json
 import subprocess
+import urllib.error
 
 import lib_docker
 
 
 def _completed(cmd, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(cmd, returncode, stdout=stdout, stderr=stderr)
+
+
+class _FakeResponse:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestHostOllamaReachable:
+    """GH issue #93: host-Ollama mode has no `ollama` container for
+    doctor.py's other checks to inspect, so this checks reachability
+    directly against the host's own Ollama instance instead."""
+
+    def test_200_response_is_reachable(self, monkeypatch):
+        monkeypatch.setattr(lib_docker.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(200))
+        assert lib_docker.host_ollama_reachable() is True
+
+    def test_non_200_response_is_not_reachable(self, monkeypatch):
+        monkeypatch.setattr(lib_docker.urllib.request, "urlopen", lambda *a, **k: _FakeResponse(500))
+        assert lib_docker.host_ollama_reachable() is False
+
+    def test_connection_error_is_not_reachable_and_does_not_raise(self, monkeypatch):
+        def raise_url_error(*a, **k):
+            raise urllib.error.URLError("connection refused")
+        monkeypatch.setattr(lib_docker.urllib.request, "urlopen", raise_url_error)
+        assert lib_docker.host_ollama_reachable() is False
 
 
 class TestComposeRunningServices:
