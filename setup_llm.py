@@ -823,6 +823,28 @@ def run_local_provider(dev: bool = False) -> None:
     print(f"  docker compose -f docker-compose.local.yaml{gpu_flag} up")
 
 
+_PROVIDER_CHOICES = {"1": "gemini", "2": "anthropic", "3": "openai", "4": "local"}
+
+
+def current_provider_choice(repo_root: Path) -> str:
+    """Which numbered choice ("1"-"4") to default the provider-picker
+    prompt to - whichever provider the currently-active litellm config
+    (litellm.yaml or litellm.local-ollama.yaml, whichever was written most
+    recently - see lib_llm_test.llm_active_config_path/llm_active_provider)
+    already implies, or "1" (Gemini, the repo's shipped default) if that
+    can't be determined. GH issue #87: every other prompt in this wizard
+    (interaction level, models, GPU, budgets) already prefills from
+    existing config on a re-run - this was the one exception, and worse
+    than "always defaults to 1": a bare Enter here had no fallback at all
+    and errored out via die(), unlike every other prompt's `input(...) or
+    default_choice` idiom."""
+    active_provider = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(repo_root))
+    for choice_key, provider in _PROVIDER_CHOICES.items():
+        if provider == active_provider:
+            return choice_key
+    return "1"
+
+
 def main(dev: bool = False) -> None:
     """dev=True (see setup_all.py, which asks about developer mode before
     running this step at all): the Local/Ollama flow's own live test
@@ -832,15 +854,22 @@ def main(dev: bool = False) -> None:
     that path - accepted here regardless so the caller doesn't need to
     know which path will be taken before the user picks one."""
     os.chdir(Path(__file__).resolve().parent)
+    repo_root = Path(".")
 
+    default_choice = current_provider_choice(repo_root)
     print("--- Horseless Carriage: LLM Provider & Model Setup ---")
     print()
     print("Select an LLM provider:")
-    print("  1) Google Gemini    (cloud, commercial API key)")
-    print("  2) Anthropic Claude (cloud, commercial API key)")
-    print("  3) OpenAI           (cloud, commercial API key)")
-    print("  4) Local / Ollama   (fully local, no commercial API, no keys)")
-    choice = input("Choice [1-4]: ").strip()
+    labels = {
+        "1": "Google Gemini    (cloud, commercial API key)",
+        "2": "Anthropic Claude (cloud, commercial API key)",
+        "3": "OpenAI           (cloud, commercial API key)",
+        "4": "Local / Ollama   (fully local, no commercial API, no keys)",
+    }
+    for key, label in labels.items():
+        marker = " (current)" if key == default_choice else ""
+        print(f"  {key}) {label}{marker}")
+    choice = input(f"Choice [{default_choice}]: ").strip() or default_choice
 
     if choice == "1":
         run_cloud_provider("gemini", "GOOGLE_API_KEY", fetch_gemini_models, "Google Gemini")
