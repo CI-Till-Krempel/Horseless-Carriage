@@ -3,6 +3,22 @@ FROM python:3.11-slim AS base
 
 WORKDIR /app
 
+# GH issue #95: with no locale set, this base image reads as the "C"
+# locale, and Python then decodes the interactive CLI's stdin (piped
+# through from `docker compose run`'s tty) using 'surrogateescape' - any
+# multi-byte UTF-8 character a user types/pastes (smart quotes, em-dashes,
+# accents) gets mangled into a lone surrogate codepoint. That survives
+# fine as a Python str right up until the ADK session service tries to
+# json-serialize it for storage, where it crashes the whole run with
+# UnicodeEncodeError: "surrogates not allowed". C.UTF-8 is a glibc
+# built-in pseudo-locale (no `locales` package/locale-gen needed) that
+# makes Python decode stdin as real UTF-8 from the start, so those
+# characters round-trip correctly instead of becoming surrogates.
+ENV LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PYTHONIOENCODING=UTF-8 \
+    PYTHONUTF8=1
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y git curl
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
