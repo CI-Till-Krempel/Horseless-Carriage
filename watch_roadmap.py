@@ -13,7 +13,7 @@ Polls the configured state repository for two things a human would
 otherwise have to remember to check for themselves:
   1. New commits landed on the develop branch (GITHUB_DEVELOP_BRANCH).
   2. A story sitting in the backlog whose completed pipeline stages
-     (STORY_STAGES: Ready -> Implemented -> Reviewed -> Tested ->
+     (STORY_STAGES: Draft -> Ready -> Implemented -> Reviewed -> Tested ->
      Accepted) stop one short of the next one - i.e. genuinely "ready for
      <next stage's owner>" work (the issue's own example: "ready for
      developers"), not just specifically the "Ready" stage.
@@ -60,7 +60,7 @@ from typing import Tuple
 
 import lib_env
 
-STORY_STAGES = ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]
+STORY_STAGES = ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]
 
 DEFAULT_POLL_INTERVAL_SECONDS = 300
 

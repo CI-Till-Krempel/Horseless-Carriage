@@ -83,7 +83,7 @@ Every story is implemented on its own branch, never directly on `develop`:
    (`check_build()`, `advance_story_stage(..., "Tested")`).
 4. Once a story is marked Tested, **QA** calls `merge_story_pr()` to merge that story's feature
    branch into `develop` - this is what actually makes the story part of the integration branch
-   the next sprint PR will pick up. See [Architecture](ARCHITECTURE.md) for the full 5-stage
+   the next sprint PR will pick up. See [Architecture](ARCHITECTURE.md) for the full 6-stage
    story pipeline this attaches to.
 
 `merge_story_pr()` respects real branch-protection/required-checks by default (no forced
