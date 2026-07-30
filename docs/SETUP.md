@@ -213,6 +213,44 @@ You don't need to run either of these by hand, though: `doctor.py` (and therefor
 pre-flight gate) already does this check for you whenever `OLLAMA_GPU_ENABLED=true` and the
 `ollama` container is up, and prints a hard-to-miss warning banner if it finds `library=cpu`.
 
+### macOS: native Ollama instead (GH issue #93)
+
+Everything above is NVIDIA-only - Docker Desktop for Mac has no GPU passthrough at all, so a
+dockerized Ollama always runs CPU-only there, even on Apple Silicon (see
+[this writeup](https://chariotsolutions.com/blog/post/apple-silicon-gpus-docker-and-ollama-pick-two/)).
+The workaround is to run Ollama natively on the host instead of in a container, so it can use the
+GPU (Metal) directly - the rest of the stack (`db`, `litellm`, `agent`) still runs in Docker exactly
+as before, `litellm` just talks to your host's Ollama over `host.docker.internal` instead of to a
+container.
+
+`setup_llm.py`'s Local/Ollama flow detects macOS and offers this by default; it writes
+`OLLAMA_HOST_MODE=true` to `.env` and points `config/model-templates/litellm.local-ollama.yaml`'s
+`api_base` at your host instead of the dockerized service. To set it up manually:
+
+```bash
+# 1. Install and start Ollama natively on the host:
+#    https://ollama.com/download
+ollama serve
+
+# 2. Pull the model configured in .env's OLLAMA_MODEL (default llama3.1:8b):
+ollama pull llama3.1:8b
+
+# 3. Use the host-Ollama compose file INSTEAD OF docker-compose.local.yaml
+#    (a separate file, not a merged override - Compose merges rather than
+#    replaces `depends_on` across `-f` files, so an override alone can't
+#    remove litellm's dependency on the dockerized `ollama` service):
+docker compose -f docker-compose.local-hostollama.yaml up
+```
+
+This works the same way on Linux/Windows too, if you'd rather run Ollama natively there for any
+other reason - `docker-compose.local-hostollama.yaml` adds the `host.docker.internal` DNS mapping
+Linux's Docker Engine needs (Docker Desktop on Mac/Windows already resolves it automatically).
+
+Mutually exclusive with the NVIDIA GPU override above: host mode bypasses the dockerized `ollama`
+service entirely, so there's nothing there for `docker-compose.gpu.yaml` to accelerate.
+`doctor.py` checks host-mode reachability directly (a plain HTTP request to
+`http://localhost:11434`) instead of inspecting a container, since there is no container to inspect.
+
 ## Human Interaction Levels
 
 How much of a human is actually in the loop is configurable via `INTERACTION_LEVEL` (`.env`, set

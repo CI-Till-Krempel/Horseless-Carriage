@@ -1,0 +1,163 @@
+# Host-Ollama variant of the fully-local stack (see docker-compose.local.yaml).
+# GH issue #93: Docker Desktop for Mac has no GPU passthrough at all, so a
+# containerized Ollama always runs CPU-only there, even on Apple Silicon
+# (https://chariotsolutions.com/blog/post/apple-silicon-gpus-docker-and-ollama-pick-two/).
+# This file points the stack at an Ollama instance running natively on the
+# host machine instead of the dockerized `ollama` service, so it can
+# actually use the GPU (Metal on macOS). Works the same way on Linux/Windows
+# too, if you'd rather run Ollama natively there for any other reason.
+#
+# Same db + litellm + agent services as docker-compose.local.yaml, minus the
+# `ollama` service and its dependency - this is a separate, standalone file
+# rather than an overlay merged on top of docker-compose.local.yaml because
+# Compose merges (rather than replaces) `depends_on` across `-f` files, so
+# an overlay alone can't actually remove litellm's dependency on the
+# dockerized `ollama` service. Kept in sync with docker-compose.local.yaml's
+# db/agent services (checked by tests/test_docker_compose_env.py, same as
+# docker-compose.yaml vs. docker-compose.local.yaml already are).
+#
+# Prerequisites (do this BEFORE `docker compose up`):
+#   1. Install Ollama on the host: https://ollama.com/download
+#   2. Start it:               ollama serve
+#   3. Pull the configured model (see OLLAMA_MODEL in .env, default
+#      llama3.1:8b):           ollama pull llama3.1:8b
+#
+# Run standalone (do not combine with docker-compose.local.yaml - the two
+# define the same service names against different dependency graphs):
+#   cp .env.local.example .env   # or edit your existing .env
+#   docker compose -f docker-compose.local-hostollama.yaml up
+#
+# setup_llm.py's Local/Ollama flow offers this automatically on macOS (and
+# writes OLLAMA_HOST_MODE=true to .env so run.py/rebuild_images.py use this
+# file without you needing to pass -f by hand) - see docs/SETUP.md's "GPU
+# Support" section for the full picture, including the NVIDIA/Docker GPU
+# path this replaces.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=llm_user
+      - POSTGRES_PASSWORD=llm_password
+      - POSTGRES_DB=litellm_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./config/model-templates/litellm.local-ollama.yaml:/app/config.yaml:ro
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - DATABASE_URL=${DATABASE_URL}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    depends_on:
+      - db
+    # Docker Desktop (Mac/Windows) already resolves host.docker.internal to
+    # the host automatically; Linux's Docker Engine does not, and needs this
+    # explicit mapping (host-gateway is a special value Compose/Docker
+    # resolves to the host's own gateway IP at container start).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  agent:
+    build:
+      context: .
+      dockerfile: agent.Dockerfile
+    ports:
+      # ADK web frontend (only listens when AGENT_MODE=web, the default)
+      - "8000:8000"
+    volumes:
+      # Mount the agent's source code as read-only
+      - ./agents:/app/agents:ro
+      - ./spec-templates:/app/spec-templates:ro
+      - ./eval:/app/eval:ro
+      # Mount the state repository as read-write
+      - type: bind
+        source: ${STATE_REPO_PATH}
+        target: /app/state_repo
+      # Mount the sessions directory to persist conversation history
+      - ./sessions:/app/sessions
+      # Scratch space for the team-performance eval harness (run_eval.py /
+      # run_eval_analysis.py) to write its clone + report where the host
+      # (and CI's artifact-upload step) can read them back.
+      - ./eval-output:/app/eval-output
+    environment:
+      - AGENT_MODE=${AGENT_MODE:-web}
+      - STATE_REPO_PATH=${STATE_REPO_PATH}
+      - INTERNAL_STATE_REPO_PATH=/app/state_repo
+      - LITELLM_PROXY_API_BASE=http://litellm:4000
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+      - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_REPO_URL=${GITHUB_REPO_URL}
+      # GH issue #82: Compose prints a "variable is not set" warning for any
+      # bare ${VAR} reference left unset in .env, even when the code being
+      # run already has a perfectly good default for it (get_interaction_level(),
+      # _default_push_branch(), etc.) - inline `:-default` here matches those
+      # same code-side defaults exactly, so the warning only fires for a var
+      # that's genuinely required with no safe fallback.
+      - GITHUB_REPO_BRANCH=${GITHUB_REPO_BRANCH:-main}
+      - GITHUB_APP_ID=${GITHUB_APP_ID}
+      - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
+      - GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
+      - SPRINT_TOKEN_BUDGET=${SPRINT_TOKEN_BUDGET:-1000000}
+      # TOTAL_USD_BUDGET is the canonical name (GH issue #81) - not actually
+      # meaningful in local mode (see LLM_LOCAL_PROVIDER below), but still
+      # passed through for consistency; SPRINT_USD_BUDGET is kept alongside
+      # it so an existing .env using the older name keeps working via
+      # get_env_with_deprecated_fallback. The `:-` (empty, not a real value)
+      # on both is deliberate (GH issue #82): get_env_with_deprecated_fallback
+      # needs to see each one genuinely absent (empty string, falsy) to know
+      # to check the other - a real inline default here would inject a value
+      # into TOTAL_USD_BUDGET even when only the deprecated name was actually
+      # configured, permanently hiding it. This empty default exists purely
+      # to silence Compose's own warning, not to change what value is used.
+      - TOTAL_USD_BUDGET=${TOTAL_USD_BUDGET:-}
+      - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET:-}
+      - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE:-10.0}
+      # Per-sprint config for agents/scrum_team/scripts/run_eval.py - see
+      # .env.example's "Eval Harness Budget Configuration" section. No inline
+      # default here (unlike the vars above) - run_eval.py's own
+      # parser.error() deliberately requires these explicitly when the eval
+      # harness actually runs, rather than silently falling back to a value
+      # calibrated for a different purpose.
+      - EVAL_SPRINT_TOKEN_BUDGET=${EVAL_SPRINT_TOKEN_BUDGET}
+      # Same deprecated-name pair as TOTAL_USD_BUDGET/SPRINT_USD_BUDGET above -
+      # `:-` (empty) only, not a real default, so run_eval.py's own
+      # get_env_with_deprecated_fallback still sees each one genuinely absent.
+      - EVAL_USD_BUDGET_PER_SPRINT=${EVAL_USD_BUDGET_PER_SPRINT:-}
+      - EVAL_SPRINT_USD_BUDGET=${EVAL_SPRINT_USD_BUDGET:-}
+      - SESSION_ID=${SESSION_ID:-my-sprint}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - GIT_USER_NAME=${GIT_USER_NAME}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL}
+      # GH issue #75: self-hosted Ollama models have no real per-token price
+      # behind them, so LiteLLM's spend tracking for them is always ~$0 -
+      # tells check_cost_budget_callback to skip the meaningless remote USD
+      # check and rely on the local token budget instead. See docs/BUDGET.md.
+      - LLM_LOCAL_PROVIDER=true
+      # GH issue #76: Docker Compose only passes variables explicitly listed
+      # here into the container - it does NOT forward the rest of the host's
+      # .env automatically, however plausible that might look. These three
+      # were configurable in .env/setup_llm.py but silently never reached
+      # the agent process, always reading back as unset/default regardless
+      # of what was actually configured.
+      - INTERACTION_LEVEL=${INTERACTION_LEVEL:-Product}
+      - GITHUB_DEVELOP_BRANCH=${GITHUB_DEVELOP_BRANCH:-develop}
+      - NOTIFICATION_PLUGINS=${NOTIFICATION_PLUGINS:-console}
+      - TRANSCRIPT_MAX_ENTRIES=${TRANSCRIPT_MAX_ENTRIES:-200}
+    depends_on:
+      - litellm
+    # Keep the container running and allow for interactive sessions
+    stdin_open: true
+    tty: true
+    command: ["/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh"]
+
+volumes:
+  postgres_data:

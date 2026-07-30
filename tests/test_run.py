@@ -111,6 +111,33 @@ class TestComposeFileArgs:
         (tmp_path / ".env").write_text("OLLAMA_GPU_ENABLED='true'\n")
         assert run.compose_file_args(tmp_path) == []
 
+    def test_local_setup_with_host_mode_uses_hostollama_compose_file(self, tmp_path):
+        """OLLAMA_HOST_MODE=true (GH issue #93: Ollama running natively on
+        the host, e.g. macOS with no GPU passthrough into Docker) must use
+        docker-compose.local-hostollama.yaml INSTEAD OF docker-compose.local
+        .yaml, not merged alongside it - Compose merges (rather than
+        replaces) `depends_on` across `-f` files, so an overlay alone can't
+        remove litellm's dependency on the dockerized `ollama` service."""
+        local_yaml = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_yaml.parent.mkdir(parents=True)
+        local_yaml.write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: ollama/llama3.1:8b\n"
+        )
+        (tmp_path / ".env").write_text("OLLAMA_HOST_MODE='true'\n")
+        assert run.compose_file_args(tmp_path) == ["-f", "docker-compose.local-hostollama.yaml"]
+
+    def test_local_setup_with_host_mode_wins_over_gpu(self, tmp_path):
+        """The two are mutually exclusive - host mode bypasses the
+        dockerized `ollama` service entirely, so it takes priority if both
+        were somehow set (setup_llm.py itself never writes both true)."""
+        local_yaml = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_yaml.parent.mkdir(parents=True)
+        local_yaml.write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: ollama/llama3.1:8b\n"
+        )
+        (tmp_path / ".env").write_text("OLLAMA_HOST_MODE='true'\nOLLAMA_GPU_ENABLED='true'\n")
+        assert run.compose_file_args(tmp_path) == ["-f", "docker-compose.local-hostollama.yaml"]
+
 
 class TestWaitForHttp:
     def test_reachable_returns_true_immediately(self, ok_server):
