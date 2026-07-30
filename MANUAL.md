@@ -68,14 +68,16 @@ instead of starting over.
 
 ## 4. Running a sprint
 
-**Every time you connect** (a fresh session or resuming one), the Orchestrator greets you first -
-you never have to send a message just to get it to engage. That greeting includes a status recap
-(sprint/budget, product vision, sprint report, open impediments/retro actions, stories ready for the
-next pipeline stage) and, once setup is complete, 2-5 concrete next-action options picked from what's
-actually relevant right now - not a generic checklist every time. Typical options: resume an
-interrupted sprint, discuss an open impediment, implement a logged retro action, refine stories that
-are ready for the next stage, start a new sprint, or work on the product vision/roadmap. Pick one (or
-say something else entirely) and the Orchestrator hands off to the right role immediately.
+**On your first message of a fresh (or resumed) session** — a real user turn (even a bare "Hi") is
+still required; ADK itself has no mechanism to invoke the agent before you send anything at all, in
+either the web UI or `run.py cli` (GH issue #92) - the Orchestrator's reply is a rich, state-aware
+greeting rather than a generic response. That greeting includes a status recap (sprint/budget,
+product vision, sprint report, open impediments/retro actions, stories ready for the next pipeline
+stage) and, once setup is complete, 2-5 concrete next-action options picked from what's actually
+relevant right now - not a generic checklist every time. Typical options: resume an interrupted
+sprint, discuss an open impediment, implement a logged retro action, refine stories that are ready
+for the next stage, start a new sprint, or work on the product vision/roadmap. Pick one (or say
+something else entirely) and the Orchestrator hands off to the right role immediately.
 
 A sprint always follows the same shape:
 
