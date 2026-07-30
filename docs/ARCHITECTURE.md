@@ -126,16 +126,17 @@ Stored in this repository, these provide the structure for Scrum artifacts.
 - `spec-templates/stories/` — User story templates.
 - `spec-templates/workflows/` — Agentic workflow and runbook templates.
 - `spec-templates/DOD.md` / `spec-templates/DOR.md` — Definition of Done / Definition of Ready
-  checklists, mapped onto the 5-stage story pipeline below. Unlike the templates above, these
+  checklists, mapped onto the 6-stage story pipeline below. Unlike the templates above, these
   aren't per-item blueprints to copy - every role reads them directly (`read_doc`).
 
-### Story workflow (Ready → Implemented → Reviewed → Tested → Accepted)
+### Story workflow (Draft → Ready → Implemented → Reviewed → Tested → Accepted)
 
-Every story passes through exactly these 5 stages, in this exact order, no skipping:
+Every story passes through exactly these 6 stages, in this exact order, no skipping:
 
 | Stage | Owner | Gate |
 |---|---|---|
-| READY | Product Owner (Architect supports on technical feasibility) | Real title/user story/acceptance criteria, Dev Team estimate - see `spec-templates/DOR.md` |
+| DRAFT | Product Owner (Architect supports on technical feasibility) | Story concept/mockup being shaped into a real backlog item - not yet fully specified (GH issue #94) |
+| READY | Product Owner (Architect supports on technical feasibility) | Real title/user story/acceptance criteria, Dev Team estimate - see `spec-templates/DOR.md`. At the Stakeholder interaction level, also requires `record_design_approval` for this story (see below) |
 | IMPLEMENTED | Dev Team | Real, working code committed and pushed |
 | REVIEWED | Architect | Architectural/technical review complete |
 | TESTED | QA | `check_build()` passes; test strategy verified |
@@ -151,8 +152,13 @@ nicely in a prompt:
 - **Content quality**: rejects marking READY (or the legacy "Done"/"Accepted") if the title/user
   story/acceptance criteria are missing or still placeholder text
   (`_story_readiness_issues` in `agents/scrum_team/tools/requirements.py`).
+- **Design approval before Ready** (GH issue #94): at the Stakeholder interaction level, a story
+  must have `record_design_approval(title_or_id, note)` called for it - a per-story flag, not a
+  shared sprint-wide approval - before it can move from DRAFT to READY ("the designs are cleared by
+  stakeholder review, then they are ready"). Not required at Product/CEO/EVAL - see
+  `requires_pre_ready_design_approval` in `agents/scrum_team/helpers.py`.
 - **No bypass**: `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status`
-  directly to any of the 5 stage names - only `advance_story_stage` can.
+  directly to any of the 6 stage names - only `advance_story_stage` can.
 - It also updates `specs/ROADMAP.md`'s per-stage checkboxes for that story automatically, in the
   same call - see below.
 
@@ -169,10 +175,11 @@ Stored in your **target state repository** (configured via `STATE_REPO_PATH` - s
 - `specs/stories/` — Refined User Stories.
 - `specs/workflows/` — Agentic workflows and runbooks.
 - `specs/reports/` — Sprint review reports and budget status.
-- `specs/ROADMAP.md` — Product roadmap tracking releases and stories. Each story gets its own 5
+- `specs/ROADMAP.md` — Product roadmap tracking releases and stories. Each story gets its own 6
   checkboxes, one per stage of the story workflow above:
   ```
   - [US-0001] Create a to-do list
+    - [x] DRAFT
     - [x] READY
     - [x] IMPLEMENTED
     - [ ] REVIEWED

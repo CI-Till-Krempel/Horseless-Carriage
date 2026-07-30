@@ -78,6 +78,23 @@ _PRE_RELEASE_APPROVAL_BY_LEVEL = {
     "EVAL": None,
 }
 
+# Whether advance_story_stage(..., "Ready") requires the story's mockup/
+# design to have been cleared via record_design_approval first (GH issue
+# #94: "the designs are cleared by stakeholder review, then they are
+# ready"), per interaction level. Unlike the sprint/release approvals above
+# (one shared approval unlocks every story for the rest of the sprint),
+# this is tracked per-story (see record_design_approval,
+# agents/scrum_team/tools/requirements.py) - each story's own design needs
+# its own sign-off, not one blanket approval for the whole backlog.
+# - Product: not required - this human IS the Product Owner day-to-day, so
+#   the Draft-stage conversation itself already is the review.
+# - Stakeholder: required - this is exactly the "designs cleared by
+#   stakeholder review" case the issue describes.
+# - CEO: not required - a CEO-level human approves budget, not per-story
+#   design.
+# - EVAL: not required - fully autonomous, no human to review anything.
+_PRE_READY_DESIGN_APPROVAL_REQUIRED_LEVELS = {"Stakeholder"}
+
 
 def get_interaction_level() -> str:
     """
@@ -101,6 +118,13 @@ def required_pre_implementation_approval(level: str | None = None) -> str | None
 def required_pre_release_approval(level: str | None = None) -> str | None:
     """Same as required_pre_implementation_approval, for create_release_pr."""
     return _PRE_RELEASE_APPROVAL_BY_LEVEL.get(level or get_interaction_level())
+
+
+def requires_pre_ready_design_approval(level: str | None = None) -> bool:
+    """Whether advance_story_stage(..., "Ready") requires a fresh, per-story
+    record_design_approval call at this interaction level - see
+    _PRE_READY_DESIGN_APPROVAL_REQUIRED_LEVELS."""
+    return (level or get_interaction_level()) in _PRE_READY_DESIGN_APPROVAL_REQUIRED_LEVELS
 
 
 # How much detail create_sprint_report actually renders for the human at
@@ -138,9 +162,9 @@ def report_detail_level(level: str | None = None) -> str:
 # TEMPLATE-USER-STORY.md), but story/task status is free-form text set by
 # the LLM, not a validated enum - matching only the lowercase "done" (as one
 # caller previously did) silently undercounts every story actually marked
-# "Done" the documented way. "accepted" covers the current 5-stage pipeline
-# below (Accepted is its terminal stage); "done"/"completed"/"closed" are
-# kept for stories/tests predating that pipeline.
+# "Done" the documented way. "accepted" covers the current STORY_STAGES
+# pipeline below (Accepted is its terminal stage); "done"/"completed"/
+# "closed" are kept for stories/tests predating that pipeline.
 _DONE_STATUSES = {"done", "completed", "closed", "accepted"}
 
 
@@ -154,9 +178,21 @@ def is_story_done(status) -> bool:
 # agent name (see agents/scrum_team/agent.py's LlmAgent `name=` values)
 # allowed to complete each stage via advance_story_stage
 # (agents/scrum_team/tools/requirements.py).
-STORY_STAGES = ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]
+#
+# "Draft" (GH issue #94) is the first, real, code-enforced stage rather
+# than just the inert default label a freshly-created story's free-form
+# `status` field happened to show before this - the Product Owner
+# completes it once a story concept/mockup exists worth shaping into a
+# real backlog item (collaborating with Architect on technical feasibility,
+# same as it already does for Ready - dedicated UX Lead/Business Analyst
+# roles are a larger follow-up, not part of this pipeline yet). Moving on
+# to "Ready" additionally requires the design to be cleared by
+# record_design_approval first, at interaction levels where that's required
+# (see requires_pre_ready_design_approval below).
+STORY_STAGES = ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]
 
 STAGE_OWNERS = {
+    "Draft": "ProductOwner",
     "Ready": "ProductOwner",
     "Implemented": "DevTeam",
     "Reviewed": "Architect",
@@ -179,7 +215,7 @@ def blocks_direct_status_set(status) -> bool:
     ordering/ownership enforcement. Used by upsert_story/upsert_epic/
     plan_sprint_backlog_item to refuse it outright. Covers two escape
     hatches, not just one:
-    - The 5 stage names themselves (`upsert_story({"status": "Accepted"})`
+    - The STORY_STAGES names themselves (`upsert_story({"status": "Accepted"})`
       would set a story straight to Accepted with none of
       advance_story_stage's enforcement applying at all).
     - The legacy is_story_done synonyms ("Done"/"completed"/"closed") -

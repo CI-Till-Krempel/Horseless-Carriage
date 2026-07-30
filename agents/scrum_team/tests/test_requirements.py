@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
-from agents.scrum_team.tools.requirements import advance_story_stage, upsert_backlog_item
+from agents.scrum_team.tools.requirements import advance_story_stage, upsert_backlog_item, record_design_approval
 
 
 def _base_story(stages_completed):
@@ -17,9 +17,18 @@ def _base_story(stages_completed):
 
 
 def _tool_context(agent_name, stages_completed):
+    """`stages_completed` gets "Draft" prepended automatically unless it's
+    already there (GH issue #94: Draft is now a real, ordered STORY_STAGES
+    entry before Ready) - existing callers here are testing the
+    Implemented/Reviewed/Tested/Ready gates specifically, not Draft's own
+    ordering/ownership (see TestDraftStage below for that), so they
+    shouldn't all need updating just to keep passing Draft's prerequisite."""
     tc = MagicMock()
     tc.state = ScrumState().model_dump()
-    story = _base_story(stages_completed)
+    stages = list(stages_completed)
+    if "Draft" not in stages:
+        stages = ["Draft"] + stages
+    story = _base_story(stages)
     tc.state["product_backlog"] = [story]
     tc.state["sprint_backlog"] = [dict(story)]
     tc.agent_name = agent_name
@@ -164,6 +173,128 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertIn("check_build", result["message"])
 
 
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestDraftStage(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #94): Draft is a real, ordered STORY_STAGES
+    entry - the first stage, owned by Product Owner - not just the inert
+    default label a freshly-created story's status happened to show before.
+    """
+
+    def test_ready_rejected_without_draft_first(self, mock_save, mock_md, mock_roadmap):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        story = _base_story([])  # no Draft yet
+        tc.state["product_backlog"] = [story]
+        tc.state["sprint_backlog"] = [dict(story)]
+        tc.agent_name = "ProductOwner"
+
+        result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Draft", result["message"])
+
+    def test_draft_can_only_be_completed_by_product_owner(self, mock_save, mock_md, mock_roadmap):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        story = _base_story([])
+        tc.state["product_backlog"] = [story]
+        tc.state["sprint_backlog"] = [dict(story)]
+        tc.agent_name = "DevTeam"
+
+        result = advance_story_stage("US-0001", "Draft", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ProductOwner", result["message"])
+
+    def test_product_owner_completes_draft_then_ready(self, mock_save, mock_md, mock_roadmap):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        story = _base_story([])
+        tc.state["product_backlog"] = [story]
+        tc.state["sprint_backlog"] = [dict(story)]
+        tc.agent_name = "ProductOwner"
+
+        result = advance_story_stage("US-0001", "Draft", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["stages_completed"], ["Draft"])
+
+        result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["stages_completed"], ["Draft", "Ready"])
+
+
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestReadyDesignApprovalGate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #94): "the designs are cleared by
+    stakeholder review, then they are ready" - at the Stakeholder
+    interaction level, Ready requires record_design_approval to have been
+    called for that specific story. Not required at Product/CEO/EVAL.
+    """
+
+    def test_ready_blocked_at_stakeholder_level_without_design_approval(self, mock_save, mock_md, mock_roadmap):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True):
+            tc = _tool_context("ProductOwner", [])
+            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+            self.assertEqual(result["status"], "error")
+            self.assertIn("record_design_approval", result["message"])
+
+    def test_ready_rejection_records_blocking_interaction(self, mock_save, mock_md, mock_roadmap):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True):
+            tc = _tool_context("ProductOwner", [])
+            advance_story_stage("US-0001", "Ready", tool_context=tc)
+            self.assertEqual(len(tc.state["blocking_interactions"]), 1)
+            self.assertEqual(tc.state["blocking_interactions"][0]["kind"], "approval")
+
+    def test_ready_succeeds_at_stakeholder_level_once_design_approved(self, mock_save, mock_md, mock_roadmap):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True):
+            tc = _tool_context("ProductOwner", [])
+            record_design_approval("US-0001", "Looks good", tool_context=tc)
+            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+            self.assertEqual(result["status"], "ok")
+
+    def test_ready_requires_no_design_approval_at_product_level(self, mock_save, mock_md, mock_roadmap):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Product"}, clear=True):
+            tc = _tool_context("ProductOwner", [])
+            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+            self.assertEqual(result["status"], "ok")
+
+    def test_ready_requires_no_design_approval_at_ceo_level(self, mock_save, mock_md, mock_roadmap):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "CEO"}, clear=True):
+            tc = _tool_context("ProductOwner", [])
+            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+            self.assertEqual(result["status"], "ok")
+
+    def test_ready_requires_no_design_approval_at_eval_level(self, mock_save, mock_md, mock_roadmap):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            tc = _tool_context("ProductOwner", [])
+            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+            self.assertEqual(result["status"], "ok")
+
+
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestRecordDesignApproval(unittest.TestCase):
+    """Acceptance Criteria (GH issue #94): record_design_approval sets a
+    per-story flag (not a shared sprint-wide approval) on both backlog
+    copies, so the Ready gate above can check it per story."""
+
+    def test_sets_flag_on_both_backlog_copies(self, mock_save):
+        tc = _tool_context("ProductOwner", [])
+        result = record_design_approval("US-0001", "Reviewed with stakeholder", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(tc.state["product_backlog"][0]["design_approved"])
+        self.assertTrue(tc.state["sprint_backlog"][0]["design_approved"])
+        self.assertEqual(tc.state["product_backlog"][0]["design_approval_note"], "Reviewed with stakeholder")
+
+    def test_unknown_story_errors(self, mock_save):
+        tc = _tool_context("ProductOwner", [])
+        result = record_design_approval("US-9999", "note", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+
 class TestUpsertBacklogItemGuards(unittest.TestCase):
     """Acceptance Criteria (ISSUE-0007, ISSUE-0008)."""
 
@@ -195,6 +326,16 @@ class TestUpsertBacklogItemGuards(unittest.TestCase):
         upsert_backlog_item({"id": "US-0001", "title": "Add login flow"}, tool_context=tc)
         result = upsert_backlog_item({"id": "US-0002", "title": "Export data as CSV"}, tool_context=tc)
         self.assertIsNone(result["duplicate_warning"])
+
+    def test_setting_status_to_draft_directly_is_blocked(self):
+        """GH issue #94: Draft is now a real STORY_STAGES entry, not a
+        free-form label - direct-setting it is exactly the pipeline bypass
+        blocks_direct_status_set exists to close, same as any other stage."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_backlog_item({"id": "US-0001", "title": "Foo", "status": "Draft"}, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("advance_story_stage", result["message"])
 
 
 if __name__ == "__main__":

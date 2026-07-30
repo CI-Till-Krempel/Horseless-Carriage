@@ -1,8 +1,8 @@
 # Definition of Done (DoD)
 
-A story is only truly done once it has reached **ACCEPTED** - the last of the 5 mandatory stages
-every story passes through in strict order (READY, IMPLEMENTED, REVIEWED, TESTED, ACCEPTED - see
-"Story workflow" in RELEASE.md), each completed via `advance_story_stage(title_or_id, stage)`
+A story is only truly done once it has reached **ACCEPTED** - the last of the 6 mandatory stages
+every story passes through in strict order (DRAFT, READY, IMPLEMENTED, REVIEWED, TESTED, ACCEPTED -
+see "Story workflow" in RELEASE.md), each completed via `advance_story_stage(title_or_id, stage)`
 (`agents/scrum_team/tools/requirements.py`), each owned by exactly one role, no skipping. This file
 is a checklist to consult, not a template to copy per story - reference it directly
 (`read_doc("spec-templates/DOD.md")`), don't duplicate its text into `specs/`.

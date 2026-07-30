@@ -27,23 +27,30 @@ human-approval gate on a typo.
 
 ## What's actually mechanically enforced
 
-Two tool-level gates already exist to stop the team from skipping human review entirely (see
+Three tool-level gates already exist to stop the team from skipping human review entirely (see
 `specs/requirements/ISSUE-0001-Human-Review-Gates-Are-Not-Mechanically-Enforced.md`):
 
+- `advance_story_stage(title_or_id, "Ready")` - refuses unless the story's design was cleared via
+  `record_design_approval(title_or_id, note)` (GH issue #94), if this level requires it.
 - `advance_story_stage(title_or_id, "Implemented")` - refuses unless a fresh approval was recorded
   for this sprint via `record_human_approval(approval_type, note)`.
 - `create_release_pr(...)` - refuses unless a fresh approval was recorded for this increment.
 
-`INTERACTION_LEVEL` controls *which* `approval_type` (if any) each of these two gates actually
-requires - see `_PRE_IMPLEMENTATION_APPROVAL_BY_LEVEL` / `_PRE_RELEASE_APPROVAL_BY_LEVEL` in
-`agents/scrum_team/helpers.py`:
+`INTERACTION_LEVEL` controls *which* `approval_type` (if any) each of these gates actually
+requires - see `requires_pre_ready_design_approval` / `_PRE_IMPLEMENTATION_APPROVAL_BY_LEVEL` /
+`_PRE_RELEASE_APPROVAL_BY_LEVEL` in `agents/scrum_team/helpers.py`:
 
-| Level | Before implementing (`advance_story_stage(..., "Implemented")`) | Before releasing (`create_release_pr`) |
-|---|---|---|
-| Product | `record_human_approval("sprint", ...)` required | `record_human_approval("release", ...)` required |
-| Stakeholder | `record_human_approval("sprint", ...)` required | `record_human_approval("release", ...)` required |
-| CEO | `record_human_approval("budget", ...)` required | none - the team releases on its own judgment |
-| EVAL | none | none |
+| Level | Before Ready (`advance_story_stage(..., "Ready")`) | Before implementing (`advance_story_stage(..., "Implemented")`) | Before releasing (`create_release_pr`) |
+|---|---|---|---|
+| Product | not required | `record_human_approval("sprint", ...)` required | `record_human_approval("release", ...)` required |
+| Stakeholder | `record_design_approval(title_or_id, ...)` required, per story | `record_human_approval("sprint", ...)` required | `record_human_approval("release", ...)` required |
+| CEO | not required | `record_human_approval("budget", ...)` required | none - the team releases on its own judgment |
+| EVAL | not required | none | none |
+
+The Ready-stage gate is deliberately per-story (a flag set directly on that one story), not the
+shared "one approval unlocks everything for the rest of the sprint" pattern the other two gates
+use - a stakeholder reviewing one story's mockup doesn't stand in for having reviewed a different
+story's design.
 
 Both gates use the same "must be *new* since last time" pattern already used for
 `retro_baseline`/`sprint_report_pending_release`: one approval can't be replayed to silently unblock
