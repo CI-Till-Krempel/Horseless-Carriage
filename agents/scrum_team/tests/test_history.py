@@ -167,6 +167,34 @@ class TestHistoryManagement(unittest.TestCase):
         self.assertNotIn("ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345", mock_context.state["transcript"][0]["content"])
         self.assertIn("***REDACTED-GH-TOKEN***", mock_context.state["messages"][1]["content"])
 
+    def test_transcript_logger_also_receives_redacted_text(self):
+        """
+        Acceptance Criteria (GH issue #127 x #128): the per-run transcript
+        log (transcript_logger, agent.py) is a NEW durable on-disk record
+        added for issue #127 - it must log the same redacted copy as
+        state.transcript/messages, not the raw model text, or it would
+        reopen the exact secret-leak gap issue #128 closed, just via a
+        different file.
+        """
+        import agents.scrum_team.agent as agent_module
+
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        mock_context.state = ScrumState().model_dump()
+
+        mock_response = MagicMock()
+        mock_response.content = types.Content(
+            role="model",
+            parts=[types.Part(text="Your token is ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345")],
+        )
+
+        with patch.object(agent_module.transcript_logger, "info") as mock_log:
+            history_management_after_callback(mock_context, mock_response)
+
+        logged_text = mock_log.call_args[0][0]
+        self.assertNotIn("ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345", logged_text)
+        self.assertIn("***REDACTED-GH-TOKEN***", logged_text)
+
     def test_history_injection_redacts_secrets_in_pasted_user_messages(self):
         """
         Acceptance Criteria (GH issue #128): a secret a user pastes directly

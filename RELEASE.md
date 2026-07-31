@@ -268,8 +268,10 @@ rendering the same unconditional content: `full` (Product, EVAL) keeps everythin
 and headline outcomes only. This is in the report-generation code itself, not left to the PO agent's
 prompt-following, so a human at a given level gets a consistently-shaped report regardless of how
 that call happened to be phrased - and no data is silently dropped: an omitted section is still named
-explicitly under a "Full Process Detail" heading, pointing at `.hc/state.json` where it still lives
-in full.
+explicitly under a "Full Process Detail" heading, pointing at exactly where it still lives - most
+sections point at `.hc/state.json`, but the conversation transcript points at
+`specs/reports/TRANSCRIPT-LATEST.md` instead (a human-readable Markdown file, not a raw blob in
+`.hc/state.json` - see GH issue #127).
 
 ### Tool dispatch resilience (hallucinated/disallowed tool calls)
 

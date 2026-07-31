@@ -53,8 +53,35 @@ class TestStatePersistence(unittest.TestCase):
         if self.old_internal_path:
             os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
 
-    def test_transcript_is_in_the_persisted_allowlist(self):
-        self.assertIn("transcript", REPO_STATE_KEYS)
+    def test_transcript_is_never_persisted_to_the_state_repo(self):
+        """
+        Acceptance Criteria (GH issue #127): the raw, unbounded multi-agent
+        transcript has no place in a git-committed, human-reviewable state
+        file - it stays in-memory-only session state, used to render the
+        sprint report excerpt and the human-readable Markdown transcript
+        (specs/reports/TRANSCRIPT-*.md, see _write_conversation_transcript
+        in tools/budget.py) and made durable separately via the per-run
+        log at /app/sessions/transcript-<session-id>.log.
+        """
+        self.assertNotIn("transcript", REPO_STATE_KEYS)
+        self.tool_context.state["transcript"] = [
+            {"agent_name": "DevTeam", "role": "model", "content": "Implemented the feature."},
+        ]
+
+        save_state_to_repo(tool_context=self.tool_context)
+
+        state_file = self.test_repo / ".hc" / "state.json"
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        self.assertNotIn("transcript", saved)
+
+    def test_messages_is_still_in_the_persisted_allowlist(self):
+        """
+        Unlike transcript, `messages` (the flat ScrumOrchestrator-only
+        history used to resume a session on a fresh checkout of the state
+        repo) serves a distinct functional purpose, not just a debug
+        record, and must keep surviving a restart.
+        """
+        self.assertIn("messages", REPO_STATE_KEYS)
 
     def test_budget_reset_flag_is_in_the_persisted_allowlist(self):
         """
@@ -66,45 +93,28 @@ class TestStatePersistence(unittest.TestCase):
         """
         self.assertIn("budget_reset_since_last_sprint_start", REPO_STATE_KEYS)
 
-    def test_save_state_to_repo_persists_transcript(self):
+    def test_load_state_from_repo_does_not_restore_transcript_after_restart(self):
+        """
+        Deliberate behavior change (GH issue #127): since transcript is no
+        longer written to .hc/state.json at all, it can no longer be
+        restored from it either - a restart starts a fresh (empty)
+        transcript. Continuity across a restart is instead provided by the
+        per-run log (stable filename as long as SESSION_ID is unchanged)
+        and by whatever Markdown transcript snapshots already exist under
+        specs/reports/ from prior sprint reports.
+        """
         self.tool_context.state["transcript"] = [
-            {"agent_name": "DevTeam", "role": "model", "content": "Implemented the feature."},
-            {"agent_name": "QA", "role": "model", "content": "Reviewed and approved."},
+            {"agent_name": "ProductOwner", "role": "model", "content": "Prioritized backlog."}
         ]
-
-        result = save_state_to_repo(tool_context=self.tool_context)
-
-        self.assertEqual(result["status"], "ok")
-        state_file = self.test_repo / ".hc" / "state.json"
-        self.assertTrue(state_file.exists())
-        saved = json.loads(state_file.read_text(encoding="utf-8"))
-        self.assertEqual(saved["transcript"], self.tool_context.state["transcript"])
-
-    def test_save_state_to_repo_handles_empty_transcript(self):
-        # Edge case: no sub-agent turns yet — must persist without error.
-        self.tool_context.state["transcript"] = []
-
-        result = save_state_to_repo(tool_context=self.tool_context)
-
-        self.assertEqual(result["status"], "ok")
-        state_file = self.test_repo / ".hc" / "state.json"
-        saved = json.loads(state_file.read_text(encoding="utf-8"))
-        self.assertEqual(saved["transcript"], [])
-
-    def test_load_state_from_repo_restores_transcript_after_restart(self):
-        transcript = [{"agent_name": "ProductOwner", "role": "model", "content": "Prioritized backlog."}]
-        self.tool_context.state["transcript"] = transcript
         save_state_to_repo(tool_context=self.tool_context)
 
-        # Simulate a restart: fresh state with no transcript in memory.
         fresh_context = MagicMock()
         fresh_context.state = ScrumState().model_dump()
-        self.assertEqual(fresh_context.state["transcript"], [])
 
         result = load_state_from_repo(tool_context=fresh_context)
 
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(fresh_context.state["transcript"], transcript)
+        self.assertEqual(fresh_context.state["transcript"], [])
 
     def test_hc_version_is_in_the_persisted_allowlist(self):
         self.assertIn("hc_version", REPO_STATE_KEYS)

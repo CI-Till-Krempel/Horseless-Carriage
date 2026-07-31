@@ -47,10 +47,12 @@ to `REPO_STATE_KEYS`.
   environment if you're not sure what upstream libraries (LiteLLM, ADK) include in
   their debug output.
 - **Conversation content is not scanned for secrets.** If a user pastes a real
-  credential into a prompt, it can end up in `ScrumState.messages`/`transcript`,
-  which *are* persisted to the state repo (`REPO_STATE_KEYS`). Don't paste real
-  secrets into agent conversations — use `.env` for all credentials the agents
-  need.
+  credential into a prompt, it can end up in `ScrumState.messages` (persisted to
+  the state repo, `REPO_STATE_KEYS`) or `ScrumState.transcript` (in-memory only,
+  but rendered into `specs/reports/TRANSCRIPT-LATEST.md` and the per-run log at
+  `sessions/transcript-<session-id>.log` - GH issue #127: `transcript` itself is
+  no longer written into `.hc/state.json`). Don't paste real secrets into agent
+  conversations — use `.env` for all credentials the agents need.
 - **The target/state repo itself may be a real git repo that gets pushed to
   GitHub.** Treat anything written under `REPO_STATE_KEYS` as eventually public
   within your team/org, even if the repo is private.

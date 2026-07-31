@@ -69,8 +69,29 @@ def _setup_logging():
     
     root_logger.info(f"Logging initialized. Console level: {log_level_str}, File: {log_file}")
 
+# GH issue #127: a raw, per-run record of the actual conversation and tool
+# calls - separate from the general application/debug log above, and
+# distinct from state.json (which no longer stores the transcript at all,
+# see REPO_STATE_KEYS in tools/scrum.py). propagate=False keeps this off
+# the console entirely: every ADK frontend already renders the live
+# conversation itself, so re-printing full turns via the root logger would
+# just duplicate that output - this logger exists purely to make it durable
+# on disk.
+def _setup_transcript_logger() -> logging.Logger:
+    transcript_file = os.path.join("/app/sessions", f"transcript-{os.getenv('SESSION_ID', 'default')}.log")
+    os.makedirs(os.path.dirname(transcript_file), exist_ok=True)
+    tlogger = logging.getLogger("hc.transcript")
+    tlogger.setLevel(logging.INFO)
+    tlogger.propagate = False
+    if not any(isinstance(h, logging.FileHandler) and h.baseFilename == os.path.abspath(transcript_file) for h in tlogger.handlers):
+        fh = logging.FileHandler(transcript_file)
+        fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+        tlogger.addHandler(fh)
+    return tlogger
+
 _setup_logging()
 logger = logging.getLogger("scrum-team")
+transcript_logger = _setup_transcript_logger()
 
 # --- Monkey patch for OpenAI and LiteLLM APIError incompatibility ---
 try:
@@ -1018,13 +1039,24 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
     # already saw/produced the real text before this callback runs, so
     # redacting here can't break anything downstream in the live
     # conversation, only what gets persisted into transcript/messages (and
-    # from there, sprint reports and the target repo's state.json).
+    # from there, sprint reports, the per-run transcript log, and the
+    # target repo's state.json).
     recorded_text = _redact_secrets(text)
+
+    # GH issue #127: durable raw record of this turn, independent of
+    # state.transcript's size cap below and of state.json entirely (this
+    # logger never touches persisted state) - logs the same redacted copy
+    # as everything else below, not the raw text, so this new on-disk log
+    # doesn't reopen the exact secret-leak gap issue #128 just closed.
+    transcript_logger.info(f"[{agent_name}] {recorded_text}")
 
     # Shared multi-agent transcript: every agent's turns are appended here,
     # tagged by agent_name, so the full sprint conversation is auditable.
     # Appending (rather than syncing/replacing) means each step of a
-    # multi-step tool-calling turn gets its own entry.
+    # multi-step tool-calling turn gets its own entry. Kept in in-memory
+    # session state for the sprint-report excerpt/markdown-transcript
+    # renderer (see write_conversation_transcript in tools/budget.py) - no
+    # longer written into the target repo's .hc/state.json (GH issue #127).
     transcript = list(state.transcript)
     transcript.append({"agent_name": agent_name, "role": "model", "content": recorded_text})
     transcript = _trim_transcript(transcript)
@@ -1104,10 +1136,28 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     carry large file contents or PR bodies, and printing full values here
     would be noisy at best and a way to leak sensitive content into logs at
     worst. Always returns None: this is a passive trace, never a gate.
+
+    GH issue #127: also records this same names-only call description into
+    the shared transcript (state.transcript) and the durable per-run
+    transcript log, so tool calls show up per-subagent in the human-
+    readable markdown transcript (write_conversation_transcript in
+    tools/budget.py) alongside model turns - previously only the model's
+    own text was captured there, so every tool call was invisible in any
+    persisted record, not just the live console.
     """
     agent_name = getattr(tool_context, "agent_name", None) or "?"
     arg_names = ", ".join(args.keys()) if args else ""
     call_desc = f"{tool.name}({arg_names})"
+
+    transcript_logger.info(f"[{agent_name}] TOOL CALL: {call_desc}")
+    try:
+        state = get_scrum_state(tool_context.state)
+        transcript = list(state.transcript)
+        transcript.append({"agent_name": agent_name, "role": "tool_call", "content": call_desc})
+        tool_context.state["transcript"] = _trim_transcript(transcript)
+    except Exception:
+        pass
+
     if os.getenv("AGENT_MODE", "web") == "cli":
         try:
             print(tui.speech_bubble(agent_name, call_desc), file=sys.stderr)

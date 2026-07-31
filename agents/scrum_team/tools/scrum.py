@@ -36,7 +36,6 @@ REPO_STATE_KEYS = [
     "sprint_report_kpis",
     "repo",
     "messages",
-    "transcript",
     "hc_version",
     "retro_baseline",
     "human_approvals",
@@ -56,6 +55,17 @@ REPO_STATE_KEYS = [
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
 # auth material and must never be written into the target repo's
 # .hc/state.json. See SECURITY.md.
+#
+# Also deliberately excluded: transcript (GH issue #127) - the raw,
+# unbounded multi-agent debug transcript has no place in a git-committed,
+# human-reviewable state file; it stays in-memory session state for the
+# sprint report excerpt and the markdown transcript renderer
+# (write_conversation_transcript in tools/budget.py), and is separately
+# made durable via the per-run log at /app/sessions/transcript-<session-id>.
+# log (see transcript_logger in agent.py). `messages` (the flat
+# ScrumOrchestrator-only history used to resume a session on a fresh
+# checkout of the state repo) stays, since it serves a distinct functional
+# purpose, not just a debug record.
 
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     """
