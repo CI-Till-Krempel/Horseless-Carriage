@@ -207,4 +207,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # GH issue #117 - see setup_llm.py's own handler for the full
+        # rationale. Only wraps the standalone entry point - setup_all.py
+        # calls main() directly and wants Ctrl+C to abort its whole guided
+        # flow, not just this one step.
+        print()
+        print("Cancelled.")
+        sys.exit(0)

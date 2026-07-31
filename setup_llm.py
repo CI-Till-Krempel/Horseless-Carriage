@@ -374,10 +374,18 @@ def prompt_project_settings(env_path: Path, is_local: bool = False) -> None:
     for choice_key, desc in level_descriptions.items():
         marker = " (current)" if choice_key == default_choice else ""
         print(f"  {choice_key}) {desc}{marker}")
-    level_choice = input(f"Choice [{default_choice}]: ").strip() or default_choice
-    interaction_level = _INTERACTION_LEVEL_CHOICES.get(level_choice)
-    if interaction_level is None:
-        die(f"Invalid choice: {level_choice}")
+    # GH issue #117: an out-of-range choice here used to kill the entire
+    # wizard (die()), well after several other questions had already been
+    # answered - inconsistent with every other prompt in this flow, which
+    # retries on bad input instead. Answers are prefilled from .env on a
+    # rerun, so this wasn't destructive, just a jarring, disproportionate
+    # penalty for a typo.
+    interaction_level = None
+    while interaction_level is None:
+        level_choice = input(f"Choice [{default_choice}]: ").strip() or default_choice
+        interaction_level = _INTERACTION_LEVEL_CHOICES.get(level_choice)
+        if interaction_level is None:
+            warn(f"Invalid choice: {level_choice!r}. Pick one of {sorted(_INTERACTION_LEVEL_CHOICES)}.")
     lib_env.update_env_var(env_path, "INTERACTION_LEVEL", interaction_level)
 
     print()
@@ -520,15 +528,20 @@ def select_model(label: str, options: list, current: str = "") -> str:
     print(f"  {custom_idx:2d}) Enter a model id manually")
 
     default_display = str(default_idx) if default_idx else (current or "1")
-    choice = input(f"{label} [{default_display}]: ").strip() or default_display
-    if choice.isdigit():
-        n = int(choice)
-        if n == custom_idx:
-            return input("Enter model id: ").strip()
-        if 1 <= n <= len(options):
-            return options[n - 1]
-        die(f"Invalid selection: {choice}")
-    return choice  # a free-typed model id - covers keeping a `current` not in `options`
+    # GH issue #117: an out-of-range numeric choice here used to kill the
+    # entire wizard (die()) instead of reprompting like every other question
+    # in this flow - retry instead, matching the rest of the wizard's style.
+    while True:
+        choice = input(f"{label} [{default_display}]: ").strip() or default_display
+        if choice.isdigit():
+            n = int(choice)
+            if n == custom_idx:
+                return input("Enter model id: ").strip()
+            if 1 <= n <= len(options):
+                return options[n - 1]
+            warn(f"Invalid selection: {choice!r}. Pick a number from 1-{custom_idx}.")
+            continue
+        return choice  # a free-typed model id - covers keeping a `current` not in `options`
 
 
 def detect_cheap_hint(options: list):
@@ -919,4 +932,18 @@ def main(dev: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    main(dev="--dev" in sys.argv[1:] or "dev" in sys.argv[1:])
+    try:
+        main(dev="--dev" in sys.argv[1:] or "dev" in sys.argv[1:])
+    except KeyboardInterrupt:
+        # GH issue #117: run.py already turns a Ctrl+C during its own
+        # foreground `docker compose up` into a clean message instead of a
+        # raw traceback (see ISSUE-0032) - this wizard had no equivalent,
+        # despite a user being arguably more likely to hit Ctrl+C here
+        # (second-guessing a prompt, a mistyped key) than during run.py's
+        # mostly-unattended container startup. Only wraps the standalone
+        # entry point, not main() itself - setup_all.py calls main()
+        # directly and deliberately wants Ctrl+C to abort its whole guided
+        # flow, not just this one step.
+        print()
+        print("Cancelled.")
+        sys.exit(0)
