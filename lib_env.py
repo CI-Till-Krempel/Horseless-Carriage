@@ -20,6 +20,17 @@ def is_placeholder(value: str) -> bool:
     return bool(re.match(r"^<.*>$", value))
 
 
+def _unescape_single_quoted(value: str) -> str:
+    """Reverses update_env_var's `'` -> `\\'` escaping (GH issue #122).
+    Docker Compose's own .env parser recognizes exactly this same `\\'`
+    sequence as a literal quote inside a single-quoted value and leaves
+    every other backslash untouched (verified against `docker compose
+    config`), so this must mirror that rule exactly rather than doing
+    general backslash-unescaping, which would corrupt an unrelated literal
+    backslash (e.g. a Windows path, GH issue #34)."""
+    return value.replace("\\'", "'")
+
+
 def read_env_var(path: Path, key: str) -> str:
     """Reads a single KEY="value" (or KEY='value', or bare KEY=value) line;
     "" if missing/not found. Strips at most one matching pair of quotes,
@@ -32,7 +43,10 @@ def read_env_var(path: Path, key: str) -> str:
         return ""
     raw = m.group(1)
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        return raw[1:-1]
+        value = raw[1:-1]
+        if raw[0] == "'":
+            value = _unescape_single_quoted(value)
+        return value
     return raw
 
 
@@ -46,10 +60,17 @@ def update_env_var(path: Path, key: str, value: str) -> None:
     corrupts (\\t becomes an actual tab, other \\X sequences just lose their
     backslash) instead of erroring, which is what broke the container's
     volume mount in GH issue #34. Single-quoted values are treated as
-    fully literal by both Compose and this module's own read_env_var."""
+    fully literal by both Compose and this module's own read_env_var,
+    except for one escape Compose does recognize inside single quotes: a
+    literal `'` must be written as `\\'`, or Compose fails to parse the
+    line at all (confirmed via `docker compose config`) instead of merely
+    mis-parsing it - GH issue #122, hit by an ordinary Git user name like
+    "O'Brien". Every other backslash is passed through untouched, so this
+    escape is applied to embedded quotes only, never to backslashes."""
     path = Path(path)
     text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    line = f"{key}='{value}'"
+    escaped_value = value.replace("'", "\\'")
+    line = f"{key}='{escaped_value}'"
     pattern = re.compile(rf"^{re.escape(key)}=.*$", re.MULTILINE)
     if pattern.search(text):
         # Replacement given as a function, not a string: re.sub() parses a
@@ -96,6 +117,9 @@ def load_env_file(path: Path) -> dict:
         key = key.strip()
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            quote_char = value[0]
             value = value[1:-1]
+            if quote_char == "'":
+                value = _unescape_single_quoted(value)
         result[key] = value
     return result
