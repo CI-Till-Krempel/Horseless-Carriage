@@ -23,6 +23,7 @@ from agents.scrum_team.agent import (
     recover_fake_tool_call_callback,
     _stories_ready_for_next_stage_count,
     ensure_state_initialized_callback,
+    inject_litellm_key_callback,
 )
 from agents.scrum_team.state import ScrumState
 from google.genai import types
@@ -786,6 +787,86 @@ class TestEnsureStateInitializedCallback(unittest.TestCase):
 
     def test_registered_first_in_root_agent_before_model_callbacks(self):
         self.assertEqual(root_agent.before_model_callback[0], ensure_state_initialized_callback)
+
+
+def _mock_context_with_model(agent_name, agent_key=None, additional_args=None):
+    mock_context = MagicMock()
+    mock_context.agent_name = agent_name
+    mock_context.state = ScrumState().model_dump()
+    if agent_key:
+        mock_context.state["litellm_keys"][agent_name] = agent_key
+    model = MagicMock()
+    model._additional_args = additional_args if additional_args is not None else {}
+    mock_context._invocation_context.agent.canonical_model = model
+    return mock_context, model
+
+
+class TestInjectLitellmKeyCallback(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #116): the resolved API key must be set
+    as a per-agent-instance additional arg on that agent's own LiteLlm
+    model object, not the process-wide litellm.api_key global - mutating a
+    global raced across concurrent sessions/roles in `adk web` mode,
+    letting one agent's request get billed against a different role's
+    budget-capped virtual key.
+    """
+
+    def test_sets_agent_specific_key_on_the_agents_own_model(self):
+        mock_context, model = _mock_context_with_model("DevTeam", agent_key="sk-devteam-key")
+
+        inject_litellm_key_callback(mock_context, MagicMock())
+
+        self.assertEqual(model._additional_args["api_key"], "sk-devteam-key")
+
+    def test_falls_back_to_proxy_api_key_env_var_when_no_agent_key(self):
+        mock_context, model = _mock_context_with_model("DevTeam")
+
+        with patch.dict("os.environ", {"LITELLM_PROXY_API_KEY": "sk-fallback-key"}, clear=True):
+            inject_litellm_key_callback(mock_context, MagicMock())
+
+        self.assertEqual(model._additional_args["api_key"], "sk-fallback-key")
+
+    def test_two_roles_own_models_do_not_clobber_each_others_key(self):
+        """The actual bug: two agents' calls (here simulated as two
+        sequential callback invocations, standing in for what would be
+        concurrent coroutines in adk web mode) must never share mutable
+        key state - each agent's own model instance holds its own key."""
+        dev_context, dev_model = _mock_context_with_model("DevTeam", agent_key="sk-devteam-key")
+        qa_context, qa_model = _mock_context_with_model("QA", agent_key="sk-qa-key")
+
+        inject_litellm_key_callback(dev_context, MagicMock())
+        inject_litellm_key_callback(qa_context, MagicMock())
+
+        self.assertEqual(dev_model._additional_args["api_key"], "sk-devteam-key")
+        self.assertEqual(qa_model._additional_args["api_key"], "sk-qa-key")
+
+    def test_does_not_mutate_the_global_litellm_api_key(self):
+        import litellm
+        mock_context, _model = _mock_context_with_model("DevTeam", agent_key="sk-devteam-key")
+        litellm.api_key = "sentinel-should-not-change"
+
+        inject_litellm_key_callback(mock_context, MagicMock())
+
+        self.assertEqual(litellm.api_key, "sentinel-should-not-change")
+
+    def test_falls_back_to_global_when_model_has_no_additional_args(self):
+        """Defensive fallback for an agent that doesn't expose a
+        LiteLlm-shaped model (or a future ADK internals change) - better to
+        fall back to the old (still-correct-if-not-concurrent) behavior
+        than to silently inject no key at all."""
+        import litellm
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        mock_context.state = ScrumState().model_dump()
+        mock_context.state["litellm_keys"]["DevTeam"] = "sk-devteam-key"
+
+        # A model with no _additional_args attribute at all.
+        broken_model = object()
+        mock_context._invocation_context.agent.canonical_model = broken_model
+
+        inject_litellm_key_callback(mock_context, MagicMock())
+
+        self.assertEqual(litellm.api_key, "sk-devteam-key")
 
 
 if __name__ == "__main__":

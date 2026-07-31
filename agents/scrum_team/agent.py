@@ -312,16 +312,43 @@ def get_scrum_state(context_state) -> ScrumState:
 
 def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
-    BeforeModelCallback: Injects agent-specific LiteLLM key if available in state.
+    BeforeModelCallback: Injects agent-specific LiteLLM key.
+
+    Sets the key as a per-agent additional arg on that agent's own LiteLlm
+    model instance (LiteLlm._additional_args, merged into every completion
+    call that specific instance makes - see google.adk.models.lite_llm),
+    rather than mutating the process-wide litellm.api_key global (GH issue
+    #116). The global mutation raced across concurrent sessions/roles in
+    `adk web` mode (a single server process can run multiple sessions/
+    sub-agent turns concurrently): between one coroutine's callback setting
+    the global and that same coroutine's actual HTTP dispatch, a different
+    concurrent coroutine (a different role) could overwrite the same
+    global, billing one agent's request against a different role's
+    budget-capped virtual key. Each role has its own LiteLlm instance, so
+    scoping the key there instead means two different roles' calls can
+    never clobber each other's key regardless of concurrency (a residual,
+    narrower race remains between concurrent sessions sharing the SAME
+    role's single agent-definition object - out of scope for this fix,
+    which targets the cross-role misattribution actually reported).
+
+    Falls back to the old global-mutation behavior if the current agent
+    doesn't expose a LiteLlm-shaped model (e.g. a future ADK internals
+    change) - better than silently injecting no key at all.
     """
     state = get_scrum_state(callback_context.state)
     agent_name = callback_context.agent_name
     agent_key = state.litellm_keys.get(agent_name)
-    
-    if agent_key:
-        litellm.api_key = agent_key
-    else:
-        litellm.api_key = os.getenv("LITELLM_PROXY_API_KEY")
+    key_to_use = agent_key or os.getenv("LITELLM_PROXY_API_KEY")
+
+    try:
+        model = callback_context._invocation_context.agent.canonical_model
+        additional_args = getattr(model, "_additional_args", None)
+        if additional_args is not None:
+            additional_args["api_key"] = key_to_use
+            return
+    except Exception:
+        pass
+    litellm.api_key = key_to_use
 
 # --- Budget Enforcement Callbacks ---
 
