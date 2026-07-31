@@ -238,6 +238,68 @@ class TestGitHubTools(unittest.TestCase):
         mock_run.assert_called()
 
     @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_refuses_refspec_disguised_as_a_branch_name(self, mock_run):
+        """
+        Acceptance Criteria (GH issue #104): branch="HEAD:main" never equals
+        the protected-branch string "main", so the exact-string protected
+        check alone doesn't catch it - but `git push origin HEAD:main` would
+        still push current HEAD straight onto main. Reject anything shaped
+        like a refspec (or containing any other non-branch-name character)
+        before the protected-branch check even runs, and before any git
+        command is invoked at all.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["repo"] = {"default_branch": "main"}
+
+        result = git_push(branch="HEAD:main", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_refuses_branch_names_with_shell_metacharacters(self, mock_run):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        for bad_branch in ["feature; rm -rf /", "feature branch", "feature~1", "feature?", "feature*"]:
+            result = git_push(branch=bad_branch, tool_context=tool_context)
+            self.assertEqual(result["status"], "error", f"expected refusal for {bad_branch!r}")
+
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_still_allows_normal_branch_names(self, mock_run):
+        mock_run.return_value = {"status": "ok"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        for ok_branch in ["feature/foo-bar_1", "US-0042-do-the-thing", "release/1.2.3"]:
+            result = git_push(branch=ok_branch, tool_context=tool_context)
+            self.assertEqual(result["status"], "ok", f"expected success for {ok_branch!r}")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_stops_if_checkout_fails(self, mock_run):
+        """
+        Acceptance Criteria (GH issue #104): a failed `git checkout -B`
+        must be fatal, not silently discarded - continuing to commit/push
+        afterward would operate on whatever branch was already checked out,
+        not the caller's intended target.
+        """
+        mock_run.return_value = {"status": "error", "stderr": "fatal: some checkout failure"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = git_push(branch="feature-branch", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_called_once_with(
+            ["git", "checkout", "-B", "feature-branch"],
+            cwd=unittest.mock.ANY,
+            tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
     def test_gh_pr_review_records_pr_review_call(self, mock_run):
         """
         Acceptance Criteria (ISSUE-0005): a successful gh_pr_review call is
