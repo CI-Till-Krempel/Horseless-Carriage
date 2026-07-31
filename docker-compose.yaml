@@ -42,6 +42,19 @@ services:
       - ./agents:/app/agents:ro
       - ./spec-templates:/app/spec-templates:ro
       - ./eval:/app/eval:ro
+      # GH issue #156: `adk eval` writes its own local run-history bookkeeping
+      # to <agents_dir>/<app_name>/.adk/eval_history (google/adk/evaluation/
+      # local_eval_set_results_manager.py) - here, eval/adk/agent/scrum_team/
+      # .adk - which the read-only mount above blocks ("Read-only file
+      # system"). A named volume nested inside that read-only mount point
+      # still gets its own independent, writable mount (Compose/Docker apply
+      # mounts as separate mount-namespace entries), without making the rest
+      # of the eval/ tree (scenario/eval-set source the agent under test must
+      # not be able to tamper with) writable. Not a host bind mount: this is
+      # pure ADK-internal bookkeeping nobody needs to inspect on the host, and
+      # a host path that doesn't exist yet is a known Windows Docker Desktop
+      # footgun (see STATE_REPO_PATH's mkdir-first handling elsewhere).
+      - adk_eval_history:/app/eval/adk/agent/scrum_team/.adk
       # Mount the state repository as read-write
       - type: bind
         source: ${STATE_REPO_PATH}
@@ -137,3 +150,4 @@ services:
 
 volumes:
   postgres_data:
+  adk_eval_history:
