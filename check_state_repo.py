@@ -14,6 +14,15 @@ import lib_env
 
 _HISTORY_WALK_DEPTH = 50
 
+# Must match agents/scrum_team/scripts/validate_state.py's own
+# CORRUPTION_EXIT_CODE - kept as a literal here (not imported) since that
+# module's own top-level `from agents.scrum_team.state import ScrumState`
+# would sys.exit() at import time on a host Python that doesn't have
+# pydantic/the agents package installed, which is exactly the "couldn't
+# even run" case this constant exists to distinguish from real corruption
+# (see GH issue #109).
+VALIDATE_STATE_CORRUPTION_EXIT_CODE = 3
+
 
 def stray_template_files(specs_dir: Path) -> list:
     """TEMPLATE-*.md files directly under specs_dir - these belong only in
@@ -162,7 +171,7 @@ def run(repo_root: Path, interactive: bool = None, prompt=input) -> int:
         else:
             print("WARNING: Could not find Docker or python3 to validate state.json.")
 
-        if validation_exit_code != 0:
+        if validation_exit_code == VALIDATE_STATE_CORRUPTION_EXIT_CODE:
             print("ERROR: state.json validation failed. Your state might be corrupted or outdated.")
             is_interactive = sys.stdin.isatty() if interactive is None else interactive
             if not is_interactive:
@@ -170,6 +179,20 @@ def run(repo_root: Path, interactive: bool = None, prompt=input) -> int:
                 print("or initialize a new one, or re-run this interactively for repair options.")
                 return 1
             return _offer_state_repair(state_file, state_repo_path, prompt=prompt)
+        elif validation_exit_code != 0:
+            # Anything other than 0 (valid) or CORRUPTION_EXIT_CODE (genuine
+            # content corruption) means the validation script itself
+            # couldn't run - a missing dependency (validate_state.py's own
+            # ImportError), the Docker daemon being down, or any other
+            # environment problem (GH issue #109). This is NOT evidence
+            # state.json is actually corrupted, so it must not offer the
+            # repair/reset/delete menu - a real, healthy state file must
+            # never be reset or deleted because of an unrelated environment
+            # issue.
+            print("WARNING: Could not validate state.json (the validation script itself did not run - "
+                  "this is not necessarily a sign state.json is corrupted).")
+            print("Check that Docker is running (if using the Docker validation path) or that "
+                  "pydantic is installed (if using the local python3 fallback), then try again.")
     else:
         print("INFO: .hc/state.json not found. This is normal if the agent hasn't run yet.")
 

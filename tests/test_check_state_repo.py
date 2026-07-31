@@ -17,18 +17,20 @@ def repo_with_state(tmp_path):
 
 def _fail_validation(monkeypatch):
     """Makes check_state_repo.run()'s validate_state.py step always report
-    corrupted, via local python3 (no docker-compose.yaml in the fixture
-    repo_root), regardless of state.json's actual real content - the tests
-    below only care about what happens *after* validation fails. Only
-    intercepts the validate_state.py invocation itself; every other
-    subprocess.run call (the git commands _offer_state_repair's "reset from
-    git history" option makes) passes through to the real subprocess.run,
-    since those need to actually work against the fixture's real git repo."""
+    GENUINE corruption (exit code 3 - see check_state_repo.
+    VALIDATE_STATE_CORRUPTION_EXIT_CODE / GH issue #109), via local python3
+    (no docker-compose.yaml in the fixture repo_root), regardless of
+    state.json's actual real content - the tests below only care about what
+    happens *after* validation fails. Only intercepts the validate_state.py
+    invocation itself; every other subprocess.run call (the git commands
+    _offer_state_repair's "reset from git history" option makes) passes
+    through to the real subprocess.run, since those need to actually work
+    against the fixture's real git repo."""
     real_run = subprocess.run
 
     def fake_run(cmd, **kwargs):
         if any("validate_state.py" in str(part) for part in cmd):
-            return subprocess.CompletedProcess(cmd, 1)
+            return subprocess.CompletedProcess(cmd, check_state_repo.VALIDATE_STATE_CORRUPTION_EXIT_CODE)
         return real_run(cmd, **kwargs)
 
     monkeypatch.setattr(check_state_repo.shutil, "which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "python3" else None)
@@ -120,11 +122,35 @@ class TestStateJsonValidation:
         monkeypatch.setattr(check_state_repo.shutil, "which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "python3" else None)
         monkeypatch.setattr(
             check_state_repo.subprocess, "run",
-            lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 1),
+            lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, check_state_repo.VALIDATE_STATE_CORRUPTION_EXIT_CODE),
         )
-        code = check_state_repo.run(repo_root)
+        code = check_state_repo.run(repo_root, interactive=False)
         assert code == 1
         assert "state.json validation failed" in capsys.readouterr().out
+
+    def test_validation_script_itself_failing_to_run_is_not_treated_as_corruption(self, repo_with_state, monkeypatch, capsys):
+        """
+        Acceptance Criteria (GH issue #109): a non-zero exit code from
+        validate_state.py that ISN'T the dedicated corruption exit code
+        (e.g. 1, from an ImportError, the Docker daemon being down, or any
+        other environment problem) means the validation script itself
+        couldn't run - it must NOT be reported/treated as "state.json is
+        corrupted", and must never trigger the repair/reset/delete menu.
+        """
+        repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{}")
+        monkeypatch.setattr(check_state_repo.shutil, "which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "python3" else None)
+        monkeypatch.setattr(
+            check_state_repo.subprocess, "run",
+            lambda cmd, **kwargs: subprocess.CompletedProcess(cmd, 1),
+        )
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _: (_ for _ in ()).throw(AssertionError("must not prompt")))
+        out = capsys.readouterr().out
+        assert "state.json validation failed" not in out
+        assert "might be corrupted" not in out
+        assert "Could not validate state.json" in out
+        assert code == 0
 
     def test_validation_prefers_docker_when_available(self, repo_with_state, monkeypatch, capsys):
         repo_root, state_repo = repo_with_state
