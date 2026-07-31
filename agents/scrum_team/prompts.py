@@ -216,6 +216,10 @@ SPRINT CLOSE SEQUENCE (do this every sprint, in order, before considering it don
    around it. Do NOT end the sprint, and do NOT just keep transferring between yourself and Scrum
    Master, until Product Owner has actually made both of those two tool calls successfully - check
    session state (`sprint_report` non-empty) rather than assuming a hand-off implies completion.
+   `create_sprint_report` also automatically files every retro action/impediment from step 6 as a
+   real Issue in `product_backlog` (GH issue #164) - at the "Product" interaction level it's filed
+   with no priority set yet, so triaging/prioritizing it is your job in a future sprint's planning
+   (via `set_priority`/`plan_backlog_item`), not something to leave unaddressed indefinitely.
 
 CONFLICT RESOLUTION
 - Priorities/value/scope tradeoffs: PO decides

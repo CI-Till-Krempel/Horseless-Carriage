@@ -389,6 +389,51 @@ def _write_conversation_transcript(tool_context=None) -> Dict[str, Any]:
     return {"status": "ok", "path": numbered_path, "latest_path": latest_path, "entries": len(transcript)}
 
 
+def _file_retro_items_as_issues(tool_context) -> List[str]:
+    """
+    GH issue #164: retro actions and impediments must become real,
+    trackable backlog work, not just a text log nobody ever revisits - the
+    exact failure mode reported (a real eval run's retrospective logged
+    that pytest couldn't generate coverage, but nothing turned that into a
+    fix, so it silently blocked every later sprint the same way).
+
+    Files every not-yet-converted retro_actions/impediment_log entry
+    (tracked via its own "issue_id" once filed, so re-running this on a
+    later sprint's report doesn't re-file the same items) as an Issue via
+    upsert_issue - the same backlog pipeline a real Product Owner works
+    from, so it's plannable/prioritizable, not a separate list nobody
+    grooms. At the "Product" interaction level, priority is left for the
+    human Product Owner to set via their own backlog grooming; at every
+    other level (no human review step in that loop), it's auto-prioritized
+    "Must" so it can't be silently starved the way the reported failure
+    was.
+    """
+    from .requirements import upsert_issue, set_priority
+
+    filed_ids = []
+    for collection_name, text_field in (("retro_actions", "action"), ("impediment_log", "description")):
+        collection = list(tool_context.state.get(collection_name, []))
+        for entry in collection:
+            if entry.get("issue_id"):
+                continue
+            text = (entry.get(text_field) or "").strip()
+            if not text:
+                continue
+            res = upsert_issue(
+                {"title": text, "overview": text, "owner": entry.get("owner", "")},
+                tool_context=tool_context,
+            )
+            if res.get("status") != "ok":
+                continue
+            issue_id = res["item"]["id"]
+            entry["issue_id"] = issue_id
+            filed_ids.append(issue_id)
+            if get_interaction_level() != "Product":
+                set_priority(issue_id, "Must", tool_context=tool_context)
+        tool_context.state[collection_name] = collection
+    return filed_ids
+
+
 def create_sprint_report(summary: str, accomplishments: List[str], tool_context=None) -> Dict[str, Any]:
     """
     Generate a management summary report for the current sprint.
@@ -424,6 +469,14 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                 "create_sprint_report. This is mandatory, not optional."
             ),
         }
+
+    # GH issue #164: convert this sprint's retro/impediment findings into
+    # real backlog work before rendering the report below, so the report
+    # can actually say what each item was filed as instead of the finding
+    # just sitting in this log unactioned (see _file_retro_items_as_issues).
+    _file_retro_items_as_issues(tool_context)
+    retro = s.get("retro_actions", [])
+    impediments = s.get("impediment_log", [])
 
     hc_version = s.get("hc_version", "unknown")
     hc_version_line = f"Horseless Carriage v{hc_version}" if hc_version != "unknown" else "Horseless Carriage (version unknown)"
@@ -477,7 +530,8 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         report += "\n## Retrospective Actions (including efficiency improvements)\n"
         if retro:
             for action in retro:
-                report += f"- {action['action']} (Owner: {action['owner']}, Status: {action['status']})\n"
+                issue_note = f", filed as {action['issue_id']}" if action.get("issue_id") else ""
+                report += f"- {action['action']} (Owner: {action['owner']}, Status: {action['status']}{issue_note})\n"
         else:
             # This branch is now only reachable when the mandatory gate above
             # was satisfied by a *new impediment* instead of a retro action -
@@ -489,7 +543,8 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         report += "\n## Impediments\n"
         if impediments:
             for imp in impediments:
-                report += f"- {imp['description']} (Owner: {imp['owner']}, Status: {imp['status']})\n"
+                issue_note = f", filed as {imp['issue_id']}" if imp.get("issue_id") else ""
+                report += f"- {imp['description']} (Owner: {imp['owner']}, Status: {imp['status']}{issue_note})\n"
         else:
             report += "No impediments logged.\n"
     else:
