@@ -176,6 +176,76 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestOneStoryAtATimeOrdering(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #106): stories are worked one at a time,
+    top to bottom, in product_backlog priority order - the immediately
+    preceding story must already be Accepted. _preceding_story must
+    distinguish "not in product_backlog at all" from "genuinely first in
+    product_backlog" - conflating the two (both previously returned None)
+    let a sprint_backlog-only story (no matching product_backlog entry)
+    advance through every stage with no ordering check at all.
+    """
+
+    def _two_story_context(self, agent_name, second_story_stages, second_in_product_backlog=True):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        first = _base_story(["Draft", "Ready"])
+        first["id"] = "US-0001"
+        second = _base_story(["Draft"] + list(second_story_stages))
+        second["id"] = "US-0002"
+        second["title"] = "Second story"
+
+        product_backlog = [first]
+        if second_in_product_backlog:
+            product_backlog.append(second)
+        tc.state["product_backlog"] = product_backlog
+        tc.state["sprint_backlog"] = [dict(first), dict(second)]
+        tc.agent_name = agent_name
+        return tc
+
+    def test_preceding_product_backlog_story_not_accepted_blocks_advancement(self, mock_save, mock_md, mock_roadmap):
+        tc = self._two_story_context("ProductOwner", ["Ready"])
+        result = advance_story_stage("US-0002", "Ready", tool_context=tc)
+        self.assertEqual(result["status"], "ok")  # Ready re-affirm is a no-op success; real check is below
+        # US-0001 (first, not yet Accepted) must block US-0002 from a stage that actually requires ordering.
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0002": {"estimate": 10, "actual": 5}}
+        tc.agent_name = "DevTeam"
+        result = advance_story_stage("US-0002", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0001", result["message"])
+        self.assertIn("must reach Accepted first", result["message"])
+
+    def test_first_story_in_product_backlog_has_no_predecessor(self, mock_save, mock_md, mock_roadmap):
+        tc = self._two_story_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_sprint_only_story_without_product_backlog_entry_is_refused(self, mock_save, mock_md, mock_roadmap):
+        """
+        The actual bug: US-0002 exists only in sprint_backlog (no matching
+        product_backlog entry) - previously _preceding_story returned None
+        for it (same as "genuinely first"), so it could advance freely
+        regardless of US-0001 (still incomplete) sitting ahead of it in
+        intent. It must now be refused instead, since ordering can't be
+        verified for a story that was never actually planned into the
+        product backlog.
+        """
+        tc = self._two_story_context("ProductOwner", [], second_in_product_backlog=False)
+        result = advance_story_stage("US-0002", "Ready", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0002", result["message"])
+        self.assertIn("product_backlog", result["message"])
+
+
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestDraftStage(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #94): Draft is a real, ordered STORY_STAGES
