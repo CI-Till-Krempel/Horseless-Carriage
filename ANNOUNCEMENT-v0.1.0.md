@@ -5,6 +5,12 @@
 - Status: Draft
 - Last Updated: 2026-07-21
 
+## Pitch
+Horseless Carriage gives an LLM a simulated Scrum team — Product Owner, Scrum Master,
+Dev, QA, and Architect — that plans, builds, and ships real code against your actual
+GitHub repo. You set the budget and how much of a human stays in the loop, and the
+team runs the sprint end to end.
+
 ## Headline
 Horseless Carriage v0.1.0 is here: a multi-agent Scrum team you can point at a real
 repo today, with trustworthy sprint reports instead of placeholder numbers.

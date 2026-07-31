@@ -112,12 +112,11 @@ real run surfaces the team ignoring this distinction as a repeatable problem, fi
 been - see [ARCHITECTURE.md](ARCHITECTURE.md) "Design Principle: Enforce Mandatory Process
 Mechanically, Not Just by Prompting" section.
 
-A real run did exactly this: at Stakeholder level, the team stayed turn-by-turn (a user-facing reply
-after every internal hand-off) instead of running the story pipeline continuously between the two
-points a Stakeholder actually needs to be involved (approving the sprint goal/backlog, and the
-sprint review at the end) - see `specs/requirements/ISSUE-0016-Sprint-Stays-Interactive-Instead-Of-
-Autonomous-At-Stakeholder-And-CEO-Levels.md`. This distinction - *how often* the orchestrator stops
-to address the human, as opposed to *what it says* when it does (covered above) - is now its own
-named section in `ORCHESTRATOR_PROMPT` (AUTONOMY BY INTERACTION LEVEL), deliberately kept prompt-only
-for the same reason as the rest of this section: "did the team stop and chat unnecessarily" isn't
-something a mechanical gate can check.
+At Stakeholder and CEO levels, the orchestrator should run the story pipeline continuously between
+the two points where the human actually needs to be involved (approving the sprint goal/backlog, and
+the sprint review at the end), rather than stopping for a user-facing reply after every internal
+hand-off (see `specs/requirements/ISSUE-0016-Sprint-Stays-Interactive-Instead-Of-Autonomous-At-
+Stakeholder-And-CEO-Levels.md`). This - *how often* the orchestrator stops to address the human, as
+opposed to *what it says* when it does (covered above) - is its own named section in
+`ORCHESTRATOR_PROMPT` (AUTONOMY BY INTERACTION LEVEL), deliberately prompt-only: "did the team stop
+and chat unnecessarily" isn't something a mechanical gate can check.

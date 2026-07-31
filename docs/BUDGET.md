@@ -4,13 +4,11 @@
 
 The system implements a **dual-layer budgeting strategy** to ensure both operational safety and financial control. This approach leverages LiteLLM's native financial enforcement while providing local, high-fidelity control over the logical "Sprint Budget" in tokens.
 
-**Naming (GH issue #81)**: these two limits have different *scopes*, and their env var names say
-so explicitly - `SPRINT_TOKEN_BUDGET` is **per-sprint** (resets automatically every sprint),
-`TOTAL_USD_BUDGET` is a **whole-engagement** ceiling (never resets on its own). The older name
-`SPRINT_USD_BUDGET` is still honored as a deprecated fallback (`get_env_with_deprecated_fallback` in
-`agents/scrum_team/helpers.py`) if you haven't renamed it in your own `.env` yet - its "SPRINT_"
-prefix looked like a per-sprint value even though it never behaved like one, which is exactly the
-ambiguity this rename fixes.
+**Naming**: these two limits have different *scopes*, and their env var names say so explicitly -
+`SPRINT_TOKEN_BUDGET` is **per-sprint** (resets automatically every sprint), `TOTAL_USD_BUDGET` is a
+**whole-engagement** ceiling (never resets on its own). The older name `SPRINT_USD_BUDGET` is still
+honored as a deprecated fallback (`get_env_with_deprecated_fallback` in `agents/scrum_team/helpers.py`)
+if you haven't renamed it in your own `.env` yet.
 
 ## 1. Token Budget (ADK Layer)
 - **Unit**: Total tokens (e.g., 1,000,000).
@@ -96,8 +94,7 @@ Every sprint's report is kept — written to a sequentially numbered
 `specs/reports/SPRINT-REPORT-NNN.md` (`001`, `002`, ...; the number is derived by scanning what's
 already there, the same way story/ADR IDs are generated, so there's no separate counter to drift
 out of sync) — and `specs/reports/SPRINT-REPORT-LATEST.md` is also kept up to date as a convenience
-pointer to the most recent one. Earlier versions of this only ever kept `SPRINT-REPORT-LATEST.md`,
-so every sprint but the last got silently overwritten.
+pointer to the most recent one.
 
 Example report content:
 ```markdown

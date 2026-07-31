@@ -185,45 +185,14 @@ Carriage itself* is released — this section is how the agents release the prod
 
 ## 8. Troubleshooting
 
-- **`python3 doctor.py`** — checks Docker, `.env` completeness, `STATE_REPO_PATH`
-  existence, GitHub auth configuration, and live LLM/LiteLLM proxy connectivity. Run this first.
-  Collects everything wrong into one "Actionable Items" punch list rather than stopping at the
-  first problem - `run.py` refuses to start at all while any ERROR-level item remains.
-- **`python3 setup_all.py`** — if you'd rather not chase down individual `doctor.py` items by hand,
-  this re-runs the guided setup (provider/model, project checks) and loops on the doctor gate until
-  it's clean, then offers to start the agent.
-- **`python3 check_state_repo.py`** — validates your target repo's `specs/` structure and
-  `.hc/state.json`, and flags stray template files that shouldn't be there. If `state.json` is
-  corrupted, run it interactively (a real terminal) for a repair/reset/delete menu — see
-  [State Repository § Checkpointing and recovery](docs/STATE-REPOSITORY.md#checkpointing-and-recovery).
-  The Orchestrator itself also offers the same choice in chat (plus an LLM-assisted repair option
-  only it can do) if this ever happens mid-session instead of during setup.
-- **"GitHub tools may fail" warning on startup** — no `GITHUB_TOKEN` or complete
-  `GITHUB_APP_*` trio configured. The container still starts (other tools work
-  fine); fix `.env` and restart.
-- **429 / rate-limit errors mid-sprint** — the Scrum Master should catch this and
-  trigger a review, but if it doesn't, it usually means the model or the
-  per-agent quota is too aggressive for your provider tier; lower it or switch
-  `LOG_LEVEL=debug` temporarily to see request volume.
-- **Old virtual keys stopped working** — see [§5](#5-budgets) recovery steps.
-- **Repo/budget config shows as unset, or the session goes silent on the very first message** — state
-  (repo URL, budgets, interaction level) is now loaded automatically before the Orchestrator's first
-  turn each session, so this shouldn't recur; if it does, check that `TOTAL_USD_BUDGET`/
-  `SPRINT_TOKEN_BUDGET` in `.env` aren't explicitly set to `0` (a genuinely unset value already
-  defaults to a safe budget, but an explicit `0` is treated as "no budget" and previously could halt
-  the session before it even started replying).
-- **Orchestrator keeps re-describing the same plan instead of acting** — after 3 replies in a row
-  with no tool call at all, a `⏸ [NO ACTION TAKEN - ...]` banner is mechanically prepended to its
-  next reply (you'll see it directly in the chat, not just in logs), and it shows up in
-  `list_blocking_interactions()` too - a code-guaranteed signal, not dependent on the model noticing
-  on its own. If you see this banner, tell it plainly to act now (or ask what specifically it's
-  waiting on) rather than restating the same instructions again.
-- **A reply looks like raw JSON, e.g. `{"type": "function", "function": "repo_status", ...}`, instead
-  of real text or a real action** — some models occasionally emit a text reply shaped exactly like a
-  tool call instead of actually making one. This is now auto-recovered: it's converted into a real
-  tool call mechanically, so the intended action still runs - if you still see the raw JSON text
-  itself in the chat, that shouldn't happen anymore; check `LOG_LEVEL=debug` logs for a
-  `recover_fake_tool_call_callback` line and report it.
+Troubleshooting content now lives in its own dedicated reference:
+**[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — a symptom → cause → fix guide covering setup/first-run
+problems (`doctor.py`, `setup_all.py`, `check_state_repo.py`, GitHub auth warnings), Docker/container
+problems, budget/cost problems (exhausted budgets, LiteLLM database wipes, rate limits), mid-session
+agent-behavior problems (the stall banner, the known raw-JSON-shaped-reply issue), and GitHub
+integration problems. Start with `python3 doctor.py` for almost anything that looks wrong — see
+[§3](#3-first-run-the-setup-wizard) above and
+[TROUBLESHOOTING.md §1](TROUBLESHOOTING.md#1-setup--first-run-problems).
 
 ## 9. Team performance evaluation
 
@@ -311,6 +280,9 @@ needed beyond what `docker-compose.yaml` already provides.
   and how its own team-performance evaluation harness works.
 - [SECURITY.md](SECURITY.md) — secret handling, what's never persisted, how to
   report a vulnerability.
+- [TROUBLESHOOTING.md](TROUBLESHOOTING.md) — symptom → cause → fix reference for setup, Docker,
+  budget, mid-session agent-behavior, and GitHub integration problems.
+- [FAQ.md](FAQ.md) — short answers to the questions a prospective or new user is likely to have.
 - `spec-templates/` — the actual templates the agents fill in (PRD, SRS, ADR, user
   story, roadmap, announcement, user guide).
 - `specs/ROADMAP.md` (in your state repo) — what's shipped and what's planned.

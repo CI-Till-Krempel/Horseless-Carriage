@@ -41,22 +41,14 @@ docker compose logs -f agent
 
 ## Watch Mode: Get Notified of New Work
 
-GH issue #48 asked two related questions: does the team only ever process work on one thread, and
-wouldn't it make more sense to have it notice new work (a story moving into a stage another role is
-waiting to pick up, new commits landing on `develop`) and pick it up automatically, rather than a
-human having to remember to check?
+The team processes work single-threaded/turn-based: the `ScrumOrchestrator` delegates to one
+sub-agent at a time via ADK's `transfer_to_agent`, and tools mutate `tool_context.state` in place
+with no concurrency safety, so nothing here runs multiple roles in parallel. See
+`specs/stories/EP-0008-Concurrency-Safe-State-And-A-Working-Parallel-Loop.md` for the concurrency
+work that would be needed before that changes.
 
-**On the threading question**: yes, deliberately single-threaded/turn-based. The `ScrumOrchestrator`
-delegates to one sub-agent at a time via ADK's `transfer_to_agent`, and every tool mutates
-`tool_context.state` in place (see `agents/scrum_team/tools/base.py` and nearly every tool in
-`agents/scrum_team/tools/`) - none of that is written to be safely mutated from more than one
-concurrent caller. Actually running multiple roles concurrently would mean either giving every tool
-its own locking/transaction semantics, or moving to a fundamentally different state model - a much
-larger architectural change than fits alongside the rest of this issue, and not attempted here.
-
-**On noticing new work automatically**: `watch_roadmap.py` is a small, entirely optional, opt-in
-script (nothing else in this repo ever imports or runs it) that polls the state repository for two
-things:
+`watch_roadmap.py` is a small, optional, opt-in script (nothing else in this repo imports or runs it)
+that polls the state repository for two things:
 
 ```bash
 python3 watch_roadmap.py          # poll forever (Ctrl+C to stop)
@@ -66,19 +58,13 @@ python3 watch_roadmap.py --once   # check once and exit (0 if something fired, 1
 
 - New commits on the configured develop branch (`GITHUB_DEVELOP_BRANCH`).
 - A backlog item whose completed pipeline stages stop one short of the next one (e.g.
-  Ready-but-not-Implemented - "ready for developers", the issue's own example; the same logic also
-  catches Reviewed-but-not-Tested, "ready for QA", etc.).
+  Ready-but-not-Implemented - "ready for developers"; the same logic also catches
+  Reviewed-but-not-Tested - "ready for QA", etc.).
 
 When either fires, it prints a hard-to-miss banner (`WATCH_POLL_INTERVAL_SECONDS` in `.env` controls
-the poll interval, default 300s) - it does **not** start or drive a session itself. Reaching further
-- automatically starting a headless agent turn - needs the eval harness's ADK `InMemoryRunner`
-pattern (`agents/scrum_team/scripts/run_eval.py`), which creates a disposable session just for that
-one harness run. Reusing that against this repo's real, persistent production session (the
-sqlite-backed session a live web/CLI user might have open at the same moment) risks two writers
-racing on the same `session.state` - a real correctness problem, not a paperwork one. Closing that gap
-is scoped as its own epic - see `specs/stories/EP-0008-Concurrency-Safe-State-And-A-Working-Parallel-
-Loop.md` - rather than a shortcut here. You still start the agent yourself (`python3 run.py`); this
-script only saves you from having to keep checking whether there's anything new for it to do.
+the poll interval, default 300s) - it does **not** start or drive a session itself. You still start
+the agent yourself (`python3 run.py`); this script only saves you from having to keep checking
+whether there's anything new for it to do.
 
 ## Logging & Session Management
 
