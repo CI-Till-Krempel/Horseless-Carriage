@@ -145,6 +145,11 @@ services:
       - EVAL_USD_BUDGET_PER_SPRINT=${EVAL_USD_BUDGET_PER_SPRINT:-}
       - EVAL_SPRINT_USD_BUDGET=${EVAL_SPRINT_USD_BUDGET:-}
       - SESSION_ID=${SESSION_ID:-my-sprint}
+      # GH issue #125: see docker-compose.yaml's identical entry - the
+      # commit of this Horseless Carriage checkout that produced an eval
+      # run, computed on the host and passed through since `.git` is
+      # excluded from the agent image's build context.
+      - HC_COMMIT_SHA=${HC_COMMIT_SHA:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - GIT_USER_NAME=${GIT_USER_NAME}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL}
