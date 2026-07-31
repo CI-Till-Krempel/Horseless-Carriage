@@ -143,10 +143,27 @@ def _redact_cmd(cmd: list[str]) -> list[str]:
             redacted.append(arg)
     return redacted
 
-def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str, Any]:
+# Default ceiling for every subprocess this tool layer invokes (git, gh) -
+# see GH issue #113: without any timeout at all, a network stall on a `git
+# push`, `gh` falling back to an interactive prompt, or any other hang left
+# the entire agent session unresponsive indefinitely, with no way to tell
+# a slow LLM call apart from a genuinely stuck subprocess. 120s is generous
+# for a single git/gh invocation while still bounding the worst case.
+_DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 120
+
+
+def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
+         timeout: float = _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS) -> Dict[str, Any]:
     """
     Run a shell command non-interactively and capture output.
     Injects GH_TOKEN if present in session.state.
+
+    stdin is explicitly closed (DEVNULL) - without it, `gh` falling back to
+    an interactive prompt for a credential it can't resolve non-interactively
+    would otherwise block waiting for input that can never arrive here. A
+    timeout (default _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS) bounds every other
+    hang (a network stall on `git push`, `gh pr checks --watch`, etc.) -
+    see GH issue #113.
     """
     env = os.environ.copy()
     if tool_context and getattr(tool_context, "state", None):
@@ -185,6 +202,8 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
             check=False,
             env=env,
             errors="replace",
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
         return {
             "status": "ok" if p.returncode == 0 else "error",
@@ -192,6 +211,13 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None) -> Dict[str,
             "stdout": p.stdout.strip(),
             "stderr": p.stderr.strip(),
             "cmd": _redact_cmd(cmd),
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "message": f"Command timed out after {timeout}s: {' '.join(_redact_cmd(cmd))}",
+            "cmd": _redact_cmd(cmd),
+            "timed_out": True,
         }
     except Exception as e:
         return {"status": "error", "message": str(e), "cmd": _redact_cmd(cmd)}
