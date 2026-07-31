@@ -117,5 +117,48 @@ class TestRedactCmd(unittest.TestCase):
         self.assertNotIn(auth_value, str(result["cmd"]))
 
 
+class TestRunTimeoutAndStdin(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #113): no subprocess this tool layer
+    invokes (git, gh) had a timeout - a network stall on `git push`, or `gh`
+    falling back to an interactive prompt for a credential it can't resolve
+    non-interactively, hung the entire agent session indefinitely, with no
+    way to tell a slow LLM call apart from a genuinely stuck subprocess.
+    """
+
+    def test_default_timeout_is_passed_to_subprocess_run(self):
+        with patch("subprocess.run") as mock_subprocess_run:
+            mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            _run(["git", "status"])
+
+        self.assertEqual(mock_subprocess_run.call_args.kwargs["timeout"], 120)
+
+    def test_custom_timeout_is_honored(self):
+        with patch("subprocess.run") as mock_subprocess_run:
+            mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            _run(["git", "status"], timeout=5)
+
+        self.assertEqual(mock_subprocess_run.call_args.kwargs["timeout"], 5)
+
+    def test_stdin_is_explicitly_closed(self):
+        """Without this, `gh` falling back to an interactive prompt would
+        hang waiting for input that can never arrive in this context."""
+        import subprocess as subprocess_module
+        with patch("subprocess.run") as mock_subprocess_run:
+            mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            _run(["gh", "auth", "status"])
+
+        self.assertEqual(mock_subprocess_run.call_args.kwargs["stdin"], subprocess_module.DEVNULL)
+
+    def test_timeout_expired_returns_a_clean_error_not_a_raised_exception(self):
+        import subprocess as subprocess_module
+        with patch("subprocess.run", side_effect=subprocess_module.TimeoutExpired(cmd=["git", "push"], timeout=120)):
+            result = _run(["git", "push"])
+
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(result.get("timed_out"))
+        self.assertIn("timed out", result["message"])
+
+
 if __name__ == "__main__":
     unittest.main()
