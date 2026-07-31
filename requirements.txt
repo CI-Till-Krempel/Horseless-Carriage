@@ -7,15 +7,35 @@ pytest==9.1.1
 pytest-cov==7.1.0
 radon==6.0.1
 bandit==1.9.4
-# adk eval's own dependency check (google/adk/cli/cli_eval.py's
-# pretty_print_eval_result) only actually needs pandas + tabulate at
-# runtime for our usage - NOT the full google-adk[eval] extra, which pulls
-# in google-cloud-aiplatform[evaluation] and, through it, a hard
-# `litellm<1.86.0` pin that's unresolvable against this file's own
-# litellm==1.90.2 (ResolutionImpossible). google-cloud-aiplatform,
-# gepa, jinja2, and rouge-score - the extra's other members - are for
-# LLM-judge/embedding-similarity metrics and GEPA prompt optimization,
-# neither of which eval/adk/test_config.json's tool_trajectory_avg_score
-# criterion (a mechanical tool-call-sequence comparison) uses.
+# GH issue #156 (reopened - see below): `adk eval`'s real import chain
+# needs all four of these at runtime, not just pandas/tabulate as first
+# thought. `google.adk.cli.cli_tools_click`'s actual `adk eval` command
+# body (not just `--help`, which never executes it - the gap in the first
+# attempt at this fix) eagerly imports
+# google.adk.evaluation.metric_evaluator_registry, which unconditionally
+# imports evaluator classes (safety_evaluator.py,
+# multi_turn_task_success_evaluator.py, response_evaluator.py, ...) that
+# import google.adk.evaluation.vertex_ai_eval_facade at module level, which
+# does `from ..dependencies.vertexai import vertexai` - and
+# google/adk/dependencies/vertexai.py does a hard `import vertexai` (no
+# try/except) right at its own module top, regardless of whether the
+# metric actually selected (eval/adk/test_config.json's
+# tool_trajectory_avg_score) needs it. response_evaluator.py additionally
+# needs rouge_score for its RougeEvaluator import.
+#
+# `vertexai` ships inside the google-cloud-aiplatform *distribution*, but
+# do NOT install the "evaluation" extra (`google-cloud-aiplatform
+# [evaluation]`, e.g. via google-adk[eval]) - that extra's own
+# `litellm<1.86.0` pin is unresolvable against this file's own
+# litellm==1.90.2 (confirmed via `pip install`: ResolutionImpossible). The
+# bare package (no extras) provides the `vertexai` module without that
+# constraint. gepa/jinja2 (the other google-adk[eval] extra members) are
+# for GEPA prompt optimization, which nothing here uses - left out.
+#
+# Verified this time by actually exercising the real command body (not
+# just import success): built the image fresh and ran the full guarded
+# import chain from cli_tools_click.py's `adk eval` handler end-to-end.
 pandas==2.3.3
 tabulate==0.9.0
+google-cloud-aiplatform==1.163.0
+rouge-score==0.1.2
