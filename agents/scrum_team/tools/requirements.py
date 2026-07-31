@@ -40,6 +40,30 @@ _PLACEHOLDER_USER_STORY = "As a <role>, I want <capability>, so that <benefit>."
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 
+# GH issue #121: MoSCoW rank used to keep product_backlog actually sorted in
+# priority order. _preceding_story's docstring already asserted "backlog
+# order is priority order" as an existing invariant, but nothing enforced
+# it - items were only ever appended or mutated in place, so a story marked
+# "Must" after the fact never actually moved ahead of the lower-priority
+# stories still blocking it in the one-story-at-a-time gate. Unset/unknown
+# priority ranks as "Must" (0), matching the "Must" default already used
+# when rendering a story's priority elsewhere (see item.get("priority",
+# "Must") below) - a story nobody has explicitly deprioritized shouldn't be
+# silently pushed to the back of the queue.
+_PRIORITY_RANK = {"Must": 0, "Should": 1, "Could": 2, "Won't": 3}
+
+
+def _priority_rank(item: Dict[str, Any]) -> int:
+    return _PRIORITY_RANK.get(item.get("priority"), _PRIORITY_RANK["Must"])
+
+
+def _resort_backlog_by_priority(s: Dict[str, Any]) -> None:
+    """Stable-sorts product_backlog by MoSCoW rank in place - stable so
+    items sharing a priority keep their existing relative order."""
+    backlog = list(s.get("product_backlog", []))
+    backlog.sort(key=_priority_rank)
+    s["product_backlog"] = backlog
+
 
 def _normalize_title_for_dup_check(title: str) -> str:
     """Case/punctuation-insensitive key for near-exact title matches (see ISSUE-0008)."""
@@ -351,6 +375,7 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
         s["product_backlog"] = backlog
         updated_item = item
 
+    _resort_backlog_by_priority(s)
     save_state_to_repo(tool_context)
 
     # ISSUE-0007: a story's version can be set directly here, bypassing
@@ -411,7 +436,11 @@ def _generate_next_id(prefix: str, tool_context=None) -> str:
 
 def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str, Any]:
     """
-    Update priority for a backlog item.
+    Update priority for a backlog item, then re-sort product_backlog by
+    MoSCoW rank (GH issue #121) so the one-story-at-a-time ordering gate
+    (_preceding_story, which reads backlog order as priority order) actually
+    reflects the change - a story newly marked "Must" now really does jump
+    ahead of the lower-priority stories still blocking it.
     """
     from .scrum import save_state_to_repo
     s = tool_context.state
@@ -420,6 +449,7 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
         if x.get("id") == title_or_id or x.get("title") == title_or_id:
             x["priority"] = priority
             s["product_backlog"] = backlog
+            _resort_backlog_by_priority(s)
             save_state_to_repo(tool_context)
             return {"status": "ok", "item": x}
     return {"status": "error", "message": "Item not found."}

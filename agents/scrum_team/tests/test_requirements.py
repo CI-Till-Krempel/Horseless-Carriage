@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
-from agents.scrum_team.tools.requirements import advance_story_stage, upsert_backlog_item, record_design_approval, plan_backlog_item
+from agents.scrum_team.tools.requirements import advance_story_stage, upsert_backlog_item, record_design_approval, plan_backlog_item, set_priority
 
 
 def _base_story(stages_completed):
@@ -499,6 +499,69 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
         tc = self._tool_context()
         result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
         self.assertEqual(result["status"], "ok")
+
+
+class TestPriorityAffectsBacklogOrdering(unittest.TestCase):
+    """Acceptance Criteria (GH issue #121): backlog order must actually
+    reflect MoSCoW priority, since the one-story-at-a-time gate
+    (_preceding_story) keys off backlog order directly."""
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_set_priority_moves_item_ahead_of_lower_priority_ones(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [
+            {"id": "US-0001", "title": "First", "priority": "Should"},
+            {"id": "US-0002", "title": "Second", "priority": "Should"},
+            {"id": "US-0003", "title": "Third", "priority": "Could"},
+        ]
+        result = set_priority("US-0003", "Must", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([x["id"] for x in tc.state["product_backlog"]], ["US-0003", "US-0001", "US-0002"])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_same_priority_items_keep_relative_order(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [
+            {"id": "US-0001", "title": "First", "priority": "Should"},
+            {"id": "US-0002", "title": "Second", "priority": "Should"},
+            {"id": "US-0003", "title": "Third", "priority": "Should"},
+        ]
+        result = set_priority("US-0002", "Should", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([x["id"] for x in tc.state["product_backlog"]], ["US-0001", "US-0002", "US-0003"])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_new_item_created_with_high_priority_jumps_the_queue(self, mock_save, mock_md):
+        """upsert_backlog_item also re-sorts, since a new item's priority can
+        be set at creation time rather than via a later set_priority call."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [
+            {"id": "US-0001", "title": "First", "priority": "Must"},
+            {"id": "US-0002", "title": "Second", "priority": "Should"},
+        ]
+        result = upsert_backlog_item({"id": "US-0003", "title": "Third", "priority": "Must"}, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        ids = [x["id"] for x in tc.state["product_backlog"]]
+        self.assertEqual(ids, ["US-0001", "US-0003", "US-0002"])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_unset_priority_ranks_as_must_not_pushed_to_the_back(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [
+            {"id": "US-0001", "title": "First", "priority": "Should"},
+        ]
+        result = upsert_backlog_item({"id": "US-0002", "title": "Second"}, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        ids = [x["id"] for x in tc.state["product_backlog"]]
+        self.assertEqual(ids, ["US-0002", "US-0001"])
 
 
 if __name__ == "__main__":
