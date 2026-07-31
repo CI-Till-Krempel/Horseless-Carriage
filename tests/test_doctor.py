@@ -121,6 +121,34 @@ class TestGuardClauses:
         assert code == 1
         assert "'docker-compose' or 'docker compose' command not found" in capsys.readouterr().out
 
+    def test_docker_daemon_not_running_errors(self, valid_repo, monkeypatch, capsys):
+        """
+        Acceptance Criteria (GH issue #107): the docker CLI binary being
+        present doesn't mean the daemon is actually running (e.g. Docker
+        Desktop installed but not started) - `docker compose version` alone
+        can't catch this, since it only needs the CLI, not a live daemon.
+        """
+        _patch_which(monkeypatch, docker=True, **{"docker-compose": True})
+
+        def fake_run(cmd, **kwargs):
+            if cmd == ["docker", "info"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+        _patch_proxy_unreachable(monkeypatch)
+
+        code = doctor.run(valid_repo)
+        assert code == 1
+        assert "Docker daemon isn't running" in capsys.readouterr().out
+
+    def test_docker_daemon_running_reports_no_error(self, valid_repo, monkeypatch, capsys):
+        _patch_which(monkeypatch, docker=True, **{"docker-compose": True})
+        _patch_subprocess_ok(monkeypatch)
+        _patch_proxy_unreachable(monkeypatch)
+
+        code = doctor.run(valid_repo)
+        assert "Docker daemon isn't running" not in capsys.readouterr().out
+
     def test_multiple_errors_are_all_collected_not_just_the_first(self, tmp_path, monkeypatch, capsys):
         """The whole point of the punch-list refactor: a completely
         unconfigured repo should surface every blocking problem in one
@@ -251,7 +279,12 @@ class TestWarningsDoNotBlock:
 
     def test_gh_not_authenticated_warns(self, valid_repo, monkeypatch, capsys):
         _patch_which(monkeypatch, docker=True, **{"docker-compose": True, "gh": True})
-        _patch_subprocess_fail(monkeypatch)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "auth"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(doctor.subprocess, "run", fake_run)
         _patch_proxy_unreachable(monkeypatch)
         code = doctor.run(valid_repo)
         assert "gh CLI is not authenticated" in capsys.readouterr().out
