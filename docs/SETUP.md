@@ -36,10 +36,13 @@ the team:
    scrum-team roles, plus an optional cheaper/faster model for the automated
    eval harness's `scrum-eval-cheap` alias. The local/Ollama provider instead
    offers a curated pick-list (Ollama has no such API) or a manual tag.
-4. **Git identity** (user name/email used for commits the agent makes on
-   your behalf) and the **state repository** itself: creates the directory
-   if missing, then either clones `GITHUB_REPO_URL` into it (if empty and a
-   URL is given) or initializes a fresh local git repo there - see
+4. **Git identity** (user name/email used as a fallback git identity;
+   defaults to your host machine's own `git config --global` name/email if
+   set, otherwise a generic placeholder - real commits the agent makes are
+   attributed per-role regardless, see [GitHub Integration](GITHUB-INTEGRATION.md))
+   and the **state repository** itself: creates the directory if missing,
+   then either clones `GITHUB_REPO_URL` into it (if empty and a URL is
+   given) or initializes a fresh local git repo there - see
    [State Repository](STATE-REPOSITORY.md) for what this directory is and
    why it needs to exist before the agent can run.
 5. **Human interaction level** (`Product` / `Stakeholder` / `CEO` / `EVAL` -
@@ -84,10 +87,9 @@ for what `doctor.py` checks.
 
 All of this project's host-side tooling (`setup_all.py`, `setup_llm.py`, `setup_project.py`,
 `doctor.py`, `run.py`, `run_tests.py`, `check_state_repo.py`, `rebuild_images.py`,
-`watch_roadmap.py`) is plain stdlib Python - no bash, no WSL2 required. The only
-part of the stack that ever needed a Unix shell was the old setup scripts, which this replaces
-entirely; Docker Desktop may still use WSL2 internally as its own backend, but that's automatic and
-not something you need to set up yourself.
+`watch_roadmap.py`) is plain stdlib Python - no bash, no WSL2 required. Docker Desktop may still use
+WSL2 internally as its own backend, but that's automatic and not something you need to set up
+yourself.
 
 **Prerequisites:**
 
@@ -176,10 +178,7 @@ to whatever you already had configured, not the fresh detection result, so it wo
 a deliberate choice back.
 
 To enable (or check) it manually - e.g. if you're skipping `setup_llm.py`, or want to run one-off
-commands with it - merge in the GPU override file instead of hand-editing `docker-compose.local.yaml`
-(a previous version of this file asked you to uncomment a commented-out YAML block in place, which
-is easy to get subtly wrong - indentation, a stray `#` left behind - with no feedback beyond "GPU
-still isn't being used"):
+commands with it - merge in the GPU override file instead of hand-editing `docker-compose.local.yaml`:
 
 ```bash
 docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml up
@@ -274,3 +273,6 @@ only at CEO); see the linked doc for the exact mapping.
 
 - If `LITELLM_PROXY_API_BASE` is set, the agents assume "proxy mode" and use LiteLLM via the proxy endpoint.
 - Keep your `.env` local and never commit real API keys.
+- See [Configuration Reference](CONFIGURATION.md) for how every `.env` item combines with the
+  others (provider × GPU/host-mode, budget applicability, interaction level, etc.) - useful when
+  hand-editing `.env` instead of going through the wizard, or when something looks misconfigured.

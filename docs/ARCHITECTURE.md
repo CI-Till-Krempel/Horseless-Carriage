@@ -87,15 +87,13 @@ a required step.
 Concretely, in this codebase (see "Story workflow" below for the full feature these come from):
 - **Automatic side effects instead of a second, separate step.** `advance_story_stage` updates
   `specs/ROADMAP.md`'s checkboxes as part of the same call that marks a stage complete - there's no
-  separate "now remember to sync the roadmap" instruction left for the agent to forget. The earlier
-  design (a documented, mandatory, but separate `update_roadmap` step) didn't reliably happen.
+  separate "now remember to sync the roadmap" instruction left for the agent to forget.
 - **Structural refusal instead of a checklist.** `_story_readiness_issues` refuses to write a story
   with an empty/placeholder title, user story, or acceptance criteria - it doesn't just ask the
   model to check `spec-templates/DOD.md`/`DOR.md` first. `check_build()` actually attempts to
   install the project's dependencies rather than asking QA to "verify the build works" by reading
   the code. `create_sprint_report` refuses to run at all unless a *new* retro action or impediment
-  was logged since the last report - a real run had the Scrum Master role go uninvoked for 5
-  sprints straight because "retro is mandatory" was stated but never actually enforced.
+  was logged since the last report.
 - **No bypass path left open.** Enforcing order/ownership in one tool (`advance_story_stage`) is
   only real enforcement if every other way to change the same state is closed off too -
   `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status` directly to a
@@ -161,11 +159,6 @@ nicely in a prompt:
   directly to any of the 6 stage names - only `advance_story_stage` can.
 - It also updates `specs/ROADMAP.md`'s per-stage checkboxes for that story automatically, in the
   same call - see below.
-
-This was added after real eval runs repeatedly shipped stories as "Done" with an empty/placeholder
-user story, a `requirements.txt` pinning a package version that doesn't exist, and a roadmap that
-never reflected any of it - asking the agents nicely to follow a written checklist wasn't enough on
-its own.
 
 ### 2. Specification Artifacts (`specs/`)
 Stored in your **target state repository** (configured via `STATE_REPO_PATH` - see [State Repository](STATE-REPOSITORY.md)), these are the actual documents generated and updated by the agents.

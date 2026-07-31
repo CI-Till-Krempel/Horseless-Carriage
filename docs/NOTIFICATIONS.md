@@ -65,15 +65,12 @@ still firing - each is called independently, best-effort.
 ## Tool calls in the CLI (`AGENT_MODE=cli`)
 
 The ADK web UI (`AGENT_MODE=web`, the default) renders every tool call and its result in its own
-tool-call panel, so this is a non-issue there. The plain interactive CLI (`adk run`, which
-`run_agent.sh` invokes for `AGENT_MODE=cli`) is different: its REPL
-(`google.adk.cli.cli.run_interactively`/`run_input_file`) only echoes events that carry `.text`
-content - a pure tool call/tool result event has none, so **every tool call was completely invisible
-in CLI mode**, including gated actions a human might expect to notice (e.g. a release PR blocked on
-a missing approval).
+tool-call panel. The plain interactive CLI (`adk run`, which `run_agent.sh` invokes for
+`AGENT_MODE=cli`) is different: its REPL only echoes events that carry `.text` content, and a pure
+tool call/tool result event has none.
 
 `log_tool_invocation_callback` (`agents/scrum_team/agent.py`, registered as `before_tool_callback` on
-every agent) closes this gap independently of whichever ADK frontend is running: it prints
+every agent) makes tool calls visible independently of whichever ADK frontend is running: it prints
 `🔧 [AgentName] tool_name(arg_names)` to stderr for every tool call, so it shows up in the CLI
 terminal itself and in `docker compose logs agent` for daemon mode. Only argument *names* are logged,
 never values - tool arguments can carry large file contents or PR bodies, which shouldn't end up

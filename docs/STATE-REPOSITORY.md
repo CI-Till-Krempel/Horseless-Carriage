@@ -39,8 +39,8 @@ commits yet) has no such fallback available.
 
 ### If automatic recovery isn't possible either
 
-If state.json is corrupted *and* no checkpoint anywhere in git history is usable either (GH issue
-#85), the session starts with blank/default state rather than crashing - but you're not just stuck
+If state.json is corrupted *and* no checkpoint anywhere in git history is usable either, the session
+starts with blank/default state rather than crashing - but you're not just stuck
 with that. The Orchestrator will tell you this happened at the start of your very first message
 (state_json_corrupted in the state passed to the model), and offers three tools to actually recover:
 

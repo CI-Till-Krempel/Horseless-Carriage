@@ -81,6 +81,7 @@ including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 | Topic | What's there |
 |---|---|
 | [Setup](docs/SETUP.md) | Guided LLM/project setup, Windows-specific instructions, running fully local (no commercial LLM), human interaction levels |
+| [Configuration Reference](docs/CONFIGURATION.md) | Every `.env` config item, and how they combine (provider × GPU/host-mode × interaction level × budget) |
 | [State Repository](docs/STATE-REPOSITORY.md) | What the "source of truth" directory is, its structure, and the health-check script |
 | [Running the Agent](docs/RUNNING.md) | `run.py` modes, logging & session management, diagnostics (`doctor.py`) |
 | [Testing](docs/TESTING.md) | The host-script test suite, the agent test suite, manual QA test plans |
@@ -93,6 +94,8 @@ including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 | [MANUAL.md](MANUAL.md) | User manual: concepts, day-to-day usage, common workflows |
 | [RELEASE.md](RELEASE.md) | How this repo itself is versioned/released, and the evaluation harness's technical mechanics |
 | [SECURITY.md](SECURITY.md) | Secret-handling notes and how to report a vulnerability |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Symptom → cause → fix reference: setup, Docker/containers, budget/cost, mid-session agent behavior, GitHub integration |
+| [FAQ.md](FAQ.md) | Frequently asked questions: providers, cost, oversight, what's not ready yet, where to get help |
 | [qa/](qa/) | Manual test plans run before each release |
 
 ## What's in this repo

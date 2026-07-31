@@ -184,12 +184,9 @@ release.
 
 ## Story workflow
 
-Real eval runs repeatedly showed the same failure pattern: stories left with placeholder/empty
-content but marked "Done" anyway, and `specs/ROADMAP.md` never reflecting completed work - because
-the only enforcement was prompt text asking the agents nicely to follow a checklist, and a cheap
-model under budget pressure just... didn't, reliably. See docs/ARCHITECTURE.md "Story workflow" for the full
-human-facing writeup (the stage table, the checklist mapping in `spec-templates/DOD.md`/`DOR.md`);
-this section is the operational summary the agent prompts themselves point back to.
+See docs/ARCHITECTURE.md "Story workflow" for the full human-facing writeup (the stage table, the
+checklist mapping in `spec-templates/DOD.md`/`DOR.md`); this section is the operational summary the
+agent prompts themselves point back to.
 
 Every story passes through exactly 6 stages, in this exact order, no skipping: **Draft** (Product
 Owner, supported by Architect - GH issue #94) → **Ready** (Product Owner, supported by Architect) →
@@ -233,14 +230,7 @@ stages at all.
 
 ### Sprint retrospective enforcement
 
-A real eval run (0.1.0-run8) completed all 5 sprints - every story was implemented, reviewed,
-tested, and accepted correctly - yet the Scrum Master role was never invoked even once across the
-whole run: every `transfer_to_agent` call targeted ProductOwner, DevTeam, Architect, or QA. The
-Orchestrator's prompt said the retrospective was mandatory and listed it as the last step of the
-sprint-close sequence, but nothing actually stopped the sprint from "closing" without it - it was
-simply the easiest step to skip, so it always got skipped, in 5 out of 5 sprints.
-
-`create_sprint_report` (`agents/scrum_team/tools/budget.py`) now mechanically refuses to write a
+`create_sprint_report` (`agents/scrum_team/tools/budget.py`) mechanically refuses to write a
 report unless a *new* retro action or impediment has been logged since the last successful report:
 `len(retro_actions) + len(impediment_log)` is compared against a `retro_baseline` snapshot taken
 the last time the check passed, so a stale entry from three sprints ago can't trivially satisfy
@@ -252,18 +242,10 @@ skippable prompt instruction into a hand-off the tooling itself forces.
 ### Human interaction levels
 
 `record_human_approval`'s two gates (`advance_story_stage(..., "Implemented")` and
-`create_release_pr`, see ISSUE-0001 above) originally hard-coded exactly two approval types:
-`"sprint"` before implementing, `"release"` before releasing. That's the right shape for a human
-embedded as Product Owner or acting as a business stakeholder, but it doesn't fit every real usage:
-a CEO-level sponsor who only cares about spend shouldn't have to review every sprint's backlog to
-unblock the team, and a fully automated evaluation run (`run_eval.py`) has no human to call
-`record_human_approval` at all - which is exactly why `run_eval.py`'s scripted messages had to
-socially-engineer the model into calling it based on prompt text alone ("treat the sprint as
-pre-approved"), rather than that being mechanically true.
-
+`create_release_pr`, see ISSUE-0001 above) support three approval types depending on
 `INTERACTION_LEVEL` (`agents/scrum_team/helpers.py`'s `get_interaction_level()`, see
-`docs/INTERACTION-LEVELS.md`) generalizes the two hard-coded gates into a level-driven lookup
-(`required_pre_implementation_approval`/`required_pre_release_approval`) instead:
+`docs/INTERACTION-LEVELS.md`), via a level-driven lookup
+(`required_pre_implementation_approval`/`required_pre_release_approval`):
 
 | Level | Pre-implementation | Pre-release |
 |---|---|---|
