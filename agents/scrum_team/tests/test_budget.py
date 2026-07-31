@@ -12,6 +12,7 @@ from agents.scrum_team.tools.budget import (
     optimize_process_for_budget,
     create_sprint_report,
     _write_conversation_transcript,
+    _file_retro_items_as_issues,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -435,6 +436,106 @@ class TestWriteConversationTranscript(unittest.TestCase):
         self.assertEqual(result["entries"], 0)
         written_content = mock_write_file.call_args_list[0].args[1]
         self.assertIn("No transcript recorded yet", written_content)
+
+
+class TestFileRetroItemsAsIssues(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #164): retro actions and impediments must
+    become real, plannable backlog work (Issues), not just a text log
+    nobody ever revisits - the exact failure mode a real eval run hit
+    (a broken test setup logged as an impediment, but never turned into a
+    prioritized fix, so it silently blocked every later sprint too).
+    """
+
+    def test_files_retro_actions_and_impediments_as_issues(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "pytest cannot generate coverage", "owner": "SM", "status": "open"}]
+        tool_context.state["impediment_log"] = [{"description": "CI missing coverage plugin", "owner": "SM", "status": "open"}]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(filed), 2)
+        backlog_ids = {item["id"] for item in tool_context.state["product_backlog"]}
+        self.assertEqual(set(filed), backlog_ids)
+        self.assertTrue(tool_context.state["retro_actions"][0]["issue_id"])
+        self.assertTrue(tool_context.state["impediment_log"][0]["issue_id"])
+
+    def test_does_not_refile_an_already_filed_item(self):
+        """Retro actions/impediments accumulate across the whole run - a
+        second sprint's report closing must not re-file the same entry
+        (which would duplicate it in product_backlog) just because it's
+        still present in the log."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "same item", "owner": "SM", "status": "open"}]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            first = _file_retro_items_as_issues(tool_context)
+            second = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        self.assertEqual(len(tool_context.state["product_backlog"]), 1)
+
+    def test_product_level_leaves_priority_for_the_human(self):
+        """At the "Product" interaction level, which impediments get
+        tackled in what priority is the Product Owner's call, not
+        something this automation should preempt."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "needs PO triage", "owner": "SM", "status": "open"}]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Product"}, clear=True):
+            _file_retro_items_as_issues(tool_context)
+
+        item = tool_context.state["product_backlog"][0]
+        self.assertIsNone(item.get("priority"))
+
+    def test_non_product_levels_auto_prioritize_must(self):
+        """At every other interaction level, there's no human review step
+        to leave the prioritization decision to, so it's auto-prioritized
+        instead of risking the same silent-starvation failure that was
+        reported."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "auto-prioritize me", "owner": "SM", "status": "open"}]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            _file_retro_items_as_issues(tool_context)
+
+        item = tool_context.state["product_backlog"][0]
+        self.assertEqual(item.get("priority"), "Must")
+
+    def test_ignores_blank_entries(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "  ", "owner": "SM", "status": "open"}]
+
+        filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(filed, [])
+        self.assertEqual(tool_context.state["product_backlog"], [])
+
+
+class TestCreateSprintReportFilesRetroItems(unittest.TestCase):
+    """Integration coverage: create_sprint_report itself must trigger the
+    auto-filing (GH issue #164), not just the helper in isolation."""
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_report_names_the_filed_issue(self, mock_write_file):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "fix coverage tooling", "owner": "SM", "status": "open"}]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        issue_id = tool_context.state["retro_actions"][0]["issue_id"]
+        self.assertTrue(issue_id)
+        self.assertIn(f"filed as {issue_id}", report)
+        self.assertTrue(any(item["id"] == issue_id for item in tool_context.state["product_backlog"]))
 
 
 if __name__ == "__main__":
