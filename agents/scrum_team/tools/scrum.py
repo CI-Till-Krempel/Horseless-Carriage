@@ -49,6 +49,7 @@ REPO_STATE_KEYS = [
     "qa_review_baseline",
     "sprint_report_pending_release",
     "blocking_interactions",
+    "budget_reset_since_last_sprint_start",
 ]
 # Deliberately excluded from the above: github_token, github_app,
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
@@ -96,6 +97,10 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("sprint_report_pending_release", False)
     s.setdefault("blocking_interactions", [])
     s.setdefault("orchestrator_stall_count", 0)
+    # True by default: the very first sprint needs no reset_sprint_budget()
+    # call (see GH issue #110) - there's no previous sprint's token usage to
+    # clear yet.
+    s.setdefault("budget_reset_since_last_sprint_start", True)
 
     # 1. Try to load from repo if present first, so environment can override
     state_json_corrupted = False
@@ -572,6 +577,15 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
       state: starting a new sprint goal is exactly the kind of "new sprint
       work" that gate exists to catch, and doing it while the previous
       sprint's release is still hanging open leaves that stuck permanently.
+    - Refuses to start a SECOND (or later) sprint unless reset_sprint_budget
+      has been called since the previous one started (see GH issue #110) -
+      previously this was "MANDATORY" only in SM_PROMPT's text, with no code
+      backing it at all, so a forgotten call silently carried over whatever
+      token budget headroom the previous sprint left (or didn't leave),
+      shrinking or eliminating the new sprint's real budget with no error
+      until an unexplained early halt partway through. The very first sprint
+      needs no reset (there's no previous sprint's leftover usage to clear),
+      detected by sprint_goal still being unset.
     """
     if is_low_quality_retro_text(goal):
         return {
@@ -585,7 +599,21 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
     block_msg = new_sprint_item_blocked(s)
     if block_msg:
         return {"status": "error", "message": block_msg}
+    if s.get("sprint_goal") and not s.get("budget_reset_since_last_sprint_start", True):
+        return {
+            "status": "error",
+            "message": (
+                "Cannot start a new sprint - reset_sprint_budget() must be called first. "
+                "SPRINT_TOKEN_BUDGET is a per-sprint allowance, not cumulative; without a fresh "
+                "reset, this sprint would silently inherit whatever token budget headroom the "
+                "previous sprint left over."
+            ),
+        }
     s["sprint_goal"] = goal.strip()
+    # Consumed by this start - a fresh reset_sprint_budget() call is required
+    # again before the *next* sprint can start (same "must be NEW since last
+    # time" pattern as create_sprint_report's retro_baseline).
+    s["budget_reset_since_last_sprint_start"] = False
     _ = save_state_to_repo(tool_context)
     return {"status": "ok", "sprint_goal": s["sprint_goal"]}
 

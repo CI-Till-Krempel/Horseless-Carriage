@@ -56,6 +56,16 @@ class TestStatePersistence(unittest.TestCase):
     def test_transcript_is_in_the_persisted_allowlist(self):
         self.assertIn("transcript", REPO_STATE_KEYS)
 
+    def test_budget_reset_flag_is_in_the_persisted_allowlist(self):
+        """
+        Acceptance Criteria (GH issue #110): budget_reset_since_last_sprint_start
+        must survive a state reload (a session restart mid-sprint) - if it
+        defaulted back to True on every reload instead, start_sprint's new
+        "was the budget actually reset since the last sprint?" check would
+        silently stop enforcing anything right after a restart.
+        """
+        self.assertIn("budget_reset_since_last_sprint_start", REPO_STATE_KEYS)
+
     def test_save_state_to_repo_persists_transcript(self):
         self.tool_context.state["transcript"] = [
             {"agent_name": "DevTeam", "role": "model", "content": "Implemented the feature."},
