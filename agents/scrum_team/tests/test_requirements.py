@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
-from agents.scrum_team.tools.requirements import advance_story_stage, upsert_backlog_item, record_design_approval
+from agents.scrum_team.tools.requirements import advance_story_stage, upsert_backlog_item, record_design_approval, plan_backlog_item
 
 
 def _base_story(stages_completed):
@@ -462,6 +462,43 @@ class TestUpsertBacklogItemGuards(unittest.TestCase):
         result = upsert_backlog_item({"id": "US-0001", "title": "Foo", "status": "Draft"}, tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("advance_story_stage", result["message"])
+
+
+class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
+    """Acceptance Criteria (GH issue #120): plan_backlog_item must surface a
+    sub-call failure (set_priority/update_roadmap) as its own top-level
+    status/message instead of always reporting "ok"."""
+
+    def _tool_context(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "Foo", "priority": "Low"}]
+        return tc
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_unknown_item_priority_failure_propagates(self, mock_save):
+        tc = self._tool_context()
+        result = plan_backlog_item("does-not-exist", priority="High", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("not found", result["message"].lower())
+
+    @patch("agents.scrum_team.tools.requirements.update_roadmap")
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_roadmap_failure_propagates_even_when_priority_succeeds(self, mock_save, mock_update_roadmap):
+        mock_update_roadmap.return_value = {"status": "error", "message": "ROADMAP.md not found and could not be seeded."}
+        tc = self._tool_context()
+        result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ROADMAP.md", result["message"])
+        # The priority update itself succeeded and should still be reported.
+        self.assertEqual(result["updates"][0]["result"]["status"], "ok")
+
+    @patch("agents.scrum_team.tools.requirements.update_roadmap", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_all_sub_calls_succeeding_reports_ok(self, mock_save, mock_update_roadmap):
+        tc = self._tool_context()
+        result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
 
 
 if __name__ == "__main__":

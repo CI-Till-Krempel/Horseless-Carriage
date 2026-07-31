@@ -246,10 +246,20 @@ def plan_backlog_item(title_or_id: str, priority: str = None, version: str = Non
     Requirements Management: Plan a backlog item.
     """
     from .scrum import save_state_to_repo
+    # GH issue #120: res["status"] used to be hardcoded "ok" and never
+    # revisited, even though set_priority/update_roadmap below can each
+    # independently fail (e.g. a typo'd title_or_id matching nothing) - the
+    # caller saw a reported success while nothing had actually changed, and
+    # specs/ROADMAP.md could end up pointing at content that was never
+    # really created/updated. Now propagates the first sub-call failure
+    # into the overall status/message instead.
     res = {"status": "ok", "updates": []}
     if priority:
         p_res = set_priority(title_or_id, priority, tool_context=tool_context)
         res["updates"].append({"type": "priority", "result": p_res})
+        if p_res.get("status") == "error" and res["status"] == "ok":
+            res["status"] = "error"
+            res["message"] = p_res.get("message", "set_priority failed")
     if version:
         # Persisted on the backlog item itself (not just passed through to
         # this one update_roadmap call) so advance_story_stage can later
@@ -264,6 +274,9 @@ def plan_backlog_item(title_or_id: str, priority: str = None, version: str = Non
             save_state_to_repo(tool_context)
         r_res = update_roadmap(version, stories=[title_or_id], tool_context=tool_context)
         res["updates"].append({"type": "roadmap", "result": r_res})
+        if r_res.get("status") == "error" and res["status"] == "ok":
+            res["status"] = "error"
+            res["message"] = r_res.get("message", "update_roadmap failed")
     return res
 
 def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
