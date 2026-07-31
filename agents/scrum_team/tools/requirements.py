@@ -952,6 +952,32 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     "the build and call check_build() again until it passes before retrying."
                 ),
             }
+        # GH issue #114: check_build() only verifies the build/dependency
+        # install, not that any tests actually ran or passed - this gate
+        # previously accepted a clean build + a QA PR comment as sufficient
+        # for "Tested", even for a story with a failing or completely empty
+        # test suite. Run the real test suite now and require it to have
+        # actually run something, with nothing failing.
+        from .quality import _execute_test_suite_coverage
+        coverage_result = _execute_test_suite_coverage(tool_context)
+        if not coverage_result.get("available") or coverage_result.get("tests_run", 0) <= 0:
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - running the test suite found no tests "
+                    f"actually ran ({coverage_result.get('note') or 'no coverage summary found'}). "
+                    "A story can't be Tested with an empty or unrunnable test suite."
+                ),
+            }
+        if coverage_result.get("tests_failed", 0) > 0:
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - {coverage_result['tests_failed']} of "
+                    f"{coverage_result['tests_run']} tests failed. Fix the failing tests before "
+                    "retrying."
+                ),
+            }
 
     stages_completed.add(stage)
     ordered_stages = sorted(stages_completed, key=STORY_STAGES.index)
