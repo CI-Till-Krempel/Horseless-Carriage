@@ -155,6 +155,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
+from . import tui
 from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level, STORY_STAGES, get_env_with_deprecated_fallback
 from .prompts import (
     ORCHESTRATOR_PROMPT,
@@ -879,13 +880,40 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
                     pass
     return None
 
+# --- Busy Indicator (CLI mode) ---
+
+def agent_thinking_start_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
+    """BeforeModelCallback (last in the list - see COMMON_AGENT_CALLBACKS/
+    root_agent's before_model_callback order): starts a terminal spinner for
+    the gap between sending this request and getting a reply, since a real
+    model call can take several seconds with no other output in between.
+    Placed last so a call that another before_model_callback short-circuits
+    (e.g. check_cost_budget_callback blocking on a missing budget key) never
+    shows a spinner for a request that isn't actually going to be sent.
+    AGENT_MODE=cli only (see tui.Spinner - also no-ops outside a real
+    terminal); never raises, never blocks the request either way."""
+    if os.getenv("AGENT_MODE", "web") == "cli":
+        tui.start_thinking(callback_context.agent_name)
+    return None
+
+
+def agent_thinking_stop_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    """AfterModelCallback (first in the list): stops the spinner started by
+    agent_thinking_start_callback before any other after_model_callback
+    prints anything, so the spinner line is cleanly overwritten rather than
+    left interleaved with real output. Always returns None - a passive
+    side-effect, never alters the response."""
+    if os.getenv("AGENT_MODE", "web") == "cli":
+        tui.stop_thinking()
+    return None
+
 # --- Tool Call Visibility ---
 
 def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict[str, Any]]:
     """
-    BeforeToolCallback: prints a one-line, hard-to-miss notice for every tool
-    call, to stderr - not just whatever a given ADK frontend chooses to
-    render on its own. ADK's own `adk run` CLI REPL
+    BeforeToolCallback: prints a hard-to-miss notice for every tool call, to
+    stderr - not just whatever a given ADK frontend chooses to render on its
+    own. ADK's own `adk run` CLI REPL
     (google.adk.cli.cli.run_interactively/run_input_file) only echoes events
     that carry `.text` - a pure function_call/function_response event has
     none, so every tool call was completely invisible to anyone watching a
@@ -895,6 +923,11 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     ADK web UI renders its own tool-call panel regardless, so this is a
     harmless duplicate there and the actual fix for CLI/daemon mode.
 
+    AGENT_MODE=cli gets the boxed, per-role tui.speech_bubble presentation
+    (a real interactive terminal, worth the extra lines); every other mode
+    keeps the original single-line form, since that's a container log meant
+    to be read with `docker compose logs`, not a live terminal.
+
     Deliberately logs argument *names* only, not values - tool arguments can
     carry large file contents or PR bodies, and printing full values here
     would be noisy at best and a way to leak sensitive content into logs at
@@ -902,7 +935,14 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     """
     agent_name = getattr(tool_context, "agent_name", None) or "?"
     arg_names = ", ".join(args.keys()) if args else ""
-    print(f"\U0001f527 [{agent_name}] {tool.name}({arg_names})", file=sys.stderr)
+    call_desc = f"{tool.name}({arg_names})"
+    if os.getenv("AGENT_MODE", "web") == "cli":
+        try:
+            print(tui.speech_bubble(agent_name, call_desc), file=sys.stderr)
+            return None
+        except Exception:
+            pass
+    print(f"\U0001f527 [{agent_name}] {call_desc}", file=sys.stderr)
     return None
 
 # --- Tool Dispatch Error Handling ---
@@ -945,8 +985,8 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
 
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
-    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
-    "after_model_callback": [update_token_usage_callback, history_management_after_callback],
+    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, agent_thinking_start_callback],
+    "after_model_callback": [agent_thinking_stop_callback, update_token_usage_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
     "on_tool_error_callback": on_tool_error_callback,
 }
@@ -1128,9 +1168,11 @@ root_agent = LlmAgent(
         inject_litellm_key_callback,
         check_cost_budget_callback,
         sprint_status_injection_callback,
-        history_management_callback
+        history_management_callback,
+        agent_thinking_start_callback
     ],
     after_model_callback=[
+        agent_thinking_stop_callback,
         update_token_usage_callback,
         history_management_after_callback
     ],
