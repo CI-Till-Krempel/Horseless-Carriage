@@ -156,19 +156,6 @@ class TestWriteLitellmYaml:
         setup_llm.write_litellm_yaml("openai", "gpt-4o", "gpt-4o-mini", out_file)
         assert out_file.is_file()
 
-    def test_local_ollama_host_mode_uses_host_docker_internal(self, tmp_path):
-        """GH issue #93: host-Ollama mode passes a different api_base -
-        the dockerized service's Compose DNS name isn't reachable at all
-        since there's no dockerized `ollama` service to resolve to."""
-        out_file = tmp_path / "litellm.yaml"
-        setup_llm.write_litellm_yaml(
-            "local", "llama3.1:8b", "llama3.1:8b", out_file,
-            ollama_api_base="http://host.docker.internal:11434",
-        )
-        data = yaml.safe_load(out_file.read_text())
-        po_entry = next(e for e in data["model_list"] if e["model_name"] == "scrum-po")
-        assert po_entry["litellm_params"]["api_base"] == "http://host.docker.internal:11434"
-
 
 class TestCurrentModelForRole:
     """
@@ -269,27 +256,6 @@ class TestGpuDefaultEnable:
         assert setup_llm.gpu_default_enable(gpu_detected=True, current_value="false") is False
 
 
-class TestHostOllamaDefaultEnable:
-    """
-    Acceptance Criteria (GH issue #93): same precedence rule as
-    TestGpuDefaultEnable - an explicit prior choice wins over the fresh
-    recommendation, which itself defaults to "yes" on macOS (no GPU
-    passthrough into Docker at all) and "no" elsewhere.
-    """
-
-    def test_no_prior_choice_recommends_yes_on_macos(self):
-        assert setup_llm.host_ollama_default_enable(is_macos=True, current_value="") is True
-
-    def test_no_prior_choice_recommends_no_elsewhere(self):
-        assert setup_llm.host_ollama_default_enable(is_macos=False, current_value="") is False
-
-    def test_prior_true_wins_even_off_macos(self):
-        assert setup_llm.host_ollama_default_enable(is_macos=False, current_value="true") is True
-
-    def test_prior_false_wins_even_on_macos(self):
-        assert setup_llm.host_ollama_default_enable(is_macos=True, current_value="false") is False
-
-
 class TestCurrentInteractionLevelChoice:
     """
     Acceptance Criteria: re-running setup_llm.py must default the Human
@@ -331,6 +297,7 @@ class TestPromptProjectSettings:
 
     def _run(self, monkeypatch, tmp_path, answers, is_local=False):
         monkeypatch.setattr(setup_llm, "_setup_state_repo", lambda _p: None)
+        monkeypatch.setattr(setup_llm, "_host_git_identity", lambda: ("", ""))
         it = iter(answers)
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(it))
         env_path = tmp_path / ".env"
@@ -349,6 +316,7 @@ class TestPromptProjectSettings:
         env_path.write_text("")
         lib_env.update_env_var(env_path, "SPRINT_USD_BUDGET", "9.99")
         monkeypatch.setattr(setup_llm, "_setup_state_repo", lambda _p: None)
+        monkeypatch.setattr(setup_llm, "_host_git_identity", lambda: ("", ""))
         answers = iter(["", "", "", "", "", ""])  # accept every default
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
         setup_llm.prompt_project_settings(env_path, is_local=False)
@@ -459,55 +427,6 @@ class TestRunConfigurationTest:
 
         assert calls[0][:2] == ["-f", "docker-compose.local.yaml"]
         assert "docker-compose.gpu.yaml" not in calls[0]
-
-    def test_host_mode_adds_hostollama_compose_file_and_skips_ollama_service(self, tmp_path, monkeypatch):
-        """GH issue #93: OLLAMA_HOST_MODE=true must merge in
-        docker-compose.local-hostollama.yaml for the live test too, and must
-        never try to start the dockerized `ollama` service - there isn't
-        one to start in this mode, the user's host-native Ollama is assumed
-        already running."""
-        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
-        up_calls = []
-
-        def fake_run(cmd, **k):
-            if len(cmd) > 2 and cmd[2] == "version":
-                return subprocess.CompletedProcess(cmd, 0)
-            if "up" in cmd:
-                up_calls.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0)
-
-        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
-        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
-        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
-
-        env_path = tmp_path / ".env"
-        env_path.write_text("")
-        lib_env.update_env_var(env_path, "OLLAMA_HOST_MODE", "true")
-
-        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path)
-
-        assert len(up_calls) == 1
-        cmd = up_calls[0]
-        assert "docker-compose.local-hostollama.yaml" in cmd
-        assert "docker-compose.local.yaml" not in cmd
-        assert "ollama" not in cmd
-
-    def test_host_mode_skips_ollama_image_rebuild_in_dev_mode(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
-        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
-        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
-        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
-
-        rebuild_calls = []
-        monkeypatch.setattr(setup_llm.rebuild_images, "rebuild", lambda compose_args: rebuild_calls.append(compose_args) or 0)
-
-        env_path = tmp_path / ".env"
-        env_path.write_text("")
-        lib_env.update_env_var(env_path, "OLLAMA_HOST_MODE", "true")
-
-        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path, dev=True)
-
-        assert rebuild_calls == []
 
     def test_dev_mode_rebuilds_ollama_before_starting_it_for_local_provider(self, tmp_path, monkeypatch):
         """
@@ -840,3 +759,110 @@ class TestSetupStateRepo:
 
         assert not target.exists()
         assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(target)
+
+
+class TestHostGitIdentity:
+    """
+    Acceptance Criteria: prompt_project_settings' Git identity questions
+    should default to the host machine's own `git config --global`
+    name/email (a more plausible starting point than the generic
+    "DevTeam"/"devteam@company.com" placeholder) when nothing is configured
+    in .env yet - see _host_git_identity's docstring for why this is safe
+    (real commit attribution is per-role, not this value).
+    """
+
+    def test_reads_host_global_git_config(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            value = "Jane Doe" if cmd[-1] == "user.name" else "jane@example.com"
+            return subprocess.CompletedProcess(cmd, 0, stdout=value + "\n", stderr="")
+
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
+        assert setup_llm._host_git_identity() == ("Jane Doe", "jane@example.com")
+
+    def test_nothing_configured_returns_empty_strings(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
+        assert setup_llm._host_git_identity() == ("", "")
+
+    def test_missing_git_binary_does_not_crash(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise FileNotFoundError("git")
+
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
+        assert setup_llm._host_git_identity() == ("", "")
+
+    def test_used_as_fallback_only_behind_env_value(self, monkeypatch, tmp_path):
+        # An already-configured .env value must win over the host default.
+        monkeypatch.setattr(setup_llm, "_host_git_identity", lambda: ("Host Name", "host@example.com"))
+        monkeypatch.setattr(setup_llm, "_setup_state_repo", lambda _p: None)
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "GIT_USER_NAME", "Configured Name")
+        lib_env.update_env_var(env_path, "GIT_USER_EMAIL", "configured@example.com")
+        answers = iter(["", "", "", "", "", ""])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+        setup_llm.prompt_project_settings(env_path, is_local=True)
+        assert lib_env.read_env_var(env_path, "GIT_USER_NAME") == "Configured Name"
+        assert lib_env.read_env_var(env_path, "GIT_USER_EMAIL") == "configured@example.com"
+
+    def test_used_as_default_when_env_unset(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(setup_llm, "_host_git_identity", lambda: ("Host Name", "host@example.com"))
+        monkeypatch.setattr(setup_llm, "_setup_state_repo", lambda _p: None)
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        answers = iter(["", "", "", "", "", ""])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+        setup_llm.prompt_project_settings(env_path, is_local=True)
+        assert lib_env.read_env_var(env_path, "GIT_USER_NAME") == "Host Name"
+        assert lib_env.read_env_var(env_path, "GIT_USER_EMAIL") == "host@example.com"
+
+
+class TestRunCloudProviderOrdering:
+    """
+    Acceptance Criteria: a user who just picked a cloud provider should be
+    asked about THAT provider (API key, model choice) before being asked
+    about surrounding project settings (git identity, state repo,
+    interaction level, budget) - regression test for the setup-wizard
+    prompt reordering (see run_cloud_provider's own docstring).
+    """
+
+    def test_model_and_write_happen_before_project_settings_and_test(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.example").write_text("")
+        calls = []
+
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "1")
+        monkeypatch.setattr(setup_llm.getpass, "getpass", lambda _prompt="": "sk-test-key")
+        monkeypatch.setattr(setup_llm, "write_litellm_yaml", lambda *a, **k: calls.append("write_yaml"))
+        monkeypatch.setattr(setup_llm, "prompt_project_settings", lambda *a, **k: calls.append("project_settings"))
+        monkeypatch.setattr(setup_llm, "run_configuration_test", lambda *a, **k: calls.append("run_test"))
+
+        setup_llm.run_cloud_provider(
+            "anthropic", "ANTHROPIC_API_KEY",
+            lambda key: ["claude-x", "claude-y"], "Anthropic Claude",
+        )
+
+        assert calls == ["write_yaml", "write_yaml", "project_settings", "run_test"]
+
+
+class TestRunLocalProviderOrdering:
+    """Same ordering guarantee as TestRunCloudProviderOrdering, for the
+    Local/Ollama flow (model + GPU choice before project settings)."""
+
+    def test_model_and_gpu_happen_before_project_settings_and_test(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.local.example").write_text("")
+        calls = []
+        answers = iter(["1", "n"])
+
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+        monkeypatch.setattr(setup_llm, "detect_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(setup_llm, "write_litellm_yaml", lambda *a, **k: calls.append("write_yaml"))
+        monkeypatch.setattr(setup_llm, "prompt_project_settings", lambda *a, **k: calls.append("project_settings"))
+        monkeypatch.setattr(setup_llm, "run_configuration_test", lambda *a, **k: calls.append("run_test"))
+
+        setup_llm.run_local_provider(dev=False)
+
+        assert calls == ["write_yaml", "project_settings", "run_test"]

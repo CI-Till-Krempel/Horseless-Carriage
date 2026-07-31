@@ -46,6 +46,7 @@ Usage:
 import sys
 from pathlib import Path
 
+import banner
 import check_state_repo
 import doctor
 import run
@@ -143,6 +144,7 @@ def offer_to_start(dev: bool) -> None:
 def main() -> None:
     default_dev = "--dev" in sys.argv[1:] or "dev" in sys.argv[1:]
 
+    banner.print_banner()
     print("--- Horseless Carriage: Guided Setup ---")
     print("This walks through every setup step in order. Each step is also its own")
     print("standalone script (setup_llm.py, setup_project.py, doctor.py, run.py) if you")

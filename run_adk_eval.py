@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""
+Runs the ADK-native gate-enforcement eval set (eval/adk/scrum_team.evalset.json)
+against your currently configured provider/model, inside the same `agent`
+container image the project already builds.
+
+This is a much smaller, much cheaper check than the full scenario-based
+harness (docs/EVALUATION.md, agents/scrum_team/scripts/run_eval.py): a
+handful of scripted single/few-turn conversations checking whether specific,
+already unit-tested, mechanically-enforced gates (protected-branch push
+refusal, story-pipeline stage skipping, missing-approval blocks, etc.) also
+hold up against a live model's actual tool-call behavior - see
+eval/adk/README.md for the full picture, including known limitations of
+exact tool-call argument matching.
+
+Requires a real .env (a configured provider + LITELLM_MASTER_KEY) - unlike
+the host-script test suite, this sends real requests to your configured
+model, so it costs real tokens/money (or real local compute for Ollama).
+
+Usage:
+  python3 run_adk_eval.py             Run the eval set for real.
+  python3 run_adk_eval.py --dry-run   Print the command that would run, without executing it.
+"""
+
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import lib_docker
+
+EVAL_SET_PATH = "eval/adk/scrum_team.evalset.json"
+EVAL_CONFIG_PATH = "eval/adk/test_config.json"
+AGENT_MODULE_PATH = "eval/adk/agent/scrum_team"
+
+
+def parse_args(argv: list) -> bool:
+    """Returns whether --dry-run was passed."""
+    return "--dry-run" in argv
+
+
+def adk_eval_command() -> list:
+    """The `adk eval` invocation run inside the container - see
+    eval/adk/README.md's "Deviation: a loader shim was required" for why
+    AGENT_MODULE_PATH is the eval/adk/agent/scrum_team shim rather than
+    agents/scrum_team or agents directly."""
+    return [
+        "adk", "eval", AGENT_MODULE_PATH, EVAL_SET_PATH,
+        "--config_file_path", EVAL_CONFIG_PATH,
+        "--print_detailed_results",
+    ]
+
+
+def main() -> None:
+    os.chdir(Path(__file__).resolve().parent)
+    dry_run = parse_args(sys.argv[1:])
+
+    if shutil.which("docker") is None:
+        print("ERROR: 'docker' command not found. Please install Docker.")
+        sys.exit(1)
+
+    env_path = Path(".env")
+    if not env_path.is_file():
+        print("ERROR: .env not found. Run python3 setup_llm.py first - this eval set needs a")
+        print("real configured provider/model, not just the test suite's mock model.")
+        sys.exit(1)
+
+    compose_args = lib_docker.compose_file_args(Path("."))
+    adk_cmd = adk_eval_command()
+
+    if dry_run:
+        print("Would run:")
+        print(f"  docker compose {' '.join(compose_args)} --env-file .env up -d db litellm")
+        print(f"  docker compose {' '.join(compose_args)} --env-file .env run --rm --entrypoint \"\" agent \\")
+        print(f"    {' '.join(adk_cmd)}")
+        return
+
+    print("--- Bringing up db + litellm ---")
+    up_cmd = ["docker", "compose", *compose_args, "--env-file", ".env", "up", "-d", "db", "litellm"]
+    result = subprocess.run(up_cmd)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+    print(f"--- Running ADK eval set: {EVAL_SET_PATH} ---")
+    run_cmd = [
+        "docker", "compose", *compose_args, "--env-file", ".env", "run", "--rm",
+        "--entrypoint", "", "agent", *adk_cmd,
+    ]
+    result = subprocess.run(run_cmd)
+    sys.exit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()

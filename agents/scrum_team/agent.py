@@ -1,5 +1,6 @@
 # agents/scrum_team/agent.py
 import os
+import json
 import requests
 import logging
 import sys
@@ -155,6 +156,7 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
+from . import tui
 from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level, STORY_STAGES, get_env_with_deprecated_fallback
 from .prompts import (
     ORCHESTRATOR_PROMPT,
@@ -558,6 +560,103 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
 
     return None
 
+_FAKE_TOOL_CALL_NAME_KEYS = ("function", "name")
+_FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args", "properties")
+_JSON_ENVELOPE_MESSAGE_KEYS = ("message", "content", "text")
+
+
+def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> None:
+    """
+    AfterModelCallback: some models occasionally reply with plain TEXT that
+    merely *looks* like a tool call - a JSON object shaped like
+    `{"type": "function", "function": "<tool_name>", "arguments": {...}}` -
+    instead of an actual ADK function_call part, even when the prompt
+    explicitly says not to (see prompts.py's DELEGATION IS MANDATORY, NOT
+    DESCRIPTIVE, which already names this exact pattern as "an improvised
+    JSON blob"). GH issue #89: a real session hit this 8 times in a row
+    with gemini-1.5-pro via the LiteLLM proxy - the existing stall-warning
+    banner (_track_orchestrator_stall) didn't reliably get the model to
+    self-correct, so this is a mechanical backstop rather than relying on
+    the model's behavior changing.
+
+    GH issue #95 surfaced a second, looser variant of the same habit from a
+    local Ollama model: `{"function": "read_doc", "properties": {"path":
+    ...}}` - no `"type"` key at all, and `"properties"` instead of
+    `"arguments"`/`"args"`. The original exact-shape match missed this, so
+    the call silently never happened. Treated as the same fake-tool-call
+    pattern whenever `"type"` is absent (or is itself "function"), as long
+    as an explicit args-shaped key is present alongside the name - that
+    second condition keeps a merely-JSON-shaped prose reply (e.g. `{"status":
+    "ok", "note": "..."}`, which has neither) from ever being misread as an
+    attempted call.
+
+    Also recovers a third pattern the same local model produced (also GH
+    issue #91): a genuine conversational reply wrapped in a JSON envelope -
+    `{"response_type": "info", "message": "..."}` - instead of plain text.
+    That isn't a tool-call attempt at all, so it's unwrapped to its
+    human-readable `message` rather than converted into a function_call.
+
+    Mutates llm_response.content.parts *in place* (matching
+    _track_orchestrator_stall's established pattern below, rather than
+    returning a new LlmResponse) - ADK's own flow re-checks this exact
+    object for function_call parts after every after_model_callback runs
+    (see base_llm_flow.py's _handle_after_model_callback ->
+    _postprocess_async) and dispatches them exactly as if the model had
+    used real function-calling, including on_tool_error_callback's
+    existing "tool not found" recovery if the name turns out to be
+    hallucinated - so this converts the model's actual intent into a real,
+    normally-dispatched tool call rather than reimplementing dispatch here.
+
+    Requires an exact, whole-string JSON match against these precise shapes
+    (not a substring search) so a legitimate prose reply that merely
+    mentions a tool by name is never mistaken for this pattern - and only
+    fires when there is no real function_call part already (nothing to
+    recover) and exactly one text part (an unambiguous whole reply, not one
+    part of a longer multi-part message).
+    """
+    if not llm_response.content or not llm_response.content.parts:
+        return
+    parts = llm_response.content.parts
+    if any(getattr(p, "function_call", None) for p in parts):
+        return
+    text_parts = [p for p in parts if getattr(p, "text", None)]
+    if len(text_parts) != 1:
+        return
+
+    text = (text_parts[0].text or "").strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return
+    if not isinstance(parsed, dict):
+        return
+
+    tool_name = next((parsed[k] for k in _FAKE_TOOL_CALL_NAME_KEYS if isinstance(parsed.get(k), str) and parsed[k].strip()), None)
+    has_args_key = any(k in parsed for k in _FAKE_TOOL_CALL_ARGS_KEYS)
+    type_is_function = parsed.get("type") == "function"
+    if tool_name and (type_is_function or has_args_key):
+        tool_args = next((parsed[k] for k in _FAKE_TOOL_CALL_ARGS_KEYS if isinstance(parsed.get(k), dict)), {})
+        logger.warning(
+            f"recover_fake_tool_call_callback: {callback_context.agent_name} replied with text shaped like "
+            f"a tool call ({tool_name!r}) instead of a real one (GH issue #89/#95) - converting it into an "
+            "actual function call."
+        )
+        llm_response.content.parts = [types.Part(function_call=types.FunctionCall(name=tool_name, args=tool_args))]
+        return
+
+    if not tool_name and isinstance(parsed.get("response_type"), str):
+        message = next((parsed[k] for k in _JSON_ENVELOPE_MESSAGE_KEYS if isinstance(parsed.get(k), str) and parsed[k].strip()), None)
+        if message:
+            logger.warning(
+                f"recover_fake_tool_call_callback: {callback_context.agent_name} wrapped a plain reply in a "
+                f"JSON envelope ({parsed.get('response_type')!r}) instead of replying in plain text (GH issue "
+                "#91) - unwrapping it to the human-readable message."
+            )
+            text_parts[0].text = message
+
+
 def update_token_usage_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
     """
     AfterModelCallback: Automatically updates the token usage in session state.
@@ -879,13 +978,40 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
                     pass
     return None
 
+# --- Busy Indicator (CLI mode) ---
+
+def agent_thinking_start_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
+    """BeforeModelCallback (last in the list - see COMMON_AGENT_CALLBACKS/
+    root_agent's before_model_callback order): starts a terminal spinner for
+    the gap between sending this request and getting a reply, since a real
+    model call can take several seconds with no other output in between.
+    Placed last so a call that another before_model_callback short-circuits
+    (e.g. check_cost_budget_callback blocking on a missing budget key) never
+    shows a spinner for a request that isn't actually going to be sent.
+    AGENT_MODE=cli only (see tui.Spinner - also no-ops outside a real
+    terminal); never raises, never blocks the request either way."""
+    if os.getenv("AGENT_MODE", "web") == "cli":
+        tui.start_thinking(callback_context.agent_name)
+    return None
+
+
+def agent_thinking_stop_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    """AfterModelCallback (first in the list): stops the spinner started by
+    agent_thinking_start_callback before any other after_model_callback
+    prints anything, so the spinner line is cleanly overwritten rather than
+    left interleaved with real output. Always returns None - a passive
+    side-effect, never alters the response."""
+    if os.getenv("AGENT_MODE", "web") == "cli":
+        tui.stop_thinking()
+    return None
+
 # --- Tool Call Visibility ---
 
 def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict[str, Any]]:
     """
-    BeforeToolCallback: prints a one-line, hard-to-miss notice for every tool
-    call, to stderr - not just whatever a given ADK frontend chooses to
-    render on its own. ADK's own `adk run` CLI REPL
+    BeforeToolCallback: prints a hard-to-miss notice for every tool call, to
+    stderr - not just whatever a given ADK frontend chooses to render on its
+    own. ADK's own `adk run` CLI REPL
     (google.adk.cli.cli.run_interactively/run_input_file) only echoes events
     that carry `.text` - a pure function_call/function_response event has
     none, so every tool call was completely invisible to anyone watching a
@@ -895,6 +1021,11 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     ADK web UI renders its own tool-call panel regardless, so this is a
     harmless duplicate there and the actual fix for CLI/daemon mode.
 
+    AGENT_MODE=cli gets the boxed, per-role tui.speech_bubble presentation
+    (a real interactive terminal, worth the extra lines); every other mode
+    keeps the original single-line form, since that's a container log meant
+    to be read with `docker compose logs`, not a live terminal.
+
     Deliberately logs argument *names* only, not values - tool arguments can
     carry large file contents or PR bodies, and printing full values here
     would be noisy at best and a way to leak sensitive content into logs at
@@ -902,7 +1033,14 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     """
     agent_name = getattr(tool_context, "agent_name", None) or "?"
     arg_names = ", ".join(args.keys()) if args else ""
-    print(f"\U0001f527 [{agent_name}] {tool.name}({arg_names})", file=sys.stderr)
+    call_desc = f"{tool.name}({arg_names})"
+    if os.getenv("AGENT_MODE", "web") == "cli":
+        try:
+            print(tui.speech_bubble(agent_name, call_desc), file=sys.stderr)
+            return None
+        except Exception:
+            pass
+    print(f"\U0001f527 [{agent_name}] {call_desc}", file=sys.stderr)
     return None
 
 # --- Tool Dispatch Error Handling ---
@@ -945,8 +1083,8 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
 
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
-    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback],
-    "after_model_callback": [update_token_usage_callback, history_management_after_callback],
+    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, agent_thinking_start_callback],
+    "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
     "on_tool_error_callback": on_tool_error_callback,
 }
@@ -1014,7 +1152,7 @@ scrum_master = LlmAgent(
     ],
     **COMMON_AGENT_CALLBACKS,
 )
-
+   
 dev_team = LlmAgent(
     name="DevTeam",
     model=LiteLlm(get_model_name("dev")),
@@ -1128,9 +1266,12 @@ root_agent = LlmAgent(
         inject_litellm_key_callback,
         check_cost_budget_callback,
         sprint_status_injection_callback,
-        history_management_callback
+        history_management_callback,
+        agent_thinking_start_callback
     ],
     after_model_callback=[
+        agent_thinking_stop_callback,
+        recover_fake_tool_call_callback,
         update_token_usage_callback,
         history_management_after_callback
     ],
