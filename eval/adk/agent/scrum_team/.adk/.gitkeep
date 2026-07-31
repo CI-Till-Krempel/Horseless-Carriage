@@ -1,0 +1,12 @@
+# GH issue #156: this directory must exist on the host (and therefore in
+# the ./eval:/app/eval:ro read-only bind mount - see docker-compose.yaml)
+# BEFORE the container starts. `adk eval` writes its own local run-history
+# bookkeeping here at runtime; docker-compose.yaml mounts a writable named
+# volume (adk_eval_history) at this exact path so that write succeeds
+# despite the parent mount being read-only - but Docker can only attach
+# that volume mount onto an EXISTING directory node inside a read-only
+# mount, not create one (attempting to led to "read-only file system"
+# trying to mkdir the mountpoint itself). This placeholder is what makes
+# the directory exist in the first place; its actual contents are never
+# read (the named volume's contents are what the container sees, not this
+# repo checkout's).
