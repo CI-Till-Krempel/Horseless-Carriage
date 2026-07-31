@@ -156,6 +156,21 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
       all before this.
     """
     branch = _with_eval_branch_prefix(branch)
+    # Reject anything that isn't a plain branch name before the protected-
+    # branch check even looks at it. Without this, branch="HEAD:main" (or
+    # any other src:dst refspec) never equals the protected-branch string
+    # "main", so the check below passes - but `git push origin HEAD:main`
+    # still pushes current HEAD straight onto main, bypassing the guard
+    # entirely (see GH issue #104). Valid branch names never contain ':',
+    # so this can only reject a bypass attempt, never a legitimate branch.
+    if not re.match(r"^[A-Za-z0-9._/-]+$", branch):
+        return {
+            "status": "error",
+            "message": (
+                f"Refusing to push to '{branch}' - not a plain branch name (refspec/shell "
+                "metacharacters like ':' are not allowed). Pass a real branch name, not a refspec."
+            ),
+        }
     # GitFlow: both main (_default_push_branch) and develop are protected -
     # only feature branches get pushed to directly; everything else reaches
     # develop/main via a PR merge (start_feature_branch/merge_story_pr,
@@ -172,8 +187,13 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
         }
     repo_root = str(_configured_repo_root(tool_context))
 
-    # Ensure branch exists locally
-    _ = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    # Ensure branch exists locally - fatal if this fails: continuing to
+    # commit/push against whatever branch was previously checked out would
+    # silently write the change somewhere other than the caller's intended
+    # target (see GH issue #104 - this used to discard the result entirely).
+    checkout = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    if checkout.get("status") == "error":
+        return {"status": "error", "message": f"Could not check out branch '{branch}': {checkout.get('stderr') or checkout.get('message')}", "steps": {"checkout": checkout}}
 
     r1 = None
     if add_all:
@@ -189,7 +209,7 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
         # If still failing, continue to push in case branch update is desired
     r3 = _run(["git", "push", "-u", "origin", branch], cwd=repo_root, tool_context=tool_context)
 
-    return {"status": "ok" if r3.get("status") == "ok" else "error", "branch": branch, "steps": {"checkout": _, "add": r1, "commit": r2, "push": r3}}
+    return {"status": "ok" if r3.get("status") == "ok" else "error", "branch": branch, "steps": {"checkout": checkout, "add": r1, "commit": r2, "push": r3}}
 
 def gh_pr_create(title: str, body: str = "", base: str | None = None, head: str | None = None, draft: bool = False, head_is_resolved: bool = False, tool_context=None) -> Dict[str, Any]:
     """
