@@ -679,19 +679,35 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
         return {"status": "error", "message": str(e)}
 
 
-def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title: str) -> Dict[str, Any] | None:
+# Sentinel distinguishing "story isn't in product_backlog at all" from
+# "story is in product_backlog, and is genuinely first" - _preceding_story
+# used to return None for both cases, so a story that only exists in
+# sprint_backlog (added via plan_sprint_backlog_item with no matching
+# product_backlog entry - see GH issue #106) was silently treated as having
+# no predecessor and could advance through every stage regardless of what
+# higher-priority product_backlog story was still incomplete.
+NOT_IN_PRODUCT_BACKLOG = object()
+
+
+def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title: str):
     """
     The nearest User Story before story_id/title in product_backlog order -
     backlog order is priority order (see RELEASE.md "Story workflow").
     Epics are skipped: they aren't advanced through the STORY_STAGES pipeline
     themselves, so they shouldn't block a real story behind them.
+
+    Returns NOT_IN_PRODUCT_BACKLOG (not None) if story_id/title isn't in
+    product_backlog at all - callers must treat that as "ordering can't be
+    verified", not as "no predecessor, safe to proceed".
     """
     stories_only = [x for x in product_backlog if x.get("type", "User Story") != "Epic"]
     idx = next(
         (i for i, x in enumerate(stories_only) if x.get("id") == story_id or x.get("title") == title),
         None,
     )
-    if idx is None or idx == 0:
+    if idx is None:
+        return NOT_IN_PRODUCT_BACKLOG
+    if idx == 0:
         return None
     return stories_only[idx - 1]
 
@@ -817,6 +833,15 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         }
 
     preceding = _preceding_story(product_backlog, story_id, title)
+    if preceding is NOT_IN_PRODUCT_BACKLOG:
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot advance '{story_id}' to {stage} - it isn't in product_backlog, so its "
+                "priority order relative to other stories can't be verified (see GH issue #106). "
+                "Add it via plan_backlog_item/upsert_story first."
+            ),
+        }
     if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
         return {
             "status": "error",
