@@ -77,11 +77,17 @@ def reset_sprint_budget(tool_context=None) -> Dict[str, Any]:
     agent.py) so a new sprint's exhaustion, if it happens, syncs the roadmap
     again rather than being silently skipped because a *previous* sprint
     already tripped it once.
+
+    Also marks the budget as freshly reset (see GH issue #110) - start_sprint
+    requires this to have happened since the previous sprint started (except
+    for the very first sprint, which has no previous sprint's usage to
+    clear), instead of relying on SM_PROMPT's "MANDATORY" text alone.
     """
     from .scrum import save_state_to_repo
     s = tool_context.state
     s["token_usage"] = {"total": 0, "agents": {}}
     s["budget_exhaustion_synced"] = False
+    s["budget_reset_since_last_sprint_start"] = True
     save_state_to_repo(tool_context)
     return {"status": "ok", "token_usage": s["token_usage"]}
 
