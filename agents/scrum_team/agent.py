@@ -751,8 +751,16 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
     if callback_context.agent_name != "ScrumOrchestrator":
         return
 
-    # Only on the very first message of a run (no previous interaction)
-    if llm_request.previous_interaction_id:
+    # Only on the very first message of a run (no previous interaction) -
+    # `not llm_request.previous_interaction_id` (as before) is wrong: it's
+    # falsy on the first internal model call of *every* turn, not just a
+    # session's true first turn ever (see GH issue #118 - the sibling
+    # history_management_callback right below was rewritten to fix this
+    # exact same broken check, via len(llm_request.contents) <= 1, but this
+    # callback kept using the old one). Left broken, this risks the
+    # Orchestrator re-injecting its sprint-status/menu content mid-
+    # conversation - a confusing "did it just reset?" regression.
+    if len(llm_request.contents) > 1:
         return
 
     state = get_scrum_state(callback_context.state)
