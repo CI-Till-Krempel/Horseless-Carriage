@@ -218,6 +218,12 @@ Carriage itself* is released — this section is how the agents release the prod
   `list_blocking_interactions()` too - a code-guaranteed signal, not dependent on the model noticing
   on its own. If you see this banner, tell it plainly to act now (or ask what specifically it's
   waiting on) rather than restating the same instructions again.
+- **A reply looks like raw JSON, e.g. `{"type": "function", "function": "repo_status", ...}`, instead
+  of real text or a real action** — some models occasionally emit a text reply shaped exactly like a
+  tool call instead of actually making one. This is now auto-recovered: it's converted into a real
+  tool call mechanically, so the intended action still runs - if you still see the raw JSON text
+  itself in the chat, that shouldn't happen anymore; check `LOG_LEVEL=debug` logs for a
+  `recover_fake_tool_call_callback` line and report it.
 
 ## 9. Team performance evaluation
 
