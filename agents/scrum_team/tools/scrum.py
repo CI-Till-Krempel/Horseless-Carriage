@@ -49,6 +49,7 @@ REPO_STATE_KEYS = [
     "qa_review_baseline",
     "sprint_report_pending_release",
     "blocking_interactions",
+    "budget_reset_since_last_sprint_start",
 ]
 # Deliberately excluded from the above: github_token, github_app,
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
@@ -96,6 +97,10 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("sprint_report_pending_release", False)
     s.setdefault("blocking_interactions", [])
     s.setdefault("orchestrator_stall_count", 0)
+    # True by default: the very first sprint needs no reset_sprint_budget()
+    # call (see GH issue #110) - there's no previous sprint's token usage to
+    # clear yet.
+    s.setdefault("budget_reset_since_last_sprint_start", True)
 
     # 1. Try to load from repo if present first, so environment can override
     state_json_corrupted = False
