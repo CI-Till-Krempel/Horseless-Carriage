@@ -49,8 +49,16 @@ def _setup_logging():
         set_stream_handlers_level(logging.getLogger(name), log_level)
 
     # Add file handler
+    # GH issue #128: this used to be hardcoded to DEBUG regardless of
+    # LOG_LEVEL, so the per-session log file always captured verbose DEBUG
+    # traces from httpx/openai/litellm/google.adk (which can include full
+    # request/response bodies and headers) even when a user explicitly
+    # chose a quieter, safer LOG_LEVEL - contradicting SECURITY.md's claim
+    # that this only happens under LOG_LEVEL=DEBUG. The file handler now
+    # respects the same level as everything else; DEBUG is still available,
+    # just only when actually requested.
     fh = logging.FileHandler(log_file)
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(log_level)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     fh.setFormatter(formatter)
     root_logger.addHandler(fh)
@@ -241,7 +249,7 @@ from .tools.budget import (
 # _sync_and_commit_roadmap_on_exhaustion below, the mechanical last-gasp
 # roadmap sync triggered when the sprint budget runs out mid-turn.
 from .tools.requirements import sync_all_active_stories_to_roadmap
-from .tools.base import _configured_repo_root, _run
+from .tools.base import _configured_repo_root, _run, _redact_secrets
 from .state import ScrumState, Budgets, TokenUsage
 
 # --- LiteLLM Proxy wiring ---
@@ -913,12 +921,15 @@ def history_management_callback(callback_context: CallbackContext, llm_request: 
             llm_request.contents = history_contents + llm_request.contents
             logger.info(f"Recovered {len(history_contents)} messages from persisted conversation history.")
 
-    # 2. Sync state.messages with the current full contents to keep it fresh
+    # 2. Sync state.messages with the current full contents to keep it fresh.
+    # This is the path a pasted secret in a *user* message actually goes
+    # through (history_management_after_callback only ever sees model
+    # turns) - redact here too (GH issue #128).
     new_history = []
     for content in llm_request.contents:
         text = "".join(p.text for p in content.parts if p.text)
         if text:
-            new_history.append({"role": content.role, "content": text})
+            new_history.append({"role": content.role, "content": _redact_secrets(text)})
     
     if new_history:
         try:
@@ -1003,12 +1014,19 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
     state = get_scrum_state(callback_context.state)
     agent_name = callback_context.agent_name
 
+    # GH issue #128: only the recorded copy is redacted - the model itself
+    # already saw/produced the real text before this callback runs, so
+    # redacting here can't break anything downstream in the live
+    # conversation, only what gets persisted into transcript/messages (and
+    # from there, sprint reports and the target repo's state.json).
+    recorded_text = _redact_secrets(text)
+
     # Shared multi-agent transcript: every agent's turns are appended here,
     # tagged by agent_name, so the full sprint conversation is auditable.
     # Appending (rather than syncing/replacing) means each step of a
     # multi-step tool-calling turn gets its own entry.
     transcript = list(state.transcript)
-    transcript.append({"agent_name": agent_name, "role": "model", "content": text})
+    transcript.append({"agent_name": agent_name, "role": "model", "content": recorded_text})
     transcript = _trim_transcript(transcript)
     try:
         callback_context.state["transcript"] = transcript
@@ -1023,8 +1041,8 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
     if agent_name == "ScrumOrchestrator":
         history = list(state.messages)
         # Avoid duplicate appending if called multiple times for the same response
-        if not history or history[-1].get("content") != text:
-            history.append({"role": "model", "content": text})
+        if not history or history[-1].get("content") != recorded_text:
+            history.append({"role": "model", "content": recorded_text})
             try:
                 callback_context.state["messages"] = history
             except (TypeError, KeyError):

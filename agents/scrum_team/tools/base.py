@@ -1,6 +1,7 @@
 # agents/scrum_team/tools/base.py
 from __future__ import annotations
 import os
+import re
 import subprocess
 import base64
 from pathlib import Path
@@ -125,6 +126,39 @@ def _configured_repo_root(tool_context=None) -> Path:
     except Exception:
         pass
     return _project_root()
+
+# GH issue #128: general-purpose text redaction for anything about to be
+# persisted (transcript/messages state, sprint reports) or logged, distinct
+# from _redact_cmd below (which only ever masked the one injected git auth
+# header). Conversation text isn't scanned for secrets at all otherwise - a
+# user pasting a real credential into a prompt, or a tool result echoing one
+# back, would flow straight into ScrumState.transcript/messages and then
+# into whatever consumes them, unredacted. Patterns cover the token shapes
+# actually used in or by this codebase: GitHub tokens (classic and
+# fine-grained PATs), OpenAI/LiteLLM-style "sk-..." keys (including the
+# per-agent virtual keys create_litellm_virtual_key mints), and Bearer/Basic
+# auth headers. Not a general secret scanner - it can't catch a shape it
+# doesn't know about - but closes the specific gaps flagged in SECURITY.md.
+_SECRET_PATTERNS = [
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), "***REDACTED-GH-TOKEN***"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{20,}"), "***REDACTED-GH-TOKEN***"),
+    (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "***REDACTED-KEY***"),
+    (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9\-_.=]+"), r"\1***REDACTED***"),
+    (re.compile(r"(?i)(authorization:\s*basic\s+)[A-Za-z0-9+/=]+"), r"\1***REDACTED***"),
+]
+
+
+def _redact_secrets(text: str) -> str:
+    """Masks known secret shapes (see _SECRET_PATTERNS) in free-form text
+    before it's stored/logged. Only the recorded copy is affected - callers
+    still act on the real, unredacted text."""
+    if not text:
+        return text
+    redacted = text
+    for pattern, replacement in _SECRET_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
 
 def _redact_cmd(cmd: list[str]) -> list[str]:
     """

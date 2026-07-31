@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents.scrum_team.tools.base import _hc_version, _default_push_branch, _develop_branch_name, _run, _redact_cmd
+from agents.scrum_team.tools.base import _hc_version, _default_push_branch, _develop_branch_name, _run, _redact_cmd, _redact_secrets
 from agents.scrum_team.state import ScrumState
 
 
@@ -115,6 +115,53 @@ class TestRedactCmd(unittest.TestCase):
         # ...but the metadata returned to the caller (and thus to any
         # transcript/log) must not contain the reversible base64 secret.
         self.assertNotIn(auth_value, str(result["cmd"]))
+
+
+class TestRedactSecrets(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #128): conversation text about to be
+    persisted (transcript/messages, and from there sprint reports/
+    state.json) must have common secret shapes masked, since a user can
+    paste a real credential into a prompt or a tool result can echo one
+    back into the model's response text.
+    """
+
+    def test_masks_github_classic_token(self):
+        text = "here is my token: ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+        redacted = _redact_secrets(text)
+        self.assertNotIn("ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345", redacted)
+        self.assertIn("***REDACTED-GH-TOKEN***", redacted)
+
+    def test_masks_github_fine_grained_pat(self):
+        text = "use github_pat_11ABCDEFG0123456789abcdefghijklmnopqrstuvwxyz for auth"
+        redacted = _redact_secrets(text)
+        self.assertNotIn("github_pat_11ABCDEFG0123456789abcdefghijklmnopqrstuvwxyz", redacted)
+        self.assertIn("***REDACTED-GH-TOKEN***", redacted)
+
+    def test_masks_openai_or_litellm_style_key(self):
+        text = "OPENAI_API_KEY=sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+        redacted = _redact_secrets(text)
+        self.assertNotIn("sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", redacted)
+        self.assertIn("***REDACTED-KEY***", redacted)
+
+    def test_masks_bearer_token_but_keeps_the_word_bearer(self):
+        text = "Authorization: Bearer abcDEF123.token-value_here"
+        redacted = _redact_secrets(text)
+        self.assertNotIn("abcDEF123.token-value_here", redacted)
+        self.assertIn("Bearer ***REDACTED***", redacted)
+
+    def test_masks_basic_auth_header(self):
+        text = "AUTHORIZATION: Basic eC1hY2Nlc3MtdG9rZW46c2VjcmV0"
+        redacted = _redact_secrets(text)
+        self.assertNotIn("eC1hY2Nlc3MtdG9rZW46c2VjcmV0", redacted)
+        self.assertIn("AUTHORIZATION: Basic ***REDACTED***", redacted)
+
+    def test_leaves_ordinary_text_untouched(self):
+        text = "Let's plan the sprint backlog and pick up US-0042 next."
+        self.assertEqual(_redact_secrets(text), text)
+
+    def test_empty_string_is_a_no_op(self):
+        self.assertEqual(_redact_secrets(""), "")
 
 
 class TestRunTimeoutAndStdin(unittest.TestCase):
