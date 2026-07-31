@@ -119,6 +119,21 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
     docker_ok = shutil.which("docker") is not None
     if not docker_ok:
         error("'docker' command not found. Please install Docker.")
+    else:
+        # The CLI binary being present doesn't mean the daemon is actually
+        # running (Docker Desktop installed but not started is a common
+        # real-world state, e.g. right after a reboot) - `docker compose
+        # version` below only needs the CLI, not a live daemon, so it can't
+        # catch this. Without this check, a setup with Docker Desktop
+        # stopped passes doctor cleanly and only fails once run.py actually
+        # tries `docker compose up` (GH issue #107) - exactly the "broken
+        # setup passes the gate" case doctor exists to prevent.
+        try:
+            subprocess.run(["docker", "info"], check=True, timeout=10,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            error("Docker CLI found, but the Docker daemon isn't running (or isn't reachable). "
+                  "Start Docker Desktop (or the docker service), then re-run doctor.py.")
 
     compose_ok = False
     if shutil.which("docker-compose") is not None:
