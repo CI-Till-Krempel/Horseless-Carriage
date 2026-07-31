@@ -46,6 +46,41 @@ class TestBudgetAPI(unittest.TestCase):
 
     @patch("requests.post")
     @patch("os.environ.get")
+    def test_check_cost_budget_callback_persists_current_spend(self, mock_env_get, mock_post):
+        """
+        Acceptance Criteria (GH issue #111): the live spend value fetched
+        from the LiteLLM proxy must be persisted to state.budgets, not just
+        held as a local variable - so create_sprint_report can actually
+        show it (previously it never could, since the value was discarded
+        as soon as this callback returned).
+        """
+        def side_effect(key, default=None):
+            env = {
+                "LITELLM_MASTER_KEY": "test-master-key",
+                "LITELLM_PROXY_API_BASE": "http://litellm:4000"
+            }
+            return env.get(key, default)
+        mock_env_get.side_effect = side_effect
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [{"spend": 5.0}]
+        mock_post.return_value = mock_response
+
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = ScrumState().model_dump()
+        mock_context.state["budgets"]["total_usd"] = 10.0
+        mock_llm_request = MagicMock()
+        mock_llm_request.model = "test-model"
+
+        result = check_cost_budget_callback(mock_context, mock_llm_request)
+
+        self.assertIsNone(result)
+        self.assertEqual(mock_context.state["budgets"]["current_usd_spend"], 5.0)
+
+    @patch("requests.post")
+    @patch("os.environ.get")
     def test_check_cost_budget_callback_exceeded(self, mock_env_get, mock_post):
         # Mock environment
         def side_effect(key, default=None):

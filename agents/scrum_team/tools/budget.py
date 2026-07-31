@@ -380,6 +380,15 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     report += f"\n## Budget and Usage\n"
     if budgets.get("total_usd"):
         report += f"- USD Budget (LiteLLM): ${budgets.get('total_usd'):.2f}\n"
+        # Actual spend (GH issue #111) - set by check_cost_budget_callback's
+        # live LiteLLM proxy check (agent.py), so it's only available once
+        # that check has actually run at least once this session (e.g.
+        # never, for a purely local/Ollama sprint - see LLM_LOCAL_PROVIDER).
+        current_spend = budgets.get("current_usd_spend")
+        if current_spend is not None:
+            report += f"- Actual USD Spend (LiteLLM): ${current_spend:.2f}\n"
+        else:
+            report += "- Actual USD Spend (LiteLLM): not yet available (no live proxy budget check has run this session)\n"
 
     report += f"- Process Overhead: {get_process_overhead_percentage()}%\n"
 

@@ -106,6 +106,44 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_shows_actual_usd_spend(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (GH issue #111): docs/BUDGET.md documents the
+        sprint report as showing actual spend alongside the configured
+        ceiling - previously only the ceiling was ever rendered, since the
+        live spend value check_cost_budget_callback fetches from the
+        LiteLLM proxy was never persisted anywhere the report could read it.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 3.42
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertIn("USD Budget (LiteLLM): $10.00", report["report"])
+        self.assertIn("Actual USD Spend (LiteLLM): $3.42", report["report"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_states_spend_unavailable_before_any_live_check(self, mock_write_file, mock_getenv):
+        """No live proxy budget check has run yet this session (e.g. a
+        purely local/Ollama sprint, or before the first model call) -
+        must say so plainly rather than fabricating a $0.00 spend."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["budgets"]["total_usd"] = 10.0
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertIn("Actual USD Spend (LiteLLM): not yet available", report["report"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_includes_hc_version(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (release process, see RELEASE.md): the sprint
