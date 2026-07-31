@@ -26,6 +26,7 @@ from agents.scrum_team.agent import (
     inject_litellm_key_callback,
 )
 from agents.scrum_team.state import ScrumState
+from agents.scrum_team.tools.budget import reset_sprint_budget
 from google.genai import types
 from google.adk.models.llm_response import LlmResponse
 
@@ -750,6 +751,57 @@ class TestCriticalHaltNotifications(unittest.TestCase):
         self.assertEqual(len(interactions), 1)
         self.assertEqual(interactions[0]["kind"], "critical_error")
         self.assertIn("BUDGET ERROR", interactions[0]["summary"])
+
+    def test_repeated_token_budget_exceeded_calls_notify_only_once(self):
+        """
+        Acceptance Criteria (GH issue #112): the canned halt response
+        repeats on every turn once a budget is exhausted, so
+        check_cost_budget_callback (and therefore _notify_critical_halt)
+        gets called again on every subsequent turn for as long as the halt
+        lasts - previously each of those re-invocations appended a new
+        blocking_interactions entry and re-fired every configured notifier,
+        an unbounded stream of duplicate alerts for the same exhaustion
+        event. Must notify exactly once until reset_sprint_budget clears it.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "TestAgent"
+        state = ScrumState()
+        state.budgets.total = 100
+        state.token_usage.total = 150
+        state.litellm_keys["TestAgent"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+            for _ in range(5):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                self.assertIsNotNone(result)
+
+        interactions = mock_context.state["blocking_interactions"]
+        self.assertEqual(len(interactions), 1)
+
+    def test_reset_sprint_budget_allows_a_fresh_notification_next_sprint(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "TestAgent"
+        state = ScrumState()
+        state.budgets.total = 100
+        state.token_usage.total = 150
+        state.litellm_keys["TestAgent"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+
+        with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+            check_cost_budget_callback(mock_context, MagicMock(model=None))
+            check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertEqual(len(mock_context.state["blocking_interactions"]), 1)
+
+        reset_sprint_budget(tool_context=mock_context)
+        self.assertFalse(mock_context.state["critical_halt_notified"])
+        # Simulate the new sprint ALSO exhausting its (freshly reset) budget.
+        mock_context.state["token_usage"]["total"] = 150
+
+        with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+            check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertEqual(len(mock_context.state["blocking_interactions"]), 2)
 
 
 class TestEnsureStateInitializedCallback(unittest.TestCase):

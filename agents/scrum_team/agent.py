@@ -411,12 +411,24 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str) -> None:
     case an unsupervised run needs pushed to a human, not just left as a
     chat message in a session nobody may be watching. Best-effort: a
     notification failure must never turn an already-critical halt into an
-    unhandled exception on top."""
+    unhandled exception on top.
+
+    Guarded to fire once per sprint (GH issue #112), the same "once" pattern
+    as the sibling _sync_roadmap_on_exhaustion_once right above - without
+    this, every subsequent turn after a budget halt re-invoked this (the
+    canned halt response repeats on every turn once the budget's exhausted),
+    appending a new blocking_interactions entry and re-firing every
+    configured notifier again and again, undoing the alert-fatigue fix
+    ISSUE-0025 was meant to deliver. Cleared by reset_sprint_budget, same as
+    budget_exhaustion_synced, so a halt in a later sprint notifies again."""
+    if callback_context.state.get("critical_halt_notified"):
+        return
     from .tools.notifications import record_blocking_interaction
     try:
         record_blocking_interaction("critical_error", msg, tool_context=callback_context)
     except Exception:
         pass
+    callback_context.state["critical_halt_notified"] = True
 
 
 def ensure_state_initialized_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:

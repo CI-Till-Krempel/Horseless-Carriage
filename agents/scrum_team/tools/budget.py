@@ -76,7 +76,10 @@ def reset_sprint_budget(tool_context=None) -> Dict[str, Any]:
     Also clears the exhaustion-sync guard (see check_cost_budget_callback in
     agent.py) so a new sprint's exhaustion, if it happens, syncs the roadmap
     again rather than being silently skipped because a *previous* sprint
-    already tripped it once.
+    already tripped it once. Likewise clears the critical-halt notification
+    guard (GH issue #112) - see _notify_critical_halt in agent.py - so a
+    halt in this new sprint notifies again rather than being silently
+    skipped because a previous sprint's halt already fired it once.
 
     Also marks the budget as freshly reset (see GH issue #110) - start_sprint
     requires this to have happened since the previous sprint started (except
@@ -88,6 +91,7 @@ def reset_sprint_budget(tool_context=None) -> Dict[str, Any]:
     s["token_usage"] = {"total": 0, "agents": {}}
     s["budget_exhaustion_synced"] = False
     s["budget_reset_since_last_sprint_start"] = True
+    s["critical_halt_notified"] = False
     save_state_to_repo(tool_context)
     return {"status": "ok", "token_usage": s["token_usage"]}
 
