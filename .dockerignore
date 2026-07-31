@@ -1,0 +1,23 @@
+# GH issue #123: agent.Dockerfile's `test` stage does `COPY . .`, which
+# would otherwise copy the entire build context - including a real,
+# gitignored-but-present .env with live API keys, .git/, and sessions/ -
+# into an image layer. No compose file targets `test` by default today, but
+# it's one `docker build --target test` away from baking secrets into a
+# shareable layer, and every build sends the full context to the daemon
+# regardless of target.
+.env
+.env.*
+.git/
+sessions/
+.venv/
+eval-output/
+__pycache__/
+*.pyc
+
+# Not secrets, but no reason to ship them into the build context either.
+.hc/
+.pytest_cache/
+.coverage
+htmlcov/
+.idea/
+.DS_Store
