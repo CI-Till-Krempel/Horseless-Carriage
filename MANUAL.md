@@ -213,7 +213,10 @@ requirements quality, team efficiency, each 1–5) and a ranked list of top
 problems with suggested fixes. Read the **methodology note** at the top first
 — the harness auto-merges PRs and pre-approves sprint goals to run unattended,
 so a report reflects the team's behavior under those simplified conditions,
-not full human-reviewed production usage.
+not full human-reviewed production usage. The report's **Horseless Carriage
+commit** line and the `eval-<run-id>` tag pushed to this repo (GH issue #125)
+identify exactly which HC commit produced it, so you can correlate results
+to specific fixes/regressions across runs over time.
 
 ### Triggering a real run
 
@@ -241,8 +244,13 @@ needed beyond what `docker-compose.yaml` already provides.
    docker compose --env-file .env up -d db litellm
    ```
 3. Run a small, cheap sprint (start with 1 sprint and a modest budget, not the
-   full 5 — a full run is meant for CI, not rapid local iteration):
+   full 5 — a full run is meant for CI, not rapid local iteration). Export
+   `HC_COMMIT_SHA` first so the manifest/report record which commit you're
+   actually testing (`.git` isn't available inside the container, so this
+   can't be computed there — see docker-compose.yaml's `HC_COMMIT_SHA`
+   entry, GH issue #125):
    ```bash
+   export HC_COMMIT_SHA=$(git rev-parse HEAD)
    docker compose --env-file .env run --rm agent python3 -m agents.scrum_team.scripts.run_eval \
      --sprints 1 --run-id local-test-1 \
      --token-budget 300000 --usd-budget 3.0 --max-duration-minutes 10 \

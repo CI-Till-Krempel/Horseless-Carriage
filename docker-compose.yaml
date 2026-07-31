@@ -99,6 +99,14 @@ services:
       - EVAL_USD_BUDGET_PER_SPRINT=${EVAL_USD_BUDGET_PER_SPRINT:-}
       - EVAL_SPRINT_USD_BUDGET=${EVAL_SPRINT_USD_BUDGET:-}
       - SESSION_ID=${SESSION_ID:-my-sprint}
+      # GH issue #125: the commit of this Horseless Carriage checkout that
+      # produced an eval run, recorded in the run manifest/report so results
+      # are comparable across HC commits/fixes over time. `.git` is excluded
+      # from the agent image's build context (.dockerignore, GH issue #123),
+      # so this must be computed on the host (`git rev-parse HEAD`) and
+      # passed through - empty default only, run_eval.py's own manifest
+      # field falls back to "unknown" when this is genuinely unset.
+      - HC_COMMIT_SHA=${HC_COMMIT_SHA:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - GIT_USER_NAME=${GIT_USER_NAME}
       - GIT_USER_EMAIL=${GIT_USER_EMAIL}

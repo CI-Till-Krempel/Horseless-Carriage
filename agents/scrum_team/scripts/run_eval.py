@@ -493,6 +493,14 @@ async def _main_async(args: argparse.Namespace) -> dict:
         "develop_branch": args.develop_branch,
         "eval_repo_url": args.eval_repo_url,
         "model": args.model,
+        # GH issue #125: which Horseless Carriage commit produced this run,
+        # so results are comparable across HC versions/fixes over time, not
+        # just across eval-repo branches. `.git` is deliberately excluded
+        # from the agent image's build context (see .dockerignore, GH issue
+        # #123), so this can't be computed with a `git` call from inside
+        # the container - the caller (eval.yml, or a local run) must
+        # capture it on the host and pass it through as HC_COMMIT_SHA.
+        "hc_commit": os.environ.get("HC_COMMIT_SHA", "unknown"),
         "sprints_requested": args.sprints,
         "max_duration_minutes": args.max_duration_minutes,
         "started_at": datetime.now(timezone.utc).isoformat(),

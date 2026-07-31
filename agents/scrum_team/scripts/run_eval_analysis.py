@@ -207,6 +207,7 @@ def _render_report(manifest: dict, judgment: dict) -> str:
         "# Team Performance Evaluation Report",
         "",
         f"- Run ID: {manifest.get('run_id')}",
+        f"- Horseless Carriage commit: {manifest.get('hc_commit', 'unknown')}",
         f"- Branch: {manifest.get('branch')}",
         f"- Model: {manifest.get('model')}",
         f"- Sprints requested: {manifest.get('sprints_requested')}, completed: {len(manifest.get('sprints', []))}",
