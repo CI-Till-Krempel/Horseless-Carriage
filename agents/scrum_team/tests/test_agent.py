@@ -254,6 +254,34 @@ class TestAgent(unittest.TestCase):
         self.assertIn("500,000 tokens used", text)
         self.assertNotIn("CORRUPTED", text)
 
+    def test_does_not_inject_mid_conversation(self):
+        """
+        Acceptance Criteria (GH issue #118): the old check
+        (`not llm_request.previous_interaction_id`) is falsy on the first
+        internal model call of *every* turn, not just a session's true
+        first turn ever - risking the Orchestrator re-injecting its
+        sprint-status/menu content mid-conversation. The sibling
+        history_management_callback was already fixed to key off
+        len(llm_request.contents) <= 1 instead; this callback must use the
+        exact same check.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        state = ScrumState()
+        state.sprint_goal = "Test Goal"
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        # A genuinely mid-conversation turn: real prior history plus the
+        # current user message already in contents (ADK's own history
+        # replay already ran before this callback - see
+        # history_management_callback's docstring for the full mechanics).
+        mock_llm_request.contents = ["prior turn 1", "prior turn 2", "current user message"]
+
+        sprint_status_injection_callback(mock_context, mock_llm_request)
+
+        self.assertEqual(mock_llm_request.contents, ["prior turn 1", "prior turn 2", "current user message"])
+
     def test_sprint_status_injection_surfaces_corrupted_state_notice(self):
         """
         Acceptance Criteria (GH issue #85): if init_scrum_state flagged
