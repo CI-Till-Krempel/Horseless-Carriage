@@ -191,5 +191,81 @@ class TestBudgetAPI(unittest.TestCase):
         new_call = mock_post.call_args_list[1]
         self.assertEqual(new_call[1]["json"]["max_budget"], 2.50)
 
+    @patch("requests.post")
+    @patch("os.environ.get")
+    def test_create_litellm_virtual_key_default_models_follow_role_overrides(self, mock_env_get, mock_post):
+        """
+        Acceptance Criteria (GH issue #155): the eval harness
+        (run_eval.py) points every role at scrum-eval-cheap via
+        SCRUM_<ROLE>_MODEL env overrides before any specialist agent runs.
+        A key generated with no explicit `models` list must reflect those
+        overrides (deduplicated) instead of the hardcoded production route
+        names, or the generated key can't call the model the agent is
+        actually configured to use.
+        """
+        env = {
+            "LITELLM_MASTER_KEY": "test-master-key",
+            "LITELLM_PROXY_API_BASE": "http://litellm:4000",
+            "SCRUM_PO_MODEL": "scrum-eval-cheap",
+            "SCRUM_SM_MODEL": "scrum-eval-cheap",
+            "SCRUM_DEV_MODEL": "scrum-eval-cheap",
+            "SCRUM_QA_MODEL": "scrum-eval-cheap",
+            "SCRUM_ARCH_MODEL": "scrum-eval-cheap",
+            "SCRUM_ORCHESTRATOR_MODEL": "scrum-eval-cheap",
+            "SCRUM_QUALITY_MODEL": "scrum-eval-cheap",
+        }
+        mock_env_get.side_effect = lambda key, default=None: env.get(key, default)
+
+        mock_info = MagicMock()
+        mock_info.status_code = 200
+        mock_info.json.return_value = []
+        mock_new = MagicMock()
+        mock_new.status_code = 200
+        mock_gen = MagicMock()
+        mock_gen.status_code = 200
+        mock_gen.json.return_value = {"key": "sk-test-key"}
+        mock_post.side_effect = [mock_info, mock_new, mock_gen]
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        create_litellm_virtual_key("DevTeam", tool_context=tool_context)
+
+        gen_call = mock_post.call_args_list[2]
+        self.assertEqual(gen_call[1]["json"]["models"], ["scrum-eval-cheap"])
+
+    @patch("requests.post")
+    @patch("os.environ.get")
+    def test_create_litellm_virtual_key_default_models_unchanged_without_overrides(self, mock_env_get, mock_post):
+        """Without any SCRUM_<ROLE>_MODEL overrides, the default models
+        list must still match the previous hardcoded production route
+        names, one per role."""
+        env = {
+            "LITELLM_MASTER_KEY": "test-master-key",
+            "LITELLM_PROXY_API_BASE": "http://litellm:4000",
+        }
+        mock_env_get.side_effect = lambda key, default=None: env.get(key, default)
+
+        mock_info = MagicMock()
+        mock_info.status_code = 200
+        mock_info.json.return_value = []
+        mock_new = MagicMock()
+        mock_new.status_code = 200
+        mock_gen = MagicMock()
+        mock_gen.status_code = 200
+        mock_gen.json.return_value = {"key": "sk-test-key"}
+        mock_post.side_effect = [mock_info, mock_new, mock_gen]
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        create_litellm_virtual_key("DevTeam", tool_context=tool_context)
+
+        gen_call = mock_post.call_args_list[2]
+        self.assertEqual(
+            gen_call[1]["json"]["models"],
+            ["scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", "scrum-arch", "scrum-orchestrator", "scrum-quality"],
+        )
+
 if __name__ == "__main__":
     unittest.main()

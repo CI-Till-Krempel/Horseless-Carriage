@@ -187,10 +187,17 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     }
     
     if models is None:
-        models = [
-            "scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", 
-            "scrum-arch", "scrum-orchestrator", "scrum-quality"
-        ]
+        # Derived from get_model_name, not hardcoded route names (GH issue
+        # #155): the eval harness (run_eval.py) points every role at
+        # scrum-eval-cheap via SCRUM_<ROLE>_MODEL env overrides before this
+        # ever runs, so a hardcoded production route list here left the
+        # generated key unable to access whatever model each role is
+        # actually configured to call - "key not allowed to access model
+        # ... Tried to access scrum-eval-cheap". Deduplicated since an eval
+        # run maps every role onto the same alias.
+        from ..agent import get_model_name
+        roles = ["po", "sm", "dev", "qa", "arch", "orchestrator", "quality"]
+        models = list(dict.fromkeys(get_model_name(role) for role in roles))
     
     data = {
         "models": models,
