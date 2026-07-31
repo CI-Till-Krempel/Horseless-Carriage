@@ -179,7 +179,7 @@ class TestGitHubTools(unittest.TestCase):
         Acceptance Criteria:
         - Changes are pushed to the remote repository.
         """
-        mock_run.return_value = {"status": "ok"}
+        mock_run.return_value = {"status": "ok", "returncode": 0}
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         git_push(branch="feature-branch", tool_context=tool_context)
@@ -227,7 +227,7 @@ class TestGitHubTools(unittest.TestCase):
         commit is the one legitimate exception - allow_protected=True lets
         it through.
         """
-        mock_run.return_value = {"status": "ok"}
+        mock_run.return_value = {"status": "ok", "returncode": 0}
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["repo"] = {"default_branch": "main"}
@@ -270,7 +270,7 @@ class TestGitHubTools(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.github._run")
     def test_git_push_still_allows_normal_branch_names(self, mock_run):
-        mock_run.return_value = {"status": "ok"}
+        mock_run.return_value = {"status": "ok", "returncode": 0}
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
@@ -298,6 +298,79 @@ class TestGitHubTools(unittest.TestCase):
             cwd=unittest.mock.ANY,
             tool_context=tool_context,
         )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_reports_error_when_commit_fails_for_a_real_reason(self, mock_run):
+        """
+        Acceptance Criteria (GH issue #115): a `git commit` failure for any
+        reason other than "nothing to commit" must be fatal - previously
+        the final status was derived only from the push result, so if the
+        remote happened to already be up to date, `git push` exits 0
+        ("Everything up-to-date") and git_push reported "ok" even though
+        the intended commit never actually happened anywhere.
+        """
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "checkout"]:
+                return {"status": "ok", "returncode": 0}
+            if cmd[:2] == ["git", "add"]:
+                return {"status": "ok", "returncode": 0}
+            if cmd[:2] == ["git", "commit"]:
+                return {"status": "error", "returncode": 1, "stderr": "fatal: unable to write new_index file"}
+            if cmd[:2] == ["git", "push"]:
+                return {"status": "ok", "returncode": 0}
+            raise AssertionError(f"unexpected command: {cmd}")
+        mock_run.side_effect = fake_run
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = git_push(branch="feature-branch", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("commit failed", result["message"])
+        # The push step must never have been reached.
+        push_calls = [c for c in mock_run.call_args_list if c.args[0][:2] == ["git", "push"]]
+        self.assertEqual(push_calls, [])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_retries_as_empty_commit_when_nothing_to_commit(self, mock_run):
+        """The one legitimate case a failed `git commit` should NOT be
+        fatal: nothing changed, so an empty commit is made instead to still
+        get the branch pushed - unchanged behavior from before this issue."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ["git", "commit"] and "--allow-empty" not in cmd:
+                return {"status": "error", "returncode": 1, "stderr": "nothing to commit, working tree clean"}
+            return {"status": "ok", "returncode": 0}
+        mock_run.side_effect = fake_run
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = git_push(branch="feature-branch", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(any("--allow-empty" in c for c in calls))
+        self.assertTrue(any(c[:2] == ["git", "push"] for c in calls))
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_reports_error_when_empty_commit_retry_also_fails(self, mock_run):
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "commit"]:
+                return {"status": "error", "returncode": 1, "stderr": "nothing to commit, working tree clean"}
+            return {"status": "ok", "returncode": 0}
+        mock_run.side_effect = fake_run
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = git_push(branch="feature-branch", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        push_calls = [c for c in mock_run.call_args_list if c.args[0][:2] == ["git", "push"]]
+        self.assertEqual(push_calls, [])
 
     @patch("agents.scrum_team.tools.github._run")
     def test_gh_pr_review_records_pr_review_call(self, mock_run):

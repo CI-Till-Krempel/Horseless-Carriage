@@ -206,7 +206,20 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
         # Try creating an empty commit when nothing to commit
         if "nothing to commit" in (r2.get("stderr") or "") + (r2.get("stdout") or ""):
             r2 = _run(["git", "commit", "--allow-empty", "-m", commit_message], cwd=repo_root, tool_context=tool_context)
-        # If still failing, continue to push in case branch update is desired
+        # A commit failure for any other reason (or the empty-commit retry
+        # above also failing) must be fatal here, not silently continued
+        # past (see GH issue #115) - previously the final status was derived
+        # only from the push result, so if the remote happened to already be
+        # up to date, `git push` exits 0 ("Everything up-to-date") and
+        # git_push reported "ok" even though the intended commit never
+        # actually happened anywhere, locally or remotely.
+        if r2.get("returncode") != 0:
+            return {
+                "status": "error",
+                "message": f"git commit failed: {r2.get('stderr') or r2.get('stdout') or 'unknown error'}",
+                "branch": branch,
+                "steps": {"checkout": checkout, "add": r1, "commit": r2},
+            }
     r3 = _run(["git", "push", "-u", "origin", branch], cwd=repo_root, tool_context=tool_context)
 
     return {"status": "ok" if r3.get("status") == "ok" else "error", "branch": branch, "steps": {"checkout": checkout, "add": r1, "commit": r2, "push": r3}}
