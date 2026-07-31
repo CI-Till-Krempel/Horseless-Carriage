@@ -57,10 +57,16 @@ class TestSelectModel:
         monkeypatch.setattr("builtins.input", lambda _: next(answers))
         assert setup_llm.select_model("Pick", ["a", "b", "c"]) == "custom-model-x"
 
-    def test_invalid_selection_exits(self, monkeypatch):
-        monkeypatch.setattr("builtins.input", lambda _: "99")
-        with pytest.raises(SystemExit):
-            setup_llm.select_model("Pick", ["a", "b", "c"])
+    def test_invalid_selection_reprompts_instead_of_exiting(self, monkeypatch, capsys):
+        """
+        Acceptance Criteria (GH issue #117): an out-of-range choice used to
+        kill the whole wizard (die()) - it must now reprompt instead,
+        matching every other question in this flow.
+        """
+        answers = iter(["99", "2"])
+        monkeypatch.setattr("builtins.input", lambda _: next(answers))
+        assert setup_llm.select_model("Pick", ["a", "b", "c"]) == "b"
+        assert "Invalid selection" in capsys.readouterr().err
 
     def test_current_in_options_becomes_default_and_marked(self, monkeypatch, capsys):
         prompts = []
@@ -335,6 +341,19 @@ class TestPromptProjectSettings:
         answers = ["", "", "", "", ""]
         env_path = self._run(monkeypatch, tmp_path, answers, is_local=True)
         assert lib_env.read_env_var(env_path, "TOTAL_USD_BUDGET")
+
+    def test_invalid_interaction_level_choice_reprompts_instead_of_exiting(self, monkeypatch, tmp_path, capsys):
+        """
+        Acceptance Criteria (GH issue #117): an out-of-range interaction-
+        level choice used to kill the whole wizard (die()), well after
+        several other questions had already been answered - it must now
+        reprompt instead, matching every other question in this flow.
+        """
+        # git name, git email, interaction level (bad, then good "2"), token budget, usd budget, overhead
+        answers = ["", "", "12", "2", "", "", ""]
+        env_path = self._run(monkeypatch, tmp_path, answers, is_local=False)
+        assert lib_env.read_env_var(env_path, "INTERACTION_LEVEL") == "Stakeholder"
+        assert "Invalid choice" in capsys.readouterr().err
 
 
 class TestRunConfigurationTest:

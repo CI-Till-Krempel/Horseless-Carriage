@@ -191,4 +191,13 @@ def main(argv=None, repo_root: Path = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # GH issue #117 - this script's own docstring/startup banner already
+        # says "Ctrl+C to stop", but nothing actually caught it - the normal,
+        # expected way to end this poll loop produced a raw traceback
+        # instead of the clean stop message that's actually documented.
+        print()
+        print("Stopped.")
+        sys.exit(0)
