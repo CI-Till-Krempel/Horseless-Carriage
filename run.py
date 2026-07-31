@@ -30,6 +30,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+import banner
 import doctor
 import lib_docker
 import rebuild_images
@@ -127,6 +128,7 @@ def main(argv: list = None) -> None:
 
 def _main(argv: list = None) -> None:
     os.chdir(Path(__file__).resolve().parent)
+    banner.print_banner()
     mode, daemon, dev, extra_args = parse_args(sys.argv[1:] if argv is None else argv)
 
     if shutil.which("docker") is None:
