@@ -122,6 +122,128 @@ def _sprint_metrics_table(manifest: dict) -> str:
     return "\n".join(rows)
 
 
+# GH issue #124: which KPI each series is sourced from. The first four are
+# derived straight from each sprint's own backlog snapshot (sprint_backlog),
+# always present. The last three come from QualityGuardian's calculate_kpis/
+# update_sprint_report (see its prompt's "YOU DO" and tools/quality.py) via
+# sprint_report_kpis, which only exists for a sprint if QualityGuardian
+# actually got to run - a sprint that ran out of budget/events first simply
+# has no data point for these, reported honestly as missing rather than a
+# fabricated 0 or a repeat of the last known value.
+_ACCEPTED_STAGE = "Accepted"
+_IMPLEMENTED_STAGE = "Implemented"
+
+
+def _kpi_time_series(manifest: dict) -> dict:
+    """Returns {kpi_name: [(sprint_number, value), ...]} - one list per KPI,
+    containing only the sprints that actually have a value for it."""
+    series = {
+        "Velocity (items accepted)": [],
+        "Issues fixed": [],
+        "Stories implemented": [],
+        "Testplan scenarios": [],
+        "Say-Do Ratio": [],
+        "Quality (defect escape rate)": [],
+        "Test Coverage": [],
+    }
+    for sprint in manifest.get("sprints", []):
+        n = sprint.get("sprint_number")
+        backlog = sprint.get("sprint_backlog") or []
+
+        accepted = sum(1 for item in backlog if _ACCEPTED_STAGE in (item.get("stages_completed") or []))
+        issues_fixed = sum(
+            1 for item in backlog
+            if item.get("type") == "Issue" and _ACCEPTED_STAGE in (item.get("stages_completed") or [])
+        )
+        stories_implemented = sum(
+            1 for item in backlog
+            if item.get("type") != "Issue" and _IMPLEMENTED_STAGE in (item.get("stages_completed") or [])
+        )
+        scenarios = sum(len(item.get("acceptance_criteria") or []) for item in backlog)
+
+        series["Velocity (items accepted)"].append((n, accepted))
+        series["Issues fixed"].append((n, issues_fixed))
+        series["Stories implemented"].append((n, stories_implemented))
+        series["Testplan scenarios"].append((n, scenarios))
+
+        kpis = sprint.get("sprint_report_kpis") or {}
+        say_do = (kpis.get("team_effectiveness") or {}).get("say_do_ratio")
+        if say_do is not None:
+            series["Say-Do Ratio"].append((n, say_do))
+        defect_escape_rate = (kpis.get("result_quality") or {}).get("defect_escape_rate")
+        if defect_escape_rate is not None:
+            series["Quality (defect escape rate)"].append((n, defect_escape_rate))
+        coverage = (kpis.get("maintainability") or {}).get("test_coverage")
+        if coverage is not None:
+            series["Test Coverage"].append((n, coverage))
+    return series
+
+
+def _format_kpi_value(value) -> str:
+    return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+def _render_kpi_graphs(manifest: dict) -> str:
+    """Renders one mermaid xychart-beta line graph per KPI (GitHub renders
+    mermaid natively in Markdown) plus a combined table, so the trend is
+    visible even where mermaid rendering isn't available (e.g. a plain-text
+    reading of the CI artifact)."""
+    total_sprints = len(manifest.get("sprints", []))
+    series = _kpi_time_series(manifest)
+    lines = ["## KPI Trends", ""]
+
+    if total_sprints < 2:
+        lines.append(
+            "Fewer than 2 completed sprints this run - not enough data points for a "
+            "meaningful trend line.\n"
+        )
+        return "\n".join(lines)
+
+    table_rows = ["| KPI | " + " | ".join(f"Sprint {s['sprint_number']}" for s in manifest.get("sprints", [])) + " |",
+                  "|---|" + "---|" * total_sprints]
+    for name, points in series.items():
+        by_sprint = dict(points)
+        table_rows.append(
+            "| " + name + " | " +
+            " | ".join(
+                _format_kpi_value(by_sprint[s["sprint_number"]]) if s["sprint_number"] in by_sprint else "n/a"
+                for s in manifest.get("sprints", [])
+            ) + " |"
+        )
+    lines += table_rows + [""]
+
+    for name, points in series.items():
+        if not points:
+            lines += [
+                f"### {name}",
+                "",
+                "No data available for this run - never computed (QualityGuardian's "
+                "calculate_kpis/update_sprint_report was not called in any sprint).",
+                "",
+            ]
+            continue
+        lines += [
+            f"### {name}",
+            "",
+            "```mermaid",
+            "xychart-beta",
+            f'    title "{name}"',
+            "    x-axis [" + ", ".join(f"\"Sprint {n}\"" for n, _ in points) + "]",
+            f'    y-axis "{name}"',
+            "    line [" + ", ".join(_format_kpi_value(v) for _, v in points) + "]",
+            "```",
+            "",
+        ]
+        missing = total_sprints - len(points)
+        if missing:
+            lines.append(
+                f"({missing} of {total_sprints} sprints have no data point for this KPI "
+                "and are omitted above - see the table for exactly which.)\n"
+            )
+
+    return "\n".join(lines)
+
+
 def _build_judge_prompt(manifest: dict, snapshot: dict) -> str:
     sprint_reports = "\n\n".join(
         f"### Sprint {s['sprint_number']} report\n{s.get('sprint_report') or '(none produced)'}"
@@ -224,6 +346,7 @@ def _render_report(manifest: dict, judgment: dict) -> str:
         "## Per-sprint metrics",
         _sprint_metrics_table(manifest),
         "",
+        _render_kpi_graphs(manifest),
     ]
 
     total_tokens = _total_tokens_used(manifest)

@@ -397,7 +397,17 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # LLM calls. Harness-side equivalent of the reset_sprint_budget
         # tool Scrum Master calls in interactive/real usage.
         state_delta = (
-            {"sprint_report": "", "token_usage": {"total": 0, "agents": {}}, "budget_exhaustion_synced": False}
+            {
+                "sprint_report": "",
+                "token_usage": {"total": 0, "agents": {}},
+                "budget_exhaustion_synced": False,
+                # GH issue #124: sprint_report_kpis is never cleared by the
+                # product code itself either (same as sprint_report above) -
+                # without this reset, a sprint where QualityGuardian doesn't
+                # get to run would silently inherit the previous sprint's
+                # KPI values instead of correctly having none.
+                "sprint_report_kpis": {},
+            }
             if attempt == 0 else None
         )
 
@@ -464,6 +474,13 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         "sprint_report": sprint_report,
         "sprint_backlog": session.state.get("sprint_backlog"),
         "product_backlog": session.state.get("product_backlog"),
+        # GH issue #124: QualityGuardian's calculate_kpis/update_sprint_report
+        # (see its prompt's "YOU DO") stores its findings here - captured so
+        # run_eval_analysis.py can plot Say-Do Ratio/Quality/Test Coverage as
+        # a time series across sprints. Only present if QualityGuardian
+        # actually got to run this sprint (cheap-model/budget-constrained
+        # sprints sometimes don't) - None otherwise, not a fabricated value.
+        "sprint_report_kpis": session.state.get("sprint_report_kpis"),
         "stop_reason": stop_reason,
     }
 
