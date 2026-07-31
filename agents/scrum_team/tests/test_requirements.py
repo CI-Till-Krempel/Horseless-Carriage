@@ -161,7 +161,11 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertIn("check_build", result["message"])
 
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
-        result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
     def test_tested_blocked_when_last_check_build_failed(self, mock_save, mock_md, mock_roadmap):
@@ -171,6 +175,58 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("check_build", result["message"])
+
+    def test_tested_blocked_when_no_tests_actually_ran(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (GH issue #114): check_build() only verifies the
+        build/dependency install, not that any tests actually ran - a story
+        with a completely empty test suite must not be markable as Tested
+        just because the build itself was clean and QA left a PR comment.
+        """
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 0, "tests_failed": 0, "note": "no tests collected"},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("no tests", result["message"].lower())
+
+    def test_tested_blocked_when_test_suite_could_not_run_at_all(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": False, "tests_run": 0, "tests_failed": 0, "note": "pytest could not be executed"},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_tested_blocked_when_tests_failed(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 10, "tests_failed": 2},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("2 of 10 tests failed", result["message"])
+
+    def test_tested_succeeds_when_tests_actually_pass(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 12, "tests_failed": 0},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
 
 
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
