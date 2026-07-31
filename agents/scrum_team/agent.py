@@ -538,6 +538,15 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
         if budget_info_list and isinstance(budget_info_list, list) and len(budget_info_list) > 0:
             current_spend = budget_info_list[0].get("spend", 0.0)
 
+        # Persisted so create_sprint_report can show it (GH issue #111) -
+        # previously this was a local variable only, so the sprint report
+        # could only ever print the configured ceiling, never how much was
+        # actually spent, despite docs/BUDGET.md documenting the report as
+        # showing both.
+        budgets_state = callback_context.state.get("budgets", {}) or {}
+        budgets_state["current_usd_spend"] = current_spend
+        callback_context.state["budgets"] = budgets_state
+
         if current_spend >= budget_limit:
             _sync_roadmap_on_exhaustion_once(callback_context)
             msg = (
