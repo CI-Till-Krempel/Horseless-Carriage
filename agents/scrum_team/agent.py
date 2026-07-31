@@ -134,41 +134,61 @@ try:
         return _orig_litellm_connerror_init(self, *args, **kwargs)
     litellm.exceptions.APIConnectionError.__init__ = _patched_litellm_connerror_init
 
-    # 5. Patch LiteLLMClient.acompletion to handle Gemini safety blocks gracefully
+    # 5. Patch LiteLLMClient.acompletion to handle Gemini safety blocks and
+    # transient connection failures gracefully, instead of letting either
+    # crash the whole run.
     import google.adk.models.lite_llm as adk_litellm
     _orig_adk_acompletion = adk_litellm.LiteLLMClient.acompletion
+
+    def _degraded_llm_response(response_id: str, finish_reason: str, message: str, model_name: str, stream: bool):
+        """Builds a synthetic single-turn ModelResponse standing in for a
+        failed LLM call, so the caller gets a normal-shaped response
+        instead of a propagating exception."""
+        from litellm.utils import ModelResponse, Choices, Message
+
+        response = ModelResponse(
+            id=response_id,
+            choices=[Choices(finish_reason=finish_reason, index=0, message=Message(content=message))],
+            created=0,
+            model=model_name,
+            object="chat.completion",
+        )
+        if stream:
+            async def _async_gen():
+                yield response
+            return _async_gen()
+        return response
 
     async def _patched_adk_acompletion(self, *args, **kwargs):
         try:
             return await _orig_adk_acompletion(self, *args, **kwargs)
         except Exception as e:
+            model_name = kwargs.get("model") or "unknown-gemini"
             # Check for the specific 'no choices' error which usually indicates a safety block
             if "no 'choices'" in str(e):
                 logger.warning(f"Detected Gemini safety block: {e}")
-                from litellm.utils import ModelResponse, Choices, Message
-                model_name = kwargs.get("model") or "unknown-gemini"
-                
                 blocked_msg = "⚠️ [SAFETY BLOCK] The request was blocked by Gemini's safety filters. Please try rephrasing your request or avoiding sensitive topics."
-                
-                response = ModelResponse(
-                    id="safety-block",
-                    choices=[Choices(
-                        finish_reason="safety", 
-                        index=0, 
-                        message=Message(content=blocked_msg)
-                    )],
-                    created=0,
-                    model=model_name,
-                    object="chat.completion"
+                return _degraded_llm_response("safety-block", "safety", blocked_msg, model_name, kwargs.get("stream"))
+            # GH issue #126: a transient LiteLLM proxy connection failure
+            # (proxy not up yet, network blip, etc.) previously propagated
+            # as a raw, unhandled exception all the way up through the
+            # vendored google-adk CLI event loop, crashing the entire
+            # interactive `adk run` process (exec'd as the container's PID
+            # 1 by entrypoint.sh) on the very first message - the whole
+            # session was lost, not just that one turn. Degrade the same
+            # way the safety-block case above does, so the CLI's REPL loop
+            # survives and the human can just retry the message.
+            if isinstance(e, (
+                litellm.exceptions.APIConnectionError,
+                litellm.exceptions.ServiceUnavailableError,
+                litellm.exceptions.Timeout,
+            )) or (isinstance(e, litellm.exceptions.InternalServerError) and "onnection error" in str(e)):
+                logger.warning(f"Detected LiteLLM connection failure: {e}")
+                error_msg = (
+                    "⚠️ [CONNECTION ERROR] Could not reach the LiteLLM proxy for this request "
+                    f"({e}). Please check that the proxy is running and try again."
                 )
-                
-                if kwargs.get("stream"):
-                    # Return an async iterable for streaming calls
-                    async def _async_gen():
-                        yield response
-                    return _async_gen()
-                
-                return response
+                return _degraded_llm_response("connection-error", "stop", error_msg, model_name, kwargs.get("stream"))
             raise e
 
     adk_litellm.LiteLLMClient.acompletion = _patched_adk_acompletion
