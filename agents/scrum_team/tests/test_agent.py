@@ -993,5 +993,76 @@ class TestSetupLoggingRespectsLogLevel(unittest.TestCase):
         self.assertEqual(self._file_handler_level(), logging.DEBUG)
 
 
+class TestPatchedAdkAcompletion(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #126): a transient LiteLLM proxy
+    connection failure must degrade into a synthetic response, the same
+    way an existing Gemini safety-block error already does - not
+    propagate as a raw exception, which crashes the whole `adk run` CLI
+    process on the very first message.
+    """
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def test_connection_error_degrades_instead_of_raising(self):
+        import litellm.exceptions
+
+        async def _raise_connection_error(self, *args, **kwargs):
+            raise litellm.exceptions.APIConnectionError(
+                message="connection refused", llm_provider="gemini", model="scrum-eval-cheap"
+            )
+
+        with patch.object(agent_module, "_orig_adk_acompletion", _raise_connection_error):
+            response = self._run(agent_module._patched_adk_acompletion(MagicMock(), model="scrum-eval-cheap"))
+
+        self.assertIn("CONNECTION ERROR", response.choices[0].message.content)
+        self.assertEqual(response.model, "scrum-eval-cheap")
+
+    def test_internal_server_error_with_connection_message_degrades(self):
+        """Mirrors the real GH issue #126 traceback: litellm's own
+        exception mapper surfaces a bare proxy connection failure as
+        InternalServerError, not APIConnectionError."""
+        import litellm.exceptions
+
+        async def _raise_internal_server_error(self, *args, **kwargs):
+            raise litellm.exceptions.InternalServerError(
+                message="Litellm_proxyException - Connection error.", llm_provider="gemini", model="scrum-eval-cheap"
+            )
+
+        with patch.object(agent_module, "_orig_adk_acompletion", _raise_internal_server_error):
+            response = self._run(agent_module._patched_adk_acompletion(MagicMock(), model="scrum-eval-cheap"))
+
+        self.assertIn("CONNECTION ERROR", response.choices[0].message.content)
+
+    def test_unrelated_internal_server_error_still_raises(self):
+        """An InternalServerError that isn't actually a connection failure
+        (e.g. a real 500 from the provider) must still propagate - this
+        patch only degrades the specific connection-failure shape."""
+        import litellm.exceptions
+
+        async def _raise_internal_server_error(self, *args, **kwargs):
+            raise litellm.exceptions.InternalServerError(
+                message="something else entirely broke", llm_provider="gemini", model="scrum-eval-cheap"
+            )
+
+        with patch.object(agent_module, "_orig_adk_acompletion", _raise_internal_server_error):
+            with self.assertRaises(litellm.exceptions.InternalServerError):
+                self._run(agent_module._patched_adk_acompletion(MagicMock(), model="scrum-eval-cheap"))
+
+    def test_safety_block_still_degrades(self):
+        """Regression guard: adding connection-error handling must not
+        disturb the pre-existing safety-block degradation."""
+
+        async def _raise_safety_block(self, *args, **kwargs):
+            raise ValueError("Invalid response - no 'choices' field returned")
+
+        with patch.object(agent_module, "_orig_adk_acompletion", _raise_safety_block):
+            response = self._run(agent_module._patched_adk_acompletion(MagicMock(), model="scrum-eval-cheap"))
+
+        self.assertIn("SAFETY BLOCK", response.choices[0].message.content)
+
+
 if __name__ == "__main__":
     unittest.main()
