@@ -750,6 +750,34 @@ class TestSetupStateRepo:
         out = result.out + result.err
         assert "git clone failed" in out
         assert not (target / ".git").is_dir()
+        # Acceptance Criteria (GH issue #108): a failed clone must NOT leave
+        # a specs/ skeleton behind - doing so poisons the directory for
+        # every future run (see test_retrying_after_a_failed_clone_still_works below).
+        assert not (target / "specs").exists()
+
+    def test_retrying_after_a_failed_clone_still_works(self, tmp_path, fake_git_remote, monkeypatch, capsys):
+        """
+        Acceptance Criteria (GH issue #108): before the fix, a failed clone
+        still created target/specs/ - so a retry with the SAME (now-working)
+        URL found a non-empty, non-git directory and refused to clone at
+        all, forever, since the manual `git clone` instructions it printed
+        also fail on a no-longer-empty destination. Retrying after a
+        transient failure (e.g. a fixed SSH key/URL typo) must actually
+        succeed.
+        """
+        target = tmp_path / "retry-target"
+        env_path = tmp_path / ".env"
+        bogus_source = tmp_path / "nonexistent-source.git"
+
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), str(bogus_source), "main"])
+        assert not target.exists() or not any(target.iterdir())
+
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), fake_git_remote, "main"])
+
+        assert (target / ".git").is_dir()
+        assert (target / "specs").is_dir()
+        out = capsys.readouterr().out
+        assert "already has files in it and isn't a git repository" not in out
 
     def test_git_missing_skips_setup_but_still_writes_env(self, tmp_path, monkeypatch):
         target = tmp_path / "no-git-target"
