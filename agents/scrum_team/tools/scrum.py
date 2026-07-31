@@ -43,6 +43,7 @@ REPO_STATE_KEYS = [
     "sprint_approval_baseline",
     "release_approval_baseline",
     "dev_touch_baseline",
+    "sprint_files_touched",
     "last_check_build",
     "pr_review_calls",
     "architect_review_baseline",
@@ -89,6 +90,15 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("sprint_approval_baseline", 0)
     s.setdefault("release_approval_baseline", 0)
     s.setdefault("dev_touch_baseline", 0)
+    # GH issue #119: previously only dev_touch_baseline was persisted
+    # (REPO_STATE_KEYS), not the running sprint_files_touched list it's
+    # compared against - after any state reload mid-sprint (a restart, a
+    # corrupted-state recovery), the baseline survived but the list reset
+    # to empty, requiring new writes to exceed a stale baseline again before
+    # the Implemented-stage "real source file written" gate would pass,
+    # even for a story whose files were already written earlier in the
+    # sprint.
+    s.setdefault("sprint_files_touched", [])
     s.setdefault("last_check_build", None)
     s.setdefault("pr_review_calls", {})
     s.setdefault("architect_review_baseline", 0)
