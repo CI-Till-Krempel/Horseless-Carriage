@@ -270,7 +270,7 @@ class TestGitHubTools(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.github._run")
     def test_git_push_still_allows_normal_branch_names(self, mock_run):
-        mock_run.return_value = {"status": "ok"}
+        mock_run.return_value = {"status": "ok", "returncode": 0}
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 

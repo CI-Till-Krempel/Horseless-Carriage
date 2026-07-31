@@ -218,7 +218,7 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
                 "status": "error",
                 "message": f"git commit failed: {r2.get('stderr') or r2.get('stdout') or 'unknown error'}",
                 "branch": branch,
-                "steps": {"checkout": _, "add": r1, "commit": r2},
+                "steps": {"checkout": checkout, "add": r1, "commit": r2},
             }
     r3 = _run(["git", "push", "-u", "origin", branch], cwd=repo_root, tool_context=tool_context)
 
