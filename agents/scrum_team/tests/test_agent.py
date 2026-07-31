@@ -949,5 +949,49 @@ class TestInjectLitellmKeyCallback(unittest.TestCase):
         self.assertEqual(litellm.api_key, "sk-devteam-key")
 
 
+class TestSetupLoggingRespectsLogLevel(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #128): the per-session log file handler
+    used to be hardcoded to DEBUG regardless of LOG_LEVEL, so it always
+    captured verbose upstream traces (httpx/openai/litellm/google.adk -
+    which can include full request/response bodies and headers) even when
+    a user explicitly chose a quieter LOG_LEVEL. The file handler must
+    respect the same level as everything else.
+    """
+
+    def _file_handler_level(self):
+        import logging
+        root_logger = logging.getLogger()
+        for h in root_logger.handlers:
+            if isinstance(h, logging.FileHandler):
+                return h.level
+        return None
+
+    def tearDown(self):
+        # _setup_logging adds a new FileHandler to the root logger every
+        # call - remove any added during this test so later tests/imports
+        # in the same process aren't left with stale/duplicate handlers.
+        import logging
+        root_logger = logging.getLogger()
+        for h in list(root_logger.handlers):
+            if isinstance(h, logging.FileHandler):
+                root_logger.removeHandler(h)
+                h.close()
+
+    def test_file_handler_respects_info_log_level(self):
+        import logging
+        import os
+        with patch.dict(os.environ, {"LOG_LEVEL": "INFO"}, clear=False):
+            agent_module._setup_logging()
+        self.assertEqual(self._file_handler_level(), logging.INFO)
+
+    def test_file_handler_respects_debug_log_level(self):
+        import logging
+        import os
+        with patch.dict(os.environ, {"LOG_LEVEL": "DEBUG"}, clear=False):
+            agent_module._setup_logging()
+        self.assertEqual(self._file_handler_level(), logging.DEBUG)
+
+
 if __name__ == "__main__":
     unittest.main()

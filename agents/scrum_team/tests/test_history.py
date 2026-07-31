@@ -141,6 +141,58 @@ class TestHistoryManagement(unittest.TestCase):
         self.assertEqual(mock_context.state["messages"][1]["role"], "model")
         self.assertEqual(mock_context.state["messages"][1]["content"], "Hi!")
 
+    def test_history_saving_after_response_redacts_secrets(self):
+        """
+        Acceptance Criteria (GH issue #128): a secret echoed back in the
+        model's own response text (e.g. a tool result relayed verbatim)
+        must not land unredacted in state.messages/transcript, since both
+        are persisted into the target repo's .hc/state.json.
+        """
+        state = ScrumState()
+        state.messages = [{"role": "user", "content": "Hello"}]
+
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = state.model_dump()
+
+        mock_response = MagicMock()
+        mock_response.content = types.Content(
+            role="model",
+            parts=[types.Part(text="Your token is ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345")],
+        )
+
+        history_management_after_callback(mock_context, mock_response)
+
+        self.assertNotIn("ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345", mock_context.state["messages"][1]["content"])
+        self.assertNotIn("ghp_AbCdEfGhIjKlMnOpQrStUvWxYz012345", mock_context.state["transcript"][0]["content"])
+        self.assertIn("***REDACTED-GH-TOKEN***", mock_context.state["messages"][1]["content"])
+
+    def test_history_injection_redacts_secrets_in_pasted_user_messages(self):
+        """
+        Acceptance Criteria (GH issue #128): a secret a user pastes directly
+        into a message must be redacted before state.messages is synced -
+        this is the path an actual human-typed credential goes through
+        (history_management_after_callback only ever sees model turns).
+        """
+        state = ScrumState()
+
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = state.model_dump()
+
+        mock_request = MagicMock()
+        mock_request.previous_interaction_id = None
+        mock_request.contents = [
+            types.Content(role="user", parts=[types.Part(text="my key is sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789")]),
+        ]
+
+        history_management_callback(mock_context, mock_request)
+
+        self.assertNotIn("sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", mock_context.state["messages"][0]["content"])
+        self.assertIn("***REDACTED-KEY***", mock_context.state["messages"][0]["content"])
+        # The real (unredacted) text must still reach the model.
+        self.assertIn("sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", mock_request.contents[0].parts[0].text)
+
     def test_no_injection_on_specialist_agents(self):
         # Specialists should NOT have history injected (they get fresh context for their tasks)
         state = ScrumState()
