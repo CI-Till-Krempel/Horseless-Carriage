@@ -168,25 +168,34 @@ def _check_git_ssh_auth(host: str) -> bool:
     return True
 
 
-def _clone_state_repo(repo_url: str, branch: str, state_repo_path: Path) -> None:
+def _clone_state_repo(repo_url: str, branch: str, state_repo_path: Path) -> bool:
     """Clones repo_url into state_repo_path. For an SSH-style URL, checks
     SSH auth first (see _check_git_ssh_auth) so a broken key/agent gets a
     clear, actionable message instead of a raw git error - and, either way,
     never raises: any failure is reported with manual-clone instructions
-    rather than crashing the rest of setup_llm.py."""
+    rather than crashing the rest of setup_llm.py.
+
+    Returns whether the clone actually succeeded - the caller must not
+    create anything else inside state_repo_path on failure (see GH issue
+    #108: creating the specs/ skeleton regardless of this result turned a
+    single failed clone into a permanent lockout, since the manual `git
+    clone` instructions just printed then failed too, on a directory that's
+    no longer empty)."""
     ssh_host = _git_ssh_host(repo_url)
     if ssh_host and not _check_git_ssh_auth(ssh_host):
         warn(f"SSH authentication to '{ssh_host}' doesn't seem to be set up - skipping the clone.")
         print(f"Once `ssh -T git@{ssh_host}` reports \"successfully authenticated\", clone manually:")
         print(f"  git clone {repo_url} {state_repo_path}")
-        return
+        return False
 
     info(f"Cloning {repo_url} into {state_repo_path}...")
     try:
         subprocess.run(["git", "clone", "--branch", branch, repo_url, str(state_repo_path)], check=True)
+        return True
     except subprocess.CalledProcessError:
         warn("git clone failed - check the URL and that your git/gh credentials are set up.")
         print(f"Clone it manually once that's sorted: git clone {repo_url} {state_repo_path}")
+        return False
 
 
 def _setup_state_repo(env_path: Path) -> None:
@@ -226,8 +235,19 @@ def _setup_state_repo(env_path: Path) -> None:
     is_git_repo = (state_repo_path / ".git").is_dir()
     is_empty = not any(state_repo_path.iterdir())
 
+    # Whether state_repo_path ended up in a usable state - gates creating
+    # the specs/ skeleton below (see GH issue #108). A failed clone must
+    # NOT get the skeleton: state_repo_path would then have real content in
+    # it (the specs/ directory itself) without ever being a successful
+    # clone, so a retry falls into the "already has files, isn't a git repo"
+    # branch below forever - a permanent lockout from one transient failure
+    # (e.g. a missing SSH key), since the manual `git clone` instructions
+    # already printed would then also fail on a no-longer-empty directory.
+    repo_usable = False
+
     if is_git_repo:
         info(f"{state_repo_path} is already a git repository - leaving it as-is.")
+        repo_usable = True
         if repo_url:
             existing_remote = subprocess.run(
                 ["git", "-C", str(state_repo_path), "remote", "get-url", "origin"],
@@ -236,7 +256,7 @@ def _setup_state_repo(env_path: Path) -> None:
             if existing_remote and existing_remote != repo_url:
                 warn(f"Its 'origin' remote ({existing_remote}) does not match the URL you entered ({repo_url}) - left unchanged.")
     elif repo_url and is_empty:
-        _clone_state_repo(repo_url, branch, state_repo_path)
+        repo_usable = _clone_state_repo(repo_url, branch, state_repo_path)
     elif repo_url and not is_empty:
         warn(f"{state_repo_path} already has files in it and isn't a git repository - not cloning automatically.")
         print(f"To make it a clone of {repo_url}, move its contents aside and re-run this script.")
@@ -246,17 +266,23 @@ def _setup_state_repo(env_path: Path) -> None:
         print("No GitHub repo URL given, so there's no 'origin' remote yet - the agent needs")
         print("one to push branches/open PRs. Add it whenever you're ready:")
         print(f"  cd {state_repo_path} && git remote add origin <your-repo-url> && git push -u origin {branch}")
+        repo_usable = True
 
     # Required by check_state_repo.py / the agents regardless of which path
-    # above was taken - safe to create even on an existing/cloned repo.
-    (state_repo_path / "specs").mkdir(parents=True, exist_ok=True)
+    # above was taken - safe to create even on an existing/cloned repo, but
+    # NOT on a failed clone (see repo_usable's docstring note above).
+    if repo_usable:
+        (state_repo_path / "specs").mkdir(parents=True, exist_ok=True)
 
     lib_env.update_env_var(env_path, "STATE_REPO_PATH", str(state_repo_path))
     if repo_url:
         lib_env.update_env_var(env_path, "GITHUB_REPO_URL", repo_url)
     lib_env.update_env_var(env_path, "GITHUB_REPO_BRANCH", branch)
 
-    print(f"State repository ready at: {state_repo_path}")
+    if repo_usable:
+        print(f"State repository ready at: {state_repo_path}")
+    else:
+        print(f"STATE_REPO_PATH set to {state_repo_path}, but it isn't ready yet - see the message above.")
 
 
 _INTERACTION_LEVEL_CHOICES = {"1": "Product", "2": "Stakeholder", "3": "CEO", "4": "EVAL"}
