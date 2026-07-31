@@ -94,6 +94,40 @@ class TestReadWriteEnvVar:
         assert f"STATE_REPO_PATH='{windows_path}'" in text
         assert '"' not in text
 
+    def test_embedded_single_quote_round_trips(self, tmp_path):
+        """
+        Regression test (GH issue #122): an ordinary Git user name like
+        "O'Brien" written unescaped into a single-quoted value
+        (GIT_USER_NAME='O'Brien') isn't just mis-parsed by Docker Compose's
+        own .env parser (which also reads this file directly, e.g.
+        GIT_USER_NAME=${GIT_USER_NAME} in docker-compose.yaml) - confirmed
+        via `docker compose config` that it fails outright with
+        "unexpected character '\\'' in variable name". Compose does
+        recognize a backslash-escaped quote (`\\'`) inside single quotes as
+        a literal quote, so update_env_var must write that escape and
+        read_env_var/load_env_file must reverse it.
+        """
+        env_file = tmp_path / ".env"
+        value = "O'Brien"
+        lib_env.update_env_var(env_file, "GIT_USER_NAME", value)
+        text = env_file.read_text()
+        assert "GIT_USER_NAME='O\\'Brien'" in text
+        assert lib_env.read_env_var(env_file, "GIT_USER_NAME") == value
+
+    def test_multiple_embedded_quotes_round_trip(self, tmp_path):
+        env_file = tmp_path / ".env"
+        value = "'quoted' 'again'"
+        lib_env.update_env_var(env_file, "KEY", value)
+        assert lib_env.read_env_var(env_file, "KEY") == value
+
+    def test_windows_path_still_round_trips_after_quote_escaping_change(self, tmp_path):
+        """A literal backslash not adjacent to a quote must stay untouched -
+        only embedded `'` characters get the `\\'` escape."""
+        env_file = tmp_path / ".env"
+        windows_path = r"C:\Users\till\Documents\GitHub\heinzelmann"
+        lib_env.update_env_var(env_file, "STATE_REPO_PATH", windows_path)
+        assert lib_env.read_env_var(env_file, "STATE_REPO_PATH") == windows_path
+
 
 class TestGenSecret:
     def test_returns_a_reasonably_long_hex_string(self):
@@ -154,3 +188,10 @@ class TestLoadEnvFile:
         env_file.write_text("# comment=notavalue\n\nKEY=value\n")
         result = lib_env.load_env_file(env_file)
         assert result == {"KEY": "value"}
+
+    def test_unescapes_embedded_single_quote(self, tmp_path):
+        """GH issue #122: must mirror update_env_var's `'` -> `\\'` escaping."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("GIT_USER_NAME='O\\'Brien'\n")
+        result = lib_env.load_env_file(env_file)
+        assert result == {"GIT_USER_NAME": "O'Brien"}
