@@ -7,3 +7,15 @@ pytest==9.1.1
 pytest-cov==7.1.0
 radon==6.0.1
 bandit==1.9.4
+# adk eval's own dependency check (google/adk/cli/cli_eval.py's
+# pretty_print_eval_result) only actually needs pandas + tabulate at
+# runtime for our usage - NOT the full google-adk[eval] extra, which pulls
+# in google-cloud-aiplatform[evaluation] and, through it, a hard
+# `litellm<1.86.0` pin that's unresolvable against this file's own
+# litellm==1.90.2 (ResolutionImpossible). google-cloud-aiplatform,
+# gepa, jinja2, and rouge-score - the extra's other members - are for
+# LLM-judge/embedding-similarity metrics and GEPA prompt optimization,
+# neither of which eval/adk/test_config.json's tool_trajectory_avg_score
+# criterion (a mechanical tool-call-sequence comparison) uses.
+pandas==2.3.3
+tabulate==0.9.0
