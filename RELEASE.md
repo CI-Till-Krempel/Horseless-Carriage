@@ -191,10 +191,11 @@ model under budget pressure just... didn't, reliably. See docs/ARCHITECTURE.md "
 human-facing writeup (the stage table, the checklist mapping in `spec-templates/DOD.md`/`DOR.md`);
 this section is the operational summary the agent prompts themselves point back to.
 
-Every story passes through exactly 5 stages, in this exact order, no skipping: **Ready**
-(Product Owner, supported by Architect) → **Implemented** (Dev Team) → **Reviewed** (Architect) →
-**Tested** (QA) → **Accepted** (Product Owner). `STORY_STAGES`/`STAGE_OWNERS`
-(`agents/scrum_team/helpers.py`) are the source of truth for the stage list and ownership.
+Every story passes through exactly 6 stages, in this exact order, no skipping: **Draft** (Product
+Owner, supported by Architect - GH issue #94) → **Ready** (Product Owner, supported by Architect) →
+**Implemented** (Dev Team) → **Reviewed** (Architect) → **Tested** (QA) → **Accepted** (Product
+Owner). `STORY_STAGES`/`STAGE_OWNERS` (`agents/scrum_team/helpers.py`) are the source of truth for
+the stage list and ownership.
 
 `advance_story_stage(title_or_id, stage)` (`agents/scrum_team/tools/requirements.py`) is the only
 way a stage is marked complete, and it enforces, in code:
@@ -208,8 +209,15 @@ way a stage is marked complete, and it enforces, in code:
   same check `create_from_template`/`upsert_adr` already apply to templates themselves (see
   `_strip_agent_safeguard_comments` in `agents/scrum_team/tools/docs.py`), now applied to content
   quality, not just leftover template markup.
+- **Design approval before Ready** (GH issue #94): at the Stakeholder interaction level, moving
+  Draft → Ready also requires `record_design_approval(title_or_id, note)` to have been called for
+  that specific story - "the designs are cleared by stakeholder review, then they are ready." This
+  is per-story (a flag set directly on that story), unlike the shared sprint/release approvals
+  below - see `requires_pre_ready_design_approval` in `agents/scrum_team/helpers.py`. Not required
+  at Product (the human IS the Product Owner day-to-day), CEO (approves budget, not per-story
+  design), or EVAL (fully autonomous).
 - **No bypass**: `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status`
-  directly to any of the 5 stage names *or* a legacy done-synonym ("Done"/"completed"/"closed" -
+  directly to any of the 6 stage names *or* a legacy done-synonym ("Done"/"completed"/"closed" -
   `_story_stages_completed`'s read-side backward compat treats any of those as every stage complete,
   so setting one directly is an equally complete bypass, just spelled differently) - see
   `blocks_direct_status_set` in `agents/scrum_team/helpers.py`. Only `advance_story_stage` can set

@@ -129,12 +129,28 @@ class TestAgentContainerEnvironmentCompleteness:
             "listed here, so they'd always read back as unset regardless of .env (GH issue #76)."
         )
 
+    def test_every_env_var_the_agent_code_reads_is_passed_via_docker_compose_local_hostollama_yaml(self):
+        """GH issue #93: docker-compose.local-hostollama.yaml duplicates
+        docker-compose.local.yaml's agent service (see its own header
+        comment on why it's a separate file rather than an overlay) - it
+        must be kept in the same env-var lockstep this test already
+        enforces between the other two compose files."""
+        expected = _env_vars_read_by_agent_code() - _NOT_EXPECTED_FROM_COMPOSE
+        actual = _agent_service_env_var_names(Path("docker-compose.local-hostollama.yaml"))
+        missing = expected - actual
+        assert not missing, (
+            f"docker-compose.local-hostollama.yaml's agent service environment: list is missing "
+            f"{sorted(missing)} - the agent code reads these via os.getenv, but Compose only forwards "
+            "vars explicitly listed here, so they'd always read back as unset regardless of .env "
+            "(GH issue #76)."
+        )
+
     def test_interaction_level_specifically_is_passed_through(self):
         """The exact symptom reported in GH issue #76: INTERACTION_LEVEL=
         Stakeholder in .env was read back as "Product" inside the running
         agent - because this exact variable was missing from both compose
         files' agent environment list."""
-        for compose_file in ("docker-compose.yaml", "docker-compose.local.yaml"):
+        for compose_file in ("docker-compose.yaml", "docker-compose.local.yaml", "docker-compose.local-hostollama.yaml"):
             assert "INTERACTION_LEVEL" in _agent_service_env_var_names(Path(compose_file)), compose_file
 
 
@@ -154,6 +170,10 @@ class TestNoSpuriousComposeWarningsForVarsWithSafeDefaults:
 
     def test_docker_compose_local_yaml_has_inline_defaults(self):
         entries = _agent_service_env_entries(Path("docker-compose.local.yaml"))
+        self._assert_all_have_defaults(entries)
+
+    def test_docker_compose_local_hostollama_yaml_has_inline_defaults(self):
+        entries = _agent_service_env_entries(Path("docker-compose.local-hostollama.yaml"))
         self._assert_all_have_defaults(entries)
 
     def _assert_all_have_defaults(self, entries):

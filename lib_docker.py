@@ -6,6 +6,8 @@ run/setup scripts. Stdlib-only, works identically on macOS/Linux/Windows.
 import json
 import re
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -15,8 +17,11 @@ import lib_llm_test
 
 def compose_file_args(repo_root: Path) -> list:
     """["-f", "docker-compose.local.yaml"] (plus ["-f", "docker-compose.gpu.yaml"]
-    if OLLAMA_GPU_ENABLED=true in .env - see setup_llm.py's GPU prompt) for
-    a Local/Ollama setup, else [] (default docker-compose.yaml). A
+    if OLLAMA_GPU_ENABLED=true - see setup_llm.py's GPU prompt), or ["-f",
+    "docker-compose.local-hostollama.yaml"] instead of both if
+    OLLAMA_HOST_MODE=true (GH issue #93: Ollama running natively on the host
+    machine instead of in a container - see setup_llm.py's macOS prompt) -
+    for a Local/Ollama setup, else [] (default docker-compose.yaml). A
     Local/Ollama setup (see setup_llm.py's run_local_provider) only ever
     writes config/model-templates/litellm.local-ollama.yaml, never the root
     litellm.yaml docker-compose.yaml's litellm service mounts - it needs
@@ -24,6 +29,16 @@ def compose_file_args(repo_root: Path) -> list:
     the ollama service) instead, or the agent comes up pointed at whichever
     cloud provider was last configured (or the repo's shipped default),
     with no matching API key set (GH issue #36).
+
+    Host mode uses a wholly separate compose file, not docker-compose.local
+    .yaml plus an overlay like the GPU case: Compose merges (rather than
+    replaces) `depends_on` across `-f` files, so an overlay can't actually
+    remove litellm's dependency on the dockerized `ollama` service - see
+    docker-compose.local-hostollama.yaml's own header comment. The two are
+    mutually exclusive (host mode bypasses the dockerized `ollama` service -
+    and therefore its GPU override - entirely; setup_llm.py never writes
+    both flags true), but host mode still wins here if it somehow did,
+    since it's the more fundamental of the two.
 
     Lives here (rather than in run.py, where it originated) so both run.py
     and rebuild_images.py can call it without one importing the other -
@@ -33,8 +48,11 @@ def compose_file_args(repo_root: Path) -> list:
     active_provider = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(repo_root))
     if active_provider != "local":
         return []
+    env_path = repo_root / ".env"
+    if lib_env.read_env_var(env_path, "OLLAMA_HOST_MODE") == "true":
+        return ["-f", "docker-compose.local-hostollama.yaml"]
     args = ["-f", "docker-compose.local.yaml"]
-    if lib_env.read_env_var(repo_root / ".env", "OLLAMA_GPU_ENABLED") == "true":
+    if lib_env.read_env_var(env_path, "OLLAMA_GPU_ENABLED") == "true":
         args += ["-f", "docker-compose.gpu.yaml"]
     return args
 
@@ -88,6 +106,22 @@ def ollama_gpu_status(compose_args: list) -> Optional[str]:
         return None
     matches = re.findall(r"inference compute.*?library=(\w+)", result.stdout + result.stderr)
     return matches[-1] if matches else None
+
+
+def host_ollama_reachable(base_url: str = "http://localhost:11434", timeout_secs: int = 3) -> bool:
+    """GH issue #93: in host-Ollama mode (OLLAMA_HOST_MODE=true,
+    docker-compose.local-hostollama.yaml) there is no `ollama` container for
+    doctor.py's other checks to inspect - Ollama runs directly on the host,
+    so this is checked the same way a human would: a plain HTTP request
+    against Ollama's own root endpoint (which responds "Ollama is running"
+    on success), from the host itself rather than from inside a container.
+    Never raises - unreachable, not installed, or not started yet all just
+    mean "no", not a setup error."""
+    try:
+        with urllib.request.urlopen(base_url, timeout=timeout_secs) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 def maybe_stop_existing_stack(compose_args: list) -> None:

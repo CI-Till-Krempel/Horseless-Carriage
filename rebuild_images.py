@@ -39,9 +39,12 @@ def parse_args(argv: list) -> bool:
 
 def images_to_rebuild(compose_args: list) -> list:
     """Which of this repo's own build services need rebuilding for the
-    active compose file - `agent` is defined in both compose files,
+    active compose file - `agent` is defined in every compose file,
     `ollama` only in docker-compose.local.yaml (see run.py's
-    compose_file_args, which this reuses to detect the active setup)."""
+    compose_file_args, which this reuses to detect the active setup).
+    Host-Ollama mode (GH issue #93) uses docker-compose.local-hostollama
+    .yaml instead, which has no `ollama` service at all - Ollama isn't
+    dockerized there, so this naturally rebuilds only `agent` for it too."""
     services = ["agent"]
     if "docker-compose.local.yaml" in compose_args:
         services.append("ollama")

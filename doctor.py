@@ -15,7 +15,10 @@ This script will:
    live test request if the proxy is already running.
 6. If OLLAMA_GPU_ENABLED=true and the ollama container is running, warn
    loudly if it's actually running on CPU (see lib_docker.ollama_gpu_status)
-   - a driver/WSL2 misconfiguration otherwise fails silently.
+   - a driver/WSL2 misconfiguration otherwise fails silently. If
+   OLLAMA_HOST_MODE=true instead (GH issue #93: Ollama running natively on
+   the host, e.g. for macOS GPU/Metal support), checks host reachability
+   directly instead (see lib_docker.host_ollama_reachable).
 
 Every problem found is collected into a punch list of ActionableItems (see
 check()) instead of stopping at the first one - a user fixing configuration
@@ -225,15 +228,24 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
     active_provider = lib_llm_test.llm_active_provider(active_config_path)
     print(f"Active provider ({active_config_path.relative_to(repo_root)}): {active_provider}")
 
+    host_ollama_mode = active_provider == "local" and env.get("OLLAMA_HOST_MODE") == "true"
+
     key_var = lib_llm_test.llm_provider_key_var(active_provider)
     if key_var:
         key_value = env.get(key_var, "")
         if lib_env.is_placeholder(key_value):
             warn(f"{key_var} is not set (or still a placeholder) in .env. Run python3 setup_llm.py to configure it.")
     elif active_provider == "local" and not env.get("OLLAMA_MODEL"):
-        print("NOTE: OLLAMA_MODEL is not set in .env - the ollama container will default to llama3.1:8b.")
+        where = "your host's Ollama install" if host_ollama_mode else "the ollama container"
+        print(f"NOTE: OLLAMA_MODEL is not set in .env - {where} will default to llama3.1:8b.")
 
-    if not skip_llm_probe and active_provider == "local" and env.get("OLLAMA_GPU_ENABLED") == "true":
+    if not skip_llm_probe and host_ollama_mode:
+        if lib_docker.host_ollama_reachable():
+            print("Host Ollama: reachable at http://localhost:11434.")
+        else:
+            warn("Host Ollama (GH issue #93 host mode) is not reachable at http://localhost:11434. "
+                 "Run `ollama serve` on this machine before starting the stack.")
+    elif not skip_llm_probe and active_provider == "local" and env.get("OLLAMA_GPU_ENABLED") == "true":
         compose_args = lib_docker.compose_file_args(repo_root)
         if "ollama" in lib_docker.compose_running_services(compose_args):
             gpu_status = lib_docker.ollama_gpu_status(compose_args)
@@ -259,7 +271,9 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             warn(f"LLM connectivity test failed - {detail}")
     else:
         print(f"NOTE: LiteLLM proxy not reachable at {proxy_base_url} (containers not running?).")
-        if active_provider == "local":
+        if host_ollama_mode:
+            print("  Start it with: docker compose -f docker-compose.local.yaml -f docker-compose.local-hostollama.yaml up -d db litellm")
+        elif active_provider == "local":
             print("  Start it with: docker compose -f docker-compose.local.yaml up -d db litellm ollama")
         else:
             print("  Start it with: docker compose up -d db litellm")

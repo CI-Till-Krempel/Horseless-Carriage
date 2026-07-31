@@ -21,6 +21,14 @@ class TestCountStoriesReadyForNextStage:
         state_file.write_text('{"sprint_backlog": [{"id": "US-1", "stages_completed": ["Ready"]}], "product_backlog": []}', encoding="utf-8")
         assert watch_roadmap.count_stories_ready_for_next_stage(state_file) == 1
 
+    def test_draft_but_not_ready_counts_too(self, tmp_path):
+        """GH issue #94: Draft is now the first real STORY_STAGES stage -
+        a story stuck there (not yet Ready) is genuinely "ready for the
+        Product Owner to move forward", same as any other stage gap."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text('{"sprint_backlog": [{"id": "US-1", "stages_completed": ["Draft"]}], "product_backlog": []}', encoding="utf-8")
+        assert watch_roadmap.count_stories_ready_for_next_stage(state_file) == 1
+
     def test_reviewed_but_not_tested_counts_too(self, tmp_path):
         """Not just the "Ready" stage specifically - any story one stage
         short of the next owner picking it up counts (e.g. ready for QA)."""

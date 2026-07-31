@@ -25,6 +25,7 @@ from .requirements import (
     sync_stories_from_markdown,
     sync_requirements_from_markdown,
     advance_story_stage,
+    record_design_approval,
 )
 from .github import (
     configure_github_repo,

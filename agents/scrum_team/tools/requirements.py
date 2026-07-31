@@ -12,6 +12,7 @@ from ..helpers import (
     blocks_direct_status_set,
     is_source_file,
     required_pre_implementation_approval,
+    requires_pre_ready_design_approval,
 )
 
 # Matches a bare item ID (US-0001, EP-0002, ISSUE-0003, ...) and nothing
@@ -278,8 +279,9 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
                 f"Cannot set status to '{item.get('status')}' directly - stage transitions (and "
                 "legacy 'Done'/'completed'/'closed', which are treated as every stage complete) "
                 "must go through advance_story_stage(title_or_id, stage), which enforces ordering "
-                "and stage ownership. Omit 'status' here (or set it to something outside the "
-                "pipeline, e.g. 'Draft') and call advance_story_stage instead."
+                "and stage ownership, including 'Draft' - the first stage in the pipeline (GH issue "
+                "#94), not a free-form label. Omit 'status' here entirely (a new item defaults to "
+                "'Draft' automatically) and call advance_story_stage instead."
             ),
         }
 
@@ -681,7 +683,7 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     """
     The nearest User Story before story_id/title in product_backlog order -
     backlog order is priority order (see RELEASE.md "Story workflow").
-    Epics are skipped: they aren't advanced through the 5-stage pipeline
+    Epics are skipped: they aren't advanced through the STORY_STAGES pipeline
     themselves, so they shouldn't block a real story behind them.
     """
     stories_only = [x for x in product_backlog if x.get("type", "User Story") != "Epic"]
@@ -751,8 +753,8 @@ def sync_all_active_stories_to_roadmap(tool_context) -> Dict[str, Any]:
 def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict[str, Any]:
     """
     The single, mandatory mechanism for moving a story through the fixed
-    Ready -> Implemented -> Reviewed -> Tested -> Accepted pipeline (see
-    RELEASE.md "Story workflow" and spec-templates/DOD.md, DOR.md).
+    Draft -> Ready -> Implemented -> Reviewed -> Tested -> Accepted pipeline
+    (see RELEASE.md "Story workflow" and spec-templates/DOD.md, DOR.md).
 
     Enforces, in code rather than by asking nicely in a prompt (which
     repeatedly wasn't enough on its own in real eval runs):
@@ -834,7 +836,31 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
     source_touch_count = None
     architect_review_count = None
     qa_review_count = None
-    if stage == "Implemented":
+    if stage == "Ready":
+        # GH issue #94: at interaction levels where a story's mockup/design
+        # must be cleared by stakeholder review before it's Ready, that
+        # approval is tracked per-story (record_design_approval sets this
+        # flag directly on the story) rather than via the shared,
+        # per-sprint human_approvals list the Implemented/release gates
+        # use below - one blanket approval doesn't stand in for having
+        # actually reviewed THIS story's own design.
+        if requires_pre_ready_design_approval() and not (
+            product_item.get("design_approved") or sprint_item.get("design_approved")
+        ):
+            message = (
+                f"Cannot mark '{story_id}' as Ready - this interaction level requires the story's "
+                f"mockup/design to be cleared by stakeholder review first. Call "
+                f"record_design_approval('{story_id}', ...) once it has been."
+            )
+            from .notifications import record_blocking_interaction
+            record_blocking_interaction(
+                "approval",
+                f"Story '{story_id}' is waiting on design approval before it can be marked Ready.",
+                detail=message,
+                tool_context=tool_context,
+            )
+            return {"status": "error", "message": message}
+    elif stage == "Implemented":
         # Which approval type (if any) is required depends on the configured
         # INTERACTION_LEVEL (see docs/INTERACTION-LEVELS.md) - e.g. "budget"
         # instead of "sprint" at the CEO level, none at all for EVAL.
@@ -973,3 +999,44 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         "story_markdown": story_md_result,
         "roadmap_sync": roadmap_result,
     }
+
+
+def record_design_approval(title_or_id: str, note: str = "", tool_context=None) -> Dict[str, Any]:
+    """
+    Records that a human has reviewed and cleared this specific story's
+    mockup/design (GH issue #94: "the designs are cleared by stakeholder
+    review, then they are ready") - the mechanical counterpart
+    advance_story_stage(..., "Ready") checks for (via
+    requires_pre_ready_design_approval, agents/scrum_team/helpers.py) at
+    interaction levels where that's required, instead of trusting the
+    model's own assertion that a stakeholder looked at it.
+
+    Deliberately per-story (a `design_approved` flag set directly on this
+    one story, in both backlog copies), unlike record_human_approval's
+    "sprint"/"release"/"budget" types - those are single approvals that
+    cover every story for the rest of the sprint/release, but one blanket
+    approval doesn't stand in for having actually reviewed each story's own
+    design.
+    """
+    from .scrum import save_state_to_repo
+
+    s = tool_context.state
+    sprint_backlog = list(s.get("sprint_backlog", []))
+    product_backlog = list(s.get("product_backlog", []))
+    sprint_idx = next((i for i, x in enumerate(sprint_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    if sprint_idx is None and product_idx is None:
+        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+
+    update = {"design_approved": True, "design_approval_note": note.strip()}
+    if sprint_idx is not None:
+        sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
+        s["sprint_backlog"] = sprint_backlog
+    if product_idx is not None:
+        product_backlog[product_idx] = {**product_backlog[product_idx], **update}
+        s["product_backlog"] = product_backlog
+
+    story_id = (product_backlog[product_idx].get("id") if product_idx is not None
+                else sprint_backlog[sprint_idx].get("id")) or title_or_id
+    save_state_to_repo(tool_context)
+    return {"status": "ok", "story_id": story_id, "design_approved": True}
