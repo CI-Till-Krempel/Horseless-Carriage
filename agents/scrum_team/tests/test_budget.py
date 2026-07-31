@@ -11,6 +11,7 @@ from agents.scrum_team.tools.budget import (
     recommend_sprint_budget,
     optimize_process_for_budget,
     create_sprint_report,
+    _write_conversation_transcript,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -200,7 +201,8 @@ class TestBudgetTools(unittest.TestCase):
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
 
         self.assertIn("3 entries", report)
-        self.assertIn(".hc/state.json", report)
+        self.assertIn("specs/reports/TRANSCRIPT-", report)
+        self.assertNotIn(".hc/state.json", report)
         self.assertIn("Prioritized the backlog.", report)
         # Only DevTeam's most recent entry should appear, not the superseded one.
         self.assertIn("Fixed a bug found in review.", report)
@@ -374,6 +376,65 @@ class TestBudgetTools(unittest.TestCase):
         self.assertIn("## Full Process Detail", report)
         for section in ("Per-Agent Token Usage", "Retrospective Actions", "Impediments", "Story Estimates vs Actual Tokens", "Conversation Transcript"):
             self.assertIn(section, report.split("## Full Process Detail")[1])
+
+
+class TestWriteConversationTranscript(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #127): the transcript rendered here is
+    the human-readable Markdown artifact that replaces the raw JSON blob
+    that used to be written straight into the target repo's git-committed
+    .hc/state.json - grouped by agent, including tool calls (not just
+    model text) so it documents what actually happened per sub-agent.
+    """
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_groups_entries_by_agent_and_includes_tool_calls(self, mock_write_file):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript"] = [
+            {"agent_name": "ProductOwner", "role": "model", "content": "Prioritized the backlog."},
+            {"agent_name": "DevTeam", "role": "tool_call", "content": "git_push(branch, commit_message)"},
+            {"agent_name": "DevTeam", "role": "model", "content": "Implemented the feature."},
+        ]
+
+        result = _write_conversation_transcript(tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["entries"], 3)
+        written_content = mock_write_file.call_args_list[0].args[1]
+        self.assertIn("## ProductOwner", written_content)
+        self.assertIn("Prioritized the backlog.", written_content)
+        self.assertIn("## DevTeam", written_content)
+        self.assertIn("git_push(branch, commit_message)", written_content)
+        self.assertIn("Implemented the feature.", written_content)
+        # ProductOwner's heading must come before DevTeam's (chronological).
+        self.assertLess(written_content.index("## ProductOwner"), written_content.index("## DevTeam"))
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_writes_both_numbered_and_latest_paths(self, mock_write_file):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript"] = [{"agent_name": "DevTeam", "role": "model", "content": "hi"}]
+
+        result = _write_conversation_transcript(tool_context)
+
+        self.assertTrue(result["path"].startswith("specs/reports/TRANSCRIPT-"))
+        self.assertEqual(result["latest_path"], "specs/reports/TRANSCRIPT-LATEST.md")
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn(result["path"], written_paths)
+        self.assertIn(result["latest_path"], written_paths)
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_handles_empty_transcript(self, mock_write_file):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = _write_conversation_transcript(tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["entries"], 0)
+        written_content = mock_write_file.call_args_list[0].args[1]
+        self.assertIn("No transcript recorded yet", written_content)
 
 
 if __name__ == "__main__":

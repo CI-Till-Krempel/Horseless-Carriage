@@ -5,7 +5,7 @@ import os
 import re
 import requests
 from typing import Any, Dict, List
-from .base import _state_file_path, _configured_repo_root
+from .base import _configured_repo_root
 from ..helpers import (
     get_process_overhead_percentage,
     is_story_done,
@@ -323,6 +323,65 @@ def _next_sprint_report_path(tool_context) -> str:
     return f"specs/reports/SPRINT-REPORT-{max_num + 1:03d}.md"
 
 
+_TRANSCRIPT_NUM_PATTERN = re.compile(r"TRANSCRIPT-(\d+)\.md$")
+
+
+def _next_transcript_path(tool_context) -> str:
+    """Mirrors _next_sprint_report_path, one sequence per artifact type."""
+    repo_root = _configured_repo_root(tool_context)
+    reports_dir = repo_root / "specs" / "reports"
+    max_num = 0
+    if reports_dir.exists():
+        for fp in reports_dir.glob("TRANSCRIPT-*.md"):
+            m = _TRANSCRIPT_NUM_PATTERN.match(fp.name)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+    return f"specs/reports/TRANSCRIPT-{max_num + 1:03d}.md"
+
+
+def _write_conversation_transcript(tool_context=None) -> Dict[str, Any]:
+    """
+    Renders state.transcript - every agent's model turns
+    (history_management_after_callback) and tool calls
+    (log_tool_invocation_callback), both in agent.py - as a human-readable
+    Markdown file grouped by agent in chronological order, and writes it
+    into the target repo alongside the sprint report (GH issue #127).
+    Replaces what used to be a raw, unbounded JSON blob written straight
+    into the target repo's git-committed .hc/state.json - state.transcript
+    itself is now in-memory-only session state, used just to render this
+    file and the sprint report's excerpt. A per-run raw log additionally
+    exists at /app/sessions/transcript-<session-id>.log (see
+    transcript_logger in agent.py) independent of this markdown file.
+    """
+    from .docs import write_file
+    s = tool_context.state
+    transcript = s.get("transcript", []) or []
+
+    lines = ["# Conversation Transcript\n"]
+    if not transcript:
+        lines.append("\nNo transcript recorded yet for this sprint.\n")
+    else:
+        current_agent = None
+        for entry in transcript:
+            agent_name = entry.get("agent_name", "unknown")
+            if agent_name != current_agent:
+                lines.append(f"\n## {agent_name}\n")
+                current_agent = agent_name
+            content = entry.get("content", "")
+            if entry.get("role") == "tool_call":
+                lines.append(f"- \U0001f527 `{content}`\n")
+            else:
+                lines.append(f"\n{content}\n")
+
+    report = "".join(lines)
+    numbered_path = _next_transcript_path(tool_context)
+    write_file(numbered_path, report, overwrite=True, tool_context=tool_context)
+    latest_path = "specs/reports/TRANSCRIPT-LATEST.md"
+    write_file(latest_path, report, overwrite=True, tool_context=tool_context)
+
+    return {"status": "ok", "path": numbered_path, "latest_path": latest_path, "entries": len(transcript)}
+
+
 def create_sprint_report(summary: str, accomplishments: List[str], tool_context=None) -> Dict[str, Any]:
     """
     Generate a management summary report for the current sprint.
@@ -445,26 +504,25 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     elif estimates:
         omitted_sections.append("Story Estimates vs Actual Tokens")
 
-    # Link to the persisted multi-agent transcript (see US-0001/US-0002).
+    # GH issue #127: the multi-agent transcript is now a human-readable
+    # Markdown file written into the target repo (write_conversation_
+    # transcript), not a raw blob inside the target repo's git-committed
+    # .hc/state.json - written unconditionally so the file exists
+    # regardless of which detail level's report text references it.
     # "full" adds a condensed per-agent excerpt so a technical reviewer can
-    # trace which agent made which decision without reading the whole,
-    # potentially long, log; "business" keeps just the location pointer,
-    # since that level of technical trace has no use for a business
-    # stakeholder; "executive" omits the section entirely (see
-    # omitted_sections below).
+    # trace which agent made which decision without opening the full
+    # transcript file; "business" keeps just the location pointer, since
+    # that level of technical trace has no use for a business stakeholder;
+    # "executive" omits the section entirely (see omitted_sections below).
     transcript = s.get("transcript", [])
+    transcript_result = _write_conversation_transcript(tool_context)
     if detail in ("full", "business"):
         report += "\n## Conversation Transcript\n"
         if transcript:
-            repo_root = _configured_repo_root(tool_context)
-            full_path = _state_file_path(repo_root)
-            try:
-                transcript_location = str(full_path.relative_to(repo_root))
-            except ValueError:
-                transcript_location = str(full_path)
             report += (
-                f"Full transcript ({len(transcript)} entries) persisted at "
-                f"`{transcript_location}` (`transcript` key).\n\n"
+                f"Full transcript ({len(transcript)} entries) written to "
+                f"`{transcript_result['path']}` (also mirrored at "
+                f"`{transcript_result['latest_path']}`).\n\n"
             )
             if detail == "full":
                 report += "Most recent contribution per agent:\n"
@@ -480,14 +538,16 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
 
     if omitted_sections:
         # The underlying data isn't trimmed anywhere except this rendering -
-        # retro_actions/impediment_log/story_estimates/transcript all still
-        # live in full in state (`.hc/state.json`, or `read_doc`/state tools
-        # in-session), this report just doesn't inline them at this level.
+        # Retrospective Actions/Impediments/Story Estimates still live in
+        # full in state (`.hc/state.json`, or `read_doc`/state tools
+        # in-session); the Conversation Transcript, if omitted here, is
+        # still written in full to `specs/reports/TRANSCRIPT-LATEST.md`
+        # regardless of interaction level. Available in full at the
+        # Product/EVAL interaction level either way.
         report += (
             f"\n## Full Process Detail\nOmitted from this {detail} summary (Interaction Level: "
             f"{get_interaction_level()}): {', '.join(omitted_sections)}. This underlying data is "
-            "not deleted - it's still in `.hc/state.json`, available in full at the Product/EVAL "
-            "interaction level.\n"
+            "not deleted - see the note above for exactly where each item still lives.\n"
         )
 
     s["sprint_report"] = report

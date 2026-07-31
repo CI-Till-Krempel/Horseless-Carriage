@@ -91,12 +91,14 @@ regardless of how the PO agent happened to phrase its call.
 | `executive` | CEO | Budget and usage, and the sprint-length/budget recommendation, only - retro, impediments, story estimates, and the transcript are all omitted from the rendered report. |
 
 None of the underlying data is ever deleted or skipped by this - `retro_actions`, `impediment_log`,
-`story_estimates`, and `transcript` are always written to `human_approvals`/state in full regardless
-of level (the mechanical gates in the previous section, e.g. the retrospective having to be *new*
-each sprint, apply unconditionally). Only what this one report *renders* for the human changes. When
-a tier omits a section, the report says so explicitly under a "Full Process Detail" heading, naming
-what was left out and where it still lives (`.hc/state.json`) - a silently thinner report would look
-like nothing happened, rather than like a level-appropriate summary.
+`story_estimates`, and `transcript` are always written in full regardless of level (the mechanical
+gates in the previous section, e.g. the retrospective having to be *new* each sprint, apply
+unconditionally). Only what this one report *renders* for the human changes. When a tier omits a
+section, the report says so explicitly under a "Full Process Detail" heading, naming what was left
+out and where it still lives - `retro_actions`/`impediment_log`/`story_estimates` in `.hc/state.json`,
+the conversation transcript in `specs/reports/TRANSCRIPT-LATEST.md` (a human-readable Markdown file,
+not a raw blob in `.hc/state.json` - see `RELEASE.md` "State persistence") - a silently thinner report
+would look like nothing happened, rather than like a level-appropriate summary.
 
 ## What's still prompt-only, deliberately
 

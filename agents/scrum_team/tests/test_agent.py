@@ -497,6 +497,30 @@ class TestLogToolInvocationCallback(unittest.TestCase):
         for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
             self.assertEqual(agent.before_tool_callback, log_tool_invocation_callback)
 
+    def test_appends_a_names_only_entry_to_the_shared_transcript(self):
+        """
+        Acceptance Criteria (GH issue #127): tool calls must show up
+        per-subagent in the human-readable Markdown transcript alongside
+        model turns - previously only model text was captured in
+        state.transcript at all, so every tool call was invisible in any
+        persisted record. Still names-only, matching the console log's own
+        deliberate choice not to record argument values.
+        """
+        tool = BaseTool(name="git_push", description="Push changes.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        tool_context.state = ScrumState().model_dump()
+        secret_value = "SUPER-SECRET-COMMIT-MESSAGE"
+
+        log_tool_invocation_callback(tool, {"commit_message": secret_value}, tool_context)
+
+        transcript = tool_context.state["transcript"]
+        self.assertEqual(len(transcript), 1)
+        self.assertEqual(transcript[0]["agent_name"], "DevTeam")
+        self.assertEqual(transcript[0]["role"], "tool_call")
+        self.assertIn("git_push(commit_message)", transcript[0]["content"])
+        self.assertNotIn(secret_value, transcript[0]["content"])
+
 
 class TestRecoverFakeToolCallCallback(unittest.TestCase):
     """
