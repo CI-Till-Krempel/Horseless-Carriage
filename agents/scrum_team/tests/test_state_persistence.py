@@ -119,6 +119,43 @@ class TestStatePersistence(unittest.TestCase):
         saved = json.loads(state_file.read_text(encoding="utf-8"))
         self.assertEqual(saved["hc_version"], "0.1.0")
 
+    def test_sprint_files_touched_is_in_the_persisted_allowlist(self):
+        """
+        Acceptance Criteria (GH issue #119): sprint_files_touched must
+        persist alongside dev_touch_baseline (the count it's compared
+        against for the Implemented-stage "real source file written" gate)
+        - previously only the baseline was persisted, so a state reload
+        mid-sprint reset the running list to empty while the baseline
+        stayed at its old value, falsely blocking that gate until enough
+        NEW writes accumulated again.
+        """
+        self.assertIn("sprint_files_touched", REPO_STATE_KEYS)
+
+    def test_save_state_to_repo_persists_sprint_files_touched(self):
+        self.tool_context.state["sprint_files_touched"] = ["app/main.py", "app/utils.py"]
+
+        result = save_state_to_repo(tool_context=self.tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        state_file = self.test_repo / ".hc" / "state.json"
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
+        self.assertEqual(saved["sprint_files_touched"], ["app/main.py", "app/utils.py"])
+
+    def test_load_state_from_repo_restores_sprint_files_touched_after_restart(self):
+        self.tool_context.state["sprint_files_touched"] = ["app/main.py"]
+        self.tool_context.state["dev_touch_baseline"] = 1
+        save_state_to_repo(tool_context=self.tool_context)
+
+        fresh_context = MagicMock()
+        fresh_context.state = ScrumState().model_dump()
+        self.assertEqual(fresh_context.state["sprint_files_touched"], [])
+
+        result = load_state_from_repo(tool_context=fresh_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(fresh_context.state["sprint_files_touched"], ["app/main.py"])
+        self.assertEqual(fresh_context.state["dev_touch_baseline"], 1)
+
     @patch("agents.scrum_team.tools.scrum.migrate_state")
     def test_load_state_from_repo_runs_migrations_against_recorded_version(self, mock_migrate_state):
         """
