@@ -88,6 +88,11 @@ services:
       - ./agents:/app/agents:ro
       - ./spec-templates:/app/spec-templates:ro
       - ./eval:/app/eval:ro
+      # GH issue #156: see docker-compose.yaml's identical entry - `adk
+      # eval` writes its own local run-history bookkeeping under
+      # eval/adk/agent/scrum_team/.adk, which the read-only mount above
+      # blocks ("Read-only file system").
+      - adk_eval_history:/app/eval/adk/agent/scrum_team/.adk
       # Mount the state repository as read-write
       - type: bind
         source: ${STATE_REPO_PATH}
@@ -178,3 +183,4 @@ services:
 volumes:
   postgres_data:
   ollama_data:
+  adk_eval_history:

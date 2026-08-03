@@ -208,6 +208,16 @@ __marimo__/
 
 .idea/
 .adk/
+# GH issue #156: eval/adk/agent/scrum_team/.adk itself (not its contents -
+# adk eval's own run-history writes there at runtime, into a writable
+# named volume mounted over this path - see docker-compose.yaml) must
+# exist on the host before the container starts, since Docker can't
+# create a volume's mountpoint directory inside an already-read-only bind
+# mount (./eval:/app/eval:ro). Keeping just a placeholder tracked, same
+# convention as /sessions/placeholder.txt below, is enough - the volume's
+# actual contents are never this repo checkout's.
+!eval/adk/agent/scrum_team/.adk/
+!eval/adk/agent/scrum_team/.adk/.gitkeep
 /sessions/adk_sessions.db
 # ADK session files can contain real conversation content (tool args/
 # results, pasted secrets) - never track them. placeholder.txt is kept
