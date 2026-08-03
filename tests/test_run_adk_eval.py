@@ -33,6 +33,33 @@ class TestAdkEvalCommand:
         assert "--print_detailed_results" in run_adk_eval.adk_eval_command()
 
 
+class TestHcVersionAndCommit:
+    """GH issue #167/#168: unlike the team-performance harness's
+    run_eval.py (which runs inside the agent container, whose image
+    deliberately excludes .git - GH issue #123), this script runs on the
+    host, so it can read VERSION/git directly rather than depending on an
+    env var being pre-set."""
+
+    def test_reads_real_version_and_commit(self):
+        version, commit = run_adk_eval.hc_version_and_commit()
+        assert version != "unknown"
+        assert commit != "unknown"
+        assert len(commit) == 40  # a full git SHA
+
+    def test_falls_back_to_unknown_when_git_unavailable(self, monkeypatch):
+        monkeypatch.setattr(
+            run_adk_eval.subprocess, "run",
+            lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no git")),
+        )
+        _, commit = run_adk_eval.hc_version_and_commit()
+        assert commit == "unknown"
+
+    def test_falls_back_to_unknown_when_version_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        version, _ = run_adk_eval.hc_version_and_commit()
+        assert version == "unknown"
+
+
 class TestMain:
     """os.chdir is no-op'd in every test the same way tests/test_run.py and
     tests/test_setup_project.py do it for their own os.chdir(Path(__file__)
@@ -43,6 +70,10 @@ class TestMain:
     def _isolate(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(run_adk_eval.os, "chdir", lambda _path: None)
+        # hc_version_and_commit() shells out to `git` - unrelated to what
+        # these tests exercise, and would otherwise be swept up by the
+        # docker-focused subprocess.run monkeypatches below.
+        monkeypatch.setattr(run_adk_eval, "hc_version_and_commit", lambda: ("0.1.0", "abc1234"))
 
     def test_missing_docker_exits(self, tmp_path, monkeypatch, capsys):
         self._isolate(tmp_path, monkeypatch)
@@ -55,6 +86,17 @@ class TestMain:
         else:
             raise AssertionError("expected SystemExit")
         assert "docker" in capsys.readouterr().out.lower()
+
+    def test_prints_version_and_commit_before_anything_else(self, tmp_path, monkeypatch, capsys):
+        self._isolate(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: None)
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
+        try:
+            run_adk_eval.main()
+        except SystemExit:
+            pass
+        out = capsys.readouterr().out
+        assert out.splitlines()[0] == "--- Horseless Carriage v0.1.0 (commit abc1234) ---"
 
     def test_missing_env_exits(self, tmp_path, monkeypatch, capsys):
         self._isolate(tmp_path, monkeypatch)
