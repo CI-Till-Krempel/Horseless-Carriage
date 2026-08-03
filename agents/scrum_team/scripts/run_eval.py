@@ -41,6 +41,7 @@ import requests
 
 from agents.scrum_team.scripts._eval_git_utils import get_github_token, run_git, eval_repo_slug
 from agents.scrum_team.helpers import get_env_with_deprecated_fallback
+from agents.scrum_team.tools.base import _hc_version
 
 DEFAULT_EVAL_REPO_URL = "git@github.com:CI-Till-Krempel/horseless-carriage-eval-todo-app.git"
 EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH", "QUALITY"]
@@ -525,6 +526,12 @@ async def _main_async(args: argparse.Namespace) -> dict:
         "pr_merges": [],
         "stopped_early": False,
     }
+
+    # GH issue #167/#168: print which HC commit/version this run is
+    # actually executing before anything else, so it's clear which
+    # container/build produced a given run's results without having to dig
+    # into the manifest/report afterwards.
+    print(f"--- Horseless Carriage v{_hc_version()} (commit {manifest['hc_commit']}) ---", file=sys.stderr)
 
     for sprint_number in range(1, args.sprints + 1):
         if time.monotonic() >= deadline:

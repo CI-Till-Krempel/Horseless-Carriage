@@ -40,6 +40,28 @@ def parse_args(argv: list) -> bool:
     return "--dry-run" in argv
 
 
+def hc_version_and_commit() -> tuple:
+    """(version, commit) this eval set is actually about to run against -
+    GH issue #167/#168: printed before anything else so it's clear which
+    build/commit produced a given run's results. Read directly from the
+    host checkout (VERSION file, `git rev-parse HEAD`) rather than relying
+    on an HC_COMMIT_SHA env var (unlike the team-performance harness's
+    run_eval.py, which runs *inside* the agent container - whose image
+    deliberately excludes .git, see .dockerignore/GH issue #123 - this
+    script runs on the host, where both are directly available)."""
+    try:
+        version = Path("VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        version = "unknown"
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+    except Exception:
+        commit = "unknown"
+    return version, commit
+
+
 def adk_eval_command() -> list:
     """The `adk eval` invocation run inside the container - see
     eval/adk/README.md's "Deviation: a loader shim was required" for why
@@ -55,6 +77,9 @@ def adk_eval_command() -> list:
 def main() -> None:
     os.chdir(Path(__file__).resolve().parent)
     dry_run = parse_args(sys.argv[1:])
+
+    version, commit = hc_version_and_commit()
+    print(f"--- Horseless Carriage v{version} (commit {commit}) ---")
 
     if shutil.which("docker") is None:
         print("ERROR: 'docker' command not found. Please install Docker.")
