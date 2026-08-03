@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import lib_docker
 import lib_env
 
 
@@ -58,8 +59,12 @@ def main() -> None:
     # config): the test suite mocks every external call and has no need for
     # it, and .env.test's GITHUB_TOKEN is a fake value that would otherwise
     # fail real auth.
+    # GH issue #169: its own Compose project name (horseless-carriage-test),
+    # distinct from the dev stack's (run.py) and the ADK eval-set runner's
+    # (run_adk_eval.py) - see lib_docker.compose_project_args.
     cmd = [
-        "docker", "compose", "--env-file", ".env.test", "run", "--rm",
+        "docker", "compose", *lib_docker.compose_project_args("test"),
+        "--env-file", ".env.test", "run", "--rm",
         "--entrypoint", "", "-e", "PYTHONPATH=/app", "agent",
         "pytest", "-v", "--cov=agents", "agents/scrum_team/tests",
     ]

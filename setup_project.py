@@ -78,10 +78,14 @@ def main() -> None:
     # test with "Missing Gemini API key", despite no cloud provider ever
     # being chosen).
     compose_args = lib_docker.compose_file_args(Path("."))
+    # GH issue #169: same project name as run.py's dev stack (this just
+    # starts db/litellm ahead of it), distinct from the ADK eval-set
+    # runner's and the test suite's - see lib_docker.compose_project_args.
+    full_compose_args = compose_args + lib_docker.compose_project_args("dev")
     print("Starting database and LiteLLM containers via Docker Compose...")
     if compose_args:
         print(f"(Local/Ollama setup detected - using {compose_args[1]})")
-    result = subprocess.run(["docker", "compose", *compose_args, "up", "-d", "db", "litellm"])
+    result = subprocess.run(["docker", "compose", *full_compose_args, "up", "-d", "db", "litellm"])
     if result.returncode != 0:
         sys.exit(result.returncode)
 
