@@ -57,6 +57,21 @@ def compose_file_args(repo_root: Path) -> list:
     return args
 
 
+def compose_project_args(context: str) -> list:
+    """["-p", f"horseless-carriage-{context}"] - GH issue #169: with no
+    explicit project name, Compose derives one from the checkout directory's
+    basename alone, so the dev stack (run.py/setup_project.py/setup_llm.py),
+    the ADK eval-set runner (run_adk_eval.py) and the test suite
+    (run_tests.py) all resolve to the SAME project name - and therefore the
+    same container names (e.g. horseless-carriage-db-1) and built-image
+    names - even though they're independent stacks. That makes it impossible
+    to tell which container belongs to which if more than one runs at the
+    same time on the same machine (and risks one silently adopting/
+    recreating another's containers). context is one of "dev", "eval",
+    "test"."""
+    return ["-p", f"horseless-carriage-{context}"]
+
+
 def compose_running_services(compose_args: list) -> list:
     """Names of services with at least one running container for the
     compose project resolved from compose_args + the current directory -

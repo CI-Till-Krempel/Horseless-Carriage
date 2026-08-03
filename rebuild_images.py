@@ -31,6 +31,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import lib_docker
+
 
 def parse_args(argv: list) -> bool:
     """Returns whether --no-cache was passed."""
@@ -85,7 +87,11 @@ def main() -> None:
     if compose_args:
         print(f"(Local/Ollama setup detected - using {compose_args[1]})")
 
-    exit_code = rebuild(compose_args, no_cache=no_cache)
+    # GH issue #169: same project name as run.py's own dev stack, so a
+    # standalone `python3 rebuild_images.py` run targets/builds for the
+    # same project the dev stack will actually start under.
+    full_compose_args = compose_args + lib_docker.compose_project_args("dev")
+    exit_code = rebuild(full_compose_args, no_cache=no_cache)
     if exit_code != 0:
         sys.exit(exit_code)
 

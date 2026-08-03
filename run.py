@@ -148,6 +148,11 @@ def _main(argv: list = None) -> None:
         sys.exit(1)
 
     compose_args = compose_file_args(Path("."))
+    # GH issue #169: give this stack its own Compose project name so its
+    # containers/images (horseless-carriage-dev-*) can't be confused with
+    # the ADK eval-set runner's or the test suite's - see
+    # lib_docker.compose_project_args.
+    full_compose_args = compose_args + lib_docker.compose_project_args("dev")
 
     print(f"--- Starting Horseless Carriage agent via Docker Compose (mode: {mode}) ---")
     if compose_args:
@@ -155,7 +160,7 @@ def _main(argv: list = None) -> None:
 
     if dev:
         print("--- Developer mode: rebuilding images before starting ---")
-        rebuild_exit_code = rebuild_images.rebuild(compose_args)
+        rebuild_exit_code = rebuild_images.rebuild(full_compose_args)
         if rebuild_exit_code != 0:
             sys.exit(rebuild_exit_code)
 
@@ -172,7 +177,7 @@ def _main(argv: list = None) -> None:
         thread = threading.Thread(target=open_dashboards, args=(mode,), daemon=True)
         thread.start()
         # Resumption logic is handled internally by the container's run_agent.sh script.
-        cmd = ["docker", "compose", *compose_args, "run", "--rm", "--build", "agent",
+        cmd = ["docker", "compose", *full_compose_args, "run", "--rm", "--build", "agent",
                "/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh", *extra_args]
         result = subprocess.run(cmd, env=proc_env)
         sys.exit(result.returncode)
@@ -183,22 +188,22 @@ def _main(argv: list = None) -> None:
         # make `docker compose up` fail outright with no obvious cause -
         # offer a controlled reset before that happens (GH discussion on
         # local Ollama setups).
-        lib_docker.maybe_stop_existing_stack(compose_args)
+        lib_docker.maybe_stop_existing_stack(full_compose_args)
 
         thread = threading.Thread(target=open_dashboards, args=(mode,), daemon=True)
         thread.start()
 
         if daemon:
-            result = subprocess.run(["docker", "compose", *compose_args, "up", "-d", "--build", "agent"], env=proc_env)
+            result = subprocess.run(["docker", "compose", *full_compose_args, "up", "-d", "--build", "agent"], env=proc_env)
             if result.returncode != 0:
                 sys.exit(result.returncode)
             thread.join()
             print("Agent container started in daemon mode.")
-            logs_cmd = " ".join(["docker", "compose", *compose_args, "logs", "-f", "agent"])
+            logs_cmd = " ".join(["docker", "compose", *full_compose_args, "logs", "-f", "agent"])
             print(f"To view logs, run: {logs_cmd}")
         else:
             print("Running ADK web frontend in foreground. Press Ctrl+C to stop.")
-            result = subprocess.run(["docker", "compose", *compose_args, "up", "--build", "agent"], env=proc_env)
+            result = subprocess.run(["docker", "compose", *full_compose_args, "up", "--build", "agent"], env=proc_env)
             sys.exit(result.returncode)
 
 

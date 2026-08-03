@@ -66,7 +66,10 @@ def main() -> None:
         print("real configured provider/model, not just the test suite's mock model.")
         sys.exit(1)
 
-    compose_args = lib_docker.compose_file_args(Path("."))
+    # GH issue #169: its own Compose project name (horseless-carriage-eval),
+    # distinct from the dev stack's (run.py) and the test suite's
+    # (run_tests.py) - see lib_docker.compose_project_args.
+    compose_args = lib_docker.compose_file_args(Path(".")) + lib_docker.compose_project_args("eval")
     adk_cmd = adk_eval_command()
 
     if dry_run:

@@ -49,7 +49,7 @@ class TestComposeFileSelection:
         setup_project.main()
 
         compose_up_calls = [c for c in calls if c[:2] == ["docker", "compose"] and "up" in c]
-        assert compose_up_calls == [["docker", "compose", "up", "-d", "db", "litellm"]]
+        assert compose_up_calls == [["docker", "compose", "-p", "horseless-carriage-dev", "up", "-d", "db", "litellm"]]
         assert "Local/Ollama setup detected" not in capsys.readouterr().out
 
     def test_local_ollama_setup_uses_local_compose_file(self, happy_path, monkeypatch, capsys):
@@ -64,7 +64,10 @@ class TestComposeFileSelection:
         setup_project.main()
 
         compose_up_calls = [c for c in calls if c[:2] == ["docker", "compose"] and "up" in c]
-        assert compose_up_calls == [["docker", "compose", "-f", "docker-compose.local.yaml", "up", "-d", "db", "litellm"]]
+        assert compose_up_calls == [[
+            "docker", "compose", "-f", "docker-compose.local.yaml", "-p", "horseless-carriage-dev",
+            "up", "-d", "db", "litellm",
+        ]]
         assert "Local/Ollama setup detected - using docker-compose.local.yaml" in capsys.readouterr().out
 
     def test_local_ollama_with_gpu_override_included(self, happy_path, monkeypatch):
@@ -84,7 +87,7 @@ class TestComposeFileSelection:
         compose_up_calls = [c for c in calls if c[:2] == ["docker", "compose"] and "up" in c]
         assert compose_up_calls == [[
             "docker", "compose", "-f", "docker-compose.local.yaml", "-f", "docker-compose.gpu.yaml",
-            "up", "-d", "db", "litellm",
+            "-p", "horseless-carriage-dev", "up", "-d", "db", "litellm",
         ]]
 
     def test_compose_up_failure_exits_with_its_returncode(self, happy_path, monkeypatch):

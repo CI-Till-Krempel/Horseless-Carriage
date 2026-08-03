@@ -306,7 +306,7 @@ class TestLlmConfigurationSection:
         doctor.run(valid_repo)
         out = capsys.readouterr().out
         assert "not reachable" in out
-        assert "docker compose up -d db litellm" in out
+        assert "docker compose -p horseless-carriage-dev up -d db litellm" in out
 
     def test_skip_llm_probe_never_calls_wait_for_proxy(self, valid_repo, monkeypatch, capsys):
         """run.py's pre-flight gate passes skip_llm_probe=True since
@@ -330,7 +330,7 @@ class TestLlmConfigurationSection:
         )
         doctor.run(valid_repo)
         out = capsys.readouterr().out
-        assert "docker-compose.local.yaml up -d db litellm ollama" in out
+        assert "docker-compose.local.yaml -p horseless-carriage-dev up -d db litellm ollama" in out
 
     def test_local_ollama_setup_detected_via_model_templates_file(self, valid_repo, monkeypatch, capsys):
         """
@@ -357,7 +357,7 @@ class TestLlmConfigurationSection:
         out = capsys.readouterr().out
         assert "Active provider (config/model-templates/litellm.local-ollama.yaml): local" in out
         assert "GOOGLE_API_KEY is not set" not in out
-        assert "docker-compose.local.yaml up -d db litellm ollama" in out
+        assert "docker-compose.local.yaml -p horseless-carriage-dev up -d db litellm ollama" in out
 
     def test_proxy_reachable_and_test_succeeds(self, valid_repo, mock_proxy, capsys):
         base_url, behavior = mock_proxy

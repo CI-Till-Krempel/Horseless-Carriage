@@ -261,7 +261,9 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             warn("Host Ollama (GH issue #93 host mode) is not reachable at http://localhost:11434. "
                  "Run `ollama serve` on this machine before starting the stack.")
     elif not skip_llm_probe and active_provider == "local" and env.get("OLLAMA_GPU_ENABLED") == "true":
-        compose_args = lib_docker.compose_file_args(repo_root)
+        # GH issue #169: query under the same project name run.py's dev
+        # stack actually starts under, so this sees the right containers.
+        compose_args = lib_docker.compose_file_args(repo_root) + lib_docker.compose_project_args("dev")
         if "ollama" in lib_docker.compose_running_services(compose_args):
             gpu_status = lib_docker.ollama_gpu_status(compose_args)
             if gpu_status == "cpu":
@@ -286,12 +288,15 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             warn(f"LLM connectivity test failed - {detail}")
     else:
         print(f"NOTE: LiteLLM proxy not reachable at {proxy_base_url} (containers not running?).")
+        # GH issue #169: match run.py's own dev-stack project name, so a
+        # copy-pasted manual start stays recognizable as the same stack.
+        project_flag = " ".join(lib_docker.compose_project_args("dev"))
         if host_ollama_mode:
-            print("  Start it with: docker compose -f docker-compose.local.yaml -f docker-compose.local-hostollama.yaml up -d db litellm")
+            print(f"  Start it with: docker compose -f docker-compose.local.yaml -f docker-compose.local-hostollama.yaml {project_flag} up -d db litellm")
         elif active_provider == "local":
-            print("  Start it with: docker compose -f docker-compose.local.yaml up -d db litellm ollama")
+            print(f"  Start it with: docker compose -f docker-compose.local.yaml {project_flag} up -d db litellm ollama")
         else:
-            print("  Start it with: docker compose up -d db litellm")
+            print(f"  Start it with: docker compose {project_flag} up -d db litellm")
 
     result = DoctorResult(items=items)
 

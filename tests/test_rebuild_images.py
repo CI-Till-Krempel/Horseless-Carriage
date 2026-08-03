@@ -93,7 +93,7 @@ class TestMain:
 
         rebuild_images.main()
 
-        assert captured["cmd"] == ["docker", "compose", "build", "--pull", "agent"]
+        assert captured["cmd"] == ["docker", "compose", "-p", "horseless-carriage-dev", "build", "--pull", "agent"]
 
     def test_builds_expected_docker_command_for_local_setup_with_no_cache(self, monkeypatch):
         monkeypatch.setattr(rebuild_images.shutil, "which", lambda _name: "/usr/bin/docker")
@@ -114,7 +114,7 @@ class TestMain:
         rebuild_images.main()
 
         assert captured["cmd"] == [
-            "docker", "compose", "-f", "docker-compose.local.yaml",
+            "docker", "compose", "-f", "docker-compose.local.yaml", "-p", "horseless-carriage-dev",
             "build", "--pull", "--no-cache", "agent", "ollama",
         ]
 

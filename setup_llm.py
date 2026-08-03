@@ -699,6 +699,10 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
                 compose_args += ["-f", "docker-compose.gpu.yaml"]
 
     services = ["db", "litellm"] + ([extra_service] if extra_service else [])
+    # GH issue #169: same project name as run.py/setup_project.py's dev
+    # stack (this live test starts/uses the same containers), distinct
+    # from the ADK eval-set runner's and the test suite's.
+    project_args = lib_docker.compose_project_args("dev")
 
     if host_ollama_mode:
         info("Ollama host mode: make sure `ollama serve` is running on this machine and the")
@@ -716,7 +720,7 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
     # `ollama` image involved at all.
     if dev and provider == "local" and not host_ollama_mode:
         info("Developer mode: rebuilding the ollama image fresh before starting it for this test...")
-        rebuild_exit_code = rebuild_images.rebuild(compose_args)
+        rebuild_exit_code = rebuild_images.rebuild(compose_args + project_args)
         if rebuild_exit_code != 0:
             warn("Rebuilding the ollama image failed - continuing with whatever image is already present.")
 
@@ -726,10 +730,10 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
     # `docker compose up` fail outright with no obvious cause - offer a
     # controlled reset before that happens (GH discussion on local Ollama
     # setups).
-    lib_docker.maybe_stop_existing_stack([*compose_args, "--env-file", str(env_path)])
+    lib_docker.maybe_stop_existing_stack([*compose_args, *project_args, "--env-file", str(env_path)])
 
     info(f"Starting {' + '.join(services)} (docker compose {' '.join(compose_args)} up -d)...")
-    cmd = ["docker", "compose", *compose_args, "--env-file", str(env_path), "up", "-d", *services]
+    cmd = ["docker", "compose", *compose_args, *project_args, "--env-file", str(env_path), "up", "-d", *services]
     try:
         # capture_output (not DEVNULL): "is the Docker daemon running?" was
         # a guess masking whatever `docker compose up` actually said - on
@@ -748,7 +752,7 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
     info("Waiting for the LiteLLM proxy to come up...")
     if not lib_llm_test.llm_wait_for_proxy("http://localhost:4000", 60):
         warn("LiteLLM proxy did not become reachable at http://localhost:4000 within 60s.")
-        print(f"Check logs with: docker compose {' '.join(compose_args)} logs litellm")
+        print(f"Check logs with: docker compose {' '.join(compose_args)} {' '.join(project_args)} logs litellm")
         return
 
     master_key = lib_env.read_env_var(env_path, "LITELLM_MASTER_KEY")
@@ -774,7 +778,7 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
             time.sleep(wait_between)
 
     warn(f"The test request did not succeed: {detail}")
-    print(f"Run python3 doctor.py for a more detailed diagnosis, or check: docker compose {' '.join(compose_args)} logs litellm")
+    print(f"Run python3 doctor.py for a more detailed diagnosis, or check: docker compose {' '.join(compose_args)} {' '.join(project_args)} logs litellm")
 
 
 # --- Cloud provider flow (Gemini / Anthropic / OpenAI) ---
@@ -958,12 +962,15 @@ def run_local_provider(dev: bool = False) -> None:
 
     print()
     print("Next steps:")
+    # GH issue #169: match run.py's own dev-stack project name, so a
+    # copy-pasted manual start stays recognizable as the same stack.
+    project_flag = " ".join(lib_docker.compose_project_args("dev"))
     if host_mode:
-        print("  docker compose -f docker-compose.local-hostollama.yaml up")
+        print(f"  docker compose -f docker-compose.local-hostollama.yaml {project_flag} up")
     elif gpu_enabled:
-        print("  docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml up")
+        print(f"  docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml {project_flag} up")
     else:
-        print("  docker compose -f docker-compose.local.yaml up")
+        print(f"  docker compose -f docker-compose.local.yaml {project_flag} up")
 
 
 def main(dev: bool = False) -> None:
