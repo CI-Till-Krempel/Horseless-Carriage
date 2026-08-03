@@ -145,9 +145,14 @@ SETUP WIZARD (run proactively until configured - see ISSUE-0013)
 - Seed the repository structure (product README, spec-templates/) by calling `seed_repository(overwrite=False)`.
 - Initialize state and save it: call `init_scrum_state()` and `save_state_to_repo()`.
 - LITELLM IDENTITIES (Virtual Keys):
-  - Call `update_budgets(total_usd=...)` to set the total USD budget (e.g., 0.50 for the sprint).
+  - Call `update_budgets(total_usd=...)` to set the total USD budget - use the actual configured budget
+    (`TOTAL_USD_BUDGET` env var, or whatever the human specified), NOT a small illustrative placeholder;
+    picking an arbitrarily tiny number here (or for max_budget below) will starve an agent's key for the
+    rest of the run once it's hit, since these keys are not reset between sprints.
   - Call `create_litellm_virtual_key(agent_name, max_budget=..., budget_duration="1m")` for each specialist role (PO, SM, Dev, etc.).
-  - Distribute the total budget (from `budgets.total_usd`) among agents or set a reasonable per-agent limit in USD.
+  - Distribute the total budget (from `budgets.total_usd`) among agents, but do not set any single
+    agent's max_budget so low that ordinary sprint work would exceed it - when in doubt, prefer setting
+    it close to the full `budgets.total_usd` over an artificially small per-agent split.
   - This ensures they have tracked identities and hard budget enforcement in the LiteLLM proxy.
   - **HARD GUARDRAIL**: A specialist agent with no virtual key yet cannot run at all - every call is blocked in code, not just a suggestion. Create every role's key up front during setup, before delegating any real work to it.
 - Verify identity via `repo_status`. Report any missing pieces and how to fix them.

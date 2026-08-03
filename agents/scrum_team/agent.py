@@ -189,6 +189,25 @@ try:
                     f"({e}). Please check that the proxy is running and try again."
                 )
                 return _degraded_llm_response("connection-error", "stop", error_msg, model_name, kwargs.get("stream"))
+            # A real eval run crashed the whole process here: a per-agent
+            # LiteLLM virtual key's own max_budget (set ad hoc by
+            # create_litellm_virtual_key, unrelated to the shared
+            # scrum-sprint-budget check_cost_budget_callback already
+            # enforces) was exceeded, and litellm.RateLimitError propagated
+            # all the way up through ADK uncaught, killing `adk run`/
+            # run_eval.py with no degraded response for the caller to react
+            # to. Degrade the same way as a connection failure - the calling
+            # agent gets a normal in-band message it can act on (e.g.
+            # transfer to another role) instead of the whole session dying.
+            if isinstance(e, litellm.exceptions.RateLimitError):
+                logger.warning(f"Detected LiteLLM budget/rate-limit rejection: {e}")
+                error_msg = (
+                    f"⚠️ [BUDGET LIMIT] This agent's LiteLLM virtual key rejected the request "
+                    f"({e}). Its own budget cap has likely been exceeded - a human should raise "
+                    "or reset it (see README.md \"Budget Management\"); this agent cannot make "
+                    "further LLM calls on this key until then."
+                )
+                return _degraded_llm_response("rate-limit-error", "stop", error_msg, model_name, kwargs.get("stream"))
             raise e
 
     adk_litellm.LiteLLMClient.acompletion = _patched_adk_acompletion
@@ -1133,6 +1152,54 @@ def agent_thinking_stop_callback(callback_context: CallbackContext, llm_response
 
 # --- Tool Call Visibility ---
 
+TRANSFER_LOOP_THRESHOLD = 6
+
+
+def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: str) -> Optional[Dict[str, Any]]:
+    """
+    Breaks an unproductive transfer_to_agent ping-pong between exactly two
+    agents - a real eval run saw ProductOwner and Scrum Master bounce
+    transfer_to_agent back and forth ~40 times with no other tool call in
+    between (create_sprint_report's mandatory-retro gate, see
+    tools/budget.py, kept rejecting PO's attempt to close the sprint, and
+    each rejection just sent it back to Scrum Master again). Nothing
+    mechanical stopped it - it only stopped when a per-agent LiteLLM budget
+    cap ran out and crashed the whole process. This tracks consecutive
+    transfer_to_agent hops between the *same* pair of agents; any other
+    tool call (real progress) or a transfer involving a third agent resets
+    the streak. Mirrors _track_orchestrator_stall's "mechanical banner +
+    blocking interaction" approach, but as a before_tool_callback gate since
+    that's what actually sees each transfer's target agent.
+    """
+    state = tool_context.state
+    pair = tuple(sorted((from_agent, to_agent)))
+    loop_state = state.get("_transfer_loop") or {}
+    count = loop_state.get("count", 0) + 1 if loop_state.get("pair") == list(pair) else 1
+    state["_transfer_loop"] = {"pair": list(pair), "count": count}
+
+    if count < TRANSFER_LOOP_THRESHOLD:
+        return None
+
+    state["_transfer_loop"] = {"pair": None, "count": 0}
+    msg = (
+        f"🔁 [TRANSFER LOOP DETECTED] {from_agent} and {to_agent} have handed off to each other "
+        f"{count} times in a row with no other tool call in between - refusing this transfer. "
+        "Stop transferring and actually call a tool that makes progress (e.g. the mandatory step "
+        "you're both routing around), or explain the blocker instead of handing off again."
+    )
+    try:
+        from .tools.notifications import record_blocking_interaction
+        record_blocking_interaction(
+            "stalled",
+            f"{from_agent} and {to_agent} bounced transfer_to_agent {count}x with no progress.",
+            detail=msg,
+            tool_context=tool_context,
+        )
+    except Exception:
+        pass
+    return {"status": "error", "message": msg}
+
+
 def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict[str, Any]]:
     """
     BeforeToolCallback: prints a hard-to-miss notice for every tool call, to
@@ -1155,7 +1222,8 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     Deliberately logs argument *names* only, not values - tool arguments can
     carry large file contents or PR bodies, and printing full values here
     would be noisy at best and a way to leak sensitive content into logs at
-    worst. Always returns None: this is a passive trace, never a gate.
+    worst. Mostly a passive trace - only gates the specific transfer-loop
+    case, see _detect_transfer_loop.
 
     GH issue #127: also records this same names-only call description into
     the shared transcript (state.transcript) and the durable per-run
@@ -1177,6 +1245,21 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
         tool_context.state["transcript"] = _trim_transcript(transcript)
     except Exception:
         pass
+
+    if tool.name == "transfer_to_agent":
+        target_agent = (args or {}).get("agent_name")
+        if target_agent:
+            loop_result = _detect_transfer_loop(tool_context, agent_name, target_agent)
+            if loop_result is not None:
+                print(f"\U0001f501 [{agent_name}] transfer loop broken (-> {target_agent})", file=sys.stderr)
+                return loop_result
+    else:
+        # Any non-transfer tool call is real progress - reset the ping-pong
+        # streak so it only fires on genuinely unproductive bouncing.
+        try:
+            tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
+        except Exception:
+            pass
 
     if os.getenv("AGENT_MODE", "web") == "cli":
         try:

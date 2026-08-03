@@ -482,6 +482,13 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # sprints sometimes don't) - None otherwise, not a fabricated value.
         "sprint_report_kpis": session.state.get("sprint_report_kpis"),
         "stop_reason": stop_reason,
+        # Set by _notify_critical_halt (agent.py) whenever
+        # check_cost_budget_callback halts this sprint on a token/USD
+        # guardrail - a real run kept silently starting the next sprint
+        # fresh after this instead of stopping (its own token/state resets
+        # made the halted sprint look like it never happened). The caller
+        # uses this to actually stop the whole run.
+        "critical_halt": bool(session.state.get("critical_halt_notified")),
     }
 
 
@@ -535,24 +542,53 @@ async def _main_async(args: argparse.Namespace) -> dict:
 
         message_text = _kickoff_message(scenario_text) if sprint_number == 1 else _sprint_message(sprint_number, args.sprints)
         print(f"--- sprint {sprint_number}/{args.sprints}: sending scripted message ---", file=sys.stderr)
-        sprint_result = await _run_one_sprint(
-            runner, session_service, app_name, user_id, session.id, message_text, args.max_events_per_sprint, deadline,
-        )
-        sprint_result["sprint_number"] = sprint_number
-        manifest["sprints"].append(sprint_result)
-        if sprint_result["stop_reason"] == "max_duration_exceeded":
+        try:
+            sprint_result = await _run_one_sprint(
+                runner, session_service, app_name, user_id, session.id, message_text, args.max_events_per_sprint, deadline,
+            )
+            sprint_result["sprint_number"] = sprint_number
+            manifest["sprints"].append(sprint_result)
+            if sprint_result["stop_reason"] == "max_duration_exceeded":
+                manifest["stopped_early"] = True
+                manifest["stop_reason"] = "max_duration_exceeded"
+
+            # Only the sprint-level (develop->main) PR is auto-merged here -
+            # base_branch=args.branch (this run's main) narrows _merge_open_prs
+            # so story-level feature->develop PRs are left alone; those are
+            # merged by QA's own merge_story_pr call during the sprint instead.
+            merges = _merge_open_prs(args.local_path, args.branch, sprint_result=sprint_result)
+            manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number} for m in merges])
+            _sync_local_clone_to_branch(args.develop_branch, args.local_path, args.github_token)
+        except Exception as e:
+            # Whatever crashed (a real run hit an uncaught litellm.RateLimitError
+            # here, see agent.py's _patched_adk_acompletion for the fix to that
+            # specific case) - don't lose every sprint's data gathered so far.
+            # main() writes out whatever manifest _main_async returns, crashed
+            # or not, so this still leaves a usable partial report/transcript
+            # on disk instead of nothing at all.
+            print(f"--- sprint {sprint_number}/{args.sprints} crashed: {type(e).__name__}: {e} ---", file=sys.stderr)
             manifest["stopped_early"] = True
-            manifest["stop_reason"] = "max_duration_exceeded"
-
-        # Only the sprint-level (develop->main) PR is auto-merged here -
-        # base_branch=args.branch (this run's main) narrows _merge_open_prs
-        # so story-level feature->develop PRs are left alone; those are
-        # merged by QA's own merge_story_pr call during the sprint instead.
-        merges = _merge_open_prs(args.local_path, args.branch, sprint_result=sprint_result)
-        manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number} for m in merges])
-        _sync_local_clone_to_branch(args.develop_branch, args.local_path, args.github_token)
+            manifest["stop_reason"] = "crashed"
+            manifest["crash_sprint"] = sprint_number
+            manifest["crash_error"] = f"{type(e).__name__}: {e}"
+            break
 
         if sprint_result["stop_reason"] == "max_duration_exceeded":
+            break
+
+        if sprint_result["critical_halt"]:
+            # Previously this fell through to the next sprint's fresh
+            # token/state reset as if the halt never happened (a real run
+            # hit this in sprint 1, then bounced into an unrelated
+            # transfer-loop crash in sprint 2) - a token/USD guardrail
+            # tripping is a genuine "stop the run" signal, not a per-sprint
+            # speed bump to silently absorb.
+            print(
+                f"--- sprint {sprint_number}/{args.sprints} hit a critical budget halt - stopping run ---",
+                file=sys.stderr,
+            )
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = "budget_critical_halt"
             break
 
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
