@@ -1,0 +1,64 @@
+# Dedicated LiteLLM config for `python3 run_adk_eval.py --host-ollama` -
+# identical to eval/adk/litellm.local.yaml except api_base, which points at
+# the host's own natively-running Ollama (http://host.docker.internal:11434)
+# instead of a dockerized `ollama` service.
+#
+# GH issue #93: Docker Desktop for Mac has no GPU passthrough at all, so a
+# dockerized Ollama always runs CPU-only there, even on Apple Silicon -
+# --host-ollama talks to Ollama running natively on the host instead, so it
+# can actually use the GPU (Metal). run_adk_eval.py checks/pulls the pinned
+# model directly on the host (via the `ollama` CLI) before bringing up any
+# containers, so there's no dockerized `ollama` service pull to race against
+# here the way there is in the default (dockerized-Ollama) mode.
+model_list:
+  - model_name: scrum-orchestrator
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: scrum-po
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: scrum-sm
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: scrum-dev
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: scrum-qa
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: scrum-arch
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: scrum-quality
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: scrum-eval-cheap
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://host.docker.internal:11434
+
+  - model_name: scrum-test-mock
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: sk-123
+      mock_response: "This is a permanent mock response for integration testing."
+
+general_settings:
+  num_retries: 3
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
+  store_prompts_in_spend_logs: true

@@ -2,10 +2,11 @@ import run_adk_eval
 
 
 class TestParseArgs:
-    def test_default_is_not_dry_run_ci_or_debug(self):
+    def test_default_is_not_dry_run_ci_host_ollama_or_debug(self):
         args = run_adk_eval.parse_args([])
         assert args.dry_run is False
         assert args.ci is False
+        assert args.host_ollama is False
         assert args.debug is False
         assert args.env_file == ".env"
 
@@ -14,6 +15,17 @@ class TestParseArgs:
 
     def test_ci_flag(self):
         assert run_adk_eval.parse_args(["--ci"]).ci is True
+
+    def test_host_ollama_flag(self):
+        assert run_adk_eval.parse_args(["--host-ollama"]).host_ollama is True
+
+    def test_ci_and_host_ollama_are_mutually_exclusive(self):
+        try:
+            run_adk_eval.parse_args(["--ci", "--host-ollama"])
+        except SystemExit as e:
+            assert e.code == 2  # argparse's own usage-error exit code
+        else:
+            raise AssertionError("expected SystemExit")
 
     def test_debug_flag(self):
         assert run_adk_eval.parse_args(["--debug"]).debug is True
@@ -71,9 +83,23 @@ class TestComposeSetup:
         assert extra_env["LITELLM_CONFIG_PATH"] == run_adk_eval.CI_LITELLM_CONFIG
         assert "OLLAMA_MODEL" not in extra_env
 
-    def test_both_modes_use_the_dedicated_eval_project_name(self):
-        for ci in (True, False):
-            compose_args, _ = run_adk_eval.compose_setup(ci=ci)
+    def test_host_ollama_mode_uses_hostollama_stack_and_config(self):
+        """
+        Acceptance Criteria: Docker Desktop (macOS/Windows) has no GPU
+        passthrough, so a dockerized `ollama` service always runs CPU-only -
+        --host-ollama must target the host-native compose file and its own
+        dedicated config, with no OLLAMA_MODEL override (there's no
+        dockerized `ollama` service to read it - ensure_host_ollama_ready
+        handles the model directly on the host instead).
+        """
+        compose_args, extra_env = run_adk_eval.compose_setup(ci=False, host_ollama=True)
+        assert compose_args[:2] == ["-f", "docker-compose.local-hostollama.yaml"]
+        assert extra_env["LITELLM_CONFIG_PATH"] == run_adk_eval.HOST_OLLAMA_LITELLM_CONFIG
+        assert "OLLAMA_MODEL" not in extra_env
+
+    def test_all_modes_use_the_dedicated_eval_project_name(self):
+        for ci, host_ollama in ((True, False), (False, False), (False, True)):
+            compose_args, _ = run_adk_eval.compose_setup(ci=ci, host_ollama=host_ollama)
             assert "-p" in compose_args
             assert compose_args[compose_args.index("-p") + 1] == "horseless-carriage-eval"
 
@@ -151,6 +177,89 @@ class TestWaitForOllamaModel:
         monkeypatch.setattr(run_adk_eval.time, "sleep", lambda _s: None)
         assert run_adk_eval.wait_for_ollama_model([], ".env", {}, "llama3.1:8b", timeout_seconds=5) is True
         assert len(calls) == 2
+
+
+class TestEnsureHostOllamaReady:
+    """
+    Acceptance Criteria: --host-ollama's preflight - ollama CLI present,
+    a native Ollama instance reachable, and the pinned model present
+    (pulling it if not) - runs entirely on the host, before any docker
+    compose command, so (unlike the dockerized case) there's no race to
+    poll for: a synchronous `ollama pull` here can't race with anything
+    since nothing else has started yet.
+    """
+
+    def test_fails_when_ollama_cli_missing(self, monkeypatch, capsys):
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: None)
+        assert run_adk_eval.ensure_host_ollama_ready("llama3.1:8b") is False
+        assert "ollama" in capsys.readouterr().out.lower()
+
+    def test_fails_when_ollama_not_reachable(self, monkeypatch, capsys):
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/local/bin/ollama")
+        monkeypatch.setattr(run_adk_eval.lib_docker, "host_ollama_reachable", lambda: False)
+        assert run_adk_eval.ensure_host_ollama_ready("llama3.1:8b") is False
+        assert "ollama serve" in capsys.readouterr().out
+
+    def test_succeeds_without_pulling_when_model_already_present(self, monkeypatch):
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/local/bin/ollama")
+        monkeypatch.setattr(run_adk_eval.lib_docker, "host_ollama_reachable", lambda: True)
+
+        calls = []
+
+        class FakeResult:
+            returncode = 0
+            stdout = "llama3.1:8b\n"
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return FakeResult()
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
+
+        assert run_adk_eval.ensure_host_ollama_ready("llama3.1:8b") is True
+        assert len(calls) == 1  # only `ollama list` - no pull needed
+        assert calls[0] == ["ollama", "list"]
+
+    def test_pulls_the_model_when_missing(self, monkeypatch):
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/local/bin/ollama")
+        monkeypatch.setattr(run_adk_eval.lib_docker, "host_ollama_reachable", lambda: True)
+
+        calls = []
+
+        class ListResult:
+            returncode = 0
+            stdout = "some-other-model:7b\n"
+
+        class PullResult:
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return ListResult() if cmd == ["ollama", "list"] else PullResult()
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
+
+        assert run_adk_eval.ensure_host_ollama_ready("llama3.1:8b") is True
+        assert calls == [["ollama", "list"], ["ollama", "pull", "llama3.1:8b"]]
+
+    def test_fails_when_pull_fails(self, monkeypatch, capsys):
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/local/bin/ollama")
+        monkeypatch.setattr(run_adk_eval.lib_docker, "host_ollama_reachable", lambda: True)
+
+        class ListResult:
+            returncode = 0
+            stdout = ""
+
+        class FailedPullResult:
+            returncode = 1
+
+        def fake_run(cmd, **kwargs):
+            return ListResult() if cmd == ["ollama", "list"] else FailedPullResult()
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
+
+        assert run_adk_eval.ensure_host_ollama_ready("llama3.1:8b") is False
+        assert "pull" in capsys.readouterr().out.lower()
 
 
 class TestHcVersionAndCommit:
@@ -452,6 +561,68 @@ class TestMain:
 
         assert ollama_wait_calls == []
         assert len(calls) == 3  # up, run, down - eval still actually ran
+
+    def test_host_ollama_mode_runs_full_lifecycle_without_dockerized_ollama_wait(self, tmp_path, monkeypatch):
+        """
+        Acceptance Criteria: --host-ollama must never call wait_for_ollama_model
+        (there's no dockerized `ollama` service to `docker compose exec`
+        into in this mode) - ensure_host_ollama_ready handles the model
+        directly on the host instead, before any docker compose command.
+        """
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+        monkeypatch.setattr(run_adk_eval.lib_docker, "host_ollama_reachable", lambda: True)
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py", "--host-ollama"])
+
+        ollama_wait_calls = []
+        monkeypatch.setattr(run_adk_eval, "wait_for_ollama_model", lambda *a, **k: ollama_wait_calls.append(1) or True)
+
+        calls = []
+
+        class FakeResult:
+            def __init__(self, code=0, stdout=""):
+                self.returncode = code
+                self.stdout = stdout
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == ["ollama", "list"]:
+                return FakeResult(stdout="llama3.1:8b\n")  # already present - no pull needed
+            return FakeResult()
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 0
+
+        assert ollama_wait_calls == []
+        assert calls[0] == ["ollama", "list"]
+        assert "docker-compose.local-hostollama.yaml" in calls[1]
+        assert "run" in calls[2] and "adk" in calls[2]
+        assert "down" in calls[3]
+        assert "-v" not in calls[3]  # host-ollama mode keeps host-managed volumes/state alone
+
+    def test_host_ollama_preflight_failure_exits_before_any_docker_call(self, tmp_path, monkeypatch):
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        # docker present, ollama CLI missing.
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker" if cmd == "docker" else None)
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py", "--host-ollama"])
+
+        calls = []
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("expected SystemExit")
+
+        assert calls == []  # no docker compose command (up/run/down) ever ran
 
     def test_eval_failure_exit_code_propagates_after_teardown(self, tmp_path, monkeypatch):
         """Acceptance Criteria: teardown must never swallow the eval's own
