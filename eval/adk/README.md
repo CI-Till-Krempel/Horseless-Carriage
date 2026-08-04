@@ -103,6 +103,30 @@ without changing anything about the normal dev stack (`run.py`)'s behavior.
 doesn't leave containers running indefinitely (`restart: unless-stopped`)
 the way it previously did.
 
+### A second failure mode: waiting for the model to actually be ready
+
+Fixing the config mismatch above wasn't enough - the exact same
+`[CONNECTION ERROR]`/"model not found" symptom persisted afterward, but now
+as a **race**, not a mismatch: `ollama-entrypoint.sh` backgrounds `ollama
+serve` (so the container starts accepting connections, and `docker compose
+up -d` returns success) and only pulls the model as a separate step
+*afterward* - which can take several minutes on a first run. Every request
+sent during that pull window fails with the identical "model ... not found"
+error, indistinguishable from a genuine connection problem; a real run saw
+most of the 10 eval cases fail this way, with only the last one or two
+succeeding once the pull happened to finish partway through.
+
+`run_adk_eval.py` now polls two things before running the eval, in order:
+1. LiteLLM's own `/health/readiness` (published on `localhost:4000`) -
+   `up -d` returning success only means the container process started, not
+   that LiteLLM has finished its own DB connection setup.
+2. In local mode only: `docker compose exec ollama ollama list`, until the
+   pinned model actually appears - no host port is published for `ollama`
+   (nothing needs to reach it from the host otherwise), so this execs into
+   the container directly rather than hitting an API from the host.
+   Skipped entirely in `--ci` mode, which uses a cloud model with no pull
+   step and no `ollama` container at all.
+
 ## Deviation: a loader shim was required
 
 The task brief for this pass described the root agent as

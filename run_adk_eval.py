@@ -52,6 +52,9 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import lib_docker
@@ -66,6 +69,13 @@ AGENT_MODULE_PATH = "eval/adk/agent/scrum_team"
 LOCAL_LITELLM_CONFIG = "./eval/adk/litellm.local.yaml"
 LOCAL_OLLAMA_MODEL = "llama3.1:8b"
 CI_LITELLM_CONFIG = "./eval/adk/litellm.ci.yaml"
+
+LITELLM_HEALTH_URL = "http://localhost:4000/health/readiness"
+LITELLM_READY_TIMEOUT_SECONDS = 120
+# llama3.1:8b is ~4.7GB - a slow connection can genuinely take several
+# minutes on a first-ever pull (cached in the ollama_data volume for every
+# run after that, see ollama-entrypoint.sh).
+OLLAMA_MODEL_PULL_TIMEOUT_SECONDS = 1200
 
 
 def parse_args(argv: list) -> argparse.Namespace:
@@ -148,6 +158,58 @@ def compose_setup(ci: bool) -> tuple:
     )
 
 
+def wait_for_litellm_ready(timeout_seconds: int = LITELLM_READY_TIMEOUT_SECONDS) -> bool:
+    """Polls LiteLLM's own /health/readiness (published on localhost:4000 in
+    both compose files) - mirrors eval.yml's existing "Start dependency
+    services" polling loop for the team-performance harness. `up -d`
+    returning success only means the container process started, not that
+    LiteLLM has finished its own DB connection setup. Returns False on
+    timeout rather than raising, so the caller can decide how to fail."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(LITELLM_HEALTH_URL, timeout=5) as resp:
+                if resp.status == 200:
+                    return True
+        except (urllib.error.URLError, OSError):
+            pass
+        time.sleep(2)
+    return False
+
+
+def wait_for_ollama_model(compose_args: list, env_file: str, run_env: dict, model: str,
+                           timeout_seconds: int = OLLAMA_MODEL_PULL_TIMEOUT_SECONDS) -> bool:
+    """Polls `docker compose exec ollama ollama list` until `model` shows up.
+
+    A real eval run kept failing with "model 'llama3.1:8b' not found" even
+    after the model config and OLLAMA_MODEL were made consistent - the root
+    cause was a race, not a mismatch: ollama-entrypoint.sh backgrounds
+    `ollama serve` (so the container accepts connections, and `docker
+    compose up -d` returns success) and only pulls the model as a separate
+    step *afterward*, which can take several minutes on a first run. Every
+    request sent before that pull finishes fails with this exact error,
+    indistinguishable from a genuine connection problem - in that real run,
+    most of the 10 eval cases ran (and failed) during the pull window, and
+    only the last one or two succeeded once it finished partway through.
+
+    No host port is published for `ollama` (see docker-compose.local.yaml -
+    "nothing needs to reach it from the host"), so this execs into the
+    container directly via Compose rather than hitting its API from the
+    host. Returns False on timeout rather than raising."""
+    deadline = time.monotonic() + timeout_seconds
+    list_cmd = ["docker", "compose", *compose_args, "--env-file", env_file, "exec", "-T", "ollama", "ollama", "list"]
+    printed_waiting = False
+    while time.monotonic() < deadline:
+        result = subprocess.run(list_cmd, env=run_env, capture_output=True, text=True)
+        if result.returncode == 0 and model in (result.stdout or ""):
+            return True
+        if not printed_waiting:
+            print(f"Waiting for Ollama to finish pulling {model} (first run only, cached afterwards)...")
+            printed_waiting = True
+        time.sleep(5)
+    return False
+
+
 def main() -> None:
     os.chdir(Path(__file__).resolve().parent)
     args = parse_args(sys.argv[1:])
@@ -188,6 +250,9 @@ def main() -> None:
     if args.dry_run:
         print("Would run:")
         print(f"  {env_prefix} docker compose {' '.join(compose_args)} --env-file {args.env_file} up -d db litellm")
+        print(f"  wait for {LITELLM_HEALTH_URL} (up to {LITELLM_READY_TIMEOUT_SECONDS}s)")
+        if not args.ci:
+            print(f"  wait for `ollama list` to show {LOCAL_OLLAMA_MODEL} (up to {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s - first pull only, cached afterwards)")
         print(f"  docker compose {' '.join(compose_args)} --env-file {args.env_file} run --rm -e LOG_LEVEL=debug --entrypoint \"\" agent \\")
         print(f"    {' '.join(adk_cmd)}")
         print(f"  {' '.join(down_cmd)}")
@@ -199,6 +264,13 @@ def main() -> None:
         result = subprocess.run(up_cmd, env=run_env)
         if result.returncode != 0:
             exit_code = result.returncode
+        elif not wait_for_litellm_ready():
+            print(f"ERROR: litellm did not report ready at {LITELLM_HEALTH_URL} within {LITELLM_READY_TIMEOUT_SECONDS}s.")
+            exit_code = 1
+        elif not args.ci and not wait_for_ollama_model(compose_args, args.env_file, run_env, LOCAL_OLLAMA_MODEL):
+            # --ci uses a cloud model - no pull step, nothing to wait for.
+            print(f"ERROR: Ollama did not finish pulling {LOCAL_OLLAMA_MODEL} within {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s.")
+            exit_code = 1
         else:
             print(f"--- Running ADK eval set: {EVAL_SET_PATH} ---")
             # LOG_LEVEL=debug overridden here, not in .env - this eval set

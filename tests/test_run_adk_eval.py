@@ -74,6 +74,81 @@ class TestComposeSetup:
             assert compose_args[compose_args.index("-p") + 1] == "horseless-carriage-eval"
 
 
+class TestWaitForLitellmReady:
+    def test_returns_true_on_first_successful_response(self, monkeypatch):
+        class FakeResp:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(run_adk_eval.urllib.request, "urlopen", lambda *a, **k: FakeResp())
+        assert run_adk_eval.wait_for_litellm_ready(timeout_seconds=5) is True
+
+    def test_returns_false_on_timeout(self, monkeypatch):
+        def always_fails(*a, **k):
+            raise run_adk_eval.urllib.error.URLError("connection refused")
+
+        monkeypatch.setattr(run_adk_eval.urllib.request, "urlopen", always_fails)
+        monkeypatch.setattr(run_adk_eval.time, "sleep", lambda _s: None)
+        assert run_adk_eval.wait_for_litellm_ready(timeout_seconds=0.01) is False
+
+
+class TestWaitForOllamaModel:
+    """
+    Acceptance Criteria: a real eval run kept failing with "model
+    'llama3.1:8b' not found" even after the model config and OLLAMA_MODEL
+    were made consistent - ollama-entrypoint.sh backgrounds `ollama serve`
+    (accepting connections immediately) and only pulls the model as a
+    separate step afterward, which `docker compose up -d`'s own return code
+    never waits for. This must poll until the model genuinely shows up in
+    `ollama list`, not just until the container process has started.
+    """
+
+    def test_returns_true_once_model_appears(self, monkeypatch):
+        class FakeResult:
+            returncode = 0
+            stdout = "NAME              ID              SIZE\nllama3.1:8b       abc123          4.7 GB\n"
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", lambda *a, **k: FakeResult())
+        assert run_adk_eval.wait_for_ollama_model([], ".env", {}, "llama3.1:8b", timeout_seconds=5) is True
+
+    def test_returns_false_on_timeout_while_still_pulling(self, monkeypatch):
+        class FakeResult:
+            returncode = 0
+            stdout = "NAME    ID    SIZE\n"  # model not listed yet - still pulling
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", lambda *a, **k: FakeResult())
+        monkeypatch.setattr(run_adk_eval.time, "sleep", lambda _s: None)
+        assert run_adk_eval.wait_for_ollama_model([], ".env", {}, "llama3.1:8b", timeout_seconds=0.01) is False
+
+    def test_tolerates_exec_failing_before_ollama_is_ready(self, monkeypatch):
+        """`docker compose exec` can itself fail transiently right after the
+        container starts, before Ollama's own serve process is listening -
+        this must keep polling, not treat that as a hard failure."""
+        calls = []
+
+        class FailResult:
+            returncode = 1
+            stdout = ""
+
+        class OkResult:
+            returncode = 0
+            stdout = "llama3.1:8b\n"
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return FailResult() if len(calls) == 1 else OkResult()
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
+        monkeypatch.setattr(run_adk_eval.time, "sleep", lambda _s: None)
+        assert run_adk_eval.wait_for_ollama_model([], ".env", {}, "llama3.1:8b", timeout_seconds=5) is True
+        assert len(calls) == 2
+
+
 class TestHcVersionAndCommit:
     """GH issue #167/#168: unlike the team-performance harness's
     run_eval.py (which runs inside the agent container, whose image
@@ -115,6 +190,12 @@ class TestMain:
         # these tests exercise, and would otherwise be swept up by the
         # docker-focused subprocess.run monkeypatches below.
         monkeypatch.setattr(run_adk_eval, "hc_version_and_commit", lambda: ("0.1.0", "abc1234"))
+        # Both readiness waits are covered by their own dedicated test
+        # classes above - default them to "ready immediately" here so the
+        # rest of these tests aren't all forced to fake out real polling/
+        # sleep loops just to reach the code they actually exercise.
+        monkeypatch.setattr(run_adk_eval, "wait_for_litellm_ready", lambda *a, **k: True)
+        monkeypatch.setattr(run_adk_eval, "wait_for_ollama_model", lambda *a, **k: True)
 
     def _fake_run_recording(self, calls, returncodes=None):
         results = iter(returncodes) if returncodes is not None else None
@@ -281,6 +362,71 @@ class TestMain:
         assert len(calls) == 2
         assert "adk" not in calls[1]
         assert "down" in calls[1]
+
+    def test_litellm_not_ready_stops_before_running_eval(self, tmp_path, monkeypatch):
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
+        monkeypatch.setattr(run_adk_eval, "wait_for_litellm_ready", lambda *a, **k: False)
+
+        calls = []
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("expected SystemExit")
+
+        # up ran, the eval itself must not, but teardown still must.
+        assert len(calls) == 2
+        assert "adk" not in calls[1]
+        assert "down" in calls[1]
+
+    def test_ollama_model_not_ready_stops_before_running_eval_local_only(self, tmp_path, monkeypatch):
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
+        monkeypatch.setattr(run_adk_eval, "wait_for_ollama_model", lambda *a, **k: False)
+
+        calls = []
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("expected SystemExit")
+
+        assert len(calls) == 2
+        assert "adk" not in calls[1]
+        assert "down" in calls[1]
+
+    def test_ci_mode_never_waits_for_an_ollama_model(self, tmp_path, monkeypatch):
+        """--ci uses a cloud model - there's no Ollama pull step to wait for,
+        and no Ollama container in that stack at all."""
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py", "--ci"])
+
+        ollama_wait_calls = []
+        monkeypatch.setattr(run_adk_eval, "wait_for_ollama_model", lambda *a, **k: ollama_wait_calls.append(1) or True)
+
+        calls = []
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 0
+
+        assert ollama_wait_calls == []
+        assert len(calls) == 3  # up, run, down - eval still actually ran
 
     def test_eval_failure_exit_code_propagates_after_teardown(self, tmp_path, monkeypatch):
         """Acceptance Criteria: teardown must never swallow the eval's own
