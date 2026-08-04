@@ -1,0 +1,66 @@
+# Dedicated LiteLLM config for `python3 run_adk_eval.py` (local mode) -
+# deliberately separate from config/model-templates/litellm.local-ollama.yaml,
+# which setup_llm.py freely rewrites to match whatever model a developer's
+# own dev stack is currently configured for. A real run hit "model
+# 'llama3.1:8b' not found" because that shared file had drifted out of sync
+# with .env's OLLAMA_MODEL - this file is never touched by setup_llm.py, so
+# every local `adk eval` run pulls/serves the SAME pinned model regardless
+# of whatever the developer's day-to-day dev stack happens to be using.
+#
+# Pinned to llama3.1:8b - supports tool calling (required for the agents'
+# function-calling tools) and runs on most local machines (CPU-only with
+# ~16GB RAM, or comfortably on any modern GPU). run_adk_eval.py overrides
+# OLLAMA_MODEL to this same tag when bringing the stack up, so the `ollama`
+# container always pulls/serves exactly what this file expects.
+model_list:
+  - model_name: scrum-orchestrator
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-po
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-sm
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-dev
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-qa
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-arch
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-quality
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-eval-cheap
+    litellm_params:
+      model: ollama/llama3.1:8b
+      api_base: http://ollama:11434
+
+  - model_name: scrum-test-mock
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: sk-123
+      mock_response: "This is a permanent mock response for integration testing."
+
+general_settings:
+  num_retries: 3
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
+  store_prompts_in_spend_logs: true

@@ -1,0 +1,134 @@
+# Dedicated LiteLLM config for `python3 run_adk_eval.py --ci` - used by
+# .github/workflows/adk-eval.yml on every release tag. Every role (not just
+# scrum-eval-cheap) is pointed at the same cheap Gemini model: unlike the
+# team-performance harness (agents/scrum_team/scripts/run_eval.py), `adk
+# eval` exercises agent.py's real root_agent unchanged, with no
+# SCRUM_<ROLE>_MODEL override mechanism to redirect roles to scrum-eval-cheap
+# at runtime - this file has to do that redirection itself, in the config.
+#
+# GOOGLE_API_KEY is injected as a GitHub Actions repo secret (see
+# adk-eval.yml's "Write eval environment file" step) - never committed here.
+model_list:
+  - model_name: scrum-orchestrator
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_NONE
+
+  - model_name: scrum-po
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_NONE
+
+  - model_name: scrum-sm
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_NONE
+
+  - model_name: scrum-dev
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_NONE
+
+  - model_name: scrum-qa
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_NONE
+
+  - model_name: scrum-arch
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_NONE
+
+  - model_name: scrum-quality
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_NONE
+
+  - model_name: scrum-eval-cheap
+    litellm_params:
+      model: gemini/gemini-flash-lite-latest
+      api_key: os.environ/GOOGLE_API_KEY
+      safety_settings:
+        - category: HARM_CATEGORY_HARASSMENT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_HATE_SPEECH
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+          threshold: BLOCK_NONE
+        - category: HARM_CATEGORY_DANGEROUS_CONTENT
+          threshold: BLOCK_NONE
+
+  - model_name: scrum-test-mock
+    litellm_params:
+      model: openai/gpt-3.5-turbo
+      api_key: sk-123
+      mock_response: "This is a permanent mock response for integration testing."
+
+general_settings:
+  num_retries: 3
+  master_key: os.environ/LITELLM_MASTER_KEY
+  store_model_in_db: true
+  store_prompts_in_spend_logs: true

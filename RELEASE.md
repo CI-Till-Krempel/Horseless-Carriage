@@ -442,7 +442,9 @@ of only being noticed anecdotally.
 
 `eval.yml` needs, as GitHub Actions repository secrets:
 - `GOOGLE_API_KEY`, `LITELLM_MASTER_KEY` — same as local `.env`, for the LiteLLM
-  proxy the eval run stands up.
+  proxy the eval run stands up. `adk-eval.yml` (the smaller, cheap ADK gate-
+  enforcement eval set — see `eval/adk/README.md`'s "Reproducible model config")
+  reuses these same two secrets, no separate provisioning needed.
 - `EVAL_GITHUB_APP_ID`, `EVAL_GITHUB_APP_PRIVATE_KEY`, `EVAL_GITHUB_APP_INSTALLATION_ID`
   — a GitHub App installed on the eval repo (**not** necessarily the same App used
   for real target repos) with `Contents` + `Pull requests: Read & write`. The

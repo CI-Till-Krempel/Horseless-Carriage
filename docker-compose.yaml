@@ -16,7 +16,12 @@ services:
     ports:
       - "4000:4000"
     volumes:
-      - ./litellm.yaml:/app/config.yaml:ro
+      # LITELLM_CONFIG_PATH lets a caller (e.g. run_adk_eval.py) point this
+      # at a dedicated config - eval/adk/litellm.ci.yaml - instead of
+      # whatever provider/model this developer's own .env last configured
+      # via setup_llm.py, so eval runs are reproducible regardless of the
+      # local dev environment's drift. Unset, this is unchanged from before.
+      - ${LITELLM_CONFIG_PATH:-./litellm.yaml}:/app/config.yaml:ro
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       # Only needed if litellm.yaml is swapped for one of the
