@@ -51,12 +51,13 @@ much cheaper, much faster check, meant to run far more often than a full
 ## The command to run it for real
 
 ```bash
-python3 run_adk_eval.py             # brings up db+litellm, runs the eval set inside the agent container
+python3 run_adk_eval.py             # local: pinned Ollama model (eval/adk/litellm.local.yaml)
+python3 run_adk_eval.py --ci        # cheap cloud model (eval/adk/litellm.ci.yaml) - see adk-eval.yml
 python3 run_adk_eval.py --dry-run   # print the underlying commands without running them
 ```
 
-`run_adk_eval.py` is a thin wrapper (see the repo root) that brings up `db`+`litellm` for your
-currently configured provider and runs the equivalent of:
+`run_adk_eval.py` is a thin wrapper (see the repo root) that brings up `db`+`litellm`+(`ollama` in
+local mode) and runs the equivalent of:
 
 ```bash
 adk eval eval/adk/agent/scrum_team eval/adk/scrum_team.evalset.json --config_file_path eval/adk/test_config.json
@@ -68,6 +69,39 @@ This was verified against this environment's actually-installed `adk` CLI
 required" below for why the path is `eval/adk/agent/scrum_team`, not
 `agents/scrum_team` or `agents` as an initial reading of this task might
 suggest.
+
+## Reproducible model config - dedicated, not the dev stack's
+
+A real run once failed outright with every call returning a canned
+`[CONNECTION ERROR]` (0/10 passed): LiteLLM was relaying a genuine Ollama 404
+because `config/model-templates/litellm.local-ollama.yaml` - freely rewritten
+by `setup_llm.py` for whatever provider/model a developer's own dev stack is
+currently configured for - had drifted out of sync with `.env`'s
+`OLLAMA_MODEL`. Results from this eval set need to be comparable across
+machines and runs, so it never depends on that shared, driftable config:
+
+- **Local (default)**: `eval/adk/litellm.local.yaml`, every role pinned to
+  Ollama's `llama3.1:8b` (tool-calling capable, runs on most machines) -
+  `run_adk_eval.py` overrides `OLLAMA_MODEL` to the same tag when bringing
+  the stack up, so `ollama` always pulls/serves exactly what this config
+  expects, regardless of whatever model this developer's own `.env` last
+  configured for day-to-day dev use. Runs against `docker-compose.local.yaml`.
+- **`--ci`**: `eval/adk/litellm.ci.yaml`, every role pointed at the same
+  cheap Gemini model (`gemini-flash-lite-latest`) - `GOOGLE_API_KEY` is
+  injected as a GitHub Actions repository secret (the same one `eval.yml`
+  already uses - see `RELEASE.md`'s "Required secrets"). Runs against the
+  cloud `docker-compose.yaml` (no Ollama). Used by
+  `.github/workflows/adk-eval.yml` on every release tag.
+
+Neither file is ever touched by `setup_llm.py`. Both compose files'
+`litellm` service now mount `${LITELLM_CONFIG_PATH:-<previous default>}`
+instead of a hardcoded path, so `run_adk_eval.py` can redirect the mount
+without changing anything about the normal dev stack (`run.py`)'s behavior.
+
+`run_adk_eval.py` also tears its stack down (`docker compose ... down`,
+`-v` in `--ci` mode) once the eval finishes - success or failure - so a run
+doesn't leave containers running indefinitely (`restart: unless-stopped`)
+the way it previously did.
 
 ## Deviation: a loader shim was required
 
@@ -230,3 +264,5 @@ get_evaluation_criteria_or_default('eval/adk/test_config.json')  # -> same crite
 | `scrum_team.evalset.json` | The `EvalSet` - 10 `EvalCase` entries |
 | `test_config.json` | The matching `EvalConfig` (`tool_trajectory_avg_score`, `IN_ORDER`) |
 | `agent/scrum_team/__init__.py`, `agent/scrum_team/agent.py` | Loader shim for `adk eval` (see "Deviation" above) - re-exports the real `agents.scrum_team.agent.root_agent` unchanged |
+| `litellm.local.yaml` | Dedicated, pinned LiteLLM config for local `run_adk_eval.py` runs (see "Reproducible model config" above) |
+| `litellm.ci.yaml` | Dedicated, cheap-cloud-model LiteLLM config for `run_adk_eval.py --ci` / `adk-eval.yml` |

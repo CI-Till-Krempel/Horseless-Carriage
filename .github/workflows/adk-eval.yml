@@ -1,0 +1,45 @@
+name: ADK Gate-Enforcement Eval
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+jobs:
+  adk-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Unlike eval.yml's multi-sprint team-performance harness (real spend
+    # across 5 sprints, gated behind a maintainer-approved "eval-approval"
+    # environment), this eval set is ~10 short, scripted single/few-turn
+    # conversations against a cheap Gemini model (eval/adk/litellm.ci.yaml)
+    # - cheap and fast enough to run automatically on every release tag as a
+    # regression gate, with no manual approval step.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write eval environment file
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+        run: |
+          {
+            echo "GOOGLE_API_KEY=$GOOGLE_API_KEY"
+            echo "LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY"
+            echo "DATABASE_URL=postgresql://llm_user:llm_password@db:5432/litellm_db"
+            echo "STATE_REPO_PATH=/tmp/hc-adk-eval-state-scratch"
+            echo "SESSION_ID=adk-eval-${{ github.run_number }}"
+          } > .env.adk-eval
+          mkdir -p /tmp/hc-adk-eval-state-scratch
+
+      - name: Run ADK gate-enforcement eval set
+        run: python3 run_adk_eval.py --ci --env-file .env.adk-eval
+
+      # Belt-and-suspenders backstop: run_adk_eval.py already tears the
+      # stack down itself (even on failure, via its own try/finally) - this
+      # only catches the case where the job got killed/cancelled before that
+      # finally block could run at all.
+      - name: Stop dependency services (backstop)
+        if: always()
+        run: docker compose -p horseless-carriage-eval --env-file .env.adk-eval down -v
