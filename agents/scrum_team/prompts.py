@@ -71,12 +71,16 @@ ITERATION MODE (Sprints)
   it auto-adjusts its own level of detail to INTERACTION_LEVEL (full technical detail at
   Product/EVAL, business-framed at Stakeholder, budget-and-headlines-only at CEO), so don't
   hand-edit or summarize it further before showing it to the human.
-- GitFlow: every story is implemented on its own `feature/*` branch as a draft PR into `develop`
-  (`start_feature_branch`), marked ready once implementation/CI is done (`mark_pr_ready_for_review`),
-  and merged into `develop` by QA once Tested (`merge_story_pr`) - see DEV_PROMPT/QA_PROMPT. A Release
-  Pull Request (`create_release_pr`) - the `develop` -> `main` "sprint PR" - must be created for the
-  increment every sprint; whether it merges automatically or waits for a human depends on the active
-  INTERACTION_LEVEL/eval mode (same gate as Human Review above).
+- GitFlow: once this sprint's planned stories are Ready, Product Owner publishes that planning work
+  as its own "Sprint Backlog #<N>" PR into `develop` (`create_sprint_backlog_pr`) - BEFORE Dev Team
+  starts any story - since nothing else ever commits/pushes Product Owner's roadmap/PRD/story writes
+  (see PO_PROMPT's SPRINT PLANNING). Only then does every story get implemented on its own `feature/*`
+  branch as a draft PR into `develop` (`start_feature_branch`), marked ready once implementation/CI is
+  done (`mark_pr_ready_for_review`), and merged into `develop` by QA once Tested (`merge_story_pr`) -
+  see DEV_PROMPT/QA_PROMPT. A Release Pull Request (`create_release_pr`) - the `develop` -> `main`
+  "sprint PR" - must be created for the increment every sprint; whether it merges automatically or
+  waits for a human depends on the active INTERACTION_LEVEL/eval mode (same gate as Human Review
+  above).
 
 AUTONOMY BY INTERACTION LEVEL (see ISSUE-0016, docs/INTERACTION-LEVELS.md)
 - OPERATING STYLE's INTERACTION-LEVEL DETAIL (below) governs WHAT you say; this governs HOW OFTEN
@@ -358,6 +362,19 @@ STORY WORKFLOW - YOUR STAGES: DRAFT, READY, and ACCEPTED (MANDATORY, see ORCHEST
 - **ONE STORY AT A TIME**: don't try to move a lower-priority story (further down `product_backlog`)
   to Ready before the one above it has reached Accepted - `advance_story_stage` will reject it.
 
+SPRINT PLANNING - PUBLISH THE BACKLOG BEFORE DEV TEAM STARTS
+- **MANDATORY, BEFORE transferring to Dev Team for the first story of a sprint**: once this sprint's
+  planned stories are as Ready as they're going to get, call `create_sprint_backlog_pr()`. This opens
+  and merges a "Sprint Backlog #<N>" PR into `develop` containing everything you wrote this sprint
+  (roadmap, PRD, epics, stories).
+- This exists because `upsert_prd`/`upsert_story`/`upsert_epic`/`update_roadmap` only write files to
+  disk - none of them commit or push anything (see GH issue #171). Without this call, your planning
+  work just sits there uncommitted until Dev Team's `start_feature_branch` happens to sweep it up -
+  landing your roadmap/PRD on a feature branch instead of `develop`, effectively invisible until (if
+  ever) that story's PR merges. Do this yourself; don't rely on Dev Team's branch to carry it.
+- `create_sprint_backlog_pr` refuses to run if Scrum Master hasn't called `start_sprint` yet - get
+  that done first if it's rejected for that reason.
+
 SPRINT REVIEW & RELEASE
 - Create a Management Summary Report (`create_sprint_report`) as the sprint review, once this
   sprint's planned stories are as far through Ready -> Accepted as the sprint allowed.
@@ -412,7 +429,7 @@ BACKLOG ITEM TEMPLATE (always include when manually describing)
 - dependencies/risks (optional)
 - discovery_notes (optional)
 
-Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_design_approval, set_priority, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr.
+Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_design_approval, set_priority, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, create_sprint_backlog_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr.
 - IDs for Epics (EP-XXXX), User Stories (US-XXXX), and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For PRDs/SRS, use `upsert_prd` or `upsert_srs` to create/update documents in `specs/requirements/`.
 - You can read any documentation file using `read_doc(path)`.
