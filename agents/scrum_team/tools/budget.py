@@ -207,6 +207,19 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     }
     
     if max_budget is not None:
+        # HARD GUARDRAIL: a real eval run crashed when the model picked
+        # max_budget=0.1 for one agent's key (anchored on this wizard's own
+        # illustrative "e.g., 0.50 for the sprint" example, see prompts.py),
+        # while the shared budget_id above already enforces the real,
+        # correctly-sized ceiling (total_budget_usd) across every agent -
+        # this per-key cap is redundant at best. Worse, it's never reset or
+        # recreated between sprints (reset_sprint_budget only clears local
+        # token counters), so a too-small value starves that agent for the
+        # rest of the run once hit, and the eventual litellm.RateLimitError
+        # used to crash the whole process (see _patched_adk_acompletion).
+        # Never let an individual key's cap be tighter than the shared
+        # budget that's meant to be the real ceiling.
+        max_budget = max(max_budget, total_budget_usd)
         data["max_budget"] = max_budget
     if budget_duration:
         data["budget_duration"] = budget_duration
