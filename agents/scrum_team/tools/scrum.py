@@ -634,8 +634,13 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
     # again before the *next* sprint can start (same "must be NEW since last
     # time" pattern as create_sprint_report's retro_baseline).
     s["budget_reset_since_last_sprint_start"] = False
+    # Used by create_sprint_backlog_pr (tools/github.py) to name that
+    # sprint's "Sprint Backlog #<N>" PR - the only place a sprint number is
+    # tracked in agent state at all (run_eval.py's own sprint counter is a
+    # harness-only concept, invisible to the agents' own state/tools).
+    s["sprint_number"] = s.get("sprint_number", 0) + 1
     _ = save_state_to_repo(tool_context)
-    return {"status": "ok", "sprint_goal": s["sprint_goal"]}
+    return {"status": "ok", "sprint_goal": s["sprint_goal"], "sprint_number": s["sprint_number"]}
 
 
 def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_context=None) -> Dict[str, Any]:

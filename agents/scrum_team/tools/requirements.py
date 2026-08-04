@@ -1028,13 +1028,33 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         # actually run something, with nothing failing.
         from .quality import _execute_test_suite_coverage
         coverage_result = _execute_test_suite_coverage(tool_context)
-        if not coverage_result.get("available") or coverage_result.get("tests_run", 0) <= 0:
+        tests_run = coverage_result.get("tests_run", 0)
+        if tests_run <= 0:
             return {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - running the test suite found no tests "
                     f"actually ran ({coverage_result.get('note') or 'no coverage summary found'}). "
                     "A story can't be Tested with an empty or unrunnable test suite."
+                ),
+            }
+        if not coverage_result.get("available"):
+            # A real eval run hit this with tests_run > 0 (some tests did run,
+            # possibly all passing) but the coverage summary itself couldn't be
+            # parsed - wording this the same as the "no tests ran" case above
+            # (GH issue #114's original message) sent agents chasing an empty
+            # test suite that wasn't the actual problem, burning an entire
+            # sprint's budget on unrelated tooling changes. State plainly that
+            # tests did run, and surface the real pytest output so whatever's
+            # actually wrong (harness-side coverage parsing, a real test
+            # dependency issue, etc.) is at least visible instead of a black box.
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - {tests_run} test(s) ran but the coverage "
+                    f"summary could not be parsed from pytest's output ({coverage_result.get('note') or 'no coverage summary found'}). "
+                    "This may not be a problem with your test suite - check the output above before "
+                    "changing test/CI configuration further; a human may need to look at this."
                 ),
             }
         if coverage_result.get("tests_failed", 0) > 0:

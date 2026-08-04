@@ -17,6 +17,7 @@ class ScrumState(BaseModel):
     product_backlog: List[Dict] = Field(default_factory=list)
     definition_of_done: List[str] = Field(default_factory=list)
     sprint_goal: str = ""
+    sprint_number: int = 0
     sprint_backlog: List[Dict] = Field(default_factory=list)
     impediment_log: List[Dict] = Field(default_factory=list)
     retro_actions: List[Dict] = Field(default_factory=list)

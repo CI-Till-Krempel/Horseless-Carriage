@@ -324,6 +324,100 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
         "pr": pr_res,
     }
 
+def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=None) -> Dict[str, Any]:
+    """
+    GitFlow: commits+pushes this sprint's planning output (roadmap, PRD,
+    epics, stories reaching Ready - whatever Product Owner has written via
+    upsert_prd/upsert_story/upsert_epic/update_roadmap since the last
+    sprint) to its own branch, opens a PR titled "Sprint Backlog #<N>"
+    against develop, and merges it immediately.
+
+    A real eval run showed why this needs to be its own explicit step:
+    upsert_story/upsert_epic/update_roadmap/upsert_prd only write files to
+    disk - none of them commit, let alone push (see save_state_to_repo's
+    own docstring: "purely local safety net"). Every agent shares one local
+    checkout, so those dangling writes just sat there until whatever tool
+    call did the FIRST `git add -A` + push - in practice DevTeam's
+    start_feature_branch, which exists to sweep in small stray files like a
+    single story markdown, but ended up dragging the entire roadmap/PRD
+    along too and landing it on a feature branch instead of develop. Call
+    this once sprint planning (this sprint's stories reaching Ready) is
+    done, and BEFORE Dev Team opens the first feature branch - so planning
+    output lands on develop as its own reviewable unit.
+
+    - title/body: optional extra text appended to the PR title/body. The
+      title is always prefixed "Sprint Backlog #<N>" (N = state.sprint_number,
+      set by start_sprint - this refuses to run if no sprint has been
+      started yet).
+    """
+    state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
+    sprint_number = state.get("sprint_number", 0)
+    if sprint_number <= 0:
+        return {
+            "status": "error",
+            "message": (
+                "Cannot create a Sprint Backlog PR - no sprint has been started yet "
+                "(sprint_number is unset). Ask Scrum Master to call start_sprint(goal) first."
+            ),
+        }
+
+    repo_root = str(_configured_repo_root(tool_context))
+    develop = _develop_branch_name(tool_context)
+    branch = f"sprint-backlog/{sprint_number}"
+
+    fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
+    checkout_develop = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    if checkout_develop.get("status") == "error":
+        return {
+            "status": "error",
+            "message": f"Could not check out '{develop}': {checkout_develop.get('stderr') or checkout_develop.get('message')}",
+            "fetch": fetch,
+        }
+
+    checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    if checkout_branch.get("status") == "error":
+        return {
+            "status": "error",
+            "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}",
+        }
+
+    push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", tool_context=tool_context)
+    if push_res.get("status") != "ok":
+        return {"status": "error", "message": "Failed to push the sprint backlog branch.", "push": push_res}
+    actual_branch = push_res.get("branch", branch)
+
+    pr_title = f"Sprint Backlog #{sprint_number}" + (f": {title}" if title else "")
+    pr_res = gh_pr_create(
+        title=pr_title,
+        body=body or f"Sprint {sprint_number} planning output - roadmap, backlog, and stories reaching Ready this sprint.",
+        base=develop,
+        head=actual_branch,
+        head_is_resolved=True,
+        tool_context=tool_context,
+    )
+    if pr_res.get("status") != "ok":
+        return {"status": "error", "message": "Failed to open the Sprint Backlog PR.", "push": push_res, "pr": pr_res}
+
+    # No auto-merge sweeps a develop-targeted PR the way run_eval.py's
+    # _merge_open_prs does for the main-targeted release/eval-report PRs
+    # (it deliberately only merges PRs against the run's main branch, same
+    # reason story PRs need QA's own explicit merge_story_pr) - merge here
+    # directly instead of leaving it to ride on something that won't come.
+    # --admin bypasses required-review/status-check protection on develop,
+    # matching how the harness already force-merges its own sprint-level
+    # release PR - this PR is planning documentation, not code, so there's
+    # no build/test gate meaningful to wait on.
+    merge_res = _run(["gh", "pr", "merge", "--merge", "--admin"], cwd=repo_root, tool_context=tool_context)
+
+    return {
+        "status": "ok" if merge_res.get("status") == "ok" else "error",
+        "sprint_number": sprint_number,
+        "branch": actual_branch,
+        "push": push_res,
+        "pr": pr_res,
+        "merge": merge_res,
+    }
+
 def mark_pr_ready_for_review(pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
     """
     GitFlow: removes draft status from a PR opened via start_feature_branch,
