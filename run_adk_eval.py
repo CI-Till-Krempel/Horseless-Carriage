@@ -100,7 +100,7 @@ def main() -> None:
     if dry_run:
         print("Would run:")
         print(f"  docker compose {' '.join(compose_args)} --env-file .env up -d db litellm")
-        print(f"  docker compose {' '.join(compose_args)} --env-file .env run --rm --entrypoint \"\" agent \\")
+        print(f"  docker compose {' '.join(compose_args)} --env-file .env run --rm -e LOG_LEVEL=debug --entrypoint \"\" agent \\")
         print(f"    {' '.join(adk_cmd)}")
         return
 
@@ -111,9 +111,16 @@ def main() -> None:
         sys.exit(result.returncode)
 
     print(f"--- Running ADK eval set: {EVAL_SET_PATH} ---")
+    # LOG_LEVEL=debug overridden here, not in .env - this eval set exists to
+    # catch gate-enforcement regressions against a live model, so seeing the
+    # full request/response trace (e.g. the exact LiteLLM error behind a
+    # canned "[CONNECTION ERROR]" response, see agent.py's
+    # _patched_adk_acompletion) matters every time it's run; the normal dev
+    # stack (run.py) shouldn't get that verbosity by default just because
+    # it shares the same .env file.
     run_cmd = [
         "docker", "compose", *compose_args, "--env-file", ".env", "run", "--rm",
-        "--entrypoint", "", "agent", *adk_cmd,
+        "-e", "LOG_LEVEL=debug", "--entrypoint", "", "agent", *adk_cmd,
     ]
     result = subprocess.run(run_cmd)
     sys.exit(result.returncode)

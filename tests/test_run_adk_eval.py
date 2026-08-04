@@ -155,6 +155,41 @@ class TestMain:
         assert "run" in calls[1]
         assert "adk" in calls[1]
 
+    def test_eval_run_forces_debug_log_level(self, tmp_path, monkeypatch):
+        """
+        Acceptance Criteria: this eval set exists to catch gate-enforcement
+        regressions against a live model - seeing the full request/response
+        trace (e.g. the real LiteLLM error behind a canned "[CONNECTION
+        ERROR]" response) matters every time it runs, so LOG_LEVEL=debug is
+        forced here regardless of whatever the shared .env's LOG_LEVEL is
+        set to for the normal dev stack (run.py).
+        """
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("LOG_LEVEL=info\n")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.lib_docker, "compose_file_args", lambda repo_root: [])
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
+
+        calls = []
+
+        class FakeResult:
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return FakeResult()
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 0
+
+        eval_run_cmd = calls[1]
+        assert "-e" in eval_run_cmd
+        assert eval_run_cmd[eval_run_cmd.index("-e") + 1] == "LOG_LEVEL=debug"
+
     def test_up_failure_stops_before_running_eval(self, tmp_path, monkeypatch):
         self._isolate(tmp_path, monkeypatch)
         (tmp_path / ".env").write_text("")
