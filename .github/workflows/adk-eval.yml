@@ -34,7 +34,11 @@ jobs:
           mkdir -p /tmp/hc-adk-eval-state-scratch
 
       - name: Run ADK gate-enforcement eval set
-        run: python3 run_adk_eval.py --ci --env-file .env.adk-eval
+        # --debug: unlike an interactive local run (where it just floods the
+        # shell), a CI run's log is only read after the fact, and only when
+        # diagnosing a failure - the full request/response trace is worth
+        # having by default here.
+        run: python3 run_adk_eval.py --ci --debug --env-file .env.adk-eval
 
       # Belt-and-suspenders backstop: run_adk_eval.py already tears the
       # stack down itself (even on failure, via its own try/finally) - this

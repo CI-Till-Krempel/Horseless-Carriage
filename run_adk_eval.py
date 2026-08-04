@@ -43,6 +43,7 @@ afterward, success or failure - see the `finally` block in main().
 Usage:
   python3 run_adk_eval.py                      Run the eval set locally (pinned Ollama model).
   python3 run_adk_eval.py --ci                 Run against the cheap cloud model (see adk-eval.yml).
+  python3 run_adk_eval.py --debug              Force LOG_LEVEL=debug for the eval run (verbose - see agent.py's logging).
   python3 run_adk_eval.py --env-file .env.foo  Use a different env file for docker compose.
   python3 run_adk_eval.py --dry-run            Print the commands that would run, without running them.
 """
@@ -92,6 +93,15 @@ def parse_args(argv: list) -> argparse.Namespace:
     parser.add_argument(
         "--env-file", default=".env",
         help="Path to the env file docker compose reads secrets/config from (default: .env).",
+    )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help=(
+            "Force LOG_LEVEL=debug for the eval run - this eval set exists to catch "
+            "gate-enforcement regressions against a live model, so seeing the full "
+            "request/response trace matters when actually diagnosing a failure, but it's "
+            "too noisy to leave on by default for every run (off unless passed)."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -236,10 +246,15 @@ def main() -> None:
     env_prefix = " ".join(f"{k}={v}" for k, v in extra_env.items())
 
     up_cmd = ["docker", "compose", *compose_args, "--env-file", args.env_file, "up", "-d", "db", "litellm"]
-    run_cmd = [
-        "docker", "compose", *compose_args, "--env-file", args.env_file, "run", "--rm",
-        "-e", "LOG_LEVEL=debug", "--entrypoint", "", "agent", *adk_cmd,
-    ]
+    run_cmd = ["docker", "compose", *compose_args, "--env-file", args.env_file, "run", "--rm"]
+    if args.debug:
+        # Opt-in, not forced - this eval set exists to catch gate-enforcement
+        # regressions against a live model, so the full request/response
+        # trace matters when actually diagnosing a failure, but it floods
+        # the shell on every routine run otherwise (only pass --debug when
+        # you actually need it).
+        run_cmd += ["-e", "LOG_LEVEL=debug"]
+    run_cmd += ["--entrypoint", "", "agent", *adk_cmd]
     down_cmd = ["docker", "compose", *compose_args, "--env-file", args.env_file, "down"]
     if args.ci:
         # Ephemeral CI runner - also drop named volumes, matching eval.yml's
@@ -253,8 +268,7 @@ def main() -> None:
         print(f"  wait for {LITELLM_HEALTH_URL} (up to {LITELLM_READY_TIMEOUT_SECONDS}s)")
         if not args.ci:
             print(f"  wait for `ollama list` to show {LOCAL_OLLAMA_MODEL} (up to {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s - first pull only, cached afterwards)")
-        print(f"  docker compose {' '.join(compose_args)} --env-file {args.env_file} run --rm -e LOG_LEVEL=debug --entrypoint \"\" agent \\")
-        print(f"    {' '.join(adk_cmd)}")
+        print(f"  {' '.join(run_cmd)}")
         print(f"  {' '.join(down_cmd)}")
         return
 
@@ -273,14 +287,6 @@ def main() -> None:
             exit_code = 1
         else:
             print(f"--- Running ADK eval set: {EVAL_SET_PATH} ---")
-            # LOG_LEVEL=debug overridden here, not in .env - this eval set
-            # exists to catch gate-enforcement regressions against a live
-            # model, so seeing the full request/response trace (e.g. the
-            # exact LiteLLM error behind a canned "[CONNECTION ERROR]"
-            # response, see agent.py's _patched_adk_acompletion) matters
-            # every time it's run; the normal dev stack (run.py) shouldn't
-            # get that verbosity by default just because it shares the same
-            # .env file.
             result = subprocess.run(run_cmd, env=run_env)
             exit_code = result.returncode
     finally:

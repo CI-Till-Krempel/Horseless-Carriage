@@ -53,6 +53,7 @@ much cheaper, much faster check, meant to run far more often than a full
 ```bash
 python3 run_adk_eval.py             # local: pinned Ollama model (eval/adk/litellm.local.yaml)
 python3 run_adk_eval.py --ci        # cheap cloud model (eval/adk/litellm.ci.yaml) - see adk-eval.yml
+python3 run_adk_eval.py --debug     # force LOG_LEVEL=debug for this run (off by default - floods the shell otherwise)
 python3 run_adk_eval.py --dry-run   # print the underlying commands without running them
 ```
 
