@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -93,7 +94,22 @@ class TestAdkEvalCommand:
 
     def test_uses_the_loader_shim_path(self):
         cmd = run_adk_eval.adk_eval_command()
-        assert cmd[0:3] == ["adk", "eval", "eval/adk/agent/scrum_team"]
+        assert cmd[0:4] == ["python3", "eval/adk/run_eval_shim.py", "eval", "eval/adk/agent/scrum_team"]
+
+    def test_uses_the_sequential_eval_runner_not_the_bare_adk_command(self):
+        """
+        Acceptance Criteria: `adk eval` runs 4 eval cases concurrently by
+        default (its own hardcoded InferenceConfig/EvaluateConfig
+        parallelism=4, no CLI flag to override) - interleaving 4 scripted
+        conversations' tool-call logs made it impossible to tell which log
+        line belonged to which scenario. run_eval_shim.py is a
+        drop-in wrapper that forces parallelism=1 before delegating to the
+        same CLI.
+        """
+        cmd = run_adk_eval.adk_eval_command()
+        assert "adk" not in cmd
+        assert cmd[0] == "python3"
+        assert cmd[1] == run_adk_eval.EVAL_RUNNER_SHIM_PATH
 
     def test_includes_eval_set_and_config(self):
         """The generated evalset (real per-agent keys injected - see
@@ -509,7 +525,6 @@ class TestPrepareScratchStateRepo:
     def test_creates_working_repo_with_initial_commit_on_main(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
-        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_REMOTE_DIR", "remote.git")
 
         path = run_adk_eval.prepare_scratch_state_repo()
 
@@ -526,7 +541,6 @@ class TestPrepareScratchStateRepo:
     def test_creates_develop_branch_too(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
-        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_REMOTE_DIR", "remote.git")
 
         run_adk_eval.prepare_scratch_state_repo()
 
@@ -539,7 +553,6 @@ class TestPrepareScratchStateRepo:
         not a placeholder URL."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
-        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_REMOTE_DIR", "remote.git")
 
         run_adk_eval.prepare_scratch_state_repo()
 
@@ -556,12 +569,66 @@ class TestPrepareScratchStateRepo:
         )
         assert push.returncode == 0
 
+    def test_remote_is_registered_as_a_relative_path_inside_the_working_tree(self, tmp_path, monkeypatch):
+        """
+        Acceptance Criteria: a real eval run failed with "fatal: '/Users/.../
+        eval-output/adk-state-repo-remote.git' does not appear to be a git
+        repository" - a first attempt put the bare remote in a *sibling*
+        directory and registered it via an absolute host path, which only
+        the working tree itself is bind-mounted into the container
+        (docker-compose.*.yaml's STATE_REPO_PATH -> /app/state_repo), so
+        that absolute path resolved to nothing once git_push actually ran
+        inside the container. The remote must live *inside* the working
+        tree and be registered via a relative URL, so the same reference
+        resolves correctly under any absolute path it's mounted at.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
+
+        run_adk_eval.prepare_scratch_state_repo()
+
+        work_dir = tmp_path / "work"
+        remote_url = subprocess.run(
+            ["git", "remote", "get-url", "origin"], cwd=work_dir, capture_output=True, text=True,
+        ).stdout.strip()
+        assert not Path(remote_url).is_absolute()
+        assert (work_dir / run_adk_eval.STATE_REPO_SCRATCH_REMOTE_SUBDIR).is_dir()
+
+        # Simulate the container seeing this same working tree at a
+        # completely different absolute path than the host used to set it
+        # up - a relative remote URL must still resolve correctly there.
+        container_path = tmp_path / "elsewhere" / "state_repo"
+        container_path.parent.mkdir()
+        work_dir.rename(container_path)
+        push = subprocess.run(
+            ["git", "checkout", "-B", "feature/test"], cwd=container_path, capture_output=True, text=True,
+        )
+        assert push.returncode == 0
+        (container_path / "new.txt").write_text("x")
+        subprocess.run(["git", "add", "-A"], cwd=container_path, check=True)
+        subprocess.run(["git", "commit", "-m", "test commit"], cwd=container_path, check=True)
+        push = subprocess.run(
+            ["git", "push", "-u", "origin", "feature/test"], cwd=container_path, capture_output=True, text=True,
+        )
+        assert push.returncode == 0, push.stderr
+
+    def test_remote_subdir_is_excluded_from_working_tree_commits(self, tmp_path, monkeypatch):
+        """The bare remote living inside the working tree must never itself
+        get swept up by `git add -A` as a nested repo/gitlink."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
+
+        run_adk_eval.prepare_scratch_state_repo()
+
+        work_dir = tmp_path / "work"
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=work_dir, capture_output=True, text=True).stdout
+        assert run_adk_eval.STATE_REPO_SCRATCH_REMOTE_SUBDIR not in status
+
     def test_wipes_and_recreates_fresh_on_repeat_calls(self, tmp_path, monkeypatch):
         """A second run must start from the same clean state, not
         accumulate branches/commits left over from a previous run."""
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
-        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_REMOTE_DIR", "remote.git")
 
         run_adk_eval.prepare_scratch_state_repo()
         work_dir = tmp_path / "work"
@@ -714,7 +781,7 @@ class TestMain:
 
         assert calls == []
         out = capsys.readouterr().out
-        assert "adk eval" in out
+        assert "run_eval_shim.py eval" in out
         assert "up -d db litellm" in out
         assert "down" in out
 
@@ -738,7 +805,7 @@ class TestMain:
         assert len(calls) == 3
         assert calls[0][-3:] == ["up", "-d", "db"] or "litellm" in calls[0]
         assert "run" in calls[1]
-        assert "adk" in calls[1]
+        assert run_adk_eval.EVAL_RUNNER_SHIM_PATH in calls[1]
         assert "down" in calls[2]
         assert "-v" not in calls[2]  # local mode keeps the pulled-model volume
 
@@ -978,7 +1045,7 @@ class TestMain:
         assert ollama_wait_calls == []
         assert calls[0] == ["ollama", "list"]
         assert "docker-compose.local-hostollama.yaml" in calls[1]
-        assert "run" in calls[2] and "adk" in calls[2]
+        assert "run" in calls[2] and run_adk_eval.EVAL_RUNNER_SHIM_PATH in calls[2]
         assert "down" in calls[3]
         assert "-v" not in calls[3]  # host-ollama mode keeps host-managed volumes/state alone
 

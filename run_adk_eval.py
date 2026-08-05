@@ -82,6 +82,11 @@ EVAL_SET_PATH = "eval/adk/scrum_team.evalset.json"
 GENERATED_EVAL_SET_PATH = "eval/adk/scrum_team.evalset.generated.json"
 EVAL_CONFIG_PATH = "eval/adk/test_config.json"
 AGENT_MODULE_PATH = "eval/adk/agent/scrum_team"
+# Forces `adk eval` to run cases one at a time and caps runaway trajectories
+# far below its hardcoded defaults (parallelism=4, max_llm_calls=500) - see
+# run_eval_shim.py's own docstring for why there's no CLI flag/config-file
+# field to control either of these otherwise.
+EVAL_RUNNER_SHIM_PATH = "eval/adk/run_eval_shim.py"
 
 # Mirrors run_eval.py's _SPECIALIST_AGENT_NAMES - the literal internal
 # agent_name values every specialist role can be addressed/transferred to
@@ -107,7 +112,17 @@ EVAL_KEY_MAX_BUDGET_USD = 2.0
 # team-performance harness's own eval-repo clone) so a run's actual result -
 # commits, branches, files the agents wrote - is there to inspect afterward.
 STATE_REPO_SCRATCH_DIR = "eval-output/adk-state-repo"
-STATE_REPO_SCRATCH_REMOTE_DIR = "eval-output/adk-state-repo-remote.git"
+# Deliberately INSIDE the working dir above (not a sibling directory) - only
+# STATE_REPO_SCRATCH_DIR itself is bind-mounted into the container (see
+# docker-compose.*.yaml's STATE_REPO_PATH -> /app/state_repo), so a sibling
+# path baked into .git/config as an absolute host path resolved to nothing
+# inside the container ("does not appear to be a git repository") the first
+# time a real git_push actually ran there. A subdirectory of the mounted
+# tree, referenced via a *relative* remote URL (see prepare_scratch_state_repo),
+# resolves correctly under both the host path and the container's
+# /app/state_repo, since relative git remote paths are resolved against cwd
+# at push/fetch time, never baked in as an absolute path.
+STATE_REPO_SCRATCH_REMOTE_SUBDIR = ".state-repo-remote.git"
 
 # Pinned, dedicated configs - see this module's docstring's "Reproducible
 # model config". None of these are ever touched by setup_llm.py (which only
@@ -223,11 +238,22 @@ def adk_eval_command() -> list:
     AGENT_MODULE_PATH is the eval/adk/agent/scrum_team shim rather than
     agents/scrum_team or agents directly.
 
+    Runs `python3 <EVAL_RUNNER_SHIM_PATH>` in place of the bare `adk`
+    executable - a drop-in replacement with the identical CLI surface (same
+    subcommand/arguments) that forces every eval case to run one at a time
+    and caps runaway trajectories at ADK_EVAL_MAX_LLM_CALLS turns instead of
+    `adk eval`'s own hardcoded defaults. Without the former, `adk eval` ran
+    4 scripted conversations concurrently, interleaving their tool-call
+    logs so badly it was impossible to tell which log line belonged to
+    which scenario; without the latter, a model stuck in an unproductive
+    loop burned 100+ turns before the sprint token budget finally cut it
+    off - see run_eval_shim.py's own docstring for the full mechanics.
+
     Runs against GENERATED_EVAL_SET_PATH, not the checked-in EVAL_SET_PATH
     template directly - see provision_and_generate_eval_set, which writes it
     before this command ever executes."""
     return [
-        "adk", "eval", AGENT_MODULE_PATH, GENERATED_EVAL_SET_PATH,
+        "python3", EVAL_RUNNER_SHIM_PATH, "eval", AGENT_MODULE_PATH, GENERATED_EVAL_SET_PATH,
         "--config_file_path", EVAL_CONFIG_PATH,
         "--print_detailed_results",
     ]
@@ -479,9 +505,10 @@ def _run_git(args: list, cwd: Path) -> None:
 
 def prepare_scratch_state_repo() -> str:
     """Wipes and recreates STATE_REPO_SCRATCH_DIR fresh on every run, with a
-    local bare "origin" remote at STATE_REPO_SCRATCH_REMOTE_DIR - never the
-    developer's own real STATE_REPO_PATH - and returns the working
-    directory's absolute path for the caller to pass as STATE_REPO_PATH.
+    local bare "origin" remote at <work_dir>/STATE_REPO_SCRATCH_REMOTE_SUBDIR
+    - never the developer's own real STATE_REPO_PATH - and returns the
+    working directory's absolute path for the caller to pass as
+    STATE_REPO_PATH.
 
     Without this, every eval case's git_push calls were REAL git operations
     (checkout/add/commit/push) against whatever this developer's own .env
@@ -493,25 +520,40 @@ def prepare_scratch_state_repo() -> str:
     github.com, because the fixture's repo.url is just cosmetic text used
     in tool responses/messages, never the actual git remote operated on.
 
-    The local bare remote means `git push` succeeds for real (a genuine
-    push to a genuine remote, exercising the same code path as production)
-    without any network access, credentials, or host-key prompt - and
-    without ever risking a real GitHub repo. Not deleted afterward (unlike
-    GENERATED_EVAL_SET_PATH) - inspect eval-output/adk-state-repo after a
-    run to see exactly what the agents committed."""
+    The bare remote lives *inside* the working tree (not a sibling
+    directory) and is registered via a *relative* URL
+    (STATE_REPO_SCRATCH_REMOTE_SUBDIR, e.g. `./.state-repo-remote.git`) - a
+    first attempt used a sibling directory with an absolute host path baked
+    into `.git/config`, which resolved to nothing once git_push actually ran
+    inside the container ("does not appear to be a git repository"), since
+    only the working tree itself is bind-mounted (docker-compose.*.yaml's
+    STATE_REPO_PATH -> /app/state_repo), not that sibling. A relative path
+    is resolved against cwd at push/fetch time, so the identical reference
+    works under both the host path (here) and /app/state_repo (inside the
+    container). Excluded from the working tree's own `git add -A` via
+    `.git/info/exclude` (never committed as a nested repo/gitlink) rather
+    than a tracked .gitignore entry, so it doesn't clutter the scratch
+    repo's own history.
+
+    `git push` succeeds for real (a genuine push to a genuine remote,
+    exercising the same code path as production) without any network
+    access, credentials, or host-key prompt - and without ever risking a
+    real GitHub repo. Not deleted afterward (unlike GENERATED_EVAL_SET_PATH)
+    - inspect eval-output/adk-state-repo after a run to see exactly what
+    the agents committed."""
     work_dir = Path(STATE_REPO_SCRATCH_DIR).resolve()
-    remote_dir = Path(STATE_REPO_SCRATCH_REMOTE_DIR).resolve()
     if work_dir.exists():
         shutil.rmtree(work_dir)
-    if remote_dir.exists():
-        shutil.rmtree(remote_dir)
     work_dir.mkdir(parents=True)
+    remote_dir = work_dir / STATE_REPO_SCRATCH_REMOTE_SUBDIR
     remote_dir.mkdir(parents=True)
 
     _run_git(["init", "--bare"], remote_dir)
     _run_git(["init", "-b", "main"], work_dir)
     _run_git(["config", "user.name", "Horseless Carriage ADK Eval"], work_dir)
     _run_git(["config", "user.email", "adk-eval@localhost"], work_dir)
+    exclude_file = work_dir / ".git" / "info" / "exclude"
+    exclude_file.write_text(exclude_file.read_text() + f"/{STATE_REPO_SCRATCH_REMOTE_SUBDIR}\n")
     (work_dir / "README.md").write_text(
         "Scratch state repo for `python3 run_adk_eval.py` - wiped and recreated fresh on every "
         "run (see prepare_scratch_state_repo in run_adk_eval.py). Inspect this after a run to see "
@@ -520,7 +562,7 @@ def prepare_scratch_state_repo() -> str:
     _run_git(["add", "-A"], work_dir)
     _run_git(["commit", "-m", "Initial commit"], work_dir)
     _run_git(["branch", "develop"], work_dir)
-    _run_git(["remote", "add", "origin", str(remote_dir)], work_dir)
+    _run_git(["remote", "add", "origin", f"./{STATE_REPO_SCRATCH_REMOTE_SUBDIR}"], work_dir)
     _run_git(["push", "-u", "origin", "main"], work_dir)
     _run_git(["push", "-u", "origin", "develop"], work_dir)
     _run_git(["checkout", "main"], work_dir)
@@ -591,7 +633,7 @@ def main() -> None:
         print(f"  {env_prefix} docker compose {' '.join(compose_args)} --env-file {args.env_file} up -d db litellm")
         print(f"  wait for {LITELLM_HEALTH_URL} (up to {LITELLM_READY_TIMEOUT_SECONDS}s)")
         print(f"  mint a real LiteLLM virtual key for each of {', '.join(_SPECIALIST_AGENT_NAMES)} and write {GENERATED_EVAL_SET_PATH}")
-        print(f"  wipe and recreate a scratch git state repo at {STATE_REPO_SCRATCH_DIR} (with a local bare remote at {STATE_REPO_SCRATCH_REMOTE_DIR}) - never this developer's own STATE_REPO_PATH")
+        print(f"  wipe and recreate a scratch git state repo at {STATE_REPO_SCRATCH_DIR} (with a local bare remote at {STATE_REPO_SCRATCH_DIR}/{STATE_REPO_SCRATCH_REMOTE_SUBDIR}) - never this developer's own STATE_REPO_PATH")
         if not args.ci and not host_ollama:
             print(f"  wait for `ollama list` to show {LOCAL_OLLAMA_MODEL} (up to {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s - first pull only, cached afterwards)")
         print(f"  {' '.join(run_cmd)}")

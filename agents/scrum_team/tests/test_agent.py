@@ -20,6 +20,7 @@ from agents.scrum_team.agent import (
     sprint_status_injection_callback,
     on_tool_error_callback,
     log_tool_invocation_callback,
+    log_tool_result_callback,
     recover_fake_tool_call_callback,
     _stories_ready_for_next_stage_count,
     ensure_state_initialized_callback,
@@ -485,29 +486,36 @@ class TestLogToolInvocationCallback(unittest.TestCase):
     entirely.
     """
 
-    def test_prints_agent_and_tool_name_to_stderr(self):
+    def test_prints_agent_tool_name_and_arg_values_to_stderr(self):
+        """
+        Acceptance Criteria: a real eval run's console log showed only
+        argument *names* (e.g. `git_push(branch, commit_message, add_all)`)
+        - no way to tell which branch, which story, which agent a given
+        call actually concerned without reading the full transcript. Actual
+        values must now appear too (truncated - see
+        test_truncates_long_argument_values_instead_of_hiding_them).
+        """
         tool = BaseTool(name="write_file", description="Write a file to the repo.")
         tool_context = MagicMock()
         tool_context.agent_name = "DevTeam"
 
         with patch("builtins.print") as mock_print:
-            result = log_tool_invocation_callback(tool, {"path": "x.py", "content": "..."}, tool_context)
+            result = log_tool_invocation_callback(tool, {"path": "x.py", "content": "short"}, tool_context)
 
         self.assertIsNone(result)
         mock_print.assert_called_once()
         printed_text = mock_print.call_args[0][0]
         self.assertIn("DevTeam", printed_text)
         self.assertIn("write_file", printed_text)
-        self.assertIn("path", printed_text)
+        self.assertIn('path="x.py"', printed_text)
+        self.assertIn('content="short"', printed_text)
         self.assertEqual(mock_print.call_args.kwargs.get("file"), agent_module.sys.stderr)
 
     def test_shows_the_actual_agent_name_for_transfer_to_agent(self):
-        """
-        Acceptance Criteria: a real eval run's console log was almost
-        entirely indistinguishable `transfer_to_agent(agent_name)` lines -
-        agent_name is a short, non-sensitive internal role identifier
-        (never file/PR content), so this one case shows its real value.
-        """
+        """transfer_to_agent's agent_name is just a normal argument value
+        now (see the generic value-formatting above) - a real eval run's
+        console was otherwise almost entirely indistinguishable
+        `transfer_to_agent(agent_name)` lines."""
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = MagicMock()
         tool_context.agent_name = "ScrumOrchestrator"
@@ -519,41 +527,45 @@ class TestLogToolInvocationCallback(unittest.TestCase):
         printed_text = mock_print.call_args[0][0]
         self.assertIn('transfer_to_agent(agent_name="QualityGuardian")', printed_text)
 
-    def test_does_not_leak_argument_values(self):
+    def test_truncates_long_argument_values_instead_of_hiding_them(self):
         """
-        Only argument *names* are logged, never values - tool args can carry
-        large file contents or PR bodies, which must not end up dumped into
-        logs (noise at best, a leak at worst).
+        Acceptance Criteria: values are shown to make log lines readable,
+        but a tool argument can carry large file contents or PR bodies -
+        truncating to TOOL_LOG_ARG_VALUE_MAX_LEN characters caps how much
+        of any one value (including a would-be secret) can ever appear,
+        without hiding it entirely the way the old names-only behavior did.
         """
         tool = BaseTool(name="write_file", description="Write a file to the repo.")
         tool_context = MagicMock()
         tool_context.agent_name = "DevTeam"
-        secret_value = "SUPER-SECRET-FILE-CONTENT"
+        secret_value = "SUPER-SECRET-FILE-CONTENT-THAT-IS-QUITE-LONG"
 
         with patch("builtins.print") as mock_print:
             log_tool_invocation_callback(tool, {"content": secret_value}, tool_context)
 
         printed_text = mock_print.call_args[0][0]
         self.assertNotIn(secret_value, printed_text)
+        self.assertIn(secret_value[:agent_module.TOOL_LOG_ARG_VALUE_MAX_LEN], printed_text)
+        self.assertIn("...", printed_text)
 
     def test_registered_on_every_agent(self):
         for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
             self.assertEqual(agent.before_tool_callback, log_tool_invocation_callback)
 
-    def test_appends_a_names_only_entry_to_the_shared_transcript(self):
+    def test_appends_a_names_and_values_entry_to_the_shared_transcript(self):
         """
         Acceptance Criteria (GH issue #127): tool calls must show up
         per-subagent in the human-readable Markdown transcript alongside
         model turns - previously only model text was captured in
         state.transcript at all, so every tool call was invisible in any
-        persisted record. Still names-only, matching the console log's own
-        deliberate choice not to record argument values.
+        persisted record. Matches the console log's own truncated-value
+        format (see test_truncates_long_argument_values_instead_of_hiding_them).
         """
         tool = BaseTool(name="git_push", description="Push changes.")
         tool_context = MagicMock()
         tool_context.agent_name = "DevTeam"
         tool_context.state = ScrumState().model_dump()
-        secret_value = "SUPER-SECRET-COMMIT-MESSAGE"
+        secret_value = "SUPER-SECRET-COMMIT-MESSAGE-THAT-IS-QUITE-LONG"
 
         log_tool_invocation_callback(tool, {"commit_message": secret_value}, tool_context)
 
@@ -561,8 +573,90 @@ class TestLogToolInvocationCallback(unittest.TestCase):
         self.assertEqual(len(transcript), 1)
         self.assertEqual(transcript[0]["agent_name"], "DevTeam")
         self.assertEqual(transcript[0]["role"], "tool_call")
-        self.assertIn("git_push(commit_message)", transcript[0]["content"])
+        self.assertIn("git_push(commit_message=", transcript[0]["content"])
         self.assertNotIn(secret_value, transcript[0]["content"])
+
+
+class TestLogToolResultCallback(unittest.TestCase):
+    """
+    Acceptance Criteria: log_tool_invocation_callback's BEFORE-the-call line
+    looks identical whether a call goes on to succeed or fail - a real eval
+    run's console gave no way to tell, without reading the full transcript,
+    which calls this repo's own code-level gates actually rejected. This
+    AfterToolCallback prints a short, distinct warning for any tool response
+    shaped {"status": "error", ...} - the convention every tool in
+    tools/*.py already follows.
+    """
+
+    def test_prints_warning_for_error_response(self):
+        tool = BaseTool(name="git_push", description="Push changes.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        response = {"status": "error", "message": "Refusing to push directly to 'main' - it's protected."}
+
+        with patch("builtins.print") as mock_print:
+            result = log_tool_result_callback(tool, {"branch": "main"}, tool_context, response)
+
+        self.assertIsNone(result)
+        mock_print.assert_called_once()
+        printed_text = mock_print.call_args[0][0]
+        self.assertIn("DevTeam", printed_text)
+        self.assertIn("git_push", printed_text)
+        self.assertIn("Refusing to push directly to 'main'", printed_text)
+        self.assertEqual(mock_print.call_args.kwargs.get("file"), agent_module.sys.stderr)
+
+    def test_does_not_print_anything_for_a_successful_response(self):
+        tool = BaseTool(name="git_push", description="Push changes.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        response = {"status": "ok"}
+
+        with patch("builtins.print") as mock_print:
+            result = log_tool_result_callback(tool, {"branch": "feature/x"}, tool_context, response)
+
+        self.assertIsNone(result)
+        mock_print.assert_not_called()
+
+    def test_truncates_long_error_messages(self):
+        tool = BaseTool(name="create_release_pr", description="Open a release PR.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        long_message = "x" * 500
+        response = {"status": "error", "message": long_message}
+
+        with patch("builtins.print") as mock_print:
+            log_tool_result_callback(tool, {}, tool_context, response)
+
+        printed_text = mock_print.call_args[0][0]
+        self.assertNotIn(long_message, printed_text)
+        self.assertIn("x" * agent_module.TOOL_LOG_ERROR_MESSAGE_MAX_LEN, printed_text)
+
+    def test_never_overrides_the_real_tool_response(self):
+        """Purely observational - must always return None so the tool's
+        genuine response reaches the model unchanged."""
+        tool = BaseTool(name="git_push", description="Push changes.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        response = {"status": "error", "message": "boom"}
+
+        result = log_tool_result_callback(tool, {}, tool_context, response)
+
+        self.assertIsNone(result)
+
+    def test_ignores_non_dict_responses(self):
+        tool = BaseTool(name="some_tool", description="A tool.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+
+        with patch("builtins.print") as mock_print:
+            result = log_tool_result_callback(tool, {}, tool_context, None)
+
+        self.assertIsNone(result)
+        mock_print.assert_not_called()
+
+    def test_registered_on_every_agent(self):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+            self.assertEqual(agent.after_tool_callback, log_tool_result_callback)
 
 
 class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
@@ -667,6 +761,45 @@ class TestRecoverFakeToolCallCallback(unittest.TestCase):
         fc = response.content.parts[0].function_call
         self.assertEqual(fc.name, "start_sprint")
         self.assertEqual(fc.args, {"goal": "Refine the MVP scope"})
+
+    def test_converts_nested_function_object_shape(self):
+        """
+        Acceptance Criteria: a live eval run produced `{"type": "function",
+        "function": {"name": "transfer_to_agent", "arguments": {...}}}` -
+        "function" as a nested object (name/arguments one level deeper)
+        rather than the tool name string directly - which the original
+        exact-key match missed entirely, scoring that eval case a hard 0.
+        """
+        response = self._response_with_text(
+            '{"type": "function", "function": {"name": "transfer_to_agent", "arguments": {"agent_name": "DevTeam"}}}'
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "ProductOwner"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "transfer_to_agent")
+        self.assertEqual(fc.args, {"agent_name": "DevTeam"})
+
+    def test_converts_function_name_key_shape(self):
+        """
+        Acceptance Criteria: a live eval run also produced
+        `{"function_name": "update_sprint_report", "arguments": {...}}` - no
+        "type"/"function"/"name" key at all, "function_name" instead - which
+        also slipped through as raw text.
+        """
+        response = self._response_with_text(
+            '{"function_name": "update_sprint_report", "arguments": {"kpis": "calculate_kpis"}}'
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "QualityGuardian"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "update_sprint_report")
+        self.assertEqual(fc.args, {"kpis": "calculate_kpis"})
 
     def test_does_not_touch_a_real_function_call(self):
         response = LlmResponse(content=types.Content(

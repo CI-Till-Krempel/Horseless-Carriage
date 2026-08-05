@@ -71,7 +71,9 @@ This was verified against this environment's actually-installed `adk` CLI
 `google.adk.cli.cli_eval.get_root_agent`) - see "Deviation: a loader shim was
 required" below for why the path is `eval/adk/agent/scrum_team`, not
 `agents/scrum_team` or `agents` as an initial reading of this task might
-suggest.
+suggest. The *actual* command run is a little different from the one shown
+above - see "Sequential, turn-capped eval runs" below for exactly why and
+how.
 
 ## Reproducible model config - dedicated, not the dev stack's
 
@@ -197,23 +199,74 @@ repo's own git history.
 
 ## Reading a live run's console output
 
-A real run's console log was almost entirely `transfer_to_agent(agent_name)`
-lines - identical to each other, no way to tell which role a given hand-off
-actually targeted, and no marker for where one of the ~10 scripted
-conversations ends and the next begins (`adk eval` itself only prints a
-per-case result at the very end, once everything has already finished).
-Two small changes to `agent.py` make a live run's log actually readable:
+A real run's console log was an undifferentiated stream of `tool_name(arg1,
+arg2)` lines - argument *names* only, no values, no way to tell which
+branch/story/agent a given call actually concerned; no marker for where one
+of the ~10 scripted conversations ends and the next begins; and, since `adk
+eval` runs 4 cases concurrently by default, 4 of those conversations'
+tool-call logs interleaved with each other from the very first line. A few
+changes make a live run's log actually readable:
 
-- `transfer_to_agent`'s `agent_name` argument is now shown in full (e.g.
-  `transfer_to_agent(agent_name="QualityGuardian")`) instead of just the
-  parameter name - it's a short, non-sensitive internal role identifier,
-  never file/PR content, so this doesn't touch `log_tool_invocation_callback`'s
-  deliberate names-only policy for every other tool's arguments.
+- Every tool call now logs its actual argument values (`agent.py`'s
+  `log_tool_invocation_callback`/`_format_tool_call`), truncated to
+  `TOOL_LOG_ARG_VALUE_MAX_LEN` (20) characters each - long values (file
+  content, PR bodies, KPI dicts) would otherwise flood the log or partially
+  leak a would-be secret if shown in full; truncation caps how much of any
+  one value can ever appear instead of hiding it entirely.
+- A short, distinct warning line (`❌ [Agent] tool_name failed: ...`) now
+  prints whenever a tool's own response is `{"status": "error", ...}` (the
+  convention every tool in `tools/*.py` follows) - a new `after_tool_callback`,
+  `log_tool_result_callback`, purely observational (never changes what the
+  model actually sees). Before this, a call that got rejected by one of this
+  repo's own code-level gates looked identical in the console to one that
+  succeeded.
 - The opening human prompt is printed once, right when a new session
   actually starts (`sprint_status_injection_callback`, gated on the same
   "true first turn" check that already existed there) - so scrolling a log
   for a specific scenario's tool calls means searching for its own prompt
   text first, not counting `=== ... ===` banners against the summary table.
+- `run_adk_eval.py` now runs `adk eval` through `eval/adk/run_eval_shim.py`
+  instead of invoking it directly - see "Sequential, turn-capped eval
+  runs" below for why, and why a wrapper script was the only way to change
+  either of these.
+
+## Sequential, turn-capped eval runs
+
+`adk eval` hardcodes two defaults with no CLI flag or config-file field to
+override them (`cli_tools_click.py` always constructs
+`InferenceConfig()`/`EvaluateConfig()`/relies on `RunConfig()`'s own
+defaults, with no arguments):
+
+- **`parallelism=4`** - eval cases run 4 at a time by default. For
+  debugging a live model's actual gate-enforcement behavior (this eval
+  set's whole purpose), that's actively counterproductive: 4 scripted
+  conversations' tool-call logs interleaved so badly it was impossible to
+  tell which line belonged to which scenario, even with the per-session
+  banner above (which still prints for all 4 sessions up front, before any
+  of their tool calls, since they genuinely start at the same time).
+- **`max_llm_calls=500`** - the ceiling on how many internal LLM turns a
+  single eval case's conversation can take before ADK itself raises
+  `LlmCallsLimitExceededError`. A model stuck in an unproductive loop (the
+  transfer-loop breaker, `TRANSFER_LOOP_THRESHOLD`, caps *consecutive*
+  same-pair transfers, but not a whole session drifting through many
+  different unproductive tool calls) burned 100+ turns in one real run
+  before the sprint token budget finally cut it off - by then, several
+  minutes and a large fraction of the sprint's whole token budget had gone
+  into a single scripted, single-turn conversation that should only ever
+  need a handful of tool calls.
+
+`run_adk_eval.py` runs `adk eval` through `eval/adk/run_eval_shim.py`
+instead of invoking it directly - a drop-in wrapper (identical CLI surface)
+that monkeypatches `InferenceConfig`/`EvaluateConfig`'s `__init__` to
+default `parallelism=1`, and `RunConfig`'s to default `max_llm_calls=50`
+(overridable via the `ADK_EVAL_MAX_LLM_CALLS` env var) - each only takes
+effect when the real caller doesn't explicitly pass a value, so this can
+never affect production (`agent.py`'s real `root_agent`, run via `adk
+web`/`adk run`/`run.py`, never goes through this shim at all). Exceeding
+the cap fails just that one eval case's inference (logged, not a crash of
+the whole `adk eval` run) - the same graceful per-case failure path
+`local_eval_service.py` already uses for any other inference-time
+exception.
 
 ## Deviation: a loader shim was required
 
@@ -483,6 +536,44 @@ Team" - so the model has a chance to self-correct *before* ever calling the
 tool, not just after being mechanically rejected. Verified with a new
 `test_prompts.py` asserting all 7 role prompts (including
 `ScrumOrchestrator`) contain the warning with their own correct name.
+
+**9. `git_push`'s scratch-repo remote resolved to nothing once it actually
+ran inside the container.** Fix #7's own first attempt put the bare "origin"
+remote in a directory *sibling* to the scratch working tree and registered
+it via an absolute host path - only the working tree itself is bind-mounted
+into the container (`docker-compose.*.yaml`'s `STATE_REPO_PATH ->
+/app/state_repo`), so a real `git push` failed with "fatal: '/Users/.../
+eval-output/adk-state-repo-remote.git' does not appear to be a git
+repository". Fixed by moving the bare remote *inside* the working tree
+(`STATE_REPO_SCRATCH_REMOTE_SUBDIR`, excluded from the tree's own `git add
+-A` via `.git/info/exclude`) and registering it with a *relative* URL - the
+same reference then resolves correctly under both the host path (at setup
+time) and `/app/state_repo` (inside the container, at push time), since a
+relative git remote path is resolved against cwd when it's actually used,
+never baked in as an absolute path. Verified with a test that renames the
+working tree to a completely different absolute path before pushing, to
+directly reproduce what the container's different mount path does.
+
+**10. Recovering the model's own fake-tool-call text missed two more
+shapes.** `recover_fake_tool_call_callback` (see "GH issue #89/#95" in
+`agent.py`) already handled a model replying with prose JSON shaped like a
+tool call instead of a real one - but a live run produced two variants its
+exact-key match still missed, each scoring its eval case a hard 0 by
+leaving the call as raw text instead of ever executing it: `{"type":
+"function", "function": {"name": "...", "arguments": {...}}}` ("function"
+nested one level deeper as an object, rather than being the tool name
+string directly) and `{"function_name": "...", "arguments": {...}}` (no
+"function"/"name" key at all). The nested-object shape is now unwrapped one
+level before the same key-based lookup runs; `"function_name"` is now a
+recognized name key.
+
+**11. Two more turns-related issues made every one of the above much
+harder to diagnose.** `adk eval` ran 4 scripted conversations concurrently
+by default and let a stuck model burn 100+ turns before the token budget
+cut it off - see "Sequential, turn-capped eval runs" above. And every tool
+call logged only argument *names*, giving no clue which branch/story/agent
+a call concerned, nor whether it had actually succeeded or failed - see
+"Reading a live run's console output" above.
 
 ## These `EvalCase`s were hand-authored, not captured from a live run
 

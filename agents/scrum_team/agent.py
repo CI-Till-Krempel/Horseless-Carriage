@@ -700,7 +700,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
 
     return None
 
-_FAKE_TOOL_CALL_NAME_KEYS = ("function", "name")
+_FAKE_TOOL_CALL_NAME_KEYS = ("function", "name", "function_name")
 _FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args", "properties")
 _JSON_ENVELOPE_MESSAGE_KEYS = ("message", "content", "text")
 
@@ -729,6 +729,18 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
     second condition keeps a merely-JSON-shaped prose reply (e.g. `{"status":
     "ok", "note": "..."}`, which has neither) from ever being misread as an
     attempted call.
+
+    A live eval run surfaced two more variants the exact-key match still
+    missed entirely (both slipped through as raw text, scoring the eval
+    case a hard 0 rather than converting into the real call): `{"type":
+    "function", "function": {"name": "transfer_to_agent", "arguments":
+    {...}}}` - "function" as a nested object (name/arguments one level
+    deeper) rather than the tool name string directly - and
+    `{"function_name": "update_sprint_report", "arguments": {...}}` - no
+    "function"/"name" key at all, "function_name" instead. The nested-object
+    shape is unwrapped one level (its own name/arguments extracted the same
+    way) before the same key-based lookup runs; "function_name" is now one
+    of the recognized name keys.
 
     Also recovers a third pattern the same local model produced (also GH
     issue #91): a genuine conversational reply wrapped in a JSON envelope -
@@ -773,11 +785,19 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
     if not isinstance(parsed, dict):
         return
 
-    tool_name = next((parsed[k] for k in _FAKE_TOOL_CALL_NAME_KEYS if isinstance(parsed.get(k), str) and parsed[k].strip()), None)
-    has_args_key = any(k in parsed for k in _FAKE_TOOL_CALL_ARGS_KEYS)
-    type_is_function = parsed.get("type") == "function"
+    # {"type": "function", "function": {"name": "...", "arguments": {...}}} -
+    # "function" nested one level deeper as an object, rather than being the
+    # tool name string directly (the original GH issue #89 shape) or a
+    # sibling top-level key (GH issue #95's "properties" variant). Unwrap it
+    # so the same key-based lookup below covers both shapes.
+    nested_function = isinstance(parsed.get("function"), dict)
+    call_spec = parsed["function"] if nested_function else parsed
+
+    tool_name = next((call_spec[k] for k in _FAKE_TOOL_CALL_NAME_KEYS if isinstance(call_spec.get(k), str) and call_spec[k].strip()), None)
+    has_args_key = any(k in call_spec for k in _FAKE_TOOL_CALL_ARGS_KEYS)
+    type_is_function = parsed.get("type") == "function" or nested_function
     if tool_name and (type_is_function or has_args_key):
-        tool_args = next((parsed[k] for k in _FAKE_TOOL_CALL_ARGS_KEYS if isinstance(parsed.get(k), dict)), {})
+        tool_args = next((call_spec[k] for k in _FAKE_TOOL_CALL_ARGS_KEYS if isinstance(call_spec.get(k), dict)), {})
         logger.warning(
             f"recover_fake_tool_call_callback: {callback_context.agent_name} replied with text shaped like "
             f"a tool call ({tool_name!r}) instead of a real one (GH issue #89/#95) - converting it into an "
@@ -1242,6 +1262,31 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     return {"status": "error", "message": msg}
 
 
+TOOL_LOG_ARG_VALUE_MAX_LEN = 20
+
+
+def _format_tool_log_arg_value(value: Any) -> str:
+    """Renders a single tool-call argument value for the console/transcript
+    log, truncated to TOOL_LOG_ARG_VALUE_MAX_LEN characters (plus an
+    ellipsis) - a real eval run's log was unreadable with argument *names*
+    only (every transfer_to_agent(agent_name) line looked identical; every
+    git_push(branch, commit_message, add_all) line gave no clue which
+    branch). Long values (file content, PR bodies, KPI dicts) would flood
+    the log or partially leak secrets if shown in full, so only the first
+    TOOL_LOG_ARG_VALUE_MAX_LEN characters ever appear."""
+    is_str = isinstance(value, str)
+    s = value if is_str else str(value)
+    truncated = s[:TOOL_LOG_ARG_VALUE_MAX_LEN] + ("..." if len(s) > TOOL_LOG_ARG_VALUE_MAX_LEN else "")
+    return f'"{truncated}"' if is_str else truncated
+
+
+def _format_tool_call(tool_name: str, args: Dict[str, Any]) -> str:
+    if not args:
+        return f"{tool_name}()"
+    rendered = ", ".join(f"{k}={_format_tool_log_arg_value(v)}" for k, v in args.items())
+    return f"{tool_name}({rendered})"
+
+
 def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict[str, Any]]:
     """
     BeforeToolCallback: prints a hard-to-miss notice for every tool call, to
@@ -1261,19 +1306,12 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     keeps the original single-line form, since that's a container log meant
     to be read with `docker compose logs`, not a live terminal.
 
-    Deliberately logs argument *names* only, not values - tool arguments can
-    carry large file contents or PR bodies, and printing full values here
-    would be noisy at best and a way to leak sensitive content into logs at
-    worst. Mostly a passive trace - only gates the specific transfer-loop
-    case, see _detect_transfer_loop.
-
-    ONE exception: transfer_to_agent's `agent_name` value is shown in full
-    (e.g. `transfer_to_agent(agent_name="QualityGuardian")`) - it's a short,
-    non-sensitive internal role identifier, never file/PR content, and by
-    far the single most useful thing to see in this log line: a real eval
-    run's console output was almost entirely `transfer_to_agent(agent_name)`
-    lines, indistinguishable from each other without the actual target.
-    Every other tool's arguments stay names-only.
+    Logs every argument's actual value (see _format_tool_call), truncated to
+    TOOL_LOG_ARG_VALUE_MAX_LEN characters - a real eval run's log was
+    otherwise an undifferentiated stream of `tool_name(arg1, arg2)` lines
+    giving no clue which branch/story/agent a given call actually concerned.
+    Truncation caps how much of any one value (including a would-be secret
+    like a commit message) can ever appear.
 
     GH issue #127: also records this same call description into the shared
     transcript (state.transcript) and the durable per-run transcript log,
@@ -1284,11 +1322,7 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     live console.
     """
     agent_name = getattr(tool_context, "agent_name", None) or "?"
-    if tool.name == "transfer_to_agent" and isinstance(args, dict) and "agent_name" in args:
-        call_desc = f'transfer_to_agent(agent_name="{args["agent_name"]}")'
-    else:
-        arg_names = ", ".join(args.keys()) if args else ""
-        call_desc = f"{tool.name}({arg_names})"
+    call_desc = _format_tool_call(tool.name, args)
 
     transcript_logger.info(f"[{agent_name}] TOOL CALL: {call_desc}")
     try:
@@ -1353,6 +1387,32 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     print(f"\U0001f527 [{agent_name}] {call_desc}", file=sys.stderr)
     return None
 
+
+TOOL_LOG_ERROR_MESSAGE_MAX_LEN = 100
+
+
+def log_tool_result_callback(
+    tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, tool_response: Any
+) -> Optional[Dict[str, Any]]:
+    """
+    AfterToolCallback: prints a short, hard-to-miss warning line whenever a
+    tool's own response indicates failure ({"status": "error", ...} - the
+    convention every tool in tools/*.py already follows). Without this,
+    log_tool_invocation_callback's BEFORE-the-call line (see that function)
+    looks identical whether a call went on to succeed or fail - a real eval
+    run's console gave no way to tell, without reading the full transcript,
+    which calls this repo's own code-level gates actually rejected.
+
+    Only ever observes; never modifies the tool's real response (always
+    returns None) - a genuine tool bug should still surface exactly as it
+    would without this callback."""
+    if isinstance(tool_response, dict) and tool_response.get("status") == "error":
+        agent_name = getattr(tool_context, "agent_name", None) or "?"
+        message = str(tool_response.get("message") or tool_response.get("error") or "no message")
+        short_message = message[:TOOL_LOG_ERROR_MESSAGE_MAX_LEN] + ("..." if len(message) > TOOL_LOG_ERROR_MESSAGE_MAX_LEN else "")
+        print(f"❌ [{agent_name}] {tool.name} failed: {short_message}", file=sys.stderr)
+    return None
+
 # --- Tool Dispatch Error Handling ---
 
 def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, error: Exception) -> Optional[Dict[str, Any]]:
@@ -1396,6 +1456,7 @@ COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, agent_thinking_start_callback],
     "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
+    "after_tool_callback": log_tool_result_callback,
     "on_tool_error_callback": on_tool_error_callback,
 }
 
@@ -1586,5 +1647,6 @@ root_agent = LlmAgent(
         history_management_after_callback
     ],
     before_tool_callback=log_tool_invocation_callback,
+    after_tool_callback=log_tool_result_callback,
     on_tool_error_callback=on_tool_error_callback,
 )
