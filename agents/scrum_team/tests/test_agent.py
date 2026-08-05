@@ -522,6 +522,42 @@ class TestLogToolInvocationCallback(unittest.TestCase):
         self.assertNotIn(secret_value, transcript[0]["content"])
 
 
+class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
+    """
+    Acceptance Criteria: a real eval run against a local model repeatedly
+    emitted transfer_to_agent(agent_name=<its own name>) - ADK's own
+    transfer resolution (google/adk/workflow/utils/_transfer_utils.py)
+    raises a bare ValueError("Agent '...' cannot transfer to itself") for
+    exactly this shape, crashing the whole node. Unlike a hallucinated tool
+    name (see TestOnToolErrorCallback), this happens in the runner's own
+    transfer-resolution step *after* the tool call, so on_tool_error_callback
+    never sees it - the only place to intercept it is before the real
+    transfer_to_agent tool ever runs.
+    """
+
+    def test_blocks_transfer_to_self(self):
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "ProductOwner"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ProductOwner", result["message"])
+
+    def test_does_not_block_transfer_to_a_different_agent(self):
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "DevTeam"}, tool_context)
+
+        self.assertIsNone(result)
+
+
 class TestRecoverFakeToolCallCallback(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #89): a model reply that's plain TEXT

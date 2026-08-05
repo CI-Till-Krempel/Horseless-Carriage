@@ -362,6 +362,33 @@ small `_coerce_backlog_item_dict` helper, shared by `upsert_story`/
 anything else that still isn't an object into a normal `{"status": "error"}`
 tool response instead of an uncaught crash.
 
+**5. `transfer_to_agent(agent_name=<itself>)` crashed the whole node.** Once
+fixes #3/#4 let conversations run further, this became the dominant
+failure: a local model repeatedly emitted a self-transfer (seemingly as a
+kind of no-op/self-continuation), and ADK's own transfer resolution
+(`resolve_and_derive_transfer_context`) raises a bare `ValueError("Agent
+'...' cannot transfer to itself")` for that shape - not caught by
+`on_tool_error_callback`, since it happens in the runner's transfer-
+resolution step *after* the tool call returns, not inside tool dispatch.
+Fixed in `log_tool_invocation_callback` (`agent.py`): a self-transfer is now
+short-circuited into a normal `{"status": "error"}` response before ADK's
+real `transfer_to_agent` tool ever runs, so that crash-prone path is never
+reached at all.
+
+**6. `update_sprint_report` corrupted session state on a wrong-shape
+argument.** A model called it with `kpis='calculate_kpis'` - the *name* of
+the sibling tool that computes the real KPI dict, as a plain string,
+instead of calling it first and passing the result. The original code
+wrote that string straight into `state["sprint_report_kpis"]` without
+checking its shape; the call itself didn't fail, but every later
+`before_model_callback` re-validates the whole session state via
+`ScrumState(**data)` (see `get_scrum_state`), so the *next* turn - for
+whichever agent happened to go next, nowhere near this tool - crashed with
+a pydantic `ValidationError`. Fixed in `tools/quality.py`: `kpis` is now
+type-checked before it ever reaches state, returning a normal
+`{"status": "error"}` explaining the mistake instead of silently
+persisting a value that poisons every subsequent turn.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this

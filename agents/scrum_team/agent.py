@@ -1273,6 +1273,25 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     if tool.name == "transfer_to_agent":
         target_agent = (args or {}).get("agent_name")
         if target_agent:
+            if target_agent == agent_name:
+                # ADK's own transfer resolution (resolve_and_derive_transfer_
+                # context, google/adk/workflow/utils/_transfer_utils.py)
+                # raises a bare ValueError("Agent '...' cannot transfer to
+                # itself") if the real transfer_to_agent tool actually runs
+                # with this shape - not caught by on_tool_error_callback,
+                # since it happens in the runner's own transfer-resolution
+                # step *after* the tool call, not inside tool dispatch. A
+                # real eval run against a local model hit this repeatedly
+                # (it emitted transfer_to_agent(agent_name=<its own name>) as
+                # a kind of no-op/self-continuation), crashing the whole
+                # node. Short-circuit here, before ADK's real tool ever
+                # runs, so that crash-prone path is never reached at all.
+                msg = (
+                    f"You are already {agent_name} - no transfer needed. Continue with your own "
+                    "tools directly, or transfer_to_agent to a DIFFERENT role if you actually need one."
+                )
+                print(f"⚠️ [{agent_name}] blocked self-transfer (agent_name={target_agent})", file=sys.stderr)
+                return {"status": "error", "message": msg}
             loop_result = _detect_transfer_loop(tool_context, agent_name, target_agent)
             if loop_result is not None:
                 print(f"\U0001f501 [{agent_name}] transfer loop broken (-> {target_agent})", file=sys.stderr)

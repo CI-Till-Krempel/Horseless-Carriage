@@ -414,6 +414,24 @@ class TestQualityTools(unittest.TestCase):
         update_sprint_report(kpis=kpis, tool_context=tool_context)
         self.assertEqual(tool_context.state["sprint_report_kpis"], kpis)
 
+    def test_update_sprint_report_rejects_non_dict_kpis(self):
+        """
+        Acceptance Criteria: a real eval run had a model call this with
+        kpis='calculate_kpis' (the other tool's name, as a plain string)
+        instead of calling it and passing the returned dict. Writing that
+        straight into state didn't fail this call - it corrupted
+        ScrumState itself, crashing the *next* turn's before_model_callback
+        (get_scrum_state re-validates the whole state via
+        ScrumState(**data)) with a pydantic ValidationError nowhere near
+        this tool. Must reject the bad shape here instead, and must not
+        touch state at all.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = update_sprint_report(kpis="calculate_kpis", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tool_context.state["sprint_report_kpis"], {})
+
     @patch("agents.scrum_team.tools.quality._configured_repo_root")
     @patch("agents.scrum_team.tools.quality._run")
     def test_check_build_persists_result_for_the_tested_gate(self, mock_run, mock_repo_root):

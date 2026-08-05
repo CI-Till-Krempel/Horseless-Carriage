@@ -295,6 +295,24 @@ def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, A
     """
     Adds the KPI dashboard to the sprint report.
     """
+    # A real eval run had a model call this with kpis='calculate_kpis' - the
+    # NAME of the tool above, as a plain string, instead of first calling it
+    # and passing its returned dict. Writing that straight into state (the
+    # original behavior here) doesn't fail this call, but corrupts
+    # ScrumState itself: every later before_model_callback re-validates the
+    # whole state via ScrumState(**data) (see get_scrum_state in agent.py),
+    # so the very next turn - regardless of which agent's - crashed with a
+    # pydantic ValidationError on sprint_report_kpis, nowhere near this tool
+    # or this agent. Reject the bad shape here instead, before it ever
+    # reaches state.
+    if not isinstance(kpis, dict):
+        return {
+            "status": "error",
+            "message": (
+                f"kpis must be the actual KPI dictionary calculate_kpis() returns, not {kpis!r} - "
+                "call calculate_kpis() first and pass its returned object here, not a tool name."
+            ),
+        }
     # In a real implementation, this would format the KPIs into a nice
     # dashboard and append it to the sprint report.
     # For now, we'll just store the KPIs in the state.
