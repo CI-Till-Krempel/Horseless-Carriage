@@ -51,8 +51,9 @@ much cheaper, much faster check, meant to run far more often than a full
 ## The command to run it for real
 
 ```bash
-python3 run_adk_eval.py             # local: pinned Ollama model, dockerized (eval/adk/litellm.local.yaml)
-python3 run_adk_eval.py --host-ollama  # same, but a native Ollama on this host (GPU-accelerated on macOS)
+python3 run_adk_eval.py             # local: pinned Ollama model - host-native on macOS (auto-detected), dockerized elsewhere
+python3 run_adk_eval.py --host-ollama    # force a native Ollama on this host regardless of platform
+python3 run_adk_eval.py --docker-ollama  # force the dockerized Ollama even on macOS (CPU-only there)
 python3 run_adk_eval.py --ci        # cheap cloud model (eval/adk/litellm.ci.yaml) - see adk-eval.yml
 python3 run_adk_eval.py --debug     # force LOG_LEVEL=debug for this run (off by default - floods the shell otherwise)
 python3 run_adk_eval.py --dry-run   # print the underlying commands without running them
@@ -82,25 +83,30 @@ currently configured for - had drifted out of sync with `.env`'s
 `OLLAMA_MODEL`. Results from this eval set need to be comparable across
 machines and runs, so it never depends on that shared, driftable config:
 
-- **Local (default)**: `eval/adk/litellm.local.yaml`, every role pinned to
-  Ollama's `llama3.1:8b` (tool-calling capable, runs on most machines) -
-  `run_adk_eval.py` overrides `OLLAMA_MODEL` to the same tag when bringing
-  the stack up, so `ollama` always pulls/serves exactly what this config
-  expects, regardless of whatever model this developer's own `.env` last
-  configured for day-to-day dev use. Runs against `docker-compose.local.yaml`
-  (dockerized Ollama - CPU-only on Docker Desktop, see `--host-ollama`).
-- **`--host-ollama`**: `eval/adk/litellm.local-hostollama.yaml`, same
-  pinned `llama3.1:8b`, but talks to Ollama running natively on this host
+- **Local, dockerized (default off macOS)**: `eval/adk/litellm.local.yaml`,
+  every role pinned to Ollama's `llama3.1:8b` (tool-calling capable, runs
+  on most machines) - `run_adk_eval.py` overrides `OLLAMA_MODEL` to the
+  same tag when bringing the stack up, so `ollama` always pulls/serves
+  exactly what this config expects, regardless of whatever model this
+  developer's own `.env` last configured for day-to-day dev use. Runs
+  against `docker-compose.local.yaml` (CPU-only on Docker Desktop, see
+  host-Ollama below).
+- **Local, host-Ollama (default ON macOS - auto-detected, no flag needed)**:
+  `eval/adk/litellm.local-hostollama.yaml`, same pinned `llama3.1:8b`, but
+  talks to Ollama running natively on this host
   (`http://host.docker.internal:11434`) instead of a dockerized `ollama`
   service. Docker Desktop (macOS/Windows) has no GPU passthrough at all (GH
   issue #93), so a dockerized Ollama always runs CPU-only there, even on
-  Apple Silicon - this is the only way a local eval run actually uses the
-  GPU (Metal on macOS). Requires `ollama serve` already running on this
-  host (same prerequisite as `docker-compose.local-hostollama.yaml`);
-  `run_adk_eval.py` pulls the pinned model itself via the host's own
-  `ollama` CLI if it isn't already present. Runs against
-  `docker-compose.local-hostollama.yaml` (still dockerized db/litellm -
-  only Ollama itself is native).
+  Apple Silicon - `run_adk_eval.py` detects macOS automatically and
+  defaults here, the only way a local eval run actually uses the GPU
+  (Metal), the same precedent `setup_llm.py`'s own host-Ollama default
+  already follows for the regular dev stack. Requires `ollama serve`
+  already running on this host (same prerequisite as
+  `docker-compose.local-hostollama.yaml`); `run_adk_eval.py` pulls the
+  pinned model itself via the host's own `ollama` CLI if it isn't already
+  present. Runs against `docker-compose.local-hostollama.yaml` (still
+  dockerized db/litellm - only Ollama itself is native). Force either way
+  regardless of platform with `--host-ollama` / `--docker-ollama`.
 - **`--ci`**: `eval/adk/litellm.ci.yaml`, every role pointed at the same
   cheap Gemini model (`gemini-flash-lite-latest`) - `GOOGLE_API_KEY` is
   injected as a GitHub Actions repository secret (the same one `eval.yml`
@@ -137,16 +143,16 @@ succeeding once the pull happened to finish partway through.
    `up -d` returning success only means the container process started, not
    that LiteLLM has finished its own DB connection setup. Applies to all
    three modes - LiteLLM itself is always dockerized.
-2. Local (default) mode only: `docker compose exec ollama ollama list`,
+2. Local, dockerized mode only: `docker compose exec ollama ollama list`,
    until the pinned model actually appears - no host port is published for
    `ollama` (nothing needs to reach it from the host otherwise), so this
    execs into the container directly rather than hitting an API from the
    host. Skipped entirely in `--ci` mode (cloud model, no pull step, no
-   `ollama` container at all) and in `--host-ollama` mode (see below - the
+   `ollama` container at all) and in host-Ollama mode (see below - the
    model is already guaranteed present before this point, so there's
    nothing left to poll for).
 
-`--host-ollama` avoids this race a different way: `ensure_host_ollama_ready`
+Host-Ollama mode avoids this race a different way: `ensure_host_ollama_ready`
 checks the `ollama` CLI is present, a native Ollama instance is reachable at
 `http://localhost:11434`, and the pinned model is present - pulling it
 itself (foreground `ollama pull`, blocking until done) if not - all on the

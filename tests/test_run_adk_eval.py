@@ -2,11 +2,12 @@ import run_adk_eval
 
 
 class TestParseArgs:
-    def test_default_is_not_dry_run_ci_host_ollama_or_debug(self):
+    def test_default_is_not_dry_run_ci_host_ollama_docker_ollama_or_debug(self):
         args = run_adk_eval.parse_args([])
         assert args.dry_run is False
         assert args.ci is False
         assert args.host_ollama is False
+        assert args.docker_ollama is False
         assert args.debug is False
         assert args.env_file == ".env"
 
@@ -19,6 +20,9 @@ class TestParseArgs:
     def test_host_ollama_flag(self):
         assert run_adk_eval.parse_args(["--host-ollama"]).host_ollama is True
 
+    def test_docker_ollama_flag(self):
+        assert run_adk_eval.parse_args(["--docker-ollama"]).docker_ollama is True
+
     def test_ci_and_host_ollama_are_mutually_exclusive(self):
         try:
             run_adk_eval.parse_args(["--ci", "--host-ollama"])
@@ -27,11 +31,49 @@ class TestParseArgs:
         else:
             raise AssertionError("expected SystemExit")
 
+    def test_host_ollama_and_docker_ollama_are_mutually_exclusive(self):
+        try:
+            run_adk_eval.parse_args(["--host-ollama", "--docker-ollama"])
+        except SystemExit as e:
+            assert e.code == 2
+        else:
+            raise AssertionError("expected SystemExit")
+
     def test_debug_flag(self):
         assert run_adk_eval.parse_args(["--debug"]).debug is True
 
     def test_env_file_flag(self):
         assert run_adk_eval.parse_args(["--env-file", ".env.adk-eval"]).env_file == ".env.adk-eval"
+
+
+class TestResolveHostOllama:
+    """
+    Acceptance Criteria: instead of always requiring an explicit
+    --host-ollama flag, auto-detect the platform - Docker Desktop for Mac
+    has no GPU passthrough at all (GH issue #93), so a dockerized Ollama
+    there can never use the GPU, unlike Linux/Windows (where the dockerized
+    `ollama` service already works fine, with optional NVIDIA GPU
+    passthrough via docker-compose.gpu.yaml) - same precedent as
+    setup_llm.py's host_ollama_default_enable. Explicit flags always win
+    over the platform-based default either way.
+    """
+
+    def test_defaults_to_true_on_macos(self):
+        args = run_adk_eval.parse_args([])
+        assert run_adk_eval.resolve_host_ollama(args, platform="darwin") is True
+
+    def test_defaults_to_false_elsewhere(self):
+        args = run_adk_eval.parse_args([])
+        assert run_adk_eval.resolve_host_ollama(args, platform="linux") is False
+        assert run_adk_eval.resolve_host_ollama(args, platform="win32") is False
+
+    def test_explicit_host_ollama_wins_regardless_of_platform(self):
+        args = run_adk_eval.parse_args(["--host-ollama"])
+        assert run_adk_eval.resolve_host_ollama(args, platform="linux") is True
+
+    def test_explicit_docker_ollama_wins_even_on_macos(self):
+        args = run_adk_eval.parse_args(["--docker-ollama"])
+        assert run_adk_eval.resolve_host_ollama(args, platform="darwin") is False
 
 
 class TestAdkEvalCommand:
@@ -309,6 +351,14 @@ class TestMain:
         # sleep loops just to reach the code they actually exercise.
         monkeypatch.setattr(run_adk_eval, "wait_for_litellm_ready", lambda *a, **k: True)
         monkeypatch.setattr(run_adk_eval, "wait_for_ollama_model", lambda *a, **k: True)
+        # Pin resolve_host_ollama's platform-based default to "not macOS" so
+        # every test below that doesn't pass --host-ollama/--docker-ollama
+        # explicitly stays on the (dockerized) local mode they were written
+        # against, deterministically, regardless of which OS actually runs
+        # this suite - see TestResolveHostOllama for the platform-detection
+        # behavior itself, and the host-ollama-specific tests below (which
+        # pass --host-ollama explicitly, so this pin doesn't affect them).
+        monkeypatch.setattr(run_adk_eval.sys, "platform", "linux")
 
     def _fake_run_recording(self, calls, returncodes=None):
         results = iter(returncodes) if returncodes is not None else None
@@ -623,6 +673,38 @@ class TestMain:
             raise AssertionError("expected SystemExit")
 
         assert calls == []  # no docker compose command (up/run/down) ever ran
+
+    def test_auto_detects_host_ollama_on_macos_when_no_flag_passed(self, tmp_path, monkeypatch, capsys):
+        """Acceptance Criteria: no --host-ollama flag needed on macOS - the
+        platform itself is enough, since Docker Desktop there has no GPU
+        passthrough at all regardless of what any individual developer
+        wants. --dry-run is enough to observe this - it returns before any
+        real docker/ollama command runs."""
+        self._isolate(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_adk_eval.sys, "platform", "darwin")  # override _isolate's own "linux" pin
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py", "--dry-run"])
+
+        run_adk_eval.main()
+
+        out = capsys.readouterr().out
+        assert "Detected macOS" in out
+        assert "docker-compose.local-hostollama.yaml" in out
+
+    def test_docker_ollama_flag_overrides_macos_auto_detection(self, tmp_path, monkeypatch, capsys):
+        self._isolate(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_adk_eval.sys, "platform", "darwin")
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py", "--dry-run", "--docker-ollama"])
+
+        run_adk_eval.main()
+
+        out = capsys.readouterr().out
+        assert "Detected macOS" not in out
+        assert "docker-compose.local-hostollama.yaml" not in out
+        assert "docker-compose.local.yaml" in out
 
     def test_eval_failure_exit_code_propagates_after_teardown(self, tmp_path, monkeypatch):
         """Acceptance Criteria: teardown must never swallow the eval's own

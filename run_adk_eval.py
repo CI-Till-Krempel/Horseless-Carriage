@@ -29,17 +29,20 @@ requests to a real model, so it costs real tokens/money (or real local
 compute for Ollama).
 
 Reproducible model config:
-  Local (default): eval/adk/litellm.local.yaml, pinned to Ollama's
-  llama3.1:8b regardless of this developer's own OLLAMA_MODEL - runs against
-  docker-compose.local.yaml (self-hosted, no API key needed, dockerized
-  Ollama - CPU-only on Docker Desktop, see --host-ollama below).
-  --host-ollama: eval/adk/litellm.local-hostollama.yaml, same pinned model,
-  but talks to Ollama running natively on this host instead of a dockerized
-  `ollama` service - Docker Desktop (macOS/Windows) has no GPU passthrough
-  at all (GH issue #93), so this is the only way a local run actually uses
-  the GPU (Metal on macOS). Requires `ollama serve` already running on this
-  host - this pulls the pinned model itself (via the host `ollama` CLI) if
-  it isn't already present, before touching Docker at all.
+  Local (default off macOS): eval/adk/litellm.local.yaml, pinned to
+  Ollama's llama3.1:8b regardless of this developer's own OLLAMA_MODEL -
+  runs against docker-compose.local.yaml (self-hosted, no API key needed,
+  dockerized Ollama - CPU-only on Docker Desktop, see host-ollama below).
+  host-ollama (default ON macOS - see resolve_host_ollama): same pinned
+  model, but talks to Ollama running natively on this host instead of a
+  dockerized `ollama` service - Docker Desktop (macOS/Windows) has no GPU
+  passthrough at all (GH issue #93), so this is the only way a local run
+  actually uses the GPU (Metal on macOS); same auto-default precedent as
+  setup_llm.py's host_ollama_default_enable. Requires `ollama serve`
+  already running on this host - this pulls the pinned model itself (via
+  the host `ollama` CLI) if it isn't already present, before touching
+  Docker at all. Force with --host-ollama; force the dockerized path
+  instead (even on macOS) with --docker-ollama.
   --ci: eval/adk/litellm.ci.yaml, every role pointed at the same cheap
   Gemini model - runs against docker-compose.yaml (cloud stack, no Ollama).
   Used by .github/workflows/adk-eval.yml on every release tag, with
@@ -49,8 +52,9 @@ The eval's own docker compose stack (db/litellm/ollama) is always torn down
 afterward, success or failure - see the `finally` block in main().
 
 Usage:
-  python3 run_adk_eval.py                      Run the eval set locally (pinned, dockerized Ollama model).
-  python3 run_adk_eval.py --host-ollama        Same, but against a native Ollama on this host (GPU-accelerated on macOS).
+  python3 run_adk_eval.py                      Run the eval set locally (pinned Ollama model - host-native on macOS, dockerized elsewhere).
+  python3 run_adk_eval.py --host-ollama        Force a native Ollama on this host (GPU-accelerated on macOS) regardless of platform.
+  python3 run_adk_eval.py --docker-ollama      Force the dockerized Ollama service even on macOS (CPU-only there).
   python3 run_adk_eval.py --ci                 Run against the cheap cloud model (see adk-eval.yml).
   python3 run_adk_eval.py --debug              Force LOG_LEVEL=debug for the eval run (verbose - see agent.py's logging).
   python3 run_adk_eval.py --env-file .env.foo  Use a different env file for docker compose.
@@ -104,10 +108,18 @@ def parse_args(argv: list) -> argparse.Namespace:
     mode_group.add_argument(
         "--host-ollama", action="store_true",
         help=(
-            "Talk to Ollama running natively on this host (docker-compose.local-hostollama.yaml) "
-            "instead of a dockerized `ollama` service - Docker Desktop (macOS/Windows) has no GPU "
-            "passthrough at all, so this is the only way a local run uses the GPU. Requires "
-            "`ollama serve` already running; pulls the pinned model itself if needed."
+            "Force talking to Ollama running natively on this host (docker-compose."
+            "local-hostollama.yaml) instead of a dockerized `ollama` service - already the default "
+            "on macOS (see resolve_host_ollama), since Docker Desktop has no GPU passthrough at "
+            "all. Requires `ollama serve` already running; pulls the pinned model itself if needed."
+        ),
+    )
+    mode_group.add_argument(
+        "--docker-ollama", action="store_true",
+        help=(
+            "Force the dockerized `ollama` service even on macOS, opting out of the automatic "
+            "host-Ollama default there (CPU-only on Docker Desktop, but no `ollama serve` "
+            "prerequisite on the host)."
         ),
     )
     parser.add_argument(
@@ -124,6 +136,31 @@ def parse_args(argv: list) -> argparse.Namespace:
         ),
     )
     return parser.parse_args(argv)
+
+
+def resolve_host_ollama(args: argparse.Namespace, platform: str = None) -> bool:
+    """Whether this run should talk to a native Ollama on this host instead
+    of a dockerized `ollama` service. --host-ollama/--docker-ollama (a
+    mutually exclusive pair - see parse_args) always win when passed
+    explicitly; with neither passed, defaults to on for macOS only - same
+    precedent as setup_llm.py's host_ollama_default_enable: Docker Desktop
+    for Mac has no GPU passthrough at all (GH issue #93), even on Apple
+    Silicon, so a dockerized Ollama there can never use the GPU. Elsewhere
+    (Linux/Windows), the dockerized `ollama` service already works fine,
+    with optional NVIDIA GPU passthrough via docker-compose.gpu.yaml, so
+    there's no reason to default away from it.
+
+    `platform` defaults to None, resolved to sys.platform *at call time*
+    (not bound at def time, unlike a plain `platform: str = sys.platform`
+    default) - this is what lets tests pin the platform-based default
+    deterministically (either by passing this explicitly, or by
+    monkeypatching run_adk_eval.sys.platform) regardless of whatever OS
+    actually runs them."""
+    if args.host_ollama:
+        return True
+    if args.docker_ollama:
+        return False
+    return (platform or sys.platform) == "darwin"
 
 
 def hc_version_and_commit() -> tuple:
@@ -295,10 +332,21 @@ def main() -> None:
         print("real configured provider/model, not just the test suite's mock model.")
         sys.exit(1)
 
+    # --ci always means the cloud stack, no Ollama at all - never resolved
+    # via platform detection (a macOS CI runner shouldn't suddenly need a
+    # native `ollama serve` prerequisite just because it's on macOS).
+    host_ollama = False if args.ci else resolve_host_ollama(args)
+    if host_ollama and not args.host_ollama and not args.ci:
+        # Auto-detected, not explicitly requested - say so, since it comes
+        # with a real prerequisite (a native `ollama serve` already running)
+        # the dockerized default doesn't have.
+        print("Detected macOS - defaulting to a native Ollama on this host for GPU acceleration "
+              "(pass --docker-ollama to use the dockerized Ollama instead).")
+
     # GH issue #169: its own Compose project name (horseless-carriage-eval),
     # distinct from the dev stack's (run.py) and the test suite's
     # (run_tests.py) - see lib_docker.compose_project_args.
-    compose_args, extra_env = compose_setup(args.ci, args.host_ollama)
+    compose_args, extra_env = compose_setup(args.ci, host_ollama)
     adk_cmd = adk_eval_command()
     run_env = {**os.environ, **extra_env}
     env_prefix = " ".join(f"{k}={v}" for k, v in extra_env.items())
@@ -322,11 +370,11 @@ def main() -> None:
 
     if args.dry_run:
         print("Would run:")
-        if args.host_ollama:
+        if host_ollama:
             print(f"  ensure the `ollama` CLI is present, Ollama is reachable at http://localhost:11434, and {LOCAL_OLLAMA_MODEL} is pulled (all on this host)")
         print(f"  {env_prefix} docker compose {' '.join(compose_args)} --env-file {args.env_file} up -d db litellm")
         print(f"  wait for {LITELLM_HEALTH_URL} (up to {LITELLM_READY_TIMEOUT_SECONDS}s)")
-        if not args.ci and not args.host_ollama:
+        if not args.ci and not host_ollama:
             print(f"  wait for `ollama list` to show {LOCAL_OLLAMA_MODEL} (up to {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s - first pull only, cached afterwards)")
         print(f"  {' '.join(run_cmd)}")
         print(f"  {' '.join(down_cmd)}")
@@ -335,7 +383,7 @@ def main() -> None:
     # Host-Ollama's own readiness/pull check runs entirely on the host,
     # before any docker compose command - see ensure_host_ollama_ready's
     # docstring for why this can't race the way the dockerized case can.
-    if args.host_ollama and not ensure_host_ollama_ready(LOCAL_OLLAMA_MODEL):
+    if host_ollama and not ensure_host_ollama_ready(LOCAL_OLLAMA_MODEL):
         sys.exit(1)
 
     exit_code = 1
@@ -347,8 +395,8 @@ def main() -> None:
         elif not wait_for_litellm_ready():
             print(f"ERROR: litellm did not report ready at {LITELLM_HEALTH_URL} within {LITELLM_READY_TIMEOUT_SECONDS}s.")
             exit_code = 1
-        elif not args.ci and not args.host_ollama and not wait_for_ollama_model(compose_args, args.env_file, run_env, LOCAL_OLLAMA_MODEL):
-            # --ci uses a cloud model, --host-ollama already ensured the
+        elif not args.ci and not host_ollama and not wait_for_ollama_model(compose_args, args.env_file, run_env, LOCAL_OLLAMA_MODEL):
+            # --ci uses a cloud model, host-ollama already ensured the
             # model above - neither has a dockerized `ollama` pull to wait for.
             print(f"ERROR: Ollama did not finish pulling {LOCAL_OLLAMA_MODEL} within {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s.")
             exit_code = 1
