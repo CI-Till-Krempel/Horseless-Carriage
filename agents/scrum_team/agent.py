@@ -402,11 +402,29 @@ def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: 
     Falls back to the old global-mutation behavior if the current agent
     doesn't expose a LiteLlm-shaped model (e.g. a future ADK internals
     change) - better than silently injecting no key at all.
+
+    Only trusts state.litellm_keys[agent_name] as an actual Bearer token if
+    it looks like a real LiteLLM virtual key (starts with "sk-" - LiteLLM's
+    own proxy auth enforces this format, per its "expected to start with
+    'sk-'" error). The ADK evalset (eval/adk/scrum_team.evalset.json)
+    pre-seeds this exact dict with non-"sk-" placeholder strings (e.g.
+    "eval-fixture-key-devteam") purely to satisfy check_cost_budget_
+    callback's "has a key at all" presence check for whichever role a given
+    case is about - a real run exposed the gap once the harness actually
+    reached a live model: this callback shipped that placeholder straight
+    through as the real Bearer token, failing every one of that role's
+    calls with a confusing 401 after 7 retries, while the root
+    ScrumOrchestrator (never present in these fixtures) kept working via
+    the LITELLM_PROXY_API_KEY fallback below. Falling back the same way for
+    anything that doesn't look like a real key fixes this without needing
+    to change the fixtures at all - and is a reasonable defensive floor
+    regardless (state.litellm_keys should never be blindly trusted as a
+    literal Bearer token without at least this basic shape check).
     """
     state = get_scrum_state(callback_context.state)
     agent_name = callback_context.agent_name
     agent_key = state.litellm_keys.get(agent_name)
-    key_to_use = agent_key or os.getenv("LITELLM_PROXY_API_KEY")
+    key_to_use = agent_key if agent_key and agent_key.startswith("sk-") else os.getenv("LITELLM_PROXY_API_KEY")
 
     try:
         model = callback_context._invocation_context.agent.canonical_model

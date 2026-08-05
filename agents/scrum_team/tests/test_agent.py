@@ -953,6 +953,25 @@ class TestInjectLitellmKeyCallback(unittest.TestCase):
 
         self.assertEqual(litellm.api_key, "sentinel-should-not-change")
 
+    def test_falls_back_to_proxy_api_key_when_agent_key_does_not_look_like_a_real_key(self):
+        """
+        Acceptance Criteria: a real eval run's evalset fixtures
+        (eval/adk/scrum_team.evalset.json) pre-seed litellm_keys with
+        non-"sk-" placeholder strings (e.g. "eval-fixture-key-devteam") to
+        satisfy check_cost_budget_callback's "has a key at all" presence
+        check - LiteLLM's own proxy auth requires a real key to start with
+        "sk-", so shipping that placeholder as the actual Bearer token
+        fails every call for that role with a confusing 401. This must
+        fall back to LITELLM_PROXY_API_KEY the same way as "no agent key
+        at all", instead of blindly trusting anything present.
+        """
+        mock_context, model = _mock_context_with_model("DevTeam", agent_key="eval-fixture-key-devteam")
+
+        with patch.dict("os.environ", {"LITELLM_PROXY_API_KEY": "sk-fallback-key"}, clear=True):
+            inject_litellm_key_callback(mock_context, MagicMock())
+
+        self.assertEqual(model._additional_args["api_key"], "sk-fallback-key")
+
     def test_falls_back_to_global_when_model_has_no_additional_args(self):
         """Defensive fallback for an agent that doesn't expose a
         LiteLlm-shaped model (or a future ADK internals change) - better to
