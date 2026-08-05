@@ -721,6 +721,85 @@ class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
         self.assertIn("TRANSFER LOOP DETECTED", results[-1]["message"])
 
 
+class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
+    """
+    Acceptance Criteria: real eval runs showed non-transfer tools stuck in
+    the same kind of unproductive loop transfer_to_agent already had a
+    breaker for - QualityGuardian calling calculate_kpis()/
+    update_sprint_report(kpis=...) back to back a dozen+ times even after
+    each call *succeeded*, and ProductOwner calling
+    advance_story_stage(title_or_id="US-0006", stage="Ready") with
+    identical arguments repeatedly after the same rejection every time.
+    _detect_repeated_call_loop must catch the exact-same-tool-exact-same-
+    args case the same way _detect_transfer_loop catches the transfer case.
+    """
+
+    def test_blocks_identical_repeated_calls(self):
+        tool = BaseTool(name="update_sprint_report", description="Update the sprint report.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "QualityGuardian"
+        tool_context.state = ScrumState().model_dump()
+
+        results = [
+            log_tool_invocation_callback(tool, {"kpis": "calculate_kpis"}, tool_context)
+            for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD)
+        ]
+
+        self.assertTrue(all(r is None for r in results[:-1]))
+        self.assertEqual(results[-1]["status"], "error")
+        self.assertIn("REPEATED CALL DETECTED", results[-1]["message"])
+
+    def test_does_not_block_when_arguments_differ(self):
+        """A different story/branch/etc each call is real, distinct
+        progress, even when the tool name repeats - must never be blocked."""
+        tool = BaseTool(name="advance_story_stage", description="Advance a story's stage.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+
+        results = [
+            log_tool_invocation_callback(tool, {"title_or_id": f"US-000{i}", "stage": "Ready"}, tool_context)
+            for i in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD + 2)
+        ]
+
+        self.assertTrue(all(r is None for r in results))
+
+    def test_a_different_tool_call_in_between_resets_the_streak(self):
+        tool = BaseTool(name="calculate_kpis", description="Calculate KPIs.")
+        other_tool = BaseTool(name="upsert_issue", description="Add or update an issue.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "QualityGuardian"
+        tool_context.state = ScrumState().model_dump()
+
+        results = []
+        for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD - 1):
+            results.append(log_tool_invocation_callback(tool, {}, tool_context))
+        results.append(log_tool_invocation_callback(other_tool, {"issue": {"title": "x"}}, tool_context))
+        for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD - 1):
+            results.append(log_tool_invocation_callback(tool, {}, tool_context))
+
+        self.assertTrue(all(r is None for r in results))
+
+    def test_transfer_to_agent_calls_are_not_subject_to_this_breaker(self):
+        """transfer_to_agent has its own dedicated, pair-based breaker
+        (TRANSFER_LOOP_THRESHOLD, see
+        TestLogToolInvocationCallbackBlocksSelfTransfer) - _detect_repeated_
+        call_loop must never additionally run for it. Stays under
+        TRANSFER_LOOP_THRESHOLD so a block here can only be this (wrong)
+        breaker firing, not the transfer one."""
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumOrchestrator"
+        tool_context.state = ScrumState().model_dump()
+
+        results = [
+            log_tool_invocation_callback(tool, {"agent_name": "DevTeam"}, tool_context)
+            for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD - 1)
+        ]
+
+        self.assertTrue(all(r is None for r in results))
+
+
 class TestRecoverFakeToolCallCallback(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #89): a model reply that's plain TEXT

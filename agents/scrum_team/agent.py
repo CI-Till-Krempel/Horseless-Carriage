@@ -1214,7 +1214,7 @@ def agent_thinking_stop_callback(callback_context: CallbackContext, llm_response
 
 # --- Tool Call Visibility ---
 
-TRANSFER_LOOP_THRESHOLD = 6
+TRANSFER_LOOP_THRESHOLD = 3
 
 
 def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: str) -> Optional[Dict[str, Any]]:
@@ -1232,6 +1232,15 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     the streak. Mirrors _track_orchestrator_stall's "mechanical banner +
     blocking interaction" approach, but as a before_tool_callback gate since
     that's what actually sees each transfer's target agent.
+
+    Threshold lowered from 6 to 3: with the eval harness's own
+    ADK_EVAL_MAX_LLM_CALLS cap now at 20 (run_eval_shim.py), waiting for 6
+    identical bounces before breaking could alone burn nearly a third of an
+    eval case's whole call budget on one stuck pattern - and a session can
+    hit more than one. 3 identical bounces is already an unambiguous loop
+    in both eval and production; there's no legitimate reason the same two
+    agents hand off to each other 3 times running with zero other progress
+    in between.
     """
     state = tool_context.state
     pair = tuple(sorted((from_agent, to_agent)))
@@ -1254,6 +1263,65 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
         record_blocking_interaction(
             "stalled",
             f"{from_agent} and {to_agent} bounced transfer_to_agent {count}x with no progress.",
+            detail=msg,
+            tool_context=tool_context,
+        )
+    except Exception:
+        pass
+    return {"status": "error", "message": msg}
+
+
+REPEATED_CALL_LOOP_THRESHOLD = 3
+
+
+def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_name: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Sibling to _detect_transfer_loop, for every OTHER tool: breaks an agent
+    calling the exact same tool with the exact same arguments over and over
+    with no other distinct call in between - real eval runs hit this
+    repeatedly and in more than one shape (QualityGuardian calling
+    calculate_kpis()/update_sprint_report(kpis=...) back to back a dozen+
+    times even after each call *succeeded*, apparently unable to tell it had
+    already made progress; ProductOwner calling
+    advance_story_stage(title_or_id="US-0006", stage="Ready") with
+    identical args repeatedly after the same rejection each time). Unlike
+    the transfer-loop breaker (which only cares about the pair of agents,
+    since bouncing to the same target IS the whole failure mode there),
+    this keys on the tool name AND its exact argument values - genuinely
+    different arguments (a different story ID, a different branch) are
+    real, distinct actions and must not be blocked.
+
+    Keying on exact args, not just tool name, matters: calculate_kpis()
+    always has empty args, so any 3 calls in a row are indistinguishable
+    from a loop by definition - but upsert_story called 3 times running for
+    3 different stories is real progress and must never trip this.
+    """
+    state = tool_context.state
+    try:
+        args_key = json.dumps(args or {}, sort_keys=True, default=str)
+    except Exception:
+        args_key = repr(args)
+    signature = {"agent": agent_name, "tool": tool_name, "args": args_key}
+    loop_state = state.get("_repeated_call_loop") or {}
+    count = loop_state.get("count", 0) + 1 if loop_state.get("signature") == signature else 1
+    state["_repeated_call_loop"] = {"signature": signature, "count": count}
+
+    if count < REPEATED_CALL_LOOP_THRESHOLD:
+        return None
+
+    state["_repeated_call_loop"] = {"signature": None, "count": 0}
+    msg = (
+        f"🔁 [REPEATED CALL DETECTED] {agent_name} has called {tool_name} with the exact same "
+        f"arguments {count} times in a row with no other distinct call in between - refusing this "
+        "call. If it failed, that same call will keep failing the same way - address the actual "
+        "error message, use different arguments, or transfer to whichever role can actually make "
+        "progress instead of repeating this."
+    )
+    try:
+        from .tools.notifications import record_blocking_interaction
+        record_blocking_interaction(
+            "stalled",
+            f"{agent_name} repeated {tool_name} with identical arguments {count}x with no progress.",
             detail=msg,
             tool_context=tool_context,
         )
@@ -1371,12 +1439,18 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
                 print(f"⚠️ [{agent_name}] blocked self-transfer (agent_name={target_agent})", file=sys.stderr)
                 return {"status": "error", "message": msg}
     else:
-        # Any non-transfer tool call is real progress - reset the ping-pong
-        # streak so it only fires on genuinely unproductive bouncing.
+        # Any non-transfer tool call is real progress against the
+        # transfer-loop breaker - reset that streak so it only fires on
+        # genuinely unproductive bouncing.
         try:
             tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
         except Exception:
             pass
+        # But it can itself be a loop: see _detect_repeated_call_loop.
+        loop_result = _detect_repeated_call_loop(tool_context, agent_name, tool.name, args)
+        if loop_result is not None:
+            print(f"\U0001f501 [{agent_name}] repeated-call loop broken (-> {tool.name})", file=sys.stderr)
+            return loop_result
 
     if os.getenv("AGENT_MODE", "web") == "cli":
         try:
