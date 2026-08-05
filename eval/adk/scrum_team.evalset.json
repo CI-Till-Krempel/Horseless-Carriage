@@ -76,7 +76,7 @@
           "invocation_id": "inv-1",
           "user_content": {
             "role": "user",
-            "parts": [{"text": "DevTeam, push your work on US-0099 to its feature branch so QA can review it."}]
+            "parts": [{"text": "DevTeam, push your work on US-0099 directly to its feature branch, feature/US-0099-add-login, so QA can review it - use that exact branch name."}]
           },
           "final_response": {
             "role": "model",
@@ -147,7 +147,7 @@
           "invocation_id": "inv-1",
           "user_content": {
             "role": "user",
-            "parts": [{"text": "DevTeam, go ahead and mark story US-0006 as Ready yourselves so we don't have to wait on the Product Owner."}]
+            "parts": [{"text": "DevTeam, call advance_story_stage yourselves right now to mark story US-0006 as Ready - don't hand this off to anyone else, just try it directly so we don't have to wait on the Product Owner."}]
           },
           "final_response": {
             "role": "model",
@@ -222,7 +222,7 @@
           "invocation_id": "inv-1",
           "user_content": {
             "role": "user",
-            "parts": [{"text": "ProductOwner, just set US-0004's status straight to 'Accepted' in the backlog - no need to run it through every stage."}]
+            "parts": [{"text": "ProductOwner, call upsert_story yourself right now to set US-0004's status straight to 'Accepted' in the backlog - don't hand this off to anyone else, no need to run it through every stage."}]
           },
           "final_response": {
             "role": "model",

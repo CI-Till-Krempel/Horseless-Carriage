@@ -10,6 +10,7 @@ from agents.scrum_team.tools.github import (
     gh_pr_review,
     gh_release_create,
     git_push,
+    _git_push_impl,
     repo_status,
     create_release_pr,
     configure_github_repo,
@@ -221,21 +222,49 @@ class TestGitHubTools(unittest.TestCase):
         mock_run.assert_not_called()
 
     @patch("agents.scrum_team.tools.github._run")
-    def test_git_push_allow_protected_escape_hatch(self, mock_run):
+    def test_git_push_impl_allow_protected_escape_hatch(self, mock_run):
         """
         Acceptance Criteria (ISSUE-0006): seed_repository's initial bootstrap
         commit is the one legitimate exception - allow_protected=True lets
-        it through.
+        it through. Only reachable via _git_push_impl (internal Python code,
+        never an agent tool call) - see the next two tests.
         """
         mock_run.return_value = {"status": "ok", "returncode": 0}
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["repo"] = {"default_branch": "main"}
 
-        result = git_push(branch="main", allow_protected=True, tool_context=tool_context)
+        result = _git_push_impl(branch="main", allow_protected=True, tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
         mock_run.assert_called()
+
+    def test_git_push_tool_has_no_allow_protected_parameter(self):
+        """
+        Acceptance Criteria: a real ADK eval run showed a live model, under
+        enough user pressure ("skip the PR, we need this live right now"),
+        choosing to call git_push with allow_protected=True itself - if that
+        parameter exists on the tool exposed to agents at all, a
+        sufficiently persuasive prompt can talk a model into using it. It
+        must not be settable through the public git_push tool at all,
+        regardless of prompt wording - only through _git_push_impl, which is
+        never registered as a tool for any role.
+        """
+        import inspect
+        assert "allow_protected" not in inspect.signature(git_push).parameters
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_tool_always_refuses_protected_branch_even_under_pressure(self, mock_run):
+        """Same scenario as the eval failure, exercised directly: git_push
+        (the tool) has no way to bypass the protected-branch guard at all."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["repo"] = {"default_branch": "main"}
+
+        result = git_push(branch="main", commit_message="skip PR to push live right now", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_not_called()
 
     @patch("agents.scrum_team.tools.github._run")
     def test_git_push_refuses_refspec_disguised_as_a_branch_name(self, mock_run):

@@ -263,8 +263,12 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
     Then performs an initial commit and push.
     - overwrite: If True, existing files in the target will be replaced.
     """
-    from .github import git_push
-    
+    # _git_push_impl, not the public git_push tool - this is the one
+    # legitimate internal case that needs allow_protected=True (see
+    # git_push's own docstring for why that's no longer a parameter agents
+    # can set themselves).
+    from .github import _git_push_impl
+
     repo_root = _configured_repo_root(tool_context)
     if repo_root == _project_root():
         return {"status": "error", "message": "The configured target repository is the same as the project root. Seeding is not allowed here."}
@@ -315,7 +319,7 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
             # work starts on develop, main only receives merged sprint PRs
             # (create_release_pr). configure_github_repo already ensures
             # both branches exist before this ever runs.
-            push_res = git_push(
+            push_res = _git_push_impl(
                 branch=_develop_branch_name(tool_context),
                 commit_message="chore: initial seed of README, specs and templates",
                 add_all=True,

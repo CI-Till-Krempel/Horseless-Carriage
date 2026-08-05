@@ -291,6 +291,12 @@ from .tools import (
     upsert_srs,
     upsert_adr,
 )
+# Not re-exported from .tools (agent-facing tools only) - this internal
+# variant is only for _sync_and_commit_roadmap_on_exhaustion below, which
+# genuinely needs to push straight to a protected branch on the sprint
+# budget running out. See git_push's own docstring for why allow_protected
+# is deliberately not a parameter any agent-facing tool call can set.
+from .tools.github import _git_push_impl
 from .tools.quality import (
     calculate_kpis,
     update_sprint_report as update_sprint_report_with_kpis,
@@ -465,7 +471,7 @@ def _sync_and_commit_roadmap_on_exhaustion(callback_context: CallbackContext) ->
         branch_result = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, tool_context=callback_context)
         current_branch = (branch_result.get("stdout") or "").strip()
         if current_branch and current_branch != "HEAD":
-            git_push(
+            _git_push_impl(
                 branch=current_branch,
                 commit_message="chore: sync roadmap - sprint budget exhausted",
                 allow_protected=True,
