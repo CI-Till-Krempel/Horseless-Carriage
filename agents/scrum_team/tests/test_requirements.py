@@ -524,6 +524,25 @@ class TestUpsertStoryEpicIssueCoerceJsonStringArg(unittest.TestCase):
         result = upsert_story(123, tool_context=tc)
         self.assertEqual(result["status"], "error")
 
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_upsert_issue_accepts_python_repr_string(self, mock_save, mock_md):
+        """
+        Acceptance Criteria: a real eval run had QualityGuardian call
+        upsert_issue(issue="{'title': 'Review PR ...', 'description':
+        '...'}") - a Python repr (single-quoted), not valid JSON, so
+        json.loads alone rejected it as "expected an object, got str" and
+        the model never recovered. ast.literal_eval (via _coerce_dict_arg)
+        must parse that shape too.
+        """
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_issue(
+            "{'title': 'Review PR feature/US-0099-add-login', 'description': 'Code review is pending'}",
+            tool_context=tc,
+        )
+        self.assertEqual(result["status"], "ok")
+
 
 class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     """Acceptance Criteria (GH issue #120): plan_backlog_item must surface a

@@ -1,10 +1,9 @@
 # agents/scrum_team/tools/requirements.py
 from __future__ import annotations
-import json
 import re
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file
+from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file, _coerce_dict_arg
 from ..helpers import (
     is_story_done,
     STORY_STAGES,
@@ -122,28 +121,10 @@ def _render_story_block(story_id: str, title: str, stages_completed: List[str]) 
 
 
 def _coerce_backlog_item_dict(value: Any, tool_name: str) -> Dict[str, Any]:
-    """
-    A real eval run crashed the whole node with `TypeError: 'str' object
-    does not support item assignment` - a model emitted this dict-typed
-    tool argument as a JSON-encoded string instead of a real object (e.g.
-    upsert_story('{"title": "..."}') instead of upsert_story({"title":
-    "..."})), and the very next line (item["type"] = ...) has no defense
-    against that. Transparently parses that one specific shape; anything
-    else that still isn't a dict is a genuine caller error, not a
-    serialization quirk, and is raised as ValueError so the caller can
-    turn it into a normal tool-level error response instead of an uncaught
-    crash.
-    """
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except (json.JSONDecodeError, ValueError):
-            parsed = None
-        if isinstance(parsed, dict):
-            return parsed
-    raise ValueError(f"{tool_name} expected an object, got {type(value).__name__}: {value!r}")
+    """Thin alias kept for this module's call sites - see _coerce_dict_arg
+    (agents/scrum_team/tools/base.py) for the JSON/Python-repr recovery
+    logic, shared with update_sprint_report's kpis argument."""
+    return _coerce_dict_arg(value, tool_name)
 
 
 def upsert_story(story: Dict[str, Any], tool_context=None) -> Dict[str, Any]:

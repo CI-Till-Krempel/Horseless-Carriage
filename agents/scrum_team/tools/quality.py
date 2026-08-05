@@ -4,7 +4,14 @@ import os
 import re
 from ..state import ScrumState
 from typing import Dict, Any
-from .base import _configured_repo_root, _run
+from .base import _configured_repo_root, _run, _coerce_dict_arg
+
+# A real eval run had QualityGuardian retry update_sprint_report ~15 times in
+# a row with kpis="calculate_kpis"/"calculate_kpis()" - the NAME of the tool
+# above, as a plain string, apparently expecting update_sprint_report to call
+# it - before burning through the eval's whole LLM-call budget. Recognized
+# below so that shape self-heals instead of looping.
+_CALCULATE_KPIS_CALL_ALIASES = {"calculate_kpis", "calculate_kpis()"}
 
 _COVERAGE_TOTAL_RE = re.compile(r"^TOTAL\s+\d+\s+\d+\s+(\d+)%", re.MULTILINE)
 _PASSED_RE = re.compile(r"(\d+)\s+passed")
@@ -294,25 +301,32 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
 def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     Adds the KPI dashboard to the sprint report.
+
+    kpis should be the actual dict calculate_kpis() returns. Two malformed
+    shapes seen in real eval runs are recovered automatically instead of
+    erroring: the literal tool name ("calculate_kpis"/"calculate_kpis()"),
+    self-healed by actually calling calculate_kpis() here; and a
+    stringified dict (JSON or a Python repr with single quotes), recovered
+    via _coerce_dict_arg. Anything else that still isn't a dict is a
+    genuine caller error - rejected before it ever reaches state, since
+    every later before_model_callback re-validates the whole state via
+    ScrumState(**data) (see get_scrum_state in agent.py), and a bad
+    sprint_report_kpis shape there crashes the *next* turn - regardless of
+    which agent's - nowhere near this tool or this call.
     """
-    # A real eval run had a model call this with kpis='calculate_kpis' - the
-    # NAME of the tool above, as a plain string, instead of first calling it
-    # and passing its returned dict. Writing that straight into state (the
-    # original behavior here) doesn't fail this call, but corrupts
-    # ScrumState itself: every later before_model_callback re-validates the
-    # whole state via ScrumState(**data) (see get_scrum_state in agent.py),
-    # so the very next turn - regardless of which agent's - crashed with a
-    # pydantic ValidationError on sprint_report_kpis, nowhere near this tool
-    # or this agent. Reject the bad shape here instead, before it ever
-    # reaches state.
-    if not isinstance(kpis, dict):
-        return {
-            "status": "error",
-            "message": (
-                f"kpis must be the actual KPI dictionary calculate_kpis() returns, not {kpis!r} - "
-                "call calculate_kpis() first and pass its returned object here, not a tool name."
-            ),
-        }
+    if isinstance(kpis, str) and kpis.strip() in _CALCULATE_KPIS_CALL_ALIASES:
+        kpis = calculate_kpis(tool_context=tool_context)
+    else:
+        try:
+            kpis = _coerce_dict_arg(kpis, "update_sprint_report")
+        except ValueError:
+            return {
+                "status": "error",
+                "message": (
+                    f"kpis must be the actual KPI dictionary calculate_kpis() returns, not {kpis!r} - "
+                    "call calculate_kpis() first and pass its returned object here, not a tool name."
+                ),
+            }
     # In a real implementation, this would format the KPIs into a nice
     # dashboard and append it to the sprint report.
     # For now, we'll just store the KPIs in the state.

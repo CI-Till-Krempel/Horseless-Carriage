@@ -258,8 +258,11 @@ defaults, with no arguments):
 `run_adk_eval.py` runs `adk eval` through `eval/adk/run_eval_shim.py`
 instead of invoking it directly - a drop-in wrapper (identical CLI surface)
 that monkeypatches `InferenceConfig`/`EvaluateConfig`'s `__init__` to
-default `parallelism=1`, and `RunConfig`'s to default `max_llm_calls=50`
-(overridable via the `ADK_EVAL_MAX_LLM_CALLS` env var) - each only takes
+default `parallelism=1`, and `RunConfig`'s to default `max_llm_calls=20`
+(these scenarios script a handful of tool calls each; 20 is generous
+headroom above that without waiting on the sprint token budget to cut off
+a genuine runaway) - overridable via the `ADK_EVAL_MAX_LLM_CALLS` env var,
+and each only takes
 effect when the real caller doesn't explicitly pass a value, so this can
 never affect production (`agent.py`'s real `root_agent`, run via `adk
 web`/`adk run`/`run.py`, never goes through this shim at all). Exceeding

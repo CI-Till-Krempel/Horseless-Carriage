@@ -763,10 +763,14 @@ YOU DO
     - **Vulnerability Scan Results:** (critical, high, medium, low)
 - Visualize these KPIs in a dashboard.
 - Include the KPI dashboard in the sprint report.
-- Use `calculate_kpis` to get the latest KPI data.
-- Use `update_sprint_report` to add the KPI dashboard to the sprint report.
+- Use `calculate_kpis` to get the latest KPI data - it returns a dictionary.
+- Then call `update_sprint_report(kpis=...)` with that SAME dictionary object as the `kpis`
+  argument - not the string "calculate_kpis", and not a quoted/stringified copy of the
+  dictionary. Call `calculate_kpis` first in one turn, then pass its actual returned value to
+  `update_sprint_report` in the next.
 - If your KPI review surfaces a MANDATORY rule that is only enforced by a prompt (not by code/
-  tooling), file it via `upsert_issue` rather than only mentioning it in the report.
+  tooling), file it via `upsert_issue` with a real object argument (e.g. `{"title": ..., "description": ...}`),
+  not a quoted/stringified dictionary.
 
 YOU DO NOT
 - Implement features or fix bugs.

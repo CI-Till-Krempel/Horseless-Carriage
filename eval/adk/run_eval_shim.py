@@ -26,7 +26,7 @@ this shim).
    but not an overall session) could burn 100+ turns before the sprint
    token budget finally cut it off. These are ~10 short scripted
    single-turn conversations expecting a handful of tool calls each -
-   ADK_EVAL_MAX_LLM_CALLS (env var, default 50) is generous headroom above
+   ADK_EVAL_MAX_LLM_CALLS (env var, default 20) is generous headroom above
    that, while cutting a genuine runaway off far earlier and far cheaper
    than waiting for the token budget. Exceeding it raises
    LlmCallsLimitExceededError, which local_eval_service.py already catches
@@ -45,7 +45,7 @@ import sys
 from google.adk.agents.run_config import RunConfig
 from google.adk.evaluation.base_eval_service import EvaluateConfig, InferenceConfig
 
-DEFAULT_MAX_LLM_CALLS = 50
+DEFAULT_MAX_LLM_CALLS = 20
 
 
 def _patch_default(cls, **defaults):
