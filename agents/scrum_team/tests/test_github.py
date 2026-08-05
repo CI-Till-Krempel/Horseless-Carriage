@@ -15,6 +15,7 @@ from agents.scrum_team.tools.github import (
     create_release_pr,
     configure_github_repo,
     start_feature_branch,
+    create_sprint_backlog_pr,
     mark_pr_ready_for_review,
     merge_story_pr,
 )
@@ -596,6 +597,94 @@ class TestStartFeatureBranch(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("develop", result["message"])
+
+
+class TestCreateSprintBacklogPr(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #171): Product Owner's sprint-planning
+    writes (roadmap/PRD/epics/stories) only ever hit disk, never git - the
+    first subsequent push (normally DevTeam's start_feature_branch) swept
+    them onto a feature branch instead of develop. create_sprint_backlog_pr
+    commits+pushes them to their own branch, opens a "Sprint Backlog #<N>"
+    PR against develop, and merges it immediately.
+    """
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_refuses_without_a_started_sprint(self, mock_run):
+        tool_context = MagicMock()
+        tool_context.state = {"sprint_number": 0}
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("start_sprint", result["message"])
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_happy_path_opens_and_merges_against_develop(self, mock_run, mock_git_push, mock_gh_pr_create):
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
+        tool_context = MagicMock()
+        tool_context.state = {"sprint_number": 3, "repo": {"default_branch": "main", "develop_branch": "develop"}}
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["sprint_number"], 3)
+        self.assertEqual(result["branch"], "sprint-backlog/3")
+        mock_git_push.assert_called_once_with(
+            branch="sprint-backlog/3", commit_message="chore: sprint 3 backlog", tool_context=tool_context,
+        )
+        mock_gh_pr_create.assert_called_once_with(
+            title="Sprint Backlog #3",
+            body=unittest.mock.ANY,
+            base="develop",
+            head="sprint-backlog/3",
+            head_is_resolved=True,
+            tool_context=tool_context,
+        )
+        # Final call is the merge - no explicit PR number needed, it
+        # resolves from the currently checked-out branch (same convention
+        # as merge_story_pr(pr_id=None)).
+        mock_run.assert_called_with(
+            ["gh", "pr", "merge", "--merge", "--admin"], cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "error", "stderr": "no such ref"})
+    def test_reports_error_when_develop_checkout_fails(self, mock_run):
+        tool_context = MagicMock()
+        tool_context.state = {"sprint_number": 1}
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("develop", result["message"])
+
+    @patch("agents.scrum_team.tools.github.git_push", return_value={"status": "error", "branch": "sprint-backlog/1"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_reports_error_when_push_fails(self, mock_run, mock_git_push):
+        tool_context = MagicMock()
+        tool_context.state = {"sprint_number": 1}
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("push", result["message"].lower())
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "error", "stderr": "already exists"})
+    @patch("agents.scrum_team.tools.github.git_push", return_value={"status": "ok", "branch": "sprint-backlog/1"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_reports_error_when_pr_create_fails(self, mock_run, mock_git_push, mock_gh_pr_create):
+        tool_context = MagicMock()
+        tool_context.state = {"sprint_number": 1}
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Sprint Backlog PR", result["message"])
+        # Never reaches the merge step if the PR was never opened.
+        mock_run.assert_called_with(["git", "checkout", "-B", "sprint-backlog/1"], cwd=unittest.mock.ANY, tool_context=tool_context)
 
 
 class TestMarkPrReadyForReview(unittest.TestCase):

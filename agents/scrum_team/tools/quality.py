@@ -49,6 +49,7 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
         }
 
     stdout = result.get("stdout", "") or ""
+    stderr = result.get("stderr", "") or ""
 
     if _NO_TESTS_RE.search(stdout):
         return {
@@ -66,12 +67,29 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
     failed = int(m.group(1)) if (m := _FAILED_RE.search(stdout)) else 0
     errored = int(m.group(1)) if (m := _ERROR_RE.search(stdout)) else 0
 
+    note = None
+    if test_coverage is None:
+        # A real eval run hit this repeatedly - QA and DevTeam bounced a
+        # story back and forth 9 times, always rejected by the exact same
+        # opaque "coverage summary not found" note, with no way to tell
+        # whether pytest crashed outright, a dependency was missing, or
+        # something else entirely - so every retry guessed blindly at
+        # unrelated tooling changes (CI config, requirements.txt, moving
+        # test files) instead of whatever the real cause actually was.
+        # Surface enough of pytest's own output for that to be diagnosable
+        # instead of a black box.
+        tail = (stdout or stderr)[-800:].strip()
+        note = (
+            f"coverage summary not found in pytest output (exit code {result.get('returncode')})"
+            + (f" - last output:\n{tail}" if tail else " - no output was captured at all.")
+        )
+
     return {
         "available": test_coverage is not None,
         "test_coverage": test_coverage,
         "tests_run": passed + failed + errored,
         "tests_failed": failed + errored,
-        "note": None if test_coverage is not None else "coverage summary not found in pytest output",
+        "note": note,
     }
 
 
