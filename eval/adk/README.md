@@ -389,6 +389,26 @@ type-checked before it ever reaches state, returning a normal
 `{"status": "error"}` explaining the mistake instead of silently
 persisting a value that poisons every subsequent turn.
 
+**7. A second local run failed outright before the eval even started:
+`ERROR: failed to provision LiteLLM virtual keys: HTTP Error 400: Bad
+Request`.** Local mode's `db` container's `postgres_data` volume is never
+dropped between runs (only `--ci`'s teardown does `down -v` - see `main()`'s
+`down_cmd` - local mode deliberately keeps it, same as the pulled Ollama
+model, so LiteLLM's own metadata isn't rebuilt from scratch every time).
+`provision_litellm_keys` minted every key with a fixed, deterministic
+`key_alias` (`adk-eval-productowner`, etc.) - fine on a first run, but
+LiteLLM rejects a second run's attempt to reuse the same alias: "Key with
+alias '...' already exists - Unique key aliases across all keys are
+required." Reproduced directly against a real running proxy (`curl .../
+key/generate` twice with the same alias) before fixing. Fixed by dropping
+`key_alias` entirely - `metadata` alone is enough for this key's only real
+purpose (returned directly, used immediately, never looked up by alias
+again) - verified by provisioning twice in a row against the same
+persisted database. Also improved the error surfaced on any future
+`/key/generate` failure: the bare `HTTPError` (e.g. "HTTP Error 400: Bad
+Request") gave no clue what was wrong - the response body (LiteLLM's own
+validation message) is now included.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this

@@ -388,6 +388,41 @@ class TestProvisionLitellmKeys:
         with pytest.raises(RuntimeError):
             run_adk_eval.provision_litellm_keys("sk-master", ["ProductOwner"])
 
+    def test_does_not_send_a_key_alias(self, monkeypatch):
+        """
+        Acceptance Criteria: a real second local run failed with "Key with
+        alias 'adk-eval-productowner' already exists" - local mode's `db`
+        container's postgres_data volume is never dropped between runs
+        (only --ci's teardown does `down -v`), so a fixed, deterministic
+        key_alias collides with whatever a previous run already minted.
+        """
+        responses = [{"key": "sk-0"}]
+        fake_urlopen, calls = self._fake_urlopen(responses)
+        monkeypatch.setattr(run_adk_eval.urllib.request, "urlopen", fake_urlopen)
+
+        run_adk_eval.provision_litellm_keys("sk-master", ["ProductOwner"])
+
+        sent_payload = json.loads(calls[0].data.decode("utf-8"))
+        assert "key_alias" not in sent_payload
+
+    def test_surfaces_response_body_on_http_error(self, monkeypatch):
+        """The bare HTTPError alone (e.g. "HTTP Error 400: Bad Request") gave
+        no clue what was actually wrong - LiteLLM's own error body (the
+        exact validation message) must be included in the raised error."""
+        import io
+        import urllib.error
+
+        def fake_urlopen(req, timeout=None):
+            raise urllib.error.HTTPError(
+                url="http://localhost:4000/key/generate", code=400, msg="Bad Request",
+                hdrs=None, fp=io.BytesIO(b'{"error": {"message": "Key with alias already exists"}}'),
+            )
+
+        monkeypatch.setattr(run_adk_eval.urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(RuntimeError, match="Key with alias already exists"):
+            run_adk_eval.provision_litellm_keys("sk-master", ["ProductOwner"])
+
 
 class TestBuildEvalSetWithRealKeys:
     def _write_template(self, tmp_path, eval_ids_and_keys):

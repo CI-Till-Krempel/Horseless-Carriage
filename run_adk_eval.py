@@ -258,12 +258,20 @@ def provision_litellm_keys(master_key: str, agent_names: list) -> dict:
     solely to serve this one eval run, unlike the shared, long-lived proxy
     create_litellm_virtual_key (tools/budget.py) mints keys against, so
     there's no other model/tenant to scope access away from. Raises on any
-    HTTP/parse failure - the caller decides how to report it."""
+    HTTP/parse failure - the caller decides how to report it.
+
+    Deliberately does not set `key_alias`: local mode's `db` container's
+    postgres_data volume is never dropped between runs (only --ci's
+    teardown does `down -v`, see main()'s down_cmd), so a real second local
+    run hit "Key with alias 'adk-eval-productowner' already exists - Unique
+    key aliases across all keys are required" - a 400 from LiteLLM itself,
+    since every run minted the exact same deterministic alias per agent.
+    `metadata` alone is enough for this key's only real purpose (returned
+    directly here, used immediately, never looked up by alias again)."""
     keys = {}
     for name in agent_names:
         payload = json.dumps({
             "metadata": {"agent": name},
-            "key_alias": f"adk-eval-{name.lower()}",
             "max_budget": EVAL_KEY_MAX_BUDGET_USD,
         }).encode("utf-8")
         req = urllib.request.Request(
@@ -272,8 +280,16 @@ def provision_litellm_keys(master_key: str, agent_names: list) -> dict:
             headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # Surface LiteLLM's own error body (e.g. the exact validation
+            # message) - str(HTTPError) alone is just "HTTP Error 400: Bad
+            # Request", which sent the last diagnosis of this hunting for
+            # the cause blind.
+            detail = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"LiteLLM /key/generate returned {e.code} for agent '{name}': {detail}") from e
         key = body.get("key")
         if not key:
             raise RuntimeError(f"LiteLLM /key/generate returned no key for agent '{name}': {body}")
