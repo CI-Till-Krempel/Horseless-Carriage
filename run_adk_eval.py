@@ -101,6 +101,14 @@ LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"
 # mode's Ollama model is free. Just a safety net, not a tuned ceiling.
 EVAL_KEY_MAX_BUDGET_USD = 2.0
 
+# See prepare_scratch_state_repo: this run's own disposable git working
+# directory + local bare "remote", never the developer's real STATE_REPO_PATH.
+# Under eval-output/ (already gitignored, same convention as the
+# team-performance harness's own eval-repo clone) so a run's actual result -
+# commits, branches, files the agents wrote - is there to inspect afterward.
+STATE_REPO_SCRATCH_DIR = "eval-output/adk-state-repo"
+STATE_REPO_SCRATCH_REMOTE_DIR = "eval-output/adk-state-repo-remote.git"
+
 # Pinned, dedicated configs - see this module's docstring's "Reproducible
 # model config". None of these are ever touched by setup_llm.py (which only
 # rewrites litellm.yaml / config/model-templates/litellm.*.yaml).
@@ -463,6 +471,62 @@ def ensure_host_ollama_ready(model: str) -> bool:
     return True
 
 
+def _run_git(args: list, cwd: Path) -> None:
+    result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed in {cwd}: {result.stderr.strip()}")
+
+
+def prepare_scratch_state_repo() -> str:
+    """Wipes and recreates STATE_REPO_SCRATCH_DIR fresh on every run, with a
+    local bare "origin" remote at STATE_REPO_SCRATCH_REMOTE_DIR - never the
+    developer's own real STATE_REPO_PATH - and returns the working
+    directory's absolute path for the caller to pass as STATE_REPO_PATH.
+
+    Without this, every eval case's git_push calls were REAL git operations
+    (checkout/add/commit/push) against whatever this developer's own .env
+    STATE_REPO_PATH already pointed at for their day-to-day dev work
+    (docker-compose.*.yaml's INTERNAL_STATE_REPO_PATH always wins in
+    _configured_repo_root - see tools/base.py) - a real run committed
+    __pycache__ files and fake spec/story markdown straight into a real
+    project, and `git push` prompted to accept an unknown SSH host key for
+    github.com, because the fixture's repo.url is just cosmetic text used
+    in tool responses/messages, never the actual git remote operated on.
+
+    The local bare remote means `git push` succeeds for real (a genuine
+    push to a genuine remote, exercising the same code path as production)
+    without any network access, credentials, or host-key prompt - and
+    without ever risking a real GitHub repo. Not deleted afterward (unlike
+    GENERATED_EVAL_SET_PATH) - inspect eval-output/adk-state-repo after a
+    run to see exactly what the agents committed."""
+    work_dir = Path(STATE_REPO_SCRATCH_DIR).resolve()
+    remote_dir = Path(STATE_REPO_SCRATCH_REMOTE_DIR).resolve()
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+    if remote_dir.exists():
+        shutil.rmtree(remote_dir)
+    work_dir.mkdir(parents=True)
+    remote_dir.mkdir(parents=True)
+
+    _run_git(["init", "--bare"], remote_dir)
+    _run_git(["init", "-b", "main"], work_dir)
+    _run_git(["config", "user.name", "Horseless Carriage ADK Eval"], work_dir)
+    _run_git(["config", "user.email", "adk-eval@localhost"], work_dir)
+    (work_dir / "README.md").write_text(
+        "Scratch state repo for `python3 run_adk_eval.py` - wiped and recreated fresh on every "
+        "run (see prepare_scratch_state_repo in run_adk_eval.py). Inspect this after a run to see "
+        "exactly what the agents committed (`git log --all --oneline`, `git diff main develop`, ...).\n"
+    )
+    _run_git(["add", "-A"], work_dir)
+    _run_git(["commit", "-m", "Initial commit"], work_dir)
+    _run_git(["branch", "develop"], work_dir)
+    _run_git(["remote", "add", "origin", str(remote_dir)], work_dir)
+    _run_git(["push", "-u", "origin", "main"], work_dir)
+    _run_git(["push", "-u", "origin", "develop"], work_dir)
+    _run_git(["checkout", "main"], work_dir)
+    return str(work_dir)
+
+
 def main() -> None:
     os.chdir(Path(__file__).resolve().parent)
     args = parse_args(sys.argv[1:])
@@ -496,7 +560,11 @@ def main() -> None:
     # (run_tests.py) - see lib_docker.compose_project_args.
     compose_args, extra_env = compose_setup(args.ci, host_ollama)
     adk_cmd = adk_eval_command()
-    run_env = {**os.environ, **extra_env}
+    # Always this run's own scratch repo (see prepare_scratch_state_repo),
+    # never whatever STATE_REPO_PATH this developer's own .env happens to
+    # have configured for their real day-to-day dev work.
+    state_repo_path = str(Path(STATE_REPO_SCRATCH_DIR).resolve())
+    run_env = {**os.environ, **extra_env, "STATE_REPO_PATH": state_repo_path}
     env_prefix = " ".join(f"{k}={v}" for k, v in extra_env.items())
 
     up_cmd = ["docker", "compose", *compose_args, "--env-file", args.env_file, "up", "-d", "db", "litellm"]
@@ -523,6 +591,7 @@ def main() -> None:
         print(f"  {env_prefix} docker compose {' '.join(compose_args)} --env-file {args.env_file} up -d db litellm")
         print(f"  wait for {LITELLM_HEALTH_URL} (up to {LITELLM_READY_TIMEOUT_SECONDS}s)")
         print(f"  mint a real LiteLLM virtual key for each of {', '.join(_SPECIALIST_AGENT_NAMES)} and write {GENERATED_EVAL_SET_PATH}")
+        print(f"  wipe and recreate a scratch git state repo at {STATE_REPO_SCRATCH_DIR} (with a local bare remote at {STATE_REPO_SCRATCH_REMOTE_DIR}) - never this developer's own STATE_REPO_PATH")
         if not args.ci and not host_ollama:
             print(f"  wait for `ollama list` to show {LOCAL_OLLAMA_MODEL} (up to {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s - first pull only, cached afterwards)")
         print(f"  {' '.join(run_cmd)}")
@@ -534,6 +603,9 @@ def main() -> None:
     # docstring for why this can't race the way the dockerized case can.
     if host_ollama and not ensure_host_ollama_ready(LOCAL_OLLAMA_MODEL):
         sys.exit(1)
+
+    print(f"--- Preparing scratch state repo at {state_repo_path} ---")
+    prepare_scratch_state_repo()
 
     # --ci injects this as a real env var (see adk-eval.yml); local mode's
     # docker-compose --env-file never reaches this host process's own

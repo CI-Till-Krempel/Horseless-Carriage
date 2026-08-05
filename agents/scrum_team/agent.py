@@ -867,6 +867,24 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
     if len(llm_request.contents) > 1:
         return
 
+    # A live `adk eval` run's console is otherwise just one undifferentiated
+    # stream of tool-call lines across all ~10 scripted conversations back
+    # to back, with no marker for where one scenario ends and the next
+    # begins - print the opening prompt here, at the one point a session's
+    # true first turn is already known to have started (the len() check
+    # above), so it's obvious which scenario the following log lines belong
+    # to. Best-effort: contents[0] is expected to be the human's opening
+    # message on a fresh session, but this is just a log aid, never worth
+    # failing the actual turn over.
+    try:
+        opening_prompt = "".join(
+            p.text for p in (llm_request.contents[0].parts or []) if getattr(p, "text", None)
+        )
+    except (IndexError, AttributeError):
+        opening_prompt = ""
+    if opening_prompt:
+        print(f"\n=== New session - prompt: {opening_prompt} ===\n", file=sys.stderr)
+
     state = get_scrum_state(callback_context.state)
 
     sprint_goal = state.sprint_goal or "Not yet defined"
@@ -1249,17 +1267,28 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     worst. Mostly a passive trace - only gates the specific transfer-loop
     case, see _detect_transfer_loop.
 
-    GH issue #127: also records this same names-only call description into
-    the shared transcript (state.transcript) and the durable per-run
-    transcript log, so tool calls show up per-subagent in the human-
-    readable markdown transcript (write_conversation_transcript in
-    tools/budget.py) alongside model turns - previously only the model's
-    own text was captured there, so every tool call was invisible in any
-    persisted record, not just the live console.
+    ONE exception: transfer_to_agent's `agent_name` value is shown in full
+    (e.g. `transfer_to_agent(agent_name="QualityGuardian")`) - it's a short,
+    non-sensitive internal role identifier, never file/PR content, and by
+    far the single most useful thing to see in this log line: a real eval
+    run's console output was almost entirely `transfer_to_agent(agent_name)`
+    lines, indistinguishable from each other without the actual target.
+    Every other tool's arguments stay names-only.
+
+    GH issue #127: also records this same call description into the shared
+    transcript (state.transcript) and the durable per-run transcript log,
+    so tool calls show up per-subagent in the human-readable markdown
+    transcript (write_conversation_transcript in tools/budget.py) alongside
+    model turns - previously only the model's own text was captured there,
+    so every tool call was invisible in any persisted record, not just the
+    live console.
     """
     agent_name = getattr(tool_context, "agent_name", None) or "?"
-    arg_names = ", ".join(args.keys()) if args else ""
-    call_desc = f"{tool.name}({arg_names})"
+    if tool.name == "transfer_to_agent" and isinstance(args, dict) and "agent_name" in args:
+        call_desc = f'transfer_to_agent(agent_name="{args["agent_name"]}")'
+    else:
+        arg_names = ", ".join(args.keys()) if args else ""
+        call_desc = f"{tool.name}({arg_names})"
 
     transcript_logger.info(f"[{agent_name}] TOOL CALL: {call_desc}")
     try:
@@ -1273,6 +1302,21 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     if tool.name == "transfer_to_agent":
         target_agent = (args or {}).get("agent_name")
         if target_agent:
+            # _detect_transfer_loop first, even for a self-transfer (pair =
+            # (agent_name, agent_name) - a degenerate but valid pair it
+            # already tracks correctly): a real eval run showed a model
+            # retrying the exact same blocked self-transfer over and over,
+            # burning tokens turn after turn until the sprint budget ran
+            # out, because the small per-call correction below never
+            # escalates on its own. Running the loop counter first means
+            # repeated self-transfers eventually hit TRANSFER_LOOP_THRESHOLD
+            # and get the same stronger "stop and take real action" banner
+            # (plus a recorded blocking interaction) as any other stuck
+            # ping-pong, instead of quietly repeating forever.
+            loop_result = _detect_transfer_loop(tool_context, agent_name, target_agent)
+            if loop_result is not None:
+                print(f"\U0001f501 [{agent_name}] transfer loop broken (-> {target_agent})", file=sys.stderr)
+                return loop_result
             if target_agent == agent_name:
                 # ADK's own transfer resolution (resolve_and_derive_transfer_
                 # context, google/adk/workflow/utils/_transfer_utils.py)
@@ -1292,10 +1336,6 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
                 )
                 print(f"⚠️ [{agent_name}] blocked self-transfer (agent_name={target_agent})", file=sys.stderr)
                 return {"status": "error", "message": msg}
-            loop_result = _detect_transfer_loop(tool_context, agent_name, target_agent)
-            if loop_result is not None:
-                print(f"\U0001f501 [{agent_name}] transfer loop broken (-> {target_agent})", file=sys.stderr)
-                return loop_result
     else:
         # Any non-transfer tool call is real progress - reset the ping-pong
         # streak so it only fires on genuinely unproductive bouncing.

@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import pytest
 
@@ -494,6 +495,84 @@ class TestProvisionAndGenerateEvalSet:
         assert data["eval_cases"][0]["session_input"]["state"]["litellm_keys"]["DevTeam"] == "sk-devteam"
 
 
+class TestPrepareScratchStateRepo:
+    """
+    Acceptance Criteria: a real eval run's git_push calls were REAL git
+    operations against whatever this developer's own .env STATE_REPO_PATH
+    pointed at (their actual working project) - a real run committed
+    __pycache__ files and fake spec/story markdown into it, and prompted to
+    accept an unknown SSH host key for github.com. This must instead use its
+    own disposable scratch repo with a local bare remote, wiped and
+    recreated fresh on every call.
+    """
+
+    def test_creates_working_repo_with_initial_commit_on_main(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_REMOTE_DIR", "remote.git")
+
+        path = run_adk_eval.prepare_scratch_state_repo()
+
+        work_dir = tmp_path / "work"
+        assert path == str(work_dir.resolve())
+        assert (work_dir / ".git").is_dir()
+        assert (work_dir / "README.md").is_file()
+        log = subprocess.run(["git", "log", "--oneline"], cwd=work_dir, capture_output=True, text=True)
+        assert log.returncode == 0
+        assert len(log.stdout.strip().splitlines()) == 1
+        branch = subprocess.run(["git", "branch", "--show-current"], cwd=work_dir, capture_output=True, text=True)
+        assert branch.stdout.strip() == "main"
+
+    def test_creates_develop_branch_too(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_REMOTE_DIR", "remote.git")
+
+        run_adk_eval.prepare_scratch_state_repo()
+
+        branches = subprocess.run(["git", "branch"], cwd=tmp_path / "work", capture_output=True, text=True).stdout
+        assert "develop" in branches
+
+    def test_local_bare_remote_has_no_network_dependency(self, tmp_path, monkeypatch):
+        """git_push's real `git push` must succeed against this remote with
+        zero network access and no host-key prompt - a real bare local repo,
+        not a placeholder URL."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_REMOTE_DIR", "remote.git")
+
+        run_adk_eval.prepare_scratch_state_repo()
+
+        work_dir = tmp_path / "work"
+        push = subprocess.run(
+            ["git", "checkout", "-B", "feature/test"], cwd=work_dir, capture_output=True, text=True,
+        )
+        assert push.returncode == 0
+        (work_dir / "new.txt").write_text("x")
+        subprocess.run(["git", "add", "-A"], cwd=work_dir, check=True)
+        subprocess.run(["git", "commit", "-m", "test commit"], cwd=work_dir, check=True)
+        push = subprocess.run(
+            ["git", "push", "-u", "origin", "feature/test"], cwd=work_dir, capture_output=True, text=True,
+        )
+        assert push.returncode == 0
+
+    def test_wipes_and_recreates_fresh_on_repeat_calls(self, tmp_path, monkeypatch):
+        """A second run must start from the same clean state, not
+        accumulate branches/commits left over from a previous run."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_DIR", "work")
+        monkeypatch.setattr(run_adk_eval, "STATE_REPO_SCRATCH_REMOTE_DIR", "remote.git")
+
+        run_adk_eval.prepare_scratch_state_repo()
+        work_dir = tmp_path / "work"
+        subprocess.run(["git", "checkout", "-B", "feature/leftover"], cwd=work_dir, check=True, capture_output=True)
+
+        run_adk_eval.prepare_scratch_state_repo()
+
+        branches = subprocess.run(["git", "branch"], cwd=work_dir, capture_output=True, text=True).stdout
+        assert "feature/leftover" not in branches
+
+
 class TestHcVersionAndCommit:
     """GH issue #167/#168: unlike the team-performance harness's
     run_eval.py (which runs inside the agent container, whose image
@@ -546,6 +625,11 @@ class TestMain:
         # this step) aren't forced to fake out a real LiteLLM /key/generate
         # call just to reach the code they actually exercise.
         monkeypatch.setattr(run_adk_eval, "provision_and_generate_eval_set", lambda *a, **k: True)
+        # Covered by its own dedicated test class below - default to a
+        # no-op here so the rest of these tests (which predate this step,
+        # and monkeypatch subprocess.run themselves to record docker compose
+        # calls) aren't forced to fake out real `git` subprocess calls too.
+        monkeypatch.setattr(run_adk_eval, "prepare_scratch_state_repo", lambda: None)
         # Pin resolve_host_ollama's platform-based default to "not macOS" so
         # every test below that doesn't pass --host-ollama/--docker-ollama
         # explicitly stays on the (dockerized) local mode they were written

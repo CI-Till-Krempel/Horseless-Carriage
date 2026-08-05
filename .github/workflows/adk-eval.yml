@@ -28,10 +28,11 @@ jobs:
             echo "GOOGLE_API_KEY=$GOOGLE_API_KEY"
             echo "LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY"
             echo "DATABASE_URL=postgresql://llm_user:llm_password@db:5432/litellm_db"
-            echo "STATE_REPO_PATH=/tmp/hc-adk-eval-state-scratch"
             echo "SESSION_ID=adk-eval-${{ github.run_number }}"
           } > .env.adk-eval
-          mkdir -p /tmp/hc-adk-eval-state-scratch
+          # No STATE_REPO_PATH here - run_adk_eval.py always overrides it
+          # with its own scratch repo (prepare_scratch_state_repo), never
+          # whatever this env file says.
 
       - name: Run ADK gate-enforcement eval set
         # --debug: unlike an interactive local run (where it just floods the

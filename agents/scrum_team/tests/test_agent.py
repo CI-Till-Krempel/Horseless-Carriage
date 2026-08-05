@@ -256,6 +256,31 @@ class TestAgent(unittest.TestCase):
         self.assertIn("500,000 tokens used", text)
         self.assertNotIn("CORRUPTED", text)
 
+    def test_prints_opening_prompt_on_new_session(self):
+        """
+        Acceptance Criteria: a live `adk eval` run's console is otherwise one
+        undifferentiated stream of tool-call lines across every scripted
+        conversation back to back, with no marker for where one scenario
+        ends and the next begins - the opening human message must be
+        printed exactly once, at session start.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = ScrumState().model_dump()
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.contents = [
+            types.Content(role="user", parts=[types.Part(text="DevTeam, push directly to main.")])
+        ]
+
+        with patch("builtins.print") as mock_print:
+            sprint_status_injection_callback(mock_context, mock_llm_request)
+
+        mock_print.assert_called_once()
+        printed_text = mock_print.call_args[0][0]
+        self.assertIn("DevTeam, push directly to main.", printed_text)
+        self.assertEqual(mock_print.call_args.kwargs.get("file"), agent_module.sys.stderr)
+
     def test_does_not_inject_mid_conversation(self):
         """
         Acceptance Criteria (GH issue #118): the old check
@@ -476,6 +501,24 @@ class TestLogToolInvocationCallback(unittest.TestCase):
         self.assertIn("path", printed_text)
         self.assertEqual(mock_print.call_args.kwargs.get("file"), agent_module.sys.stderr)
 
+    def test_shows_the_actual_agent_name_for_transfer_to_agent(self):
+        """
+        Acceptance Criteria: a real eval run's console log was almost
+        entirely indistinguishable `transfer_to_agent(agent_name)` lines -
+        agent_name is a short, non-sensitive internal role identifier
+        (never file/PR content), so this one case shows its real value.
+        """
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumOrchestrator"
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("builtins.print") as mock_print:
+            log_tool_invocation_callback(tool, {"agent_name": "QualityGuardian"}, tool_context)
+
+        printed_text = mock_print.call_args[0][0]
+        self.assertIn('transfer_to_agent(agent_name="QualityGuardian")', printed_text)
+
     def test_does_not_leak_argument_values(self):
         """
         Only argument *names* are logged, never values - tool args can carry
@@ -556,6 +599,32 @@ class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
         result = log_tool_invocation_callback(tool, {"agent_name": "DevTeam"}, tool_context)
 
         self.assertIsNone(result)
+
+    def test_repeated_self_transfer_escalates_to_the_loop_breaker(self):
+        """
+        Acceptance Criteria: a real eval run showed a model retrying the
+        exact same blocked self-transfer turn after turn, burning tokens
+        until the sprint budget ran out - the small per-call "you are
+        already X" correction alone never escalates. _detect_transfer_loop
+        must run first even for a self-transfer, so TRANSFER_LOOP_THRESHOLD
+        consecutive attempts get the stronger loop-breaker message instead
+        of silently repeating forever.
+        """
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "Architect"
+        tool_context.state = ScrumState().model_dump()
+
+        results = [
+            log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+            for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD)
+        ]
+
+        # Every attempt is blocked, but the LAST one (having hit the
+        # threshold) must be the loop-breaker's message, not the plain
+        # per-call self-transfer correction.
+        self.assertTrue(all(r is not None and r["status"] == "error" for r in results))
+        self.assertIn("TRANSFER LOOP DETECTED", results[-1]["message"])
 
 
 class TestRecoverFakeToolCallCallback(unittest.TestCase):

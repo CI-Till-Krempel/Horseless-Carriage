@@ -160,6 +160,61 @@ host, *before* any docker compose command runs at all. Since nothing else
 has started yet, there's nothing for that pull to race against, unlike the
 dockerized case above.
 
+## What state repo does an eval run actually operate on?
+
+**Its own disposable scratch repo, never a real GitHub repo or this
+developer's own working project.** `git_push`, `merge_story_pr`, etc. are
+real git operations - not simulated - so this matters for real, not just
+academically. `run_adk_eval.py`'s `prepare_scratch_state_repo` wipes and
+recreates `eval-output/adk-state-repo` (a real working directory, `git
+init`-ed fresh) plus `eval-output/adk-state-repo-remote.git` (a real *local*
+bare repo acting as `origin`) before every run, and overrides
+`STATE_REPO_PATH` to point at it - regardless of whatever this developer's
+own `.env` has configured for their actual day-to-day dev stack.
+
+This existed as a real bug before: `docker-compose.*.yaml`'s
+`INTERNAL_STATE_REPO_PATH` always wins in `_configured_repo_root` (see
+`tools/base.py`), and every one of those compose files mounts whatever
+`STATE_REPO_PATH` the *regular* dev stack (`run.py`) is configured with - a
+real eval run committed `__pycache__` files and fake spec/story markdown
+straight into a real project, and its `git push` prompted to accept an
+unknown SSH host key for `github.com`, because the evalset fixture's
+`repo.url` (e.g. `git@github.com:example/example-state-repo.git`) is only
+ever cosmetic text used in tool responses/messages - it has no bearing at
+all on which actual directory git operations run against.
+
+The local bare remote means `git push` succeeds for real (exercising the
+exact same code path as production, not a mock) with zero network access,
+no GitHub credentials, and no host-key prompt.
+
+**Debugging**: unlike `GENERATED_EVAL_SET_PATH`, this scratch repo is
+*not* deleted after a run - only wiped at the *start* of the next one. To
+see exactly what the agents actually did in a given run: `cd
+eval-output/adk-state-repo && git log --all --oneline` (every branch any
+role pushed), `git diff main develop`, `git show <sha>`, etc. Both
+directories are gitignored (`eval-output/`) and live entirely outside this
+repo's own git history.
+
+## Reading a live run's console output
+
+A real run's console log was almost entirely `transfer_to_agent(agent_name)`
+lines - identical to each other, no way to tell which role a given hand-off
+actually targeted, and no marker for where one of the ~10 scripted
+conversations ends and the next begins (`adk eval` itself only prints a
+per-case result at the very end, once everything has already finished).
+Two small changes to `agent.py` make a live run's log actually readable:
+
+- `transfer_to_agent`'s `agent_name` argument is now shown in full (e.g.
+  `transfer_to_agent(agent_name="QualityGuardian")`) instead of just the
+  parameter name - it's a short, non-sensitive internal role identifier,
+  never file/PR content, so this doesn't touch `log_tool_invocation_callback`'s
+  deliberate names-only policy for every other tool's arguments.
+- The opening human prompt is printed once, right when a new session
+  actually starts (`sprint_status_injection_callback`, gated on the same
+  "true first turn" check that already existed there) - so scrolling a log
+  for a specific scenario's tool calls means searching for its own prompt
+  text first, not counting `=== ... ===` banners against the summary table.
+
 ## Deviation: a loader shim was required
 
 The task brief for this pass described the root agent as
