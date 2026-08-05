@@ -464,6 +464,26 @@ persisted database. Also improved the error surfaced on any future
 Request") gave no clue what was wrong - the response body (LiteLLM's own
 validation message) is now included.
 
+**8. Repeated self-transfers burned tokens until the sprint budget ran
+out.** Fix #5 stopped the crash, but the model kept retrying the exact same
+blocked self-transfer turn after turn - because the self-transfer
+short-circuit returned *before* the existing transfer-loop counter
+(`_detect_transfer_loop`) ever ran, so it never escalated the way a stuck
+two-agent ping-pong already did. Fixed by running the loop counter first
+(a self-transfer is pair `(agent_name, agent_name)` - a degenerate but
+valid pair it already tracks correctly): `TRANSFER_LOOP_THRESHOLD`
+consecutive self-transfers now get the same stronger "stop and take real
+action" banner (plus a recorded blocking interaction) as any other stuck
+loop, capping the token burn mechanically instead of repeating forever.
+
+On top of that hard cap, every role's own system prompt (`prompts.py`) now
+states its own exact internal `agent_name` explicitly - e.g. "**NEVER call
+transfer_to_agent with agent_name=\"DevTeam\"** - you already are the Dev
+Team" - so the model has a chance to self-correct *before* ever calling the
+tool, not just after being mechanically rejected. Verified with a new
+`test_prompts.py` asserting all 7 role prompts (including
+`ScrumOrchestrator`) contain the warning with their own correct name.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this

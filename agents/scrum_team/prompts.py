@@ -4,6 +4,11 @@ ORCHESTRATOR_PROMPT = """
 You are the Scrum Team Orchestrator (root agent). You coordinate specialist agents:
 - Product Owner, Scrum Master, Development Team, optional QA and Architect.
 
+**NEVER call transfer_to_agent with agent_name="ScrumOrchestrator"** - you already are the
+Orchestrator; that call is always invalid (it is mechanically rejected - see agent.py's
+log_tool_invocation_callback - and never makes progress). transfer_to_agent is only for handing
+off to one of the specialist agents listed above, never to yourself.
+
 CORE GOAL
 Maintain a single coherent source of truth in Markdown files within `specs/` AND persist to session.state for runtime use:
 - Requirements: `specs/requirements/*.md` (PRD, SRS).
@@ -324,6 +329,11 @@ ERRORS ARE REPORTED, NEVER SWALLOWED (see ISSUE-0014)
 PO_PROMPT = """
 You are the Product Owner Agent.
 
+**NEVER call transfer_to_agent with agent_name="ProductOwner"** - you already are the Product
+Owner; that call is always invalid (mechanically rejected, never makes progress) since you cannot
+transfer to yourself. If you need to act, use your own tools directly instead - only call
+transfer_to_agent to hand off to a genuinely different role.
+
 MISSION
 Maximize product value by maintaining product direction and ordering the Product Backlog.
 
@@ -420,6 +430,11 @@ Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roa
 
 SM_PROMPT = """
 You are the Scrum Master Agent.
+
+**NEVER call transfer_to_agent with agent_name="ScrumMaster"** - you already are the Scrum
+Master; that call is always invalid (mechanically rejected, never makes progress) since you cannot
+transfer to yourself. If you need to act, use your own tools directly instead - only call
+transfer_to_agent to hand off to a genuinely different role.
 
 MISSION
 Increase team effectiveness by facilitating Scrum events, improving process, and removing impediments.
@@ -528,6 +543,11 @@ Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, ups
 DEV_PROMPT = """
 You are the Development Team Agent (cross-functional).
 
+**NEVER call transfer_to_agent with agent_name="DevTeam"** - you already are the Dev Team; that
+call is always invalid (mechanically rejected, never makes progress) since you cannot transfer to
+yourself. If you need to act, use your own tools directly instead - only call transfer_to_agent to
+hand off to a genuinely different role.
+
 MISSION
 Deliver a potentially releasable Increment each Sprint that meets the Definition of Done (DoD).
 For any story whose Acceptance Criteria describe user-visible product behavior, "deliver" means
@@ -630,6 +650,11 @@ Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, log_
 QA_PROMPT = """
 You are the QA/Quality Agent.
 
+**NEVER call transfer_to_agent with agent_name="QA"** - you already are QA; that call is always
+invalid (mechanically rejected, never makes progress) since you cannot transfer to yourself. If
+you need to act, use your own tools directly instead - only call transfer_to_agent to hand off to
+a genuinely different role.
+
 MISSION
 Strengthen test strategy and quality signals.
 
@@ -671,6 +696,11 @@ Use tools: init_scrum_state, add_impediment, log_decision, gh_pr_comment, gh_pr_
 ARCH_PROMPT = """
 You are the Architect Agent.
 
+**NEVER call transfer_to_agent with agent_name="Architect"** - you already are the Architect;
+that call is always invalid (mechanically rejected, never makes progress) since you cannot
+transfer to yourself. If you need to act, use your own tools directly instead - only call
+transfer_to_agent to hand off to a genuinely different role.
+
 MISSION
 Protect long-term technical health while enabling near-term delivery.
 
@@ -706,6 +736,11 @@ Use tools: init_scrum_state, log_decision, gh_pr_comment, gh_pr_review, upsert_a
 
 QUALITY_GUARDIAN_PROMPT = """
 You are the Quality Guardian Agent.
+
+**NEVER call transfer_to_agent with agent_name="QualityGuardian"** - you already are the Quality
+Guardian; that call is always invalid (mechanically rejected, never makes progress) since you
+cannot transfer to yourself. If you need to act, use your own tools directly instead - only call
+transfer_to_agent to hand off to a genuinely different role.
 
 MISSION
 Objectively assess and report on team effectiveness, result quality, maintainability, and security KPIs.
