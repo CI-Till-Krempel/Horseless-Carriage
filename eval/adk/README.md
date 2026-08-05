@@ -318,6 +318,27 @@ limitation above still applies to `git_push`'s own optional args
 explicitly (a very natural thing for it to do) still breaks an exact match
 even when the protected-branch gate itself behaves perfectly.
 
+**3. A re-run after fix #1 still failed 7/10 cases - this time a harness
+gap, not a model behavior.** `scrum_team.evalset.json`'s own fixtures only
+pre-seed `session_input.state.litellm_keys` for the ONE role each case's
+prompt directly addresses (e.g. `{"DevTeam": "eval-fixture-key-devteam"}`).
+Real sprints always call `create_litellm_virtual_key` for every specialist
+role up front, before any work happens - but these are scripted, single-turn
+conversations with no such setup turn. So whenever the model (or the
+orchestrator's own routing) transferred to any OTHER role - whether or not
+that hand-off was itself correct - that role had no key at all and hit
+`agent.py`'s "no LiteLLM virtual key yet" refusal before ever reaching the
+gate the case exists to test, contaminating the result with a fixture gap
+instead of real gate-enforcement behavior. Fixed in `run_adk_eval.py`:
+`provision_and_generate_eval_set` mints a real key (via the now-running
+proxy's own `/key/generate`) for every specialist role after `litellm`
+reports ready, then writes `scrum_team.evalset.generated.json` - a
+gitignored, per-run copy of the checked-in template with every case's
+`litellm_keys` replaced by these real keys - and `adk eval` runs against
+that instead. `sub_agent_blocked_without_budget_capped_virtual_key` is
+exempted (`NO_KEY_FIXTURE_EVAL_IDS`): its whole point is exercising the
+missing-key block itself, so it must keep no key at all.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this

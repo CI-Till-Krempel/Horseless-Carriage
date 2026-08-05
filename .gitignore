@@ -234,4 +234,10 @@ __marimo__/
 # fixture data here - never track that leakage.
 .hc/
 
+# run_adk_eval.py's per-run copy of eval/adk/scrum_team.evalset.json with
+# real, freshly-minted LiteLLM virtual keys injected - see
+# provision_and_generate_eval_set/build_eval_set_with_real_keys. Contains
+# live per-run secrets; never track it.
+eval/adk/scrum_team.evalset.generated.json
+
 .DS_Store

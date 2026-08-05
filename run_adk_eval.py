@@ -62,6 +62,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -74,8 +75,31 @@ from pathlib import Path
 import lib_docker
 
 EVAL_SET_PATH = "eval/adk/scrum_team.evalset.json"
+# Written fresh by provision_and_generate_eval_set on every run (gitignored -
+# see build_eval_set_with_real_keys) - a copy of EVAL_SET_PATH with real,
+# freshly-minted LiteLLM virtual keys for every specialist role instead of
+# the checked-in template's single-agent placeholder fixtures.
+GENERATED_EVAL_SET_PATH = "eval/adk/scrum_team.evalset.generated.json"
 EVAL_CONFIG_PATH = "eval/adk/test_config.json"
 AGENT_MODULE_PATH = "eval/adk/agent/scrum_team"
+
+# Mirrors run_eval.py's _SPECIALIST_AGENT_NAMES - the literal internal
+# agent_name values every specialist role can be addressed/transferred to
+# by. ScrumOrchestrator is deliberately excluded (agent.py's fallback-key
+# guard already exempts it - it never calls a model with its own scoped key).
+_SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect", "QualityGuardian"]
+
+# Eval cases whose whole point is exercising the missing-key block itself
+# (see agent.py's fallback-key guard) - these must keep their fixture's
+# empty/absent litellm_keys rather than getting a real key like every other
+# case, or the one thing they're testing would never trigger.
+NO_KEY_FIXTURE_EVAL_IDS = {"sub_agent_blocked_without_budget_capped_virtual_key"}
+
+LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"
+# Generous for ~10 short, single-turn scripted conversations - real spend
+# only happens in --ci mode (a real Gemini call per tool-using turn); local
+# mode's Ollama model is free. Just a safety net, not a tuned ceiling.
+EVAL_KEY_MAX_BUDGET_USD = 2.0
 
 # Pinned, dedicated configs - see this module's docstring's "Reproducible
 # model config". None of these are ever touched by setup_llm.py (which only
@@ -189,12 +213,120 @@ def adk_eval_command() -> list:
     """The `adk eval` invocation run inside the container - see
     eval/adk/README.md's "Deviation: a loader shim was required" for why
     AGENT_MODULE_PATH is the eval/adk/agent/scrum_team shim rather than
-    agents/scrum_team or agents directly."""
+    agents/scrum_team or agents directly.
+
+    Runs against GENERATED_EVAL_SET_PATH, not the checked-in EVAL_SET_PATH
+    template directly - see provision_and_generate_eval_set, which writes it
+    before this command ever executes."""
     return [
-        "adk", "eval", AGENT_MODULE_PATH, EVAL_SET_PATH,
+        "adk", "eval", AGENT_MODULE_PATH, GENERATED_EVAL_SET_PATH,
         "--config_file_path", EVAL_CONFIG_PATH,
         "--print_detailed_results",
     ]
+
+
+def _read_env_file_value(env_file: str, key: str) -> str:
+    """Minimal .env lookup for a single key. docker compose reads
+    --env-file directly itself - it's never loaded into this host process's
+    own os.environ - so provision_and_generate_eval_set (which needs
+    LITELLM_MASTER_KEY to call the now-running proxy from the host) can't
+    just read os.environ in local mode. --ci mode injects it as a real
+    environment variable instead (see adk-eval.yml), which os.environ.get
+    already covers, so this is only ever the local-mode fallback. Handles
+    plain `KEY=value` / quoted `KEY="value"` lines; returns "" if the file
+    or key is missing - deliberately not a full .env parser (comments,
+    export, multiline values, ...), since docker compose's own parsing is
+    the one that actually matters for the containers themselves."""
+    try:
+        lines = Path(env_file).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() == key:
+            return v.strip().strip('"').strip("'")
+    return ""
+
+
+def provision_litellm_keys(master_key: str, agent_names: list) -> dict:
+    """Mints a real LiteLLM virtual key (via the running proxy's own
+    /key/generate) for each name in agent_names, returning {agent_name:
+    key}. No `models` restriction is set - this proxy instance exists
+    solely to serve this one eval run, unlike the shared, long-lived proxy
+    create_litellm_virtual_key (tools/budget.py) mints keys against, so
+    there's no other model/tenant to scope access away from. Raises on any
+    HTTP/parse failure - the caller decides how to report it."""
+    keys = {}
+    for name in agent_names:
+        payload = json.dumps({
+            "metadata": {"agent": name},
+            "key_alias": f"adk-eval-{name.lower()}",
+            "max_budget": EVAL_KEY_MAX_BUDGET_USD,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            LITELLM_KEY_GENERATE_URL,
+            data=payload,
+            headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        key = body.get("key")
+        if not key:
+            raise RuntimeError(f"LiteLLM /key/generate returned no key for agent '{name}': {body}")
+        keys[name] = key
+    return keys
+
+
+def build_eval_set_with_real_keys(template_path: str, output_path: str, litellm_keys: dict) -> None:
+    """Writes output_path as a copy of template_path with every eval case's
+    session_input.state.litellm_keys replaced by litellm_keys - a real,
+    working key for every specialist role, not just the one agent the
+    checked-in template's fixture happens to pre-seed.
+
+    A real run showed only the ONE agent a case's prompt directly addresses
+    getting a key from the template's own fixture (e.g. {"DevTeam":
+    "eval-fixture-key-devteam"}); when the model (or the orchestrator's own
+    routing) instead transferred to some OTHER role, that role had no key
+    at all and hit agent.py's "no LiteLLM virtual key yet" refusal before
+    ever reaching the actual gate the case exists to test - 7 of 10 cases
+    failed this way in one run, none of it real gate-enforcement behavior.
+    Every specialist role now has a real key up front, so whichever one
+    ends up doing the work, the eval measures its actual behavior instead
+    of the fixture's own incompleteness.
+
+    NO_KEY_FIXTURE_EVAL_IDS is exempted - those cases exist specifically to
+    test the missing-key block itself and must keep no key at all."""
+    data = json.loads(Path(template_path).read_text(encoding="utf-8"))
+    for case in data.get("eval_cases", []):
+        if case.get("eval_id") in NO_KEY_FIXTURE_EVAL_IDS:
+            continue
+        state = case.setdefault("session_input", {}).setdefault("state", {})
+        state["litellm_keys"] = dict(litellm_keys)
+    Path(output_path).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def provision_and_generate_eval_set(master_key: str) -> bool:
+    """Mints a real per-agent LiteLLM virtual key for every specialist role
+    (provision_litellm_keys) against this run's own now-ready proxy, then
+    writes GENERATED_EVAL_SET_PATH (build_eval_set_with_real_keys) - must
+    run after wait_for_litellm_ready succeeds and before the eval itself.
+    Prints its own error message and returns False on any failure; never
+    raises - same convention as wait_for_litellm_ready/ensure_host_ollama_ready."""
+    if not master_key:
+        print("ERROR: LITELLM_MASTER_KEY not available (checked the environment and --env-file) - "
+              "cannot mint per-agent virtual keys before the eval runs.")
+        return False
+    try:
+        keys = provision_litellm_keys(master_key, _SPECIALIST_AGENT_NAMES)
+    except (urllib.error.URLError, OSError, RuntimeError, ValueError) as e:
+        print(f"ERROR: failed to provision LiteLLM virtual keys: {e}")
+        return False
+    build_eval_set_with_real_keys(EVAL_SET_PATH, GENERATED_EVAL_SET_PATH, keys)
+    return True
 
 
 def compose_setup(ci: bool, host_ollama: bool = False) -> tuple:
@@ -374,6 +506,7 @@ def main() -> None:
             print(f"  ensure the `ollama` CLI is present, Ollama is reachable at http://localhost:11434, and {LOCAL_OLLAMA_MODEL} is pulled (all on this host)")
         print(f"  {env_prefix} docker compose {' '.join(compose_args)} --env-file {args.env_file} up -d db litellm")
         print(f"  wait for {LITELLM_HEALTH_URL} (up to {LITELLM_READY_TIMEOUT_SECONDS}s)")
+        print(f"  mint a real LiteLLM virtual key for each of {', '.join(_SPECIALIST_AGENT_NAMES)} and write {GENERATED_EVAL_SET_PATH}")
         if not args.ci and not host_ollama:
             print(f"  wait for `ollama list` to show {LOCAL_OLLAMA_MODEL} (up to {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s - first pull only, cached afterwards)")
         print(f"  {' '.join(run_cmd)}")
@@ -386,6 +519,12 @@ def main() -> None:
     if host_ollama and not ensure_host_ollama_ready(LOCAL_OLLAMA_MODEL):
         sys.exit(1)
 
+    # --ci injects this as a real env var (see adk-eval.yml); local mode's
+    # docker-compose --env-file never reaches this host process's own
+    # os.environ, so fall back to reading args.env_file directly - see
+    # _read_env_file_value.
+    master_key = os.environ.get("LITELLM_MASTER_KEY") or _read_env_file_value(args.env_file, "LITELLM_MASTER_KEY")
+
     exit_code = 1
     try:
         print("--- Bringing up db + litellm ---")
@@ -395,13 +534,15 @@ def main() -> None:
         elif not wait_for_litellm_ready():
             print(f"ERROR: litellm did not report ready at {LITELLM_HEALTH_URL} within {LITELLM_READY_TIMEOUT_SECONDS}s.")
             exit_code = 1
+        elif not provision_and_generate_eval_set(master_key):
+            exit_code = 1
         elif not args.ci and not host_ollama and not wait_for_ollama_model(compose_args, args.env_file, run_env, LOCAL_OLLAMA_MODEL):
             # --ci uses a cloud model, host-ollama already ensured the
             # model above - neither has a dockerized `ollama` pull to wait for.
             print(f"ERROR: Ollama did not finish pulling {LOCAL_OLLAMA_MODEL} within {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s.")
             exit_code = 1
         else:
-            print(f"--- Running ADK eval set: {EVAL_SET_PATH} ---")
+            print(f"--- Running ADK eval set: {GENERATED_EVAL_SET_PATH} ---")
             result = subprocess.run(run_cmd, env=run_env)
             exit_code = result.returncode
     finally:
@@ -412,6 +553,7 @@ def main() -> None:
         # containers and a CI run doesn't leak a stack past the job.
         print("--- Tearing down the eval stack ---")
         subprocess.run(down_cmd, env=run_env)
+        Path(GENERATED_EVAL_SET_PATH).unlink(missing_ok=True)
 
     sys.exit(exit_code)
 

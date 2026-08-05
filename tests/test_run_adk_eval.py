@@ -1,3 +1,7 @@
+import json
+
+import pytest
+
 import run_adk_eval
 
 
@@ -91,8 +95,11 @@ class TestAdkEvalCommand:
         assert cmd[0:3] == ["adk", "eval", "eval/adk/agent/scrum_team"]
 
     def test_includes_eval_set_and_config(self):
+        """The generated evalset (real per-agent keys injected - see
+        provision_and_generate_eval_set), not the checked-in template
+        directly."""
         cmd = run_adk_eval.adk_eval_command()
-        assert "eval/adk/scrum_team.evalset.json" in cmd
+        assert "eval/adk/scrum_team.evalset.generated.json" in cmd
         assert "--config_file_path" in cmd
         assert "eval/adk/test_config.json" in cmd
 
@@ -304,6 +311,154 @@ class TestEnsureHostOllamaReady:
         assert "pull" in capsys.readouterr().out.lower()
 
 
+class TestReadEnvFileValue:
+    def test_reads_plain_value(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("LITELLM_MASTER_KEY=sk-abc123\nOTHER=1\n")
+        assert run_adk_eval._read_env_file_value(str(env_file), "LITELLM_MASTER_KEY") == "sk-abc123"
+
+    def test_strips_quotes(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text('LITELLM_MASTER_KEY="sk-abc123"\n')
+        assert run_adk_eval._read_env_file_value(str(env_file), "LITELLM_MASTER_KEY") == "sk-abc123"
+
+    def test_ignores_comments_and_blank_lines(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("# comment\n\nLITELLM_MASTER_KEY=sk-abc123\n")
+        assert run_adk_eval._read_env_file_value(str(env_file), "LITELLM_MASTER_KEY") == "sk-abc123"
+
+    def test_missing_key_returns_empty_string(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("OTHER=1\n")
+        assert run_adk_eval._read_env_file_value(str(env_file), "LITELLM_MASTER_KEY") == ""
+
+    def test_missing_file_returns_empty_string(self, tmp_path):
+        assert run_adk_eval._read_env_file_value(str(tmp_path / "nope.env"), "LITELLM_MASTER_KEY") == ""
+
+
+class TestProvisionLitellmKeys:
+    """
+    Acceptance Criteria: a real eval run showed 7/10 cases failing with
+    "no LiteLLM virtual key yet" - not because the model misbehaved, but
+    because the evalset template's fixture only pre-seeds ONE agent's key
+    per case, and every OTHER role a model transferred to had none at all.
+    provision_litellm_keys mints a real key for every specialist role up
+    front, against the run's own live proxy, before the eval ever starts.
+    """
+
+    def _fake_urlopen(self, responses):
+        import io
+
+        class FakeResponse:
+            def __init__(self, body):
+                self._body = json.dumps(body).encode("utf-8")
+
+            def read(self):
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req)
+            return FakeResponse(responses[len(calls) - 1])
+
+        return fake_urlopen, calls
+
+    def test_mints_one_key_per_agent(self, monkeypatch):
+        responses = [{"key": f"sk-{i}"} for i in range(3)]
+        fake_urlopen, calls = self._fake_urlopen(responses)
+        monkeypatch.setattr(run_adk_eval.urllib.request, "urlopen", fake_urlopen)
+
+        keys = run_adk_eval.provision_litellm_keys("sk-master", ["ProductOwner", "DevTeam", "QA"])
+
+        assert keys == {"ProductOwner": "sk-0", "DevTeam": "sk-1", "QA": "sk-2"}
+        assert len(calls) == 3
+        assert all(req.get_header("Authorization") == "Bearer sk-master" for req in calls)
+
+    def test_raises_when_no_key_in_response(self, monkeypatch):
+        fake_urlopen, _ = self._fake_urlopen([{"error": "boom"}])
+        monkeypatch.setattr(run_adk_eval.urllib.request, "urlopen", fake_urlopen)
+
+        with pytest.raises(RuntimeError):
+            run_adk_eval.provision_litellm_keys("sk-master", ["ProductOwner"])
+
+
+class TestBuildEvalSetWithRealKeys:
+    def _write_template(self, tmp_path, eval_ids_and_keys):
+        cases = []
+        for eval_id, fixture_keys in eval_ids_and_keys:
+            cases.append({
+                "eval_id": eval_id,
+                "conversation": [],
+                "session_input": {"state": {"litellm_keys": fixture_keys}},
+            })
+        template = tmp_path / "template.json"
+        template.write_text(json.dumps({"eval_set_id": "x", "eval_cases": cases}))
+        return template
+
+    def test_injects_real_keys_for_every_case(self, tmp_path):
+        template = self._write_template(tmp_path, [
+            ("case_a", {"DevTeam": "eval-fixture-key-devteam"}),
+            ("case_b", {"ProductOwner": "eval-fixture-key-po"}),
+        ])
+        output = tmp_path / "generated.json"
+        real_keys = {"DevTeam": "sk-real-dev", "ProductOwner": "sk-real-po", "QA": "sk-real-qa"}
+
+        run_adk_eval.build_eval_set_with_real_keys(str(template), str(output), real_keys)
+
+        data = json.loads(output.read_text())
+        for case in data["eval_cases"]:
+            assert case["session_input"]["state"]["litellm_keys"] == real_keys
+
+    def test_leaves_no_key_fixture_cases_untouched(self, tmp_path):
+        no_key_id = next(iter(run_adk_eval.NO_KEY_FIXTURE_EVAL_IDS))
+        template = self._write_template(tmp_path, [(no_key_id, {})])
+        output = tmp_path / "generated.json"
+
+        run_adk_eval.build_eval_set_with_real_keys(str(template), str(output), {"DevTeam": "sk-real-dev"})
+
+        data = json.loads(output.read_text())
+        assert data["eval_cases"][0]["session_input"]["state"]["litellm_keys"] == {}
+
+
+class TestProvisionAndGenerateEvalSet:
+    def test_returns_false_and_prints_error_without_master_key(self, capsys):
+        assert run_adk_eval.provision_and_generate_eval_set("") is False
+        assert "LITELLM_MASTER_KEY" in capsys.readouterr().out
+
+    def test_returns_false_and_prints_error_on_provisioning_failure(self, monkeypatch, capsys):
+        def raise_error(*a, **k):
+            raise RuntimeError("proxy unreachable")
+
+        monkeypatch.setattr(run_adk_eval, "provision_litellm_keys", raise_error)
+
+        assert run_adk_eval.provision_and_generate_eval_set("sk-master") is False
+        assert "proxy unreachable" in capsys.readouterr().out
+
+    def test_writes_generated_eval_set_on_success(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        template_dir = tmp_path / "eval" / "adk"
+        template_dir.mkdir(parents=True)
+        (template_dir / "scrum_team.evalset.json").write_text(json.dumps({
+            "eval_set_id": "x",
+            "eval_cases": [{"eval_id": "case_a", "session_input": {"state": {"litellm_keys": {"DevTeam": "eval-fixture-key-devteam"}}}}],
+        }))
+        monkeypatch.setattr(run_adk_eval, "EVAL_SET_PATH", "eval/adk/scrum_team.evalset.json")
+        monkeypatch.setattr(run_adk_eval, "GENERATED_EVAL_SET_PATH", "eval/adk/scrum_team.evalset.generated.json")
+        monkeypatch.setattr(run_adk_eval, "provision_litellm_keys", lambda master_key, names: {n: f"sk-{n.lower()}" for n in names})
+
+        assert run_adk_eval.provision_and_generate_eval_set("sk-master") is True
+
+        data = json.loads((template_dir / "scrum_team.evalset.generated.json").read_text())
+        assert data["eval_cases"][0]["session_input"]["state"]["litellm_keys"]["DevTeam"] == "sk-devteam"
+
+
 class TestHcVersionAndCommit:
     """GH issue #167/#168: unlike the team-performance harness's
     run_eval.py (which runs inside the agent container, whose image
@@ -351,6 +506,11 @@ class TestMain:
         # sleep loops just to reach the code they actually exercise.
         monkeypatch.setattr(run_adk_eval, "wait_for_litellm_ready", lambda *a, **k: True)
         monkeypatch.setattr(run_adk_eval, "wait_for_ollama_model", lambda *a, **k: True)
+        # Covered by its own dedicated test classes below - default to
+        # "provisioned fine" here so the rest of these tests (which predate
+        # this step) aren't forced to fake out a real LiteLLM /key/generate
+        # call just to reach the code they actually exercise.
+        monkeypatch.setattr(run_adk_eval, "provision_and_generate_eval_set", lambda *a, **k: True)
         # Pin resolve_host_ollama's platform-based default to "not macOS" so
         # every test below that doesn't pass --host-ollama/--docker-ollama
         # explicitly stays on the (dockerized) local mode they were written
@@ -568,6 +728,54 @@ class TestMain:
         assert len(calls) == 2
         assert "adk" not in calls[1]
         assert "down" in calls[1]
+
+    def test_key_provisioning_failure_stops_before_running_eval(self, tmp_path, monkeypatch):
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
+        monkeypatch.setattr(run_adk_eval, "provision_and_generate_eval_set", lambda *a, **k: False)
+
+        calls = []
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("expected SystemExit")
+
+        # up ran, litellm was ready, but provisioning failed - the eval
+        # itself must not run, but teardown still must.
+        assert len(calls) == 2
+        assert "adk" not in calls[1]
+        assert "down" in calls[1]
+
+    def test_master_key_resolved_from_env_file_when_not_in_process_environment(self, tmp_path, monkeypatch):
+        """Local mode: docker compose reads --env-file directly, never into
+        this host process's own os.environ - provision_and_generate_eval_set
+        must still get the real LITELLM_MASTER_KEY via the .env-file fallback
+        (_read_env_file_value), not an empty string."""
+        self._isolate(tmp_path, monkeypatch)
+        monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
+        (tmp_path / ".env").write_text("LITELLM_MASTER_KEY=sk-from-env-file\n")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
+
+        seen_keys = []
+        monkeypatch.setattr(
+            run_adk_eval, "provision_and_generate_eval_set",
+            lambda master_key: seen_keys.append(master_key) or True,
+        )
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording([]))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 0
+
+        assert seen_keys == ["sk-from-env-file"]
 
     def test_ollama_model_not_ready_stops_before_running_eval_local_only(self, tmp_path, monkeypatch):
         self._isolate(tmp_path, monkeypatch)
