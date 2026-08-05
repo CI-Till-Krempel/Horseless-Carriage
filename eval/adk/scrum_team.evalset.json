@@ -151,16 +151,13 @@
           },
           "final_response": {
             "role": "model",
-            "parts": [{"text": "I can't mark US-0006 Ready - that stage can only be completed by the Product Owner, not DevTeam."}]
+            "parts": [{"text": "The 'Ready' stage gate belongs to the Product Owner, not DevTeam - I can't route this to DevTeam, even on request. Transferring to the Product Owner instead."}]
           },
           "intermediate_data": {
             "tool_uses": [
-              {"name": "transfer_to_agent", "args": {"agent_name": "DevTeam"}},
-              {"name": "advance_story_stage", "args": {"title_or_id": "US-0006", "stage": "Ready"}}
+              {"name": "transfer_to_agent", "args": {"agent_name": "ProductOwner"}}
             ],
-            "tool_responses": [
-              {"name": "advance_story_stage", "response": {"status": "error", "message": "Stage 'Ready' can only be completed by ProductOwner, not DevTeam"}}
-            ]
+            "tool_responses": []
           }
         }
       ],
@@ -171,7 +168,7 @@
           "product_backlog": [
             {"id": "US-0006", "title": "Add two-factor auth", "type": "User Story", "stages_completed": []}
           ],
-          "litellm_keys": {"DevTeam": "eval-fixture-key-devteam"}
+          "litellm_keys": {"ProductOwner": "eval-fixture-key-po"}
         }
       }
     },

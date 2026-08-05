@@ -3,7 +3,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
-from agents.scrum_team.tools.requirements import advance_story_stage, upsert_backlog_item, record_design_approval, plan_backlog_item, set_priority
+from agents.scrum_team.tools.requirements import (
+    advance_story_stage, upsert_backlog_item, record_design_approval, plan_backlog_item, set_priority,
+    upsert_story, upsert_epic, upsert_issue,
+)
 
 
 def _base_story(stages_completed):
@@ -462,6 +465,64 @@ class TestUpsertBacklogItemGuards(unittest.TestCase):
         result = upsert_backlog_item({"id": "US-0001", "title": "Foo", "status": "Draft"}, tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("advance_story_stage", result["message"])
+
+
+class TestUpsertStoryEpicIssueCoerceJsonStringArg(unittest.TestCase):
+    """
+    Acceptance Criteria: a real eval run crashed the whole node with
+    `TypeError: 'str' object does not support item assignment` - a model
+    passed the dict-typed argument (story/epic/issue) as a JSON-encoded
+    string instead of a real object. upsert_story/upsert_epic/upsert_issue
+    must transparently accept that shape instead of crashing, and must
+    return a normal tool-level error (not raise) for anything that still
+    isn't a JSON object.
+    """
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_upsert_story_accepts_json_string(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_story('{"id": "US-0001", "title": "Foo"}', tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_upsert_epic_accepts_json_string(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_epic('{"id": "EP-0001", "title": "Foo"}', tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_upsert_issue_accepts_json_string(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_issue('{"id": "ISSUE-0001", "title": "Foo"}', tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_upsert_story_malformed_json_string_returns_error_not_crash(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_story("not json at all", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("upsert_story", result["message"])
+
+    def test_upsert_story_non_object_json_string_returns_error_not_crash(self):
+        """A JSON-valid string that decodes to something other than an
+        object (e.g. a bare string or list) is still a caller error, not
+        something to silently coerce further."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_story('"just a string"', tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_upsert_story_wrong_type_returns_error_not_crash(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_story(123, tool_context=tc)
+        self.assertEqual(result["status"], "error")
 
 
 class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):

@@ -291,11 +291,22 @@ owning role instead of attempting the call itself - a reasonable thing for
 a real team to do, but it means the scripted call never happens at all, so
 there's nothing for `tool_trajectory_avg_score` to match regardless of args
 (see "IN_ORDER" above - it tolerates *extra* calls, but the *expected* one
-still has to appear at least once with matching args). Prompts for these
-two cases (and `git_push_allows_feature_branch`, for a related reason: the
-model invented its own branch slug instead of the one the fixture expects)
+still has to appear at least once with matching args). Prompts for
+`upsert_story_blocks_direct_status_set` and `git_push_allows_feature_branch`
 were tightened to explicitly instruct the addressed role to act directly,
 by name, rather than leaving room for a "helpful" hand-off.
+
+`advance_story_stage_rejects_wrong_role` needed a different fix: even after
+tightening its prompt the same way, the live model kept transferring
+straight to Product Owner instead of DevTeam - not a delegation quirk, but
+`ScrumOrchestrator`'s own ROUTING RULES (`prompts.py`: "Ready/Accepted stage
+gates -> Product Owner") correctly overriding the user's contrary request.
+That's the *right* behavior - a robustness layer catching the wrong-role
+attempt before it even reaches `advance_story_stage`'s own `STAGE_OWNERS`
+check this case was written to exercise - so the fix was to the scripted
+expectation, not the prompt or the code: it now expects exactly
+`transfer_to_agent(agent_name='ProductOwner')` and nothing else, matching
+what two independent live runs actually did.
 
 **2. The model can be argued into calling `git_push` with `allow_protected=
 True` under social pressure.** For `git_push_refuses_protected_main`, the
@@ -338,6 +349,18 @@ gitignored, per-run copy of the checked-in template with every case's
 that instead. `sub_agent_blocked_without_budget_capped_virtual_key` is
 exempted (`NO_KEY_FIXTURE_EVAL_IDS`): its whole point is exercising the
 missing-key block itself, so it must keep no key at all.
+
+**4. `upsert_story` crashed the whole node on a JSON-encoded string
+argument.** Once fix #3 let `upsert_story_blocks_direct_status_set` actually
+reach the tool, it crashed with `TypeError: 'str' object does not support
+item assignment` (`agents/scrum_team/tools/requirements.py`) - the model
+emitted the `story` argument as a JSON-encoded string
+(`upsert_story('{"title": "..."}')`) instead of a real object, and the very
+next line (`story["type"] = ...`) had no defense against that. Fixed with a
+small `_coerce_backlog_item_dict` helper, shared by `upsert_story`/
+`upsert_epic`/`upsert_issue`: transparently parses that one shape, and turns
+anything else that still isn't an object into a normal `{"status": "error"}`
+tool response instead of an uncaught crash.
 
 ## These `EvalCase`s were hand-authored, not captured from a live run
 

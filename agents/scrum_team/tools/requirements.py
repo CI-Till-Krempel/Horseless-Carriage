@@ -121,10 +121,39 @@ def _render_story_block(story_id: str, title: str, stages_completed: List[str]) 
     return lines
 
 
+def _coerce_backlog_item_dict(value: Any, tool_name: str) -> Dict[str, Any]:
+    """
+    A real eval run crashed the whole node with `TypeError: 'str' object
+    does not support item assignment` - a model emitted this dict-typed
+    tool argument as a JSON-encoded string instead of a real object (e.g.
+    upsert_story('{"title": "..."}') instead of upsert_story({"title":
+    "..."})), and the very next line (item["type"] = ...) has no defense
+    against that. Transparently parses that one specific shape; anything
+    else that still isn't a dict is a genuine caller error, not a
+    serialization quirk, and is raised as ValueError so the caller can
+    turn it into a normal tool-level error response instead of an uncaught
+    crash.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError(f"{tool_name} expected an object, got {type(value).__name__}: {value!r}")
+
+
 def upsert_story(story: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     Requirements Management: Add or update a User Story by ID or Title.
     """
+    try:
+        story = _coerce_backlog_item_dict(story, "upsert_story")
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     story["type"] = "User Story"
     return upsert_backlog_item(story, tool_context=tool_context)
 
@@ -132,6 +161,10 @@ def upsert_epic(epic: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     Requirements Management: Add or update an Epic by ID or Title.
     """
+    try:
+        epic = _coerce_backlog_item_dict(epic, "upsert_epic")
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     epic["type"] = "Epic"
     return upsert_backlog_item(epic, tool_context=tool_context)
 
@@ -147,6 +180,10 @@ def upsert_issue(issue: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     `specs/requirements/` instead of `specs/stories/` - see
     spec-templates/requirements/TEMPLATE-ISSUE.md.
     """
+    try:
+        issue = _coerce_backlog_item_dict(issue, "upsert_issue")
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     issue["type"] = "Issue"
     return upsert_backlog_item(issue, tool_context=tool_context)
 
