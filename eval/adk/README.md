@@ -471,7 +471,10 @@ next line (`story["type"] = ...`) had no defense against that. Fixed with a
 small `_coerce_backlog_item_dict` helper, shared by `upsert_story`/
 `upsert_epic`/`upsert_issue`: transparently parses that one shape, and turns
 anything else that still isn't an object into a normal `{"status": "error"}`
-tool response instead of an uncaught crash.
+tool response instead of an uncaught crash. Later generalized into
+`_coerce_dict_arg` (`agents/scrum_team/tools/base.py`) with a second
+recovered shape (a Python `repr()`, single-quoted) - see finding #6 - and
+`_coerce_backlog_item_dict` is now just a thin alias for it.
 
 **5. `transfer_to_agent(agent_name=<itself>)` crashed the whole node.** Once
 fixes #3/#4 let conversations run further, this became the dominant
@@ -487,18 +490,32 @@ real `transfer_to_agent` tool ever runs, so that crash-prone path is never
 reached at all.
 
 **6. `update_sprint_report` corrupted session state on a wrong-shape
-argument.** A model called it with `kpis='calculate_kpis'` - the *name* of
-the sibling tool that computes the real KPI dict, as a plain string,
-instead of calling it first and passing the result. The original code
-wrote that string straight into `state["sprint_report_kpis"]` without
+argument - and, once just rejected, the model retried the same wrong shape
+over a dozen times running.** A model called it with `kpis='calculate_kpis'`
+- the *name* of the sibling tool that computes the real KPI dict, as a plain
+string, instead of calling it first and passing the result. The original
+code wrote that string straight into `state["sprint_report_kpis"]` without
 checking its shape; the call itself didn't fail, but every later
 `before_model_callback` re-validates the whole session state via
 `ScrumState(**data)` (see `get_scrum_state`), so the *next* turn - for
 whichever agent happened to go next, nowhere near this tool - crashed with
-a pydantic `ValidationError`. Fixed in `tools/quality.py`: `kpis` is now
-type-checked before it ever reaches state, returning a normal
-`{"status": "error"}` explaining the mistake instead of silently
-persisting a value that poisons every subsequent turn.
+a pydantic `ValidationError`. First fixed by type-checking `kpis` before it
+ever reaches state, returning a normal `{"status": "error"}` instead of
+silently persisting a value that poisons every subsequent turn - but a later
+run showed that alone wasn't enough: QualityGuardian just retried
+`update_sprint_report(kpis="calculate_kpis")` / `"calculate_kpis()"`, or a
+JSON-/Python-repr-stringified copy of the dict (single-quoted, with a bare
+`None`/`True`/`False` - a shape `json.loads` can't parse at all), over a
+dozen times in a row, since a rejection alone never taught it the right
+shape. Fixed by making `update_sprint_report` **self-heal** instead of just
+rejecting: the literal tool-name string is recognized and resolved by
+actually calling `calculate_kpis()` and using that; a stringified dict is
+recovered via `_coerce_dict_arg` (`tools/base.py` - see finding #4, which
+this generalizes and now shares with `upsert_story`/`upsert_epic`/
+`upsert_issue`, since the same Python-repr gap was hitting `upsert_issue`
+too). Only a genuinely non-recoverable value still returns the
+`{"status": "error"}` rejection. See finding #12 for why looping on this
+particular pair of tools stayed a problem even after this fix.
 
 **7. A second local run failed outright before the eval even started:
 `ERROR: failed to provision LiteLLM virtual keys: HTTP Error 400: Bad
@@ -531,6 +548,7 @@ valid pair it already tracks correctly): `TRANSFER_LOOP_THRESHOLD`
 consecutive self-transfers now get the same stronger "stop and take real
 action" banner (plus a recorded blocking interaction) as any other stuck
 loop, capping the token burn mechanically instead of repeating forever.
+(`TRANSFER_LOOP_THRESHOLD` was later lowered from 6 to 3 - see finding #12.)
 
 On top of that hard cap, every role's own system prompt (`prompts.py`) now
 states its own exact internal `agent_name` explicitly - e.g. "**NEVER call
@@ -577,6 +595,32 @@ cut it off - see "Sequential, turn-capped eval runs" above. And every tool
 call logged only argument *names*, giving no clue which branch/story/agent
 a call concerned, nor whether it had actually succeeded or failed - see
 "Reading a live run's console output" above.
+
+**12. Even with fix #6's self-heal, agents kept calling tools they'd
+already succeeded at, over and over, burning turns silently instead of
+loudly.** Lowering the turn cap to 20 (finding #11) made this newly fatal:
+QualityGuardian called `calculate_kpis()`/`update_sprint_report(...)` back
+to back a dozen+ times in a single session even after each call
+*succeeded* - it never recognized it had already made progress and kept
+repeating anyway. Separately, `ProductOwner` called
+`advance_story_stage(title_or_id="US-0006", stage="Ready")` with identical
+arguments four times running, always rejected with the same "hasn't
+completed ['Draft'] yet" error. Neither pattern is `transfer_to_agent`
+bouncing, so neither tripped the existing `_detect_transfer_loop` breaker
+(finding #8) - both just ran until `LlmCallsLimitExceededError` killed the
+whole session outright, well short of the case's natural end. Fixed by
+generalizing that breaker: a new `_detect_repeated_call_loop`/
+`REPEATED_CALL_LOOP_THRESHOLD` in `agent.py` blocks *any* tool called with
+the exact same arguments 3 times running with no other distinct call in
+between - keyed on tool name **and** exact argument values, so genuinely
+different actions (a different story ID, a different branch) are real
+progress and are never blocked, only true no-progress repetition. Also
+lowered `TRANSFER_LOOP_THRESHOLD` itself from 6 to 3 for the same reason:
+waiting for 6 identical bounces before breaking could alone burn nearly a
+third of a 20-call eval case's whole budget on one stuck pattern. Both
+apply in production too, not just eval - there's no legitimate reason to
+repeat an identical call 3 times running, whether it's failing or
+(uselessly) succeeding.
 
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
