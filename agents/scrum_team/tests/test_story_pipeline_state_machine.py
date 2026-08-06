@@ -22,7 +22,13 @@ INTERACTION_LEVEL is pinned to EVAL for the whole file: these tests are about
 the mechanical dev/review/test/accept pipeline, not the separate human-
 approval gates (already covered by TestReadyDesignApprovalGate and friends in
 test_requirements.py) - EVAL requires none of those, keeping the scripted
-sequence here focused on the state machine itself.
+sequence here focused on the state machine itself. TARGET_STORIES_PER_SPRINT/
+READY_BACKLOG_SPRINTS_TARGET are likewise pinned to 1 each - this file's
+single-story scripts aren't testing the Ready-backlog-sufficiency gate
+(see test_sprint_and_approval_gates.py for that); a real sprint's start_sprint
++ create_sprint_backlog_pr call is still made (via _draft_to_ready ->
+_publish_sprint_backlog) since Dev Team mechanically cannot start any story
+otherwise.
 """
 import os
 import unittest
@@ -36,9 +42,10 @@ from agents.scrum_team.tools.requirements import (
 from agents.scrum_team.tools.docs import upsert_prd, write_file
 from agents.scrum_team.tools.requirements import update_roadmap
 from agents.scrum_team.tools.budget import log_story_tokens
+from agents.scrum_team.tools.scrum import start_sprint
 from agents.scrum_team.tools.github import (
     start_feature_branch, git_push, mark_pr_ready_for_review,
-    gh_pr_review, merge_story_pr,
+    gh_pr_review, merge_story_pr, create_sprint_backlog_pr,
 )
 from agents.scrum_team.tools.quality import check_build
 
@@ -73,7 +80,11 @@ def _as(tool_context, agent_name):
 
 @patch("agents.scrum_team.tools.quality._run", side_effect=_fake_run)
 @patch("agents.scrum_team.tools.github._run", side_effect=_fake_run)
-@patch.dict(os.environ, {"INTERACTION_LEVEL": "EVAL"})
+@patch.dict(os.environ, {
+    "INTERACTION_LEVEL": "EVAL",
+    "TARGET_STORIES_PER_SPRINT": "1",
+    "READY_BACKLOG_SPRINTS_TARGET": "1",
+})
 class TestStoryPipelineStateMachine(unittest.TestCase):
     """
     Acceptance Criteria: the tool harness described by
@@ -111,9 +122,22 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         self.assertEqual(set_priority(story_id, "Must", tool_context=tc)["status"], "ok")
         return story_id
 
+    def _publish_sprint_backlog(self, tc):
+        """Dev Team mechanically cannot start (or finish) any story until
+        THIS sprint's Sprint Backlog PR has actually merged (see
+        sprint_backlog_pr_missing, agents/scrum_team/helpers.py) - every
+        test that reaches Implemented must go through this first, same as a
+        real conversation would via PO_PROMPT's SPRINT PLANNING section."""
+        if not tc.state.get("sprint_goal"):
+            _as(tc, "ScrumMaster")
+            self.assertEqual(start_sprint("Ship this story end to end", tool_context=tc)["status"], "ok")
+        _as(tc, "ProductOwner")
+        self.assertEqual(create_sprint_backlog_pr(tool_context=tc)["status"], "ok")
+
     def _draft_to_ready(self, tc, story_id):
         self.assertEqual(advance_story_stage(story_id, "Draft", tool_context=tc)["status"], "ok")
         self.assertEqual(advance_story_stage(story_id, "Ready", tool_context=tc)["status"], "ok")
+        self._publish_sprint_backlog(tc)
 
     def _implement(self, tc, story_id, slug="add-login", source_path="src/app.py", content="def login(): ..."):
         """GitFlow + Implemented - DevTeam's whole stage."""

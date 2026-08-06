@@ -306,6 +306,88 @@ def should_escalate_blocker_to_user(category: str, level: str | None = None) -> 
     return category == "product" and (level or get_interaction_level()) == "Product"
 
 
+def sprint_backlog_pr_missing(state: dict) -> str | None:
+    """
+    Returns a rejection message if this sprint's Sprint Backlog PR
+    (create_sprint_backlog_pr, agents/scrum_team/tools/github.py) hasn't
+    successfully merged yet, else None. A real eval run showed why this
+    needs to be a mechanical gate rather than PO_PROMPT's "call this BEFORE
+    Dev Team opens the first feature branch" instruction alone: nothing
+    stopped Dev Team from starting (or even finishing) a story before that
+    PR ever ran, so when the sprint's token budget was cut mid-story,
+    everything Product Owner had written that sprint (roadmap, PRD, epics,
+    stories) was left uncommitted anywhere reachable - the state repo
+    ended up with no specs at all.
+
+    `create_sprint_backlog_pr` sets `sprint_backlog_pr_sprint` to the
+    current `sprint_number` only once its merge actually succeeds; this
+    compares that against the *current* `sprint_number` (not just "was it
+    ever set") so a stale success from a previous sprint can't silently
+    satisfy this one.
+    """
+    sprint_number = state.get("sprint_number", 0)
+    if sprint_number <= 0:
+        return "No sprint has been started yet (sprint_number is unset) - ask Scrum Master to call start_sprint(goal) first."
+    if state.get("sprint_backlog_pr_sprint") != sprint_number:
+        return (
+            f"Cannot start implementation work - this sprint's (#{sprint_number}) Sprint Backlog PR "
+            "hasn't merged yet. Product Owner must call create_sprint_backlog_pr() to publish this "
+            "sprint's planning output (roadmap, PRD, epics, stories reaching Ready) to develop before "
+            "any story can be implemented - see PO_PROMPT SPRINT PLANNING."
+        )
+    return None
+
+
+# --- Ready-backlog sufficiency (don't start implementing until there's
+# enough Ready work queued up) ---
+# No velocity/story-points system exists in this codebase - story_estimates
+# is token-bookkeeping for the sprint report (estimate vs actual per
+# story), not a forward capacity signal. Rather than build a velocity
+# system, ready_backlog_shortfall below uses a simple, documented,
+# configurable story-COUNT proxy for "enough work queued up for N sprints"
+# - see create_sprint_backlog_pr (agents/scrum_team/tools/github.py), the
+# single choke point this gates.
+def target_stories_per_sprint() -> int:
+    """How many stories a sprint is assumed to get through, for sizing the
+    Ready-backlog sufficiency target below. Configurable via
+    TARGET_STORIES_PER_SPRINT; defaults to 3 - a deliberately simple,
+    round-number assumption, not a measured velocity."""
+    try:
+        return max(1, int(os.getenv("TARGET_STORIES_PER_SPRINT", "3")))
+    except (ValueError, TypeError):
+        return 3
+
+
+def ready_backlog_sprints_target() -> int:
+    """How many sprints' worth of Ready work the backlog should hold before
+    Dev Team may start implementing (see create_sprint_backlog_pr).
+    Configurable via READY_BACKLOG_SPRINTS_TARGET; defaults to 2."""
+    try:
+        return max(1, int(os.getenv("READY_BACKLOG_SPRINTS_TARGET", "2")))
+    except (ValueError, TypeError):
+        return 2
+
+
+def ready_backlog_shortfall(product_backlog: list) -> int:
+    """
+    How many more stories must reach Ready before the backlog holds
+    target_stories_per_sprint() * ready_backlog_sprints_target() stories
+    that are Ready-or-further but not yet Accepted (0 if already met).
+    Counts non-Epic, non-BLOCKED items only - the same population
+    _preceding_story's one-story-at-a-time ordering check considers "real"
+    backlog work (agents/scrum_team/tools/requirements.py).
+    """
+    ready_count = sum(
+        1 for x in (product_backlog or [])
+        if x.get("type", "User Story") != "Epic"
+        and not x.get("blocked")
+        and "Ready" in (x.get("stages_completed") or [])
+        and "Accepted" not in (x.get("stages_completed") or [])
+    )
+    target = target_stories_per_sprint() * ready_backlog_sprints_target()
+    return max(0, target - ready_count)
+
+
 def new_sprint_item_blocked(state: dict) -> str | None:
     """
     Returns a rejection message if a previous sprint's close sequence was

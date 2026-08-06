@@ -38,6 +38,12 @@ def _tool_context(agent_name, stages_completed):
     tc.state["product_backlog"] = [story]
     tc.state["sprint_backlog"] = [dict(story)]
     tc.agent_name = agent_name
+    # This sprint's Sprint Backlog PR is assumed already merged - these
+    # tests are about the Implemented/Reviewed/Tested/Ready gates
+    # themselves, not sprint_backlog_pr_missing (see
+    # test_sprint_and_approval_gates.py for that one).
+    tc.state["sprint_number"] = 1
+    tc.state["sprint_backlog_pr_sprint"] = 1
     return tc
 
 
@@ -298,6 +304,8 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         tc.state["product_backlog"] = product_backlog
         tc.state["sprint_backlog"] = [dict(first), dict(second)]
         tc.agent_name = agent_name
+        tc.state["sprint_number"] = 1
+        tc.state["sprint_backlog_pr_sprint"] = 1
         return tc
 
     def test_preceding_product_backlog_story_not_accepted_blocks_advancement(self, mock_save, mock_md, mock_roadmap):
@@ -438,7 +446,14 @@ class TestReadyDesignApprovalGate(unittest.TestCase):
             self.assertEqual(tc.state["blocking_interactions"][0]["kind"], "approval")
 
     def test_ready_succeeds_at_stakeholder_level_once_design_approved(self, mock_save, mock_md, mock_roadmap):
-        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True):
+        # record_design_approval now requires evidence this story's own
+        # create_story_spec_pr branch actually merged (see
+        # test_sprint_and_approval_gates.py::TestStorySpecPrEvidenceGate for
+        # that gate's own dedicated coverage) - not the concern of this
+        # test, which is about the Ready gate reading design_approved once
+        # it's set.
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True), \
+             patch("agents.scrum_team.tools.github.story_spec_pr_merged", return_value=True):
             tc = _tool_context("ProductOwner", [])
             record_design_approval("US-0001", "Looks good", tool_context=tc)
             result = advance_story_stage("US-0001", "Ready", tool_context=tc)

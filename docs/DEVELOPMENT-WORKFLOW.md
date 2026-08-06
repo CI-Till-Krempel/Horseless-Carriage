@@ -56,9 +56,9 @@ state or a PR) - the exact path is named on the node itself.
 
 ```mermaid
 flowchart TD
-    A["🧑‍🏫 ScrumMaster\n🔧🔄 start_sprint(goal)\n❌ refuses blank goal / unfinished prior close"]:::sm --> B["🧑‍💼 ProductOwner\nplans backlog to Ready — see diagram 2"]:::po
-    B --> C["🧑‍💼 ProductOwner\n🔧 create_sprint_backlog_pr\nSprint Backlog PR into develop, BEFORE any story starts"]:::po
-    C --> D["Each story runs the Stage Pipeline\n(diagram 2) — one at a time, priority order"]:::multi
+    A["🧑‍🏫 ScrumMaster\n🔧🔄 start_sprint(goal)\n❌ refuses blank goal / unfinished prior close"]:::sm --> B["🧑‍💼 ProductOwner\nplans backlog to Ready — see diagram 2\n❌ can't proceed until Ready backlog holds\n≥ TARGET_STORIES_PER_SPRINT × READY_BACKLOG_SPRINTS_TARGET stories"]:::po
+    B --> C["🧑‍💼 ProductOwner\n🔧 create_sprint_backlog_pr\nSprint Backlog PR into develop, BEFORE any story starts\n🟥👤 merge withheld until sprint/budget approval recorded, where required"]:::po
+    C --> D["Each story runs the Stage Pipeline\n(diagram 2) — one at a time, priority order\n❌ start_feature_branch/Implemented refuse until this PR has merged"]:::multi
     D --> E{{"All stories as far\nas this sprint allows?"}}:::loop
     E -- "no — iterate" --> D
     E -- yes --> F["🧑‍🏫 ScrumMaster\n🔧 add_retro_action / add_impediment\n⚠️ MANDATORY: must be NEW since last report"]:::sm
@@ -89,18 +89,21 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    subgraph ReqEng["📋 Requirements engineering & product workflow — happens while a story sits in DRAFT"]
+    subgraph ReqEng["📋 Requirements engineering & product workflow — happens while a story sits in DRAFT; iterates (see note below) until the Ready backlog is deep enough"]
         direction TB
         Vision["🧑‍💼 ProductOwner\n🔧 upsert_prd\n📄 specs/requirements/PRD-*.md\n🔄 parsed into product_vision/product_goals"]:::po
+        ArchVision["👷 Architect\n🔧 upsert_architecture_vision\n📄 specs/architecture/ARCHITECTURE-VISION.md\n🔄 parsed into architecture_vision"]:::arch
         Vision --> SRSDoc["🧑‍💼 ProductOwner\n🔧 upsert_srs (optional, technical detail)\n📄 specs/requirements/SRS-*.md"]:::po
-        Vision --> Roadmap["🧑‍💼 ProductOwner\n🔧 update_roadmap\n📄 specs/ROADMAP.md"]:::po
-        Roadmap --> Epic["🧑‍💼 ProductOwner\n🔧 upsert_epic\ngroups related stories"]:::po
+        Vision --> Roadmap["🧑‍💼 ProductOwner\n🔧 update_roadmap — MVP scope first,\nthen next releases"]:::po
+        ArchVision --> Roadmap
+        Roadmap --> Epic["🧑‍💼 ProductOwner\n🔧 upsert_epic\ngroups related stories, top-down from the roadmap"]:::po
         Epic --> StoryDraft["🧑‍💼 ProductOwner (+👷 Architect input)\n🔧 upsert_story\n📄 specs/stories/US-*.md"]:::po
         StoryDraft --> Prioritize["🧑‍💼 ProductOwner\n🔧 set_priority / plan_backlog_item"]:::po
     end
     Prioritize --> Draft["🧑‍💼 ProductOwner (+👷 Architect feasibility)\n🔄 DRAFT\n🔧 advance_story_stage\ntitle/user story/AC refined until real, not placeholder"]:::po
     Draft --> GateReady{"Stakeholder level?"}:::gate
-    GateReady -- "🟣 Stakeholder" --> Design["🟥👤 HUMAN APPROVAL\n🔧 record_design_approval\nPO records the stakeholder's sign-off on this story's design"]:::human
+    GateReady -- "🟣 Stakeholder" --> SpecPR["🧑‍💼 ProductOwner\n🔧 create_story_spec_pr\nper-story Story Spec PR, left open for review"]:::po
+    SpecPR --> Design["🟥👤 HUMAN APPROVAL\n🔧 record_design_approval\n❌ refuses unless the Story Spec PR has actually merged"]:::human
     Design --> DesignGate{{"Design approved?"}}:::loop
     DesignGate -- "❌ no — revise & resubmit" --> Draft
     DesignGate -- "✅ yes" --> Ready
@@ -142,11 +145,43 @@ flowchart TD
 ```
 
 `advance_story_stage` (`tools/requirements.py`) is the *only* tool that marks a stage complete, and
-mechanically enforces order, ownership, one-story-at-a-time (can't pass Ready until the preceding
-backlog item is Accepted), and content quality - never just prompt instructions. Every other tool that
-could set `status` to a stage name directly (`upsert_story`/`upsert_epic`/`plan_sprint_backlog_item`)
-refuses to (`blocks_direct_status_set`). Each successful call also re-renders `specs/ROADMAP.md`'s
-checkboxes for that story in the same call - no separate step.
+mechanically enforces order, ownership, content quality, and one-story-at-a-time - but the latter only
+from **Implemented onward**: a story can't reach Implemented until the preceding backlog item is
+Accepted, but Draft/Ready backlog grooming may run ahead of whichever one story is actively in
+development, so Product Owner can build up a deep Ready backlog (see below) while Dev Team works
+through stories one at a time. Every other tool that could set `status` to a stage name directly
+(`upsert_story`/`upsert_epic`/`plan_sprint_backlog_item`) refuses to (`blocks_direct_status_set`). Each
+successful call also re-renders `specs/ROADMAP.md`'s checkboxes for that story in the same call - no
+separate step.
+
+**Keep the Ready backlog deep, top-down.** A real eval run showed a sprint's token budget could be cut
+mid-story with nothing merged anywhere, because publishing that sprint's specs
+(`create_sprint_backlog_pr`, diagram 1) was only ever a prompt instruction away from Dev Team starting
+work - never a mechanical precondition. Two gates close that:
+- `create_sprint_backlog_pr` refuses to run at all while the Ready backlog (non-Epic, non-BLOCKED
+  stories with Ready reached but not yet Accepted) is short of `TARGET_STORIES_PER_SPRINT ×
+  READY_BACKLOG_SPRINTS_TARGET` stories (both env-configurable, `agents/scrum_team/helpers.py`) - the
+  mechanical push-back into the requirements-engineering loop above instead of publishing a thin
+  sprint.
+- `start_feature_branch` and `advance_story_stage(..., "Implemented")` both refuse until *this*
+  sprint's Sprint Backlog PR has actually merged (`sprint_backlog_pr_missing`) - so Dev Team
+  mechanically cannot start (or finish) a story before Product Owner's specs for this sprint have
+  landed on `develop`.
+
+Use `product_vision` and `architecture_vision` together, top-down: (re)plan `specs/ROADMAP.md`'s
+release sequence (MVP first), break the MVP scope into Epics, then detail each Epic's Stories - before
+advancing any of them past Draft.
+
+**Approval by merge request, not by assertion.** Two PRs now stand as the real approval evidence
+instead of a bare "yes, reviewed" call:
+- `create_story_spec_pr(title_or_id)` opens a PR containing just one story's own spec - at Product/
+  CEO/EVAL it merges immediately (no separate human spec-reviewer at those levels); at Stakeholder it
+  stays open, and `record_design_approval` now mechanically refuses unless that PR has actually
+  merged.
+- `create_sprint_backlog_pr` ("approve sprint planning") opens the Sprint Backlog PR either way, but
+  only merges immediately where no human approval is required before Implemented (CEO once budget is
+  approved, EVAL always); at Product/Stakeholder it stays open until a fresh `sprint` approval is
+  recorded (`record_human_approval`), then a re-call merges it.
 
 Its counterpart, `deny_review(title_or_id, stage, reason)`, is the *only* way to deny Reviewed/
 Tested/Accepted mechanically instead of just never calling `advance_story_stage` (with the "why", if
@@ -240,6 +275,7 @@ require a human, and how chatty the orchestrator is between them - full detail i
 | Which model backs each role | `config/model-templates/*.yaml` (`setup_llm.py`) | Provider/model per agent alias |
 | Report verbosity per level | `report_detail_level()` in `helpers.py` | What `create_sprint_report` renders (full/business/executive) |
 | Who resolves a BLOCKED story's category | `BLOCKER_CATEGORY_OWNERS` / `should_escalate_blocker_to_user()` in `helpers.py` | Which role (or the human User) a `raise_story_blocker` category routes to |
+| How deep the Ready backlog must be before implementing | `.env`'s `TARGET_STORIES_PER_SPRINT` / `READY_BACKLOG_SPRINTS_TARGET` (read by `ready_backlog_shortfall()` in `helpers.py`) | The story-count threshold `create_sprint_backlog_pr` enforces before it will run at all |
 
 ## Verifying the tooling actually follows this state machine
 
@@ -250,7 +286,9 @@ make. Covers the golden path (every review approved first try), all three review
 (Architect's code review, QA's, Product Owner's acceptance check - deny → fix → re-review → advance),
 and the BLOCKED path above (raise → a lower-priority story proceeds anyway → resolve → advance).
 Only genuine external boundaries (git/gh subprocess calls, the real pytest run) are mocked; every
-gate/state mutation runs for real.
+gate/state mutation runs for real. `test_sprint_and_approval_gates.py` covers the newer sprint-level
+gates the same way: the Sprint Backlog PR merge gate, the Ready-backlog sufficiency gate, the
+approval-withheld-then-merged flow, and the Story Spec PR evidence gate.
 
 ## Related docs
 
