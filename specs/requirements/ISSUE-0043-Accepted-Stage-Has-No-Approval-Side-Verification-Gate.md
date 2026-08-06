@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0043
 - Title: Accepted Stage Has No Approval-Side Verification Gate
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Architect
 - Last Updated: 2026-08-06
@@ -55,3 +55,36 @@ project keeps finding and closing for other stages.
 - Unit test on `advance_story_stage(..., "Accepted")` asserting it's rejected without whatever new
   evidence requirement is chosen, mirroring the existing Reviewed/Tested gate tests in
   `agents/scrum_team/tests/test_requirements.py::TestAdvanceStoryStageGates`.
+
+## Resolution
+Went with candidate (a): a new `record_acceptance_check(title_or_id, note, tool_context=None)`
+(`agents/scrum_team/tools/requirements.py`), exposed only to ProductOwner
+(`agents/scrum_team/agent.py`). Deliberately a per-story **counter**
+(`acceptance_check_count`), not a one-time boolean like `record_design_approval`'s
+`design_approved` - Accepted is deniable via `deny_review`, and ISSUE-0044's snapshot mechanism
+needs something that can be observed to grow past a snapshot taken at deny time; a boolean would
+already read "True" going into a re-check, indistinguishable from never having been reset.
+
+`advance_story_stage`'s new `elif stage == "Accepted":` branch refuses unless
+`acceptance_check_count > 0`. `deny_review` now also snapshots this counter at deny time
+(`review_denial["acceptance_count_at_denial"]`) when denying Accepted, and the same branch refuses
+if the count hasn't grown past that snapshot - closing ISSUE-0044's gap for Accepted too, the same
+way it was already closed for Reviewed/Tested.
+
+Went with (b)'s underlying principle (approval as an explicit action) but scoped to Accepted only
+(candidate (a)'s narrower form) rather than reshaping Reviewed/Tested's existing `gh_pr_review`-based
+approval flow, per the Acceptance Criteria's requirement not to force PO onto an unrelated tool.
+
+- `agents/scrum_team/tools/requirements.py`: `record_acceptance_check` (new), `advance_story_stage`'s
+  Accepted branch, `deny_review`'s Accepted snapshot.
+- `agents/scrum_team/tools/__init__.py` / `agents/scrum_team/agent.py`: exported and wired into
+  ProductOwner's tools only.
+- `agents/scrum_team/prompts.py`: `PO_PROMPT`'s ACCEPTED bullet and tools list updated.
+- `agents/scrum_team/tests/test_requirements.py`: `TestRecordAcceptanceCheck`,
+  `TestAdvanceStoryStageGates::test_accepted_requires_a_recorded_acceptance_check` /
+  `test_accepted_succeeds_once_acceptance_check_is_recorded`,
+  `TestDenyReview::test_accepted_denial_blocks_advance_even_if_already_checked_once`.
+- `agents/scrum_team/tests/test_story_pipeline_state_machine.py`: golden path and acceptance-fix-loop
+  tests updated to call `record_acceptance_check` before `advance_story_stage(id, "Accepted")`.
+- `docs/DEVELOPMENT-WORKFLOW.md`, `RELEASE.md`, `docs/ARCHITECTURE.md` updated.
+- See also ISSUE-0044, whose Accepted-side gap this also closes.

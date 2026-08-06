@@ -12,7 +12,7 @@ source of truth for their slice; this page is the composite map plus the knobs t
 | Agent | Owns | Key tools |
 |---|---|---|
 | 🧑‍✈️ **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
-| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_design_approval`, `deny_review`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
+| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_design_approval`, `record_acceptance_check`, `deny_review`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
 | 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `update_budgets`/`get_budget_status` |
 | 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
 | 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `deny_review`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
@@ -121,7 +121,7 @@ flowchart TD
     BuildGate -- "❌ no — 🔧 deny_review(reason)\nback to development" --> Code
     BuildGate -- "✅ yes" --> Tested["🕵️ QA\n🔄 TESTED\n🔧 advance_story_stage"]:::qa
     Tested --> Merge["🕵️ QA\n🔧 merge_story_pr\nfeature branch → develop"]:::qa
-    Merge --> Verify["🧑‍💼 ProductOwner\nverifies acceptance criteria"]:::po
+    Merge --> Verify["🧑‍💼 ProductOwner\n🔧 record_acceptance_check\nverifies acceptance criteria"]:::po
     Verify --> AcceptGate{{"Acceptance criteria\nactually met?"}}:::loop
     AcceptGate -- "❌ no — 🔧 deny_review(reason)\nback to development" --> Code
     AcceptGate -- "✅ yes" --> Accepted["🧑‍💼 ProductOwner\n🔄 ACCEPTED\n🔧 advance_story_stage"]:::po
@@ -153,6 +153,13 @@ re-rendered into its Markdown file (Notes section), which Dev Team already reads
 a denial is mechanically visible and actionable, not something that only ever existed in a PR
 comment or a conversation turn. Cleared automatically once the story advances past the stage it was
 denied at.
+
+Reviewed/Tested each require a fresh `gh_pr_review`/`gh_pr_comment` call from the deciding role since
+the story's own denial (not just since the sprint-wide baseline) before they can complete again.
+Accepted has its own evidence gate the same way: `record_acceptance_check(title_or_id, note)` must be
+called - and, after a denial, called again - before `advance_story_stage(id, "Accepted")` succeeds;
+this is a per-story counter, not a one-time flag, precisely so a denial can require a genuinely new
+check instead of reuse of the one that got denied.
 
 ## 3. Interaction levels (who's in the loop, and how much)
 

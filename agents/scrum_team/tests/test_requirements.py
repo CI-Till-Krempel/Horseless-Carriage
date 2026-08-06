@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
-    advance_story_stage, upsert_backlog_item, record_design_approval, plan_backlog_item, set_priority,
-    upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
+    advance_story_stage, upsert_backlog_item, record_design_approval, record_acceptance_check, plan_backlog_item,
+    set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
 )
 
 
@@ -233,6 +233,21 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
+    def test_accepted_requires_a_recorded_acceptance_check(self, mock_save, mock_md, mock_roadmap):
+        """Acceptance Criteria (ISSUE-0043): Accepted previously had no
+        evidence gate at all - any role could call advance_story_stage
+        on assertion alone."""
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("record_acceptance_check", result["message"])
+
+    def test_accepted_succeeds_once_acceptance_check_is_recorded(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        record_acceptance_check("US-0001", "Verified all AC met.", tool_context=tc)
+        result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
 
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
@@ -426,6 +441,34 @@ class TestRecordDesignApproval(unittest.TestCase):
         self.assertEqual(result["status"], "error")
 
 
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestRecordAcceptanceCheck(unittest.TestCase):
+    """Acceptance Criteria (ISSUE-0043): record_acceptance_check sets a
+    per-story COUNTER (not a one-time boolean like design_approved) on both
+    backlog copies, so a denial can later require a genuinely fresh check
+    (ISSUE-0044) rather than reuse of the one that got denied."""
+
+    def test_increments_counter_on_both_backlog_copies(self, mock_save):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        result = record_acceptance_check("US-0001", "Verified all AC met.", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["acceptance_check_count"], 1)
+        self.assertEqual(tc.state["sprint_backlog"][0]["acceptance_check_count"], 1)
+        self.assertEqual(tc.state["product_backlog"][0]["acceptance_check_note"], "Verified all AC met.")
+
+    def test_counter_increments_across_repeated_calls(self, mock_save):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        record_acceptance_check("US-0001", "first pass", tool_context=tc)
+        result = record_acceptance_check("US-0001", "second pass", tool_context=tc)
+        self.assertEqual(result["acceptance_check_count"], 2)
+        self.assertEqual(tc.state["product_backlog"][0]["acceptance_check_count"], 2)
+
+    def test_unknown_story_errors(self, mock_save):
+        tc = _tool_context("ProductOwner", [])
+        result = record_acceptance_check("US-9999", "note", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestDenyReview(unittest.TestCase):
@@ -580,6 +623,33 @@ class TestDenyReview(unittest.TestCase):
             return_value={"available": True, "tests_run": 5, "tests_failed": 0},
         ), patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+    def test_accepted_denial_blocks_advance_even_if_already_checked_once(self, mock_save, mock_md):
+        """Same ISSUE-0044 fix, Accepted/record_acceptance_check side
+        (ISSUE-0043): a denial must require a genuinely NEW
+        record_acceptance_check call, not just reuse of the check that led
+        to the denial."""
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        # A check already happened before the denial - the counter is
+        # already > 0 at deny time.
+        record_acceptance_check("US-0001", "First pass, missed something", tool_context=tc)
+        self.assertEqual(tc.state["product_backlog"][0]["acceptance_check_count"], 1)
+
+        deny_review("US-0001", "Accepted", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["acceptance_count_at_denial"], 1)
+
+        # No NEW acceptance check since the denial - must still be refused.
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(self._VALID_REASON, result["message"])
+
+        # A genuinely fresh acceptance check after the denial resolves it.
+        record_acceptance_check("US-0001", "Re-checked after fix", tool_context=tc)
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 

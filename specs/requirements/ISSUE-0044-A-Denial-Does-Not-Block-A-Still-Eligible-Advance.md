@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0044
 - Title: A Denial Does Not Block A Still-Eligible Advance
-- Status: In Progress
+- Status: Done
 - Priority: Could
 - Owner: Architect
 - Last Updated: 2026-08-06
@@ -62,29 +62,32 @@ itself is real (see RELEASE.md "Denying a review").
   refused (once a design is chosen) - today it currently succeeds if the counter condition happens
   to already be met, which is the gap this issue tracks.
 
-## Resolution (Reviewed/Tested only - Accepted still open)
+## Resolution
 Went with the snapshot approach from Notes: `deny_review` now records
 `review_denial["review_count_at_denial"] = pr_review_calls[role]` at the moment of denial, for
-Reviewed/Tested only (`counter_key = {"Reviewed": "Architect", "Tested": "QA"}.get(stage)`).
+Reviewed/Tested (`counter_key = {"Reviewed": "Architect", "Tested": "QA"}.get(stage)`).
 `advance_story_stage`'s Reviewed/Tested gates now additionally refuse if
 `{architect,qa}_review_count <= review_denial["review_count_at_denial"]` - i.e. the sprint-wide
 counter hasn't grown *past* the value it had when this story was denied, meaning no genuinely new
 review has happened since. This avoids the deadlock trap: resolution is a normal, pre-existing action
 (a fresh `gh_pr_review`/`gh_pr_comment`), not gated behind the thing it's unblocking.
 
-**Accepted is deliberately NOT touched by this fix** - there is no `pr_review_calls`-equivalent
-counter for Product Owner to snapshot against (ISSUE-0043's gap), so the same mechanism doesn't
-apply. A `review_denial` recorded for Accepted still doesn't block a subsequent
-`advance_story_stage(id, "Accepted")` call today. Resolving that requires ISSUE-0043's open design
-decision (what Accepted's evidence signal should even be) first - this issue stays open until that's
-decided and applied here too.
+**Accepted is now covered too, once ISSUE-0043 gave it a per-story counter to snapshot against.**
+ISSUE-0043 added `record_acceptance_check`/`acceptance_check_count` as Accepted's evidence gate;
+`deny_review` snapshots that counter instead
+(`review_denial["acceptance_count_at_denial"] = acceptance_check_count`) when denying Accepted, and
+`advance_story_stage`'s Accepted branch refuses if `acceptance_check_count <=
+review_denial["acceptance_count_at_denial"]` - a fresh `record_acceptance_check` call, not a reuse of
+the one that led to the denial, is required to resolve it. Same mechanism, same deadlock-avoidance
+shape as Reviewed/Tested, just against Accepted's own counter instead of a `pr_review_calls` role.
 
-- `agents/scrum_team/tools/requirements.py`: `deny_review` snapshots the counter for Reviewed/Tested;
-  `advance_story_stage`'s Reviewed/Tested `elif` branches check the snapshot.
+- `agents/scrum_team/tools/requirements.py`: `deny_review` snapshots the counter for
+  Reviewed/Tested/Accepted; `advance_story_stage`'s Reviewed/Tested/Accepted `elif` branches check
+  the snapshot.
 - `agents/scrum_team/tests/test_requirements.py`:
-  `test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes` and
-  `test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes` - both construct
-  the exact regression this issue tracks (a review call already satisfied the sprint-wide baseline
-  *before* the denial) and confirm it's now refused, then confirm a fresh review call after the
-  denial resolves it.
+  `test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes`,
+  `test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes`, and
+  `test_accepted_denial_blocks_advance_even_if_already_checked_once` - each constructs the exact
+  regression this issue tracks (evidence already satisfied *before* the denial) and confirms it's now
+  refused, then confirms a fresh signal after the denial resolves it.
 - RELEASE.md "Denying a review" updated with the mechanics.

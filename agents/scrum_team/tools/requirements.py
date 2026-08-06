@@ -1158,6 +1158,33 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     "retrying."
                 ),
             }
+    elif stage == "Accepted":
+        # ISSUE-0043: Accepted previously had no evidence gate at all - any
+        # role could call advance_story_stage(id, "Accepted") on assertion
+        # alone. Require record_acceptance_check to have actually run for
+        # THIS story first.
+        acceptance_count = product_item.get("acceptance_check_count") or sprint_item.get("acceptance_check_count") or 0
+        if acceptance_count <= 0:
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Accepted - call record_acceptance_check(title_or_id, "
+                    "note) first to record that the acceptance criteria were actually verified."
+                ),
+            }
+        # ISSUE-0044: same per-story freshness requirement as Reviewed/Tested
+        # above - a denial recorded here must be followed by a genuinely NEW
+        # record_acceptance_check call, not just re-use of the check that led
+        # to the denial.
+        denial = product_item.get("review_denial") or sprint_item.get("review_denial")
+        if denial and denial.get("stage") == "Accepted" and acceptance_count <= denial.get("acceptance_count_at_denial", -1):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Accepted - it was denied: {denial.get('reason')}. "
+                    "Call record_acceptance_check again after addressing that, then retry."
+                ),
+            }
 
     stages_completed.add(stage)
     ordered_stages = sorted(stages_completed, key=STORY_STAGES.index)
@@ -1254,6 +1281,51 @@ def record_design_approval(title_or_id: str, note: str = "", tool_context=None) 
     return {"status": "ok", "story_id": story_id, "design_approved": True}
 
 
+def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None) -> Dict[str, Any]:
+    """
+    Records that Product Owner has actually verified this story's acceptance
+    criteria are met (docs/DEVELOPMENT-WORKFLOW.md "Verify" node) - the
+    mechanical evidence advance_story_stage(..., "Accepted") now requires
+    (ISSUE-0043), instead of trusting the model's own assertion that
+    acceptance criteria were checked.
+
+    Deliberately a per-story COUNTER (`acceptance_check_count`), not a
+    one-time boolean like record_design_approval's `design_approved` -
+    Accepted is deniable via deny_review, and ISSUE-0044's snapshot
+    mechanism (a denial must be followed by a genuinely NEW signal, not just
+    re-use of whatever satisfied the gate before) needs something that can
+    grow past a snapshot taken at deny time. A boolean would already read
+    "True" going into a re-check, indistinguishable from never having been
+    reset.
+    """
+    from .scrum import save_state_to_repo
+
+    s = tool_context.state
+    sprint_backlog = list(s.get("sprint_backlog", []))
+    product_backlog = list(s.get("product_backlog", []))
+    sprint_idx = next((i for i, x in enumerate(sprint_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    if sprint_idx is None and product_idx is None:
+        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+
+    sprint_item = sprint_backlog[sprint_idx] if sprint_idx is not None else {}
+    product_item = product_backlog[product_idx] if product_idx is not None else {}
+    prior_count = product_item.get("acceptance_check_count") or sprint_item.get("acceptance_check_count") or 0
+    new_count = prior_count + 1
+    update = {"acceptance_check_count": new_count, "acceptance_check_note": note.strip()}
+    if sprint_idx is not None:
+        sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
+        s["sprint_backlog"] = sprint_backlog
+    if product_idx is not None:
+        product_backlog[product_idx] = {**product_backlog[product_idx], **update}
+        s["product_backlog"] = product_backlog
+
+    story_id = (product_backlog[product_idx].get("id") if product_idx is not None
+                else sprint_backlog[sprint_idx].get("id")) or title_or_id
+    save_state_to_repo(tool_context)
+    return {"status": "ok", "story_id": story_id, "acceptance_check_count": new_count}
+
+
 def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) -> Dict[str, Any]:
     """
     Denies one of the three review-gated stage transitions - Reviewed
@@ -1287,8 +1359,11 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
     teeth: that sprint-wide counter (shared across every story, not scoped
     to this one) could already be satisfied by the very review call that
     prompted the denial, letting the stage complete right away regardless.
-    Accepted has no such counter (Product Owner doesn't leave PR reviews -
-    see ISSUE-0043) so this snapshot doesn't apply there yet.
+    Accepted has its own per-story counter instead (ISSUE-0043's
+    `record_acceptance_check` / `acceptance_check_count`, since Product
+    Owner doesn't leave PR reviews) - this snapshots that count instead, so
+    a denied acceptance check requires a genuinely new
+    record_acceptance_check call before Accepted can complete again.
     """
     from .scrum import save_state_to_repo
 
@@ -1334,6 +1409,10 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
     counter_key = {"Reviewed": "Architect", "Tested": "QA"}.get(stage)
     if counter_key:
         review_denial["review_count_at_denial"] = (s.get("pr_review_calls", {}) or {}).get(counter_key, 0)
+    elif stage == "Accepted":
+        review_denial["acceptance_count_at_denial"] = (
+            product_item.get("acceptance_check_count") or sprint_item.get("acceptance_check_count") or 0
+        )
     update = {"review_denial": review_denial}
     if sprint_idx is not None:
         sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}

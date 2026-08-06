@@ -30,7 +30,7 @@ from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
-    upsert_story, set_priority, advance_story_stage, deny_review,
+    upsert_story, set_priority, advance_story_stage, deny_review, record_acceptance_check,
 )
 from agents.scrum_team.tools.docs import upsert_prd, write_file
 from agents.scrum_team.tools.requirements import update_roadmap
@@ -152,6 +152,7 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         self.assertEqual(merge_story_pr(tool_context=tc)["status"], "ok")
 
         _as(tc, "ProductOwner")
+        self.assertEqual(record_acceptance_check(story_id, "Verified all AC met.", tool_context=tc)["status"], "ok")
         result = advance_story_stage(story_id, "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(
@@ -246,6 +247,7 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         self.assertEqual(merge_story_pr(tool_context=tc)["status"], "ok")
 
         _as(tc, "ProductOwner")
+        self.assertEqual(record_acceptance_check(story_id, "First pass", tool_context=tc)["status"], "ok")
         reason = "Acceptance criteria says login must work with valid credentials, but the demo build still 500s on submit."
         deny_result = deny_review(story_id, "Accepted", reason, tool_context=tc)
         self.assertEqual(deny_result["status"], "ok")
@@ -254,6 +256,9 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         self._dev_pushes_a_fix(tc, branch, content="def login(): ...  # fixed the 500 on submit")
 
         _as(tc, "ProductOwner")
+        # A fresh acceptance check is required after the denial - re-using
+        # the one that led to it wouldn't satisfy the gate (ISSUE-0044).
+        self.assertEqual(record_acceptance_check(story_id, "Re-checked after fix", tool_context=tc)["status"], "ok")
         result = advance_story_stage(story_id, "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0].get("review_denial"))
