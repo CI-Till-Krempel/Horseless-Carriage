@@ -249,6 +249,16 @@ for - so it's mechanically visible and actionable, not just something said once 
 conversation turn. Cleared automatically by `advance_story_stage` once the story actually advances
 past the stage it was denied at, so a resolved denial doesn't linger as stale feedback.
 
+**A denial has teeth, for Reviewed/Tested (ISSUE-0044).** The Reviewed/Tested gates' own evidence
+check (`pr_review_calls[role] > baseline`) is sprint-wide, not scoped to one story - so a story that
+was just denied could otherwise still advance right away, as long as *some* review call from that
+role (even the very one that led to the denial) already satisfied the sprint-wide count. `deny_review`
+now snapshots the denying role's `pr_review_calls` count at deny time
+(`review_denial["review_count_at_denial"]`); `advance_story_stage` requires the count to have grown
+*past* that snapshot - a genuinely new review, not a reuse of the one that prompted the denial -
+before the same story can complete that stage. Accepted has no such counter (Product Owner doesn't
+leave PR reviews) so this doesn't extend there yet - see ISSUE-0043.
+
 ### Sprint retrospective enforcement
 
 `create_sprint_report` (`agents/scrum_team/tools/budget.py`) mechanically refuses to write a

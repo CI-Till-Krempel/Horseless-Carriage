@@ -1061,6 +1061,21 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     "review comment on the PR first."
                 ),
             }
+        # ISSUE-0044: the check above is sprint-wide, not per-story - without
+        # this, a story deny_review just denied could still advance right
+        # after, as long as *some* Architect review call (even the very one
+        # that led to the denial) already satisfied it. Require a review
+        # call that's genuinely NEW since THIS story's own denial, not just
+        # since the last story that reached Reviewed at all.
+        denial = product_item.get("review_denial") or sprint_item.get("review_denial")
+        if denial and denial.get("stage") == "Reviewed" and architect_review_count <= denial.get("review_count_at_denial", -1):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Reviewed - it was denied: {denial.get('reason')}. "
+                    "Leave a NEW gh_pr_review/gh_pr_comment after addressing that, then retry."
+                ),
+            }
     elif stage == "Tested":
         pr_calls = s.get("pr_review_calls", {}) or {}
         qa_review_count = pr_calls.get("QA", 0)
@@ -1071,6 +1086,16 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     f"Cannot mark '{story_id}' Tested - no gh_pr_review/gh_pr_comment call from QA "
                     "has been recorded since the last story was Tested. Leave an actual review "
                     "comment on the PR first."
+                ),
+            }
+        # ISSUE-0044: same per-story freshness requirement as Reviewed above.
+        denial = product_item.get("review_denial") or sprint_item.get("review_denial")
+        if denial and denial.get("stage") == "Tested" and qa_review_count <= denial.get("review_count_at_denial", -1):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - it was denied: {denial.get('reason')}. "
+                    "Leave a NEW gh_pr_review/gh_pr_comment after addressing that, then retry."
                 ),
             }
         last_build = s.get("last_check_build")
@@ -1253,6 +1278,17 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
     the story actually advances past the stage it was denied at (see
     advance_story_stage) - a resolved denial shouldn't linger as stale
     feedback forever.
+
+    For Reviewed/Tested specifically (ISSUE-0044), this also snapshots the
+    denying role's current `pr_review_calls` count - advance_story_stage's
+    own gate for those two stages requires the count to have grown past
+    THIS snapshot, not just past the sprint-wide baseline, before the SAME
+    story can complete that stage again. Without this, a denial had no
+    teeth: that sprint-wide counter (shared across every story, not scoped
+    to this one) could already be satisfied by the very review call that
+    prompted the denial, letting the stage complete right away regardless.
+    Accepted has no such counter (Product Owner doesn't leave PR reviews -
+    see ISSUE-0043) so this snapshot doesn't apply there yet.
     """
     from .scrum import save_state_to_repo
 
@@ -1295,6 +1331,9 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
     title = product_item.get("title") or sprint_item.get("title") or title_or_id
 
     review_denial = {"stage": stage, "reason": reason.strip(), "by": agent_name or expected_owner}
+    counter_key = {"Reviewed": "Architect", "Tested": "QA"}.get(stage)
+    if counter_key:
+        review_denial["review_count_at_denial"] = (s.get("pr_review_calls", {}) or {}).get(counter_key, 0)
     update = {"review_denial": review_denial}
     if sprint_idx is not None:
         sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}

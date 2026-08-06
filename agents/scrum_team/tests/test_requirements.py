@@ -523,6 +523,66 @@ class TestDenyReview(unittest.TestCase):
         # the denial must survive until the SAME stage actually advances.
         self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Reviewed")
 
+    def test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md):
+        """
+        Acceptance Criteria (ISSUE-0044): the Reviewed/Tested gate's own
+        evidence check is sprint-wide (pr_review_calls), not scoped to one
+        story - so a story that was just denied could previously still
+        advance right away, as long as *some* Architect review call (even
+        the very one that led to the denial) already satisfied that
+        sprint-wide count. A denial must require a review that's genuinely
+        NEW since THIS story's own denial, not just since the last story
+        that reached Reviewed at all.
+        """
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        # A real review call already happened (e.g. Architect's own
+        # REQUEST_CHANGES comment) before the denial - the sprint-wide
+        # counter is already past baseline at deny time.
+        tc.state["pr_review_calls"] = {"Architect": 1}
+
+        deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["review_count_at_denial"], 1)
+
+        # No NEW review call since the denial - the sprint-wide count is
+        # unchanged - so this must still be refused.
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Reviewed", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(self._VALID_REASON, result["message"])
+
+        # A genuinely fresh review call after the denial resolves it.
+        tc.state["pr_review_calls"] = {"Architect": 2}
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Reviewed", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+    def test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md):
+        """Same ISSUE-0044 fix, QA/Tested side."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+
+        deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["review_count_at_denial"], 1)
+
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(self._VALID_REASON, result["message"])
+
+        tc.state["pr_review_calls"] = {"QA": 2}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
 
 class TestDenyReviewSurfacesInStoryMarkdown(unittest.TestCase):
     """_update_story_markdown itself (not mocked here) must fold a recorded
