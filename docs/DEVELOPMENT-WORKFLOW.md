@@ -37,8 +37,10 @@ Both flowcharts below share the same color key and icon vocabulary:
 **Markers**: 🔧 tool call · 🔄 state change (sprint started / story stage advanced) ·
 ⚠️ mandatory condition · ❌ refused/errors if violated · 🟥👤 **human approval required** ·
 ◇ diamond = one-time routing decision (config-driven) · ⬡ hexagon = **iterative loop** - repeats
-until the condition holds (e.g. re-review, a failed build, or Product Owner acceptance sending a
-story back into development), not a single check
+until the condition holds, not a single check. Human approval is one of these loops too, not a
+one-way gate: a rejection is immediately actionable - it resubmits for revision and re-approval,
+the same as a failed review, a failed build, or Product Owner acceptance sending a story back into
+development.
 
 **Interaction levels** (highlighted on every branch they affect - see section 3 for the full matrix):
 🔵 Product · 🟣 Stakeholder · 🟠 CEO · 🤖 EVAL (fully autonomous, no human at all)
@@ -58,7 +60,10 @@ flowchart TD
     H --> I{"Release approval\nrequired at this level?"}:::gate
     I -- "🔵 Product / 🟣 Stakeholder" --> J["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval('release')"]:::human
     I -- "🟠 CEO / 🤖 EVAL" --> K
-    J --> K["🧑‍💼 ProductOwner\n🔧 create_release_pr\ndevelop → main"]:::po
+    J --> ReleaseGate{{"Approved?"}}:::loop
+    ReleaseGate -- "❌ no — more work needed" --> D
+    ReleaseGate -- "✅ yes" --> K
+    K["🧑‍💼 ProductOwner\n🔧 create_release_pr\ndevelop → main"]:::po
     K --> A
 
     classDef po fill:#cfe2ff,stroke:#0d6efd,color:#000
@@ -80,13 +85,18 @@ flowchart TD
     Draft["🧑‍💼 ProductOwner (+👷 Architect feasibility)\n🔄 DRAFT\nconcept/mockup shaped into a real backlog item"]:::po
     Draft -->|"🔧 advance_story_stage"| GateReady{"Stakeholder level?"}:::gate
     GateReady -- "🟣 Stakeholder" --> Design["🟥👤 HUMAN APPROVAL\n🔧 record_design_approval\nPO records the stakeholder's sign-off on this story's design"]:::human
-    Design --> Ready
+    Design --> DesignGate{{"Design approved?"}}:::loop
+    DesignGate -- "❌ no — revise & resubmit" --> Draft
+    DesignGate -- "✅ yes" --> Ready
     GateReady -- "🔵 Product / 🟠 CEO / 🤖 EVAL" --> Ready["🧑‍💼 ProductOwner (+👷 Architect)\n🔄 READY\nreal title/story/AC + estimate"]:::po
     Ready --> GateImpl{"Approval required\nfor this level?"}:::gate
     GateImpl -- "🔵 Product / 🟣 Stakeholder: sprint" --> Approve1["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval"]:::human
     GateImpl -- "🟠 CEO: budget" --> Approve1
     GateImpl -- "🤖 EVAL: none" --> Branch
-    Approve1 --> Branch["🧑‍💻 DevTeam\n🔧 start_feature_branch\nfeature/story-id-slug → develop, draft PR"]:::dev
+    Approve1 --> ApproveGate{{"Approved?"}}:::loop
+    ApproveGate -- "❌ no — revise & resubmit" --> Ready
+    ApproveGate -- "✅ yes" --> Branch
+    Branch["🧑‍💻 DevTeam\n🔧 start_feature_branch\nfeature/story-id-slug → develop, draft PR"]:::dev
     Branch --> Code["🧑‍💻 DevTeam\n🔧 write_file + git_push\n❌ refuses direct push to protected branches"]:::dev
     Code --> PRReady["🧑‍💻 DevTeam\n🔧 mark_pr_ready_for_review"]:::dev
     PRReady --> Impl["🧑‍💻 DevTeam\n🔄 IMPLEMENTED\n🔧 advance_story_stage"]:::dev
