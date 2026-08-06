@@ -139,21 +139,43 @@ def configure_github_app(app_id: str, private_key: str, installation_id: str, to
     except Exception as e:
         return {"status": "error", "message": f"Failed to get installation access token: {e}"}
 
-def git_push(branch: str, commit_message: str = "chore: update", add_all: bool = True, allow_protected: bool = False, tool_context=None) -> Dict[str, Any]:
+def git_push(branch: str, commit_message: str = "chore: update", add_all: bool = True, tool_context=None) -> Dict[str, Any]:
     """
-    Stage changes (optionally), commit, and push the current working tree to the given branch.
-    Non-interactive; returns command outputs.
+    Stage changes (optionally), commit, and push the current working tree to
+    the given branch. Non-interactive; returns command outputs.
     - In an eval run (EVAL_RUN_ID set), branch is auto-tagged with the run id
       (e.g. "eval-<run-id>/<branch>") so branches from different runs sharing
       one eval repo stay distinguishable - see _with_eval_branch_prefix. No-op
       in real usage.
-    - allow_protected: escape hatch for the legitimate direct-push cases
-      (seed_repository's initial bootstrap commit onto develop, and the
-      mechanical roadmap sync when the sprint budget runs out - see
-      _sync_and_commit_roadmap_on_exhaustion in agent.py). Defaults False -
-      see ISSUE-0006: DEV_PROMPT's "the configured default branch is
-      PROTECTED... cannot push to it directly" had no code backing it at
-      all before this.
+
+    This is the tool exposed to agents - it can never push to a protected
+    branch (see _git_push_impl's allow_protected, which this always passes
+    as False). A real ADK eval run showed the live model itself choosing to
+    bypass branch protection when a user's prompt applied enough pressure
+    ("skip the PR, we need this live right now") - if allow_protected were a
+    parameter on this function, that's a real, settable escape hatch an LLM
+    can be talked into using. The two genuinely legitimate direct-push cases
+    (seed_repository's initial bootstrap commit, and the mechanical roadmap
+    sync in agent.py's _sync_and_commit_roadmap_on_exhaustion) are both
+    internal Python code, never an agent-issued tool call - they call
+    _git_push_impl directly instead, which isn't registered as a tool for
+    any role and therefore isn't something any prompt can reach at all.
+    """
+    return _git_push_impl(branch, commit_message, add_all, allow_protected=False, tool_context=tool_context)
+
+
+def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: bool = True, allow_protected: bool = False, tool_context=None) -> Dict[str, Any]:
+    """
+    Real implementation behind git_push - see that function's docstring for
+    why allow_protected is deliberately NOT exposed there. Call this
+    directly (never as an agent tool - it isn't registered as one anywhere)
+    only from internal Python code that genuinely needs to push straight to
+    a protected branch: seed_repository's initial bootstrap commit onto
+    develop, and the mechanical roadmap sync when the sprint budget runs out
+    (_sync_and_commit_roadmap_on_exhaustion in agent.py). Defaults False -
+    see ISSUE-0006: DEV_PROMPT's "the configured default branch is
+    PROTECTED... cannot push to it directly" had no code backing it at all
+    before this.
     """
     branch = _with_eval_branch_prefix(branch)
     # Reject anything that isn't a plain branch name before the protected-

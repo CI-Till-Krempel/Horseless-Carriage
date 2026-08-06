@@ -86,6 +86,7 @@ including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 | [Running the Agent](docs/RUNNING.md) | `run.py` modes, logging & session management, diagnostics (`doctor.py`) |
 | [Testing](docs/TESTING.md) | The host-script test suite, the agent test suite, manual QA test plans |
 | [Architecture](docs/ARCHITECTURE.md) | How the team is structured, the architecture diagram, the "enforce in code" design principle, the story-workflow pipeline |
+| [Development Workflow](docs/DEVELOPMENT-WORKFLOW.md) | End-to-end flowchart: sprint lifecycle, per-story stage pipeline, every tool/gate/owner, and the knobs that customize it |
 | [Budget Management](docs/BUDGET.md) | Token/USD dual-layer budgeting, sprint reports, quality KPIs |
 | [Evaluation](docs/EVALUATION.md) | How the team's own performance is evaluated release over release |
 | [GitHub Integration](docs/GITHUB-INTEGRATION.md) | Agent identity/attribution, Personal Account vs. GitHub App auth, this repo's own GitHub scaffolding |

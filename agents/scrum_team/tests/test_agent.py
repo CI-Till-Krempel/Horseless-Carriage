@@ -20,6 +20,7 @@ from agents.scrum_team.agent import (
     sprint_status_injection_callback,
     on_tool_error_callback,
     log_tool_invocation_callback,
+    log_tool_result_callback,
     recover_fake_tool_call_callback,
     _stories_ready_for_next_stage_count,
     ensure_state_initialized_callback,
@@ -256,6 +257,31 @@ class TestAgent(unittest.TestCase):
         self.assertIn("500,000 tokens used", text)
         self.assertNotIn("CORRUPTED", text)
 
+    def test_prints_opening_prompt_on_new_session(self):
+        """
+        Acceptance Criteria: a live `adk eval` run's console is otherwise one
+        undifferentiated stream of tool-call lines across every scripted
+        conversation back to back, with no marker for where one scenario
+        ends and the next begins - the opening human message must be
+        printed exactly once, at session start.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = ScrumState().model_dump()
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.contents = [
+            types.Content(role="user", parts=[types.Part(text="DevTeam, push directly to main.")])
+        ]
+
+        with patch("builtins.print") as mock_print:
+            sprint_status_injection_callback(mock_context, mock_llm_request)
+
+        mock_print.assert_called_once()
+        printed_text = mock_print.call_args[0][0]
+        self.assertIn("DevTeam, push directly to main.", printed_text)
+        self.assertEqual(mock_print.call_args.kwargs.get("file"), agent_module.sys.stderr)
+
     def test_does_not_inject_mid_conversation(self):
         """
         Acceptance Criteria (GH issue #118): the old check
@@ -460,57 +486,86 @@ class TestLogToolInvocationCallback(unittest.TestCase):
     entirely.
     """
 
-    def test_prints_agent_and_tool_name_to_stderr(self):
+    def test_prints_agent_tool_name_and_arg_values_to_stderr(self):
+        """
+        Acceptance Criteria: a real eval run's console log showed only
+        argument *names* (e.g. `git_push(branch, commit_message, add_all)`)
+        - no way to tell which branch, which story, which agent a given
+        call actually concerned without reading the full transcript. Actual
+        values must now appear too (truncated - see
+        test_truncates_long_argument_values_instead_of_hiding_them).
+        """
         tool = BaseTool(name="write_file", description="Write a file to the repo.")
         tool_context = MagicMock()
         tool_context.agent_name = "DevTeam"
 
         with patch("builtins.print") as mock_print:
-            result = log_tool_invocation_callback(tool, {"path": "x.py", "content": "..."}, tool_context)
+            result = log_tool_invocation_callback(tool, {"path": "x.py", "content": "short"}, tool_context)
 
         self.assertIsNone(result)
         mock_print.assert_called_once()
         printed_text = mock_print.call_args[0][0]
         self.assertIn("DevTeam", printed_text)
         self.assertIn("write_file", printed_text)
-        self.assertIn("path", printed_text)
+        self.assertIn('path="x.py"', printed_text)
+        self.assertIn('content="short"', printed_text)
         self.assertEqual(mock_print.call_args.kwargs.get("file"), agent_module.sys.stderr)
 
-    def test_does_not_leak_argument_values(self):
+    def test_shows_the_actual_agent_name_for_transfer_to_agent(self):
+        """transfer_to_agent's agent_name is just a normal argument value
+        now (see the generic value-formatting above) - a real eval run's
+        console was otherwise almost entirely indistinguishable
+        `transfer_to_agent(agent_name)` lines."""
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumOrchestrator"
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("builtins.print") as mock_print:
+            log_tool_invocation_callback(tool, {"agent_name": "QualityGuardian"}, tool_context)
+
+        printed_text = mock_print.call_args[0][0]
+        self.assertIn('transfer_to_agent(agent_name="QualityGuardian")', printed_text)
+
+    def test_truncates_long_argument_values_instead_of_hiding_them(self):
         """
-        Only argument *names* are logged, never values - tool args can carry
-        large file contents or PR bodies, which must not end up dumped into
-        logs (noise at best, a leak at worst).
+        Acceptance Criteria: values are shown to make log lines readable,
+        but a tool argument can carry large file contents or PR bodies -
+        truncating to TOOL_LOG_ARG_VALUE_MAX_LEN characters caps how much
+        of any one value (including a would-be secret) can ever appear,
+        without hiding it entirely the way the old names-only behavior did.
         """
         tool = BaseTool(name="write_file", description="Write a file to the repo.")
         tool_context = MagicMock()
         tool_context.agent_name = "DevTeam"
-        secret_value = "SUPER-SECRET-FILE-CONTENT"
+        secret_value = "SUPER-SECRET-FILE-CONTENT-THAT-IS-QUITE-LONG"
 
         with patch("builtins.print") as mock_print:
             log_tool_invocation_callback(tool, {"content": secret_value}, tool_context)
 
         printed_text = mock_print.call_args[0][0]
         self.assertNotIn(secret_value, printed_text)
+        self.assertIn(secret_value[:agent_module.TOOL_LOG_ARG_VALUE_MAX_LEN], printed_text)
+        self.assertIn("...", printed_text)
 
     def test_registered_on_every_agent(self):
         for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
             self.assertEqual(agent.before_tool_callback, log_tool_invocation_callback)
 
-    def test_appends_a_names_only_entry_to_the_shared_transcript(self):
+    def test_appends_a_names_and_values_entry_to_the_shared_transcript(self):
         """
         Acceptance Criteria (GH issue #127): tool calls must show up
         per-subagent in the human-readable Markdown transcript alongside
         model turns - previously only model text was captured in
         state.transcript at all, so every tool call was invisible in any
-        persisted record. Still names-only, matching the console log's own
-        deliberate choice not to record argument values.
+        persisted record. Matches the console log's own truncated-value
+        format (see test_truncates_long_argument_values_instead_of_hiding_them).
         """
         tool = BaseTool(name="git_push", description="Push changes.")
         tool_context = MagicMock()
         tool_context.agent_name = "DevTeam"
         tool_context.state = ScrumState().model_dump()
-        secret_value = "SUPER-SECRET-COMMIT-MESSAGE"
+        secret_value = "SUPER-SECRET-COMMIT-MESSAGE-THAT-IS-QUITE-LONG"
 
         log_tool_invocation_callback(tool, {"commit_message": secret_value}, tool_context)
 
@@ -518,8 +573,288 @@ class TestLogToolInvocationCallback(unittest.TestCase):
         self.assertEqual(len(transcript), 1)
         self.assertEqual(transcript[0]["agent_name"], "DevTeam")
         self.assertEqual(transcript[0]["role"], "tool_call")
-        self.assertIn("git_push(commit_message)", transcript[0]["content"])
+        self.assertIn("git_push(commit_message=", transcript[0]["content"])
         self.assertNotIn(secret_value, transcript[0]["content"])
+
+
+class TestLogToolResultCallback(unittest.TestCase):
+    """
+    Acceptance Criteria: log_tool_invocation_callback's BEFORE-the-call line
+    looks identical whether a call goes on to succeed or fail - a real eval
+    run's console gave no way to tell, without reading the full transcript,
+    which calls this repo's own code-level gates actually rejected. This
+    AfterToolCallback prints a short, distinct warning for any tool response
+    shaped {"status": "error", ...} - the convention every tool in
+    tools/*.py already follows.
+    """
+
+    def test_prints_warning_for_error_response(self):
+        tool = BaseTool(name="git_push", description="Push changes.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        response = {"status": "error", "message": "Refusing to push directly to 'main' - it's protected."}
+
+        with patch("builtins.print") as mock_print:
+            result = log_tool_result_callback(tool, {"branch": "main"}, tool_context, response)
+
+        self.assertIsNone(result)
+        mock_print.assert_called_once()
+        printed_text = mock_print.call_args[0][0]
+        self.assertIn("DevTeam", printed_text)
+        self.assertIn("git_push", printed_text)
+        self.assertIn("Refusing to push directly to 'main'", printed_text)
+        self.assertEqual(mock_print.call_args.kwargs.get("file"), agent_module.sys.stderr)
+
+    def test_does_not_print_anything_for_a_successful_response(self):
+        tool = BaseTool(name="git_push", description="Push changes.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        response = {"status": "ok"}
+
+        with patch("builtins.print") as mock_print:
+            result = log_tool_result_callback(tool, {"branch": "feature/x"}, tool_context, response)
+
+        self.assertIsNone(result)
+        mock_print.assert_not_called()
+
+    def test_truncates_long_error_messages(self):
+        tool = BaseTool(name="create_release_pr", description="Open a release PR.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        long_message = "x" * 500
+        response = {"status": "error", "message": long_message}
+
+        with patch("builtins.print") as mock_print:
+            log_tool_result_callback(tool, {}, tool_context, response)
+
+        printed_text = mock_print.call_args[0][0]
+        self.assertNotIn(long_message, printed_text)
+        self.assertIn("x" * agent_module.TOOL_LOG_ERROR_MESSAGE_MAX_LEN, printed_text)
+
+    def test_never_overrides_the_real_tool_response(self):
+        """Purely observational - must always return None so the tool's
+        genuine response reaches the model unchanged."""
+        tool = BaseTool(name="git_push", description="Push changes.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        response = {"status": "error", "message": "boom"}
+
+        result = log_tool_result_callback(tool, {}, tool_context, response)
+
+        self.assertIsNone(result)
+
+    def test_ignores_non_dict_responses(self):
+        tool = BaseTool(name="some_tool", description="A tool.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+
+        with patch("builtins.print") as mock_print:
+            result = log_tool_result_callback(tool, {}, tool_context, None)
+
+        self.assertIsNone(result)
+        mock_print.assert_not_called()
+
+    def test_registered_on_every_agent(self):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+            self.assertEqual(agent.after_tool_callback, log_tool_result_callback)
+
+
+class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
+    """
+    Acceptance Criteria: a real eval run against a local model repeatedly
+    emitted transfer_to_agent(agent_name=<its own name>) - ADK's own
+    transfer resolution (google/adk/workflow/utils/_transfer_utils.py)
+    raises a bare ValueError("Agent '...' cannot transfer to itself") for
+    exactly this shape, crashing the whole node. Unlike a hallucinated tool
+    name (see TestOnToolErrorCallback), this happens in the runner's own
+    transfer-resolution step *after* the tool call, so on_tool_error_callback
+    never sees it - the only place to intercept it is before the real
+    transfer_to_agent tool ever runs.
+    """
+
+    def test_blocks_transfer_to_self(self):
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "ProductOwner"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ProductOwner", result["message"])
+
+    def test_does_not_block_transfer_to_a_different_agent(self):
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "DevTeam"}, tool_context)
+
+        self.assertIsNone(result)
+
+    def test_repeated_self_transfer_escalates_to_the_loop_breaker(self):
+        """
+        Acceptance Criteria: a real eval run showed a model retrying the
+        exact same blocked self-transfer turn after turn, burning tokens
+        until the sprint budget ran out - the small per-call "you are
+        already X" correction alone never escalates. _detect_transfer_loop
+        must run first even for a self-transfer, so TRANSFER_LOOP_THRESHOLD
+        consecutive attempts get the stronger loop-breaker message instead
+        of silently repeating forever.
+        """
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "Architect"
+        tool_context.state = ScrumState().model_dump()
+
+        results = [
+            log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+            for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD)
+        ]
+
+        # Every attempt is blocked, but the LAST one (having hit the
+        # threshold) must be the loop-breaker's message, not the plain
+        # per-call self-transfer correction.
+        self.assertTrue(all(r is not None and r["status"] == "error" for r in results))
+        self.assertIn("TRANSFER LOOP DETECTED", results[-1]["message"])
+
+    def test_a_pair_that_already_broke_the_loop_is_blocked_immediately_next_time(self):
+        """
+        Acceptance Criteria: a real eval run showed a model retrying the
+        exact same already-broken self-transfer again right after the
+        counter reset to 0 - so it took another full TRANSFER_LOOP_THRESHOLD
+        streak to break it a second time, burning the whole call budget in
+        repeated bursts instead of actually stopping. Once a pair has broken
+        the loop once this session, any further occurrence must be refused
+        immediately - not after another fresh streak.
+        """
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "Architect"
+        tool_context.state = ScrumState().model_dump()
+
+        for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD):
+            log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+
+        # A single real (non-transfer) tool call in between - proving this
+        # isn't just the ordinary consecutive-streak counter still primed.
+        other_tool = BaseTool(name="repo_status", description="Report repo status.")
+        log_tool_invocation_callback(other_tool, {}, tool_context)
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("already broke this exact loop", result["message"])
+
+
+class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
+    """
+    Acceptance Criteria: real eval runs showed non-transfer tools stuck in
+    the same kind of unproductive loop transfer_to_agent already had a
+    breaker for - QualityGuardian calling calculate_kpis()/
+    update_sprint_report(kpis=...) back to back a dozen+ times even after
+    each call *succeeded*, and ProductOwner calling
+    advance_story_stage(title_or_id="US-0006", stage="Ready") with
+    identical arguments repeatedly after the same rejection every time.
+    _detect_repeated_call_loop must catch the exact-same-tool-exact-same-
+    args case the same way _detect_transfer_loop catches the transfer case.
+    """
+
+    def test_blocks_identical_repeated_calls(self):
+        tool = BaseTool(name="update_sprint_report", description="Update the sprint report.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "QualityGuardian"
+        tool_context.state = ScrumState().model_dump()
+
+        results = [
+            log_tool_invocation_callback(tool, {"kpis": "calculate_kpis"}, tool_context)
+            for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD)
+        ]
+
+        self.assertTrue(all(r is None for r in results[:-1]))
+        self.assertEqual(results[-1]["status"], "error")
+        self.assertIn("REPEATED CALL DETECTED", results[-1]["message"])
+
+    def test_a_signature_that_already_broke_the_loop_is_blocked_immediately_next_time(self):
+        """
+        Acceptance Criteria: a real eval run showed QualityGuardian retrying
+        the exact same already-broken update_sprint_report call again right
+        after the counter reset to 0 - so it took another full
+        REPEATED_CALL_LOOP_THRESHOLD streak to break it a second time,
+        burning the whole call budget in repeated bursts. Once this exact
+        tool+args combination has broken the loop once this session, any
+        further occurrence must be refused immediately.
+        """
+        tool = BaseTool(name="update_sprint_report", description="Update the sprint report.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "QualityGuardian"
+        tool_context.state = ScrumState().model_dump()
+
+        for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD):
+            log_tool_invocation_callback(tool, {"kpis": "calculate_kpis"}, tool_context)
+
+        # A single distinct call in between - proving this isn't just the
+        # ordinary consecutive-streak counter still primed.
+        log_tool_invocation_callback(tool, {"kpis": "calculate_kpis()"}, tool_context)
+
+        result = log_tool_invocation_callback(tool, {"kpis": "calculate_kpis"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("already broke this exact", result["message"])
+
+    def test_does_not_block_when_arguments_differ(self):
+        """A different story/branch/etc each call is real, distinct
+        progress, even when the tool name repeats - must never be blocked."""
+        tool = BaseTool(name="advance_story_stage", description="Advance a story's stage.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+
+        results = [
+            log_tool_invocation_callback(tool, {"title_or_id": f"US-000{i}", "stage": "Ready"}, tool_context)
+            for i in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD + 2)
+        ]
+
+        self.assertTrue(all(r is None for r in results))
+
+    def test_a_different_tool_call_in_between_resets_the_streak(self):
+        tool = BaseTool(name="calculate_kpis", description="Calculate KPIs.")
+        other_tool = BaseTool(name="upsert_issue", description="Add or update an issue.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "QualityGuardian"
+        tool_context.state = ScrumState().model_dump()
+
+        results = []
+        for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD - 1):
+            results.append(log_tool_invocation_callback(tool, {}, tool_context))
+        results.append(log_tool_invocation_callback(other_tool, {"issue": {"title": "x"}}, tool_context))
+        for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD - 1):
+            results.append(log_tool_invocation_callback(tool, {}, tool_context))
+
+        self.assertTrue(all(r is None for r in results))
+
+    def test_transfer_to_agent_calls_are_not_subject_to_this_breaker(self):
+        """transfer_to_agent has its own dedicated, pair-based breaker
+        (TRANSFER_LOOP_THRESHOLD, see
+        TestLogToolInvocationCallbackBlocksSelfTransfer) - _detect_repeated_
+        call_loop must never additionally run for it. Stays under
+        TRANSFER_LOOP_THRESHOLD so a block here can only be this (wrong)
+        breaker firing, not the transfer one."""
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumOrchestrator"
+        tool_context.state = ScrumState().model_dump()
+
+        results = [
+            log_tool_invocation_callback(tool, {"agent_name": "DevTeam"}, tool_context)
+            for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD - 1)
+        ]
+
+        self.assertTrue(all(r is None for r in results))
 
 
 class TestRecoverFakeToolCallCallback(unittest.TestCase):
@@ -562,6 +897,82 @@ class TestRecoverFakeToolCallCallback(unittest.TestCase):
         fc = response.content.parts[0].function_call
         self.assertEqual(fc.name, "start_sprint")
         self.assertEqual(fc.args, {"goal": "Refine the MVP scope"})
+
+    def test_converts_nested_function_object_shape(self):
+        """
+        Acceptance Criteria: a live eval run produced `{"type": "function",
+        "function": {"name": "transfer_to_agent", "arguments": {...}}}` -
+        "function" as a nested object (name/arguments one level deeper)
+        rather than the tool name string directly - which the original
+        exact-key match missed entirely, scoring that eval case a hard 0.
+        """
+        response = self._response_with_text(
+            '{"type": "function", "function": {"name": "transfer_to_agent", "arguments": {"agent_name": "DevTeam"}}}'
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "ProductOwner"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "transfer_to_agent")
+        self.assertEqual(fc.args, {"agent_name": "DevTeam"})
+
+    def test_converts_function_name_key_shape(self):
+        """
+        Acceptance Criteria: a live eval run also produced
+        `{"function_name": "update_sprint_report", "arguments": {...}}` - no
+        "type"/"function"/"name" key at all, "function_name" instead - which
+        also slipped through as raw text.
+        """
+        response = self._response_with_text(
+            '{"function_name": "update_sprint_report", "arguments": {"kpis": "calculate_kpis"}}'
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "QualityGuardian"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "update_sprint_report")
+        self.assertEqual(fc.args, {"kpis": "calculate_kpis"})
+
+    def test_converts_parameters_key_shape(self):
+        """
+        Acceptance Criteria: a later eval run produced "parameters" instead
+        of "arguments"/"args" - also a recognized args key now.
+        """
+        response = self._response_with_text(
+            '{"type": "function", "name": "update_sprint_report", "parameters": {"kpis": "calculate_kpis"}}'
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "QualityGuardian"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "update_sprint_report")
+        self.assertEqual(fc.args, {"kpis": "calculate_kpis"})
+
+    def test_converts_python_repr_style_envelope(self):
+        """
+        Acceptance Criteria: a later eval run produced a Python repr()-style
+        envelope - single-quoted, like str(some_dict) - instead of valid
+        JSON. json.loads rejects single quotes outright, so this used to
+        bail out of the whole function immediately, leaving the text
+        unrecovered. ast.literal_eval is now tried as a fallback parser.
+        """
+        response = self._response_with_text(
+            "{'type': 'function', 'name': 'update_sprint_report', 'parameters': {'kpis': 'calculate_kpis'}}"
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "QualityGuardian"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "update_sprint_report")
+        self.assertEqual(fc.args, {"kpis": "calculate_kpis"})
 
     def test_does_not_touch_a_real_function_call(self):
         response = LlmResponse(content=types.Content(
@@ -952,6 +1363,25 @@ class TestInjectLitellmKeyCallback(unittest.TestCase):
         inject_litellm_key_callback(mock_context, MagicMock())
 
         self.assertEqual(litellm.api_key, "sentinel-should-not-change")
+
+    def test_falls_back_to_proxy_api_key_when_agent_key_does_not_look_like_a_real_key(self):
+        """
+        Acceptance Criteria: a real eval run's evalset fixtures
+        (eval/adk/scrum_team.evalset.json) pre-seed litellm_keys with
+        non-"sk-" placeholder strings (e.g. "eval-fixture-key-devteam") to
+        satisfy check_cost_budget_callback's "has a key at all" presence
+        check - LiteLLM's own proxy auth requires a real key to start with
+        "sk-", so shipping that placeholder as the actual Bearer token
+        fails every call for that role with a confusing 401. This must
+        fall back to LITELLM_PROXY_API_KEY the same way as "no agent key
+        at all", instead of blindly trusting anything present.
+        """
+        mock_context, model = _mock_context_with_model("DevTeam", agent_key="eval-fixture-key-devteam")
+
+        with patch.dict("os.environ", {"LITELLM_PROXY_API_KEY": "sk-fallback-key"}, clear=True):
+            inject_litellm_key_callback(mock_context, MagicMock())
+
+        self.assertEqual(model._additional_args["api_key"], "sk-fallback-key")
 
     def test_falls_back_to_global_when_model_has_no_additional_args(self):
         """Defensive fallback for an agent that doesn't expose a

@@ -50,7 +50,12 @@ services:
     ports:
       - "4000:4000"
     volumes:
-      - ./config/model-templates/litellm.local-ollama.yaml:/app/config.yaml:ro
+      # LITELLM_CONFIG_PATH lets a caller (e.g. run_adk_eval.py --host-ollama)
+      # point this at a dedicated config - eval/adk/litellm.local-hostollama.yaml -
+      # instead of whatever this developer's own .env last configured via
+      # setup_llm.py, so eval runs are reproducible regardless of the local
+      # dev environment's drift. Unset, this is unchanged from before.
+      - ${LITELLM_CONFIG_PATH:-./config/model-templates/litellm.local-ollama.yaml}:/app/config.yaml:ro
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - DATABASE_URL=${DATABASE_URL}

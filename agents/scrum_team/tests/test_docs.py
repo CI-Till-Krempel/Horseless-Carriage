@@ -146,9 +146,12 @@ class TestSeedRepositoryBranch(unittest.TestCase):
     stays at the pre-seed state until the first sprint PR merges.
     """
 
-    @patch("agents.scrum_team.tools.github.git_push")
-    def test_seed_repository_pushes_to_configured_develop_branch(self, mock_git_push):
-        mock_git_push.return_value = {"status": "ok"}
+    @patch("agents.scrum_team.tools.github._git_push_impl")
+    def test_seed_repository_pushes_to_configured_develop_branch(self, mock_git_push_impl):
+        """seed_repository uses _git_push_impl (not the public git_push tool)
+        since it's the one legitimate internal case that needs
+        allow_protected=True - see git_push's own docstring."""
+        mock_git_push_impl.return_value = {"status": "ok"}
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["repo"] = {"default_branch": "eval/run-1/main", "develop_branch": "eval/run-1/develop"}
@@ -157,8 +160,9 @@ class TestSeedRepositoryBranch(unittest.TestCase):
             with patch("agents.scrum_team.tools.docs._configured_repo_root", return_value=Path(tmp_dir)):
                 seed_repository(tool_context=tool_context)
 
-        mock_git_push.assert_called_once()
-        self.assertEqual(mock_git_push.call_args.kwargs["branch"], "eval/run-1/develop")
+        mock_git_push_impl.assert_called_once()
+        self.assertEqual(mock_git_push_impl.call_args.kwargs["branch"], "eval/run-1/develop")
+        self.assertEqual(mock_git_push_impl.call_args.kwargs["allow_protected"], True)
 
 
 if __name__ == "__main__":

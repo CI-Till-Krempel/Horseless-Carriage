@@ -1,9 +1,14 @@
 # agents/scrum_team/tests/test_requirements.py
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
-from agents.scrum_team.tools.requirements import advance_story_stage, upsert_backlog_item, record_design_approval, plan_backlog_item, set_priority
+from agents.scrum_team.tools.requirements import (
+    advance_story_stage, upsert_backlog_item, record_design_approval, record_acceptance_check, plan_backlog_item,
+    set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
+)
 
 
 def _base_story(stages_completed):
@@ -228,6 +233,21 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
+    def test_accepted_requires_a_recorded_acceptance_check(self, mock_save, mock_md, mock_roadmap):
+        """Acceptance Criteria (ISSUE-0043): Accepted previously had no
+        evidence gate at all - any role could call advance_story_stage
+        on assertion alone."""
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("record_acceptance_check", result["message"])
+
+    def test_accepted_succeeds_once_acceptance_check_is_recorded(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        record_acceptance_check("US-0001", "Verified all AC met.", tool_context=tc)
+        result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
 
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
@@ -421,6 +441,247 @@ class TestRecordDesignApproval(unittest.TestCase):
         self.assertEqual(result["status"], "error")
 
 
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestRecordAcceptanceCheck(unittest.TestCase):
+    """Acceptance Criteria (ISSUE-0043): record_acceptance_check sets a
+    per-story COUNTER (not a one-time boolean like design_approved) on both
+    backlog copies, so a denial can later require a genuinely fresh check
+    (ISSUE-0044) rather than reuse of the one that got denied."""
+
+    def test_increments_counter_on_both_backlog_copies(self, mock_save):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        result = record_acceptance_check("US-0001", "Verified all AC met.", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["acceptance_check_count"], 1)
+        self.assertEqual(tc.state["sprint_backlog"][0]["acceptance_check_count"], 1)
+        self.assertEqual(tc.state["product_backlog"][0]["acceptance_check_note"], "Verified all AC met.")
+
+    def test_counter_increments_across_repeated_calls(self, mock_save):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        record_acceptance_check("US-0001", "first pass", tool_context=tc)
+        result = record_acceptance_check("US-0001", "second pass", tool_context=tc)
+        self.assertEqual(result["acceptance_check_count"], 2)
+        self.assertEqual(tc.state["product_backlog"][0]["acceptance_check_count"], 2)
+
+    def test_unknown_story_errors(self, mock_save):
+        tc = _tool_context("ProductOwner", [])
+        result = record_acceptance_check("US-9999", "note", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestDenyReview(unittest.TestCase):
+    """
+    Acceptance Criteria: a review (Architect's code review, QA's, or Product
+    Owner's acceptance check) can only be denied with a concrete, actionable
+    reason - not silently (just never calling advance_story_stage, with the
+    "why" left in conversation text only, if stated at all) and not with an
+    empty/placeholder/generic non-reason ("not good", "denied", ...) that
+    gives Dev Team nothing to act on.
+    """
+
+    _VALID_REASON = "The pagination logic off-by-one errors on the last page - fix the loop bound."
+
+    def test_architect_denies_reviewed_with_concrete_reason(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        result = deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        for backlog in ("product_backlog", "sprint_backlog"):
+            denial = tc.state[backlog][0]["review_denial"]
+            self.assertEqual(denial["stage"], "Reviewed")
+            self.assertEqual(denial["reason"], self._VALID_REASON)
+            self.assertEqual(denial["by"], "Architect")
+
+    def test_qa_denies_tested_with_concrete_reason(self, mock_save, mock_md):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        result = deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Tested")
+
+    def test_product_owner_denies_accepted_with_concrete_reason(self, mock_save, mock_md):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        result = deny_review("US-0001", "Accepted", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Accepted")
+
+    def test_rejects_empty_reason(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        result = deny_review("US-0001", "Reviewed", "", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("review_denial", tc.state["product_backlog"][0])
+
+    def test_rejects_too_short_reason(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        result = deny_review("US-0001", "Reviewed", "bad code", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_rejects_generic_reason(self, mock_save, mock_md):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        for generic in ("not good", "denied", "needs work", "does not meet criteria"):
+            with self.subTest(generic=generic):
+                result = deny_review("US-0001", "Tested", generic, tool_context=tc)
+                self.assertEqual(result["status"], "error")
+
+    def test_rejects_placeholder_reason(self, mock_save, mock_md):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        result = deny_review("US-0001", "Accepted", "<describe what's wrong here>", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_rejects_wrong_role(self, mock_save, mock_md):
+        tc = _tool_context("DevTeam", ["Ready", "Implemented"])
+        result = deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Architect", result["message"])
+
+    def test_rejects_non_deniable_stage(self, mock_save, mock_md):
+        tc = _tool_context("ProductOwner", [])
+        result = deny_review("US-0001", "Draft", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_unknown_story_errors(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        result = deny_review("US-9999", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_advancing_past_denied_stage_clears_the_denial(self, mock_save, mock_md):
+        """A resolved denial shouldn't linger as stale feedback once the
+        story actually advances past the stage it was denied at."""
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertIsNotNone(tc.state["product_backlog"][0]["review_denial"])
+
+        # A real review call from Architect happened (re-review) - satisfies
+        # advance_story_stage's own "Reviewed" gate, unrelated to deny_review.
+        tc.state["pr_review_calls"] = {"Architect": 1}
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Reviewed", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+    def test_denying_a_different_stage_does_not_clear_an_unrelated_denial(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        # Some other, unrelated progress happens (e.g. re-review not yet done) -
+        # the denial must survive until the SAME stage actually advances.
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Reviewed")
+
+    def test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md):
+        """
+        Acceptance Criteria (ISSUE-0044): the Reviewed/Tested gate's own
+        evidence check is sprint-wide (pr_review_calls), not scoped to one
+        story - so a story that was just denied could previously still
+        advance right away, as long as *some* Architect review call (even
+        the very one that led to the denial) already satisfied that
+        sprint-wide count. A denial must require a review that's genuinely
+        NEW since THIS story's own denial, not just since the last story
+        that reached Reviewed at all.
+        """
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        # A real review call already happened (e.g. Architect's own
+        # REQUEST_CHANGES comment) before the denial - the sprint-wide
+        # counter is already past baseline at deny time.
+        tc.state["pr_review_calls"] = {"Architect": 1}
+
+        deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["review_count_at_denial"], 1)
+
+        # No NEW review call since the denial - the sprint-wide count is
+        # unchanged - so this must still be refused.
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Reviewed", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(self._VALID_REASON, result["message"])
+
+        # A genuinely fresh review call after the denial resolves it.
+        tc.state["pr_review_calls"] = {"Architect": 2}
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Reviewed", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+    def test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md):
+        """Same ISSUE-0044 fix, QA/Tested side."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+
+        deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["review_count_at_denial"], 1)
+
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(self._VALID_REASON, result["message"])
+
+        tc.state["pr_review_calls"] = {"QA": 2}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+    def test_accepted_denial_blocks_advance_even_if_already_checked_once(self, mock_save, mock_md):
+        """Same ISSUE-0044 fix, Accepted/record_acceptance_check side
+        (ISSUE-0043): a denial must require a genuinely NEW
+        record_acceptance_check call, not just reuse of the check that led
+        to the denial."""
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        # A check already happened before the denial - the counter is
+        # already > 0 at deny time.
+        record_acceptance_check("US-0001", "First pass, missed something", tool_context=tc)
+        self.assertEqual(tc.state["product_backlog"][0]["acceptance_check_count"], 1)
+
+        deny_review("US-0001", "Accepted", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["acceptance_count_at_denial"], 1)
+
+        # No NEW acceptance check since the denial - must still be refused.
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(self._VALID_REASON, result["message"])
+
+        # A genuinely fresh acceptance check after the denial resolves it.
+        record_acceptance_check("US-0001", "Re-checked after fix", tool_context=tc)
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+
+class TestDenyReviewSurfacesInStoryMarkdown(unittest.TestCase):
+    """_update_story_markdown itself (not mocked here) must fold a recorded
+    review_denial into the story's rendered Notes section, so it's visible
+    via `read_doc` - not just something said once in conversation."""
+
+    def test_review_denial_appears_in_rendered_notes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                item = {
+                    "id": "US-0001",
+                    "title": "Add login flow",
+                    "type": "User Story",
+                    "status": "Implemented",
+                    "user_story": "As a user, I want to log in, so that I can access my account.",
+                    "acceptance_criteria": ["Given valid creds, when I submit, then I'm logged in"],
+                    "review_denial": {
+                        "stage": "Reviewed",
+                        "reason": "The session token is never invalidated on logout - fix that first.",
+                        "by": "Architect",
+                    },
+                }
+                result = _update_story_markdown(item, tool_context=MagicMock(state={}))
+                self.assertEqual(result["status"], "ok")
+                content = Path(result["path"]).read_text(encoding="utf-8")
+                self.assertIn("REVIEW DENIED", content)
+                self.assertIn("session token is never invalidated", content)
+
+
 class TestUpsertBacklogItemGuards(unittest.TestCase):
     """Acceptance Criteria (ISSUE-0007, ISSUE-0008)."""
 
@@ -462,6 +723,83 @@ class TestUpsertBacklogItemGuards(unittest.TestCase):
         result = upsert_backlog_item({"id": "US-0001", "title": "Foo", "status": "Draft"}, tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("advance_story_stage", result["message"])
+
+
+class TestUpsertStoryEpicIssueCoerceJsonStringArg(unittest.TestCase):
+    """
+    Acceptance Criteria: a real eval run crashed the whole node with
+    `TypeError: 'str' object does not support item assignment` - a model
+    passed the dict-typed argument (story/epic/issue) as a JSON-encoded
+    string instead of a real object. upsert_story/upsert_epic/upsert_issue
+    must transparently accept that shape instead of crashing, and must
+    return a normal tool-level error (not raise) for anything that still
+    isn't a JSON object.
+    """
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_upsert_story_accepts_json_string(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_story('{"id": "US-0001", "title": "Foo"}', tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_upsert_epic_accepts_json_string(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_epic('{"id": "EP-0001", "title": "Foo"}', tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_upsert_issue_accepts_json_string(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_issue('{"id": "ISSUE-0001", "title": "Foo"}', tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_upsert_story_malformed_json_string_returns_error_not_crash(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_story("not json at all", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("upsert_story", result["message"])
+
+    def test_upsert_story_non_object_json_string_returns_error_not_crash(self):
+        """A JSON-valid string that decodes to something other than an
+        object (e.g. a bare string or list) is still a caller error, not
+        something to silently coerce further."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_story('"just a string"', tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_upsert_story_wrong_type_returns_error_not_crash(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_story(123, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_upsert_issue_accepts_python_repr_string(self, mock_save, mock_md):
+        """
+        Acceptance Criteria: a real eval run had QualityGuardian call
+        upsert_issue(issue="{'title': 'Review PR ...', 'description':
+        '...'}") - a Python repr (single-quoted), not valid JSON, so
+        json.loads alone rejected it as "expected an object, got str" and
+        the model never recovered. ast.literal_eval (via _coerce_dict_arg)
+        must parse that shape too.
+        """
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_issue(
+            "{'title': 'Review PR feature/US-0099-add-login', 'description': 'Code review is pending'}",
+            tool_context=tc,
+        )
+        self.assertEqual(result["status"], "ok")
 
 
 class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):

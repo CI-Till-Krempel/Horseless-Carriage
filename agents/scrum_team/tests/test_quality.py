@@ -414,6 +414,77 @@ class TestQualityTools(unittest.TestCase):
         update_sprint_report(kpis=kpis, tool_context=tool_context)
         self.assertEqual(tool_context.state["sprint_report_kpis"], kpis)
 
+    def test_update_sprint_report_rejects_non_dict_kpis(self):
+        """
+        Acceptance Criteria: a genuinely unrecoverable kpis shape (not the
+        "calculate_kpis" tool-name alias, not a JSON or Python-repr
+        stringified dict) must still be rejected before it ever reaches
+        state - a bad sprint_report_kpis shape there crashes the *next*
+        turn's before_model_callback (get_scrum_state re-validates the
+        whole state via ScrumState(**data)) with a pydantic ValidationError
+        nowhere near this tool.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = update_sprint_report(kpis="not a dict at all", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tool_context.state["sprint_report_kpis"], {})
+
+    @patch("agents.scrum_team.tools.quality.calculate_kpis")
+    def test_update_sprint_report_self_heals_calculate_kpis_tool_name_string(self, mock_calculate_kpis):
+        """
+        Acceptance Criteria: a real eval run had QualityGuardian call this
+        with kpis="calculate_kpis" (and, in other turns, "calculate_kpis()")
+        - the other tool's name, as a plain string - apparently expecting
+        update_sprint_report to call it, then retried the same wrong shape
+        over a dozen times in a row before burning through the eval's whole
+        LLM-call budget. Recognize that shape and actually call
+        calculate_kpis() here instead of erroring, so the call succeeds and
+        the loop never starts.
+        """
+        real_kpis = {"team_effectiveness": {"say_do_ratio": 0.8, "commitment_reliability": 1.0}}
+        mock_calculate_kpis.return_value = real_kpis
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        for alias in ("calculate_kpis", "calculate_kpis()", "  calculate_kpis  "):
+            with self.subTest(alias=alias):
+                tool_context.state["sprint_report_kpis"] = {}
+                result = update_sprint_report(kpis=alias, tool_context=tool_context)
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(result["kpis"], real_kpis)
+                self.assertEqual(tool_context.state["sprint_report_kpis"], real_kpis)
+
+    def test_update_sprint_report_recovers_json_stringified_kpis(self):
+        """
+        Acceptance Criteria: a JSON-encoded string (double-quoted) is
+        transparently parsed back into the real dict, same recovery
+        upsert_story/upsert_issue already get via _coerce_dict_arg.
+        """
+        real_kpis = {"team_effectiveness": {"say_do_ratio": 0.8, "commitment_reliability": 1.0}}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = update_sprint_report(kpis=json.dumps(real_kpis), tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["sprint_report_kpis"], real_kpis)
+
+    def test_update_sprint_report_recovers_python_repr_stringified_kpis(self):
+        """
+        Acceptance Criteria: a real eval run had QualityGuardian call this
+        with kpis=str(some_dict) - Python repr, single-quoted, with a bare
+        None - which json.loads can't parse at all. ast.literal_eval (via
+        _coerce_dict_arg) recovers it instead of erroring.
+        """
+        real_kpis = {
+            "team_effectiveness": {"say_do_ratio": 0.8, "commitment_reliability": 1.0},
+            "maintainability": {"code_complexity": None, "test_coverage": 0.0},
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = update_sprint_report(kpis=str(real_kpis), tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["sprint_report_kpis"], real_kpis)
+
     @patch("agents.scrum_team.tools.quality._configured_repo_root")
     @patch("agents.scrum_team.tools.quality._run")
     def test_check_build_persists_result_for_the_tested_gate(self, mock_run, mock_repo_root):

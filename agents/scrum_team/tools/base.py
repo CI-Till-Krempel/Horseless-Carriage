@@ -1,5 +1,7 @@
 # agents/scrum_team/tools/base.py
 from __future__ import annotations
+import ast
+import json
 import os
 import re
 import subprocess
@@ -297,6 +299,35 @@ def _normalize_private_key(key: str) -> str:
         clean += "\n"
         
     return clean
+
+def _coerce_dict_arg(value: Any, tool_name: str) -> Dict[str, Any]:
+    """
+    Recovers a dict-typed tool argument from the string shapes a local model
+    actually emits instead of a real object - a real eval run crashed
+    upsert_story with `TypeError: 'str' object does not support item
+    assignment` because a model emitted a JSON-encoded string
+    (upsert_story('{"title": "..."}')) instead of a real object, and a
+    separate case had update_sprint_report handed a Python repr - i.e.
+    str(some_dict), single-quoted with True/False/None
+    (update_sprint_report("{'team_effectiveness': ...}")) - which
+    json.loads can't parse at all. ast.literal_eval safely covers that
+    second shape without eval()'s arbitrary-code-execution risk. Anything
+    else that still isn't a dict is a genuine caller error, not a
+    serialization quirk, and is raised as ValueError so the caller can turn
+    it into a normal tool-level error response instead of an uncaught crash.
+    """
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                parsed = parser(value)
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+    raise ValueError(f"{tool_name} expected an object, got {type(value).__name__}: {value!r}")
+
 
 def _state_file_path(repo_root: Path) -> Path:
     return (repo_root / ".hc" / "state.json").resolve()

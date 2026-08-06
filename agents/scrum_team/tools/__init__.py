@@ -26,6 +26,8 @@ from .requirements import (
     sync_requirements_from_markdown,
     advance_story_stage,
     record_design_approval,
+    record_acceptance_check,
+    deny_review,
 )
 from .github import (
     configure_github_repo,

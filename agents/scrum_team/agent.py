@@ -1,4 +1,5 @@
 # agents/scrum_team/agent.py
+import ast
 import os
 import json
 import requests
@@ -246,6 +247,8 @@ from .tools import (
     set_priority,
     advance_story_stage,
     record_design_approval,
+    record_acceptance_check,
+    deny_review,
     add_impediment,
     add_retro_action,
     record_human_approval,
@@ -292,6 +295,12 @@ from .tools import (
     upsert_srs,
     upsert_adr,
 )
+# Not re-exported from .tools (agent-facing tools only) - this internal
+# variant is only for _sync_and_commit_roadmap_on_exhaustion below, which
+# genuinely needs to push straight to a protected branch on the sprint
+# budget running out. See git_push's own docstring for why allow_protected
+# is deliberately not a parameter any agent-facing tool call can set.
+from .tools.github import _git_push_impl
 from .tools.quality import (
     calculate_kpis,
     update_sprint_report as update_sprint_report_with_kpis,
@@ -403,11 +412,29 @@ def inject_litellm_key_callback(callback_context: CallbackContext, llm_request: 
     Falls back to the old global-mutation behavior if the current agent
     doesn't expose a LiteLlm-shaped model (e.g. a future ADK internals
     change) - better than silently injecting no key at all.
+
+    Only trusts state.litellm_keys[agent_name] as an actual Bearer token if
+    it looks like a real LiteLLM virtual key (starts with "sk-" - LiteLLM's
+    own proxy auth enforces this format, per its "expected to start with
+    'sk-'" error). The ADK evalset (eval/adk/scrum_team.evalset.json)
+    pre-seeds this exact dict with non-"sk-" placeholder strings (e.g.
+    "eval-fixture-key-devteam") purely to satisfy check_cost_budget_
+    callback's "has a key at all" presence check for whichever role a given
+    case is about - a real run exposed the gap once the harness actually
+    reached a live model: this callback shipped that placeholder straight
+    through as the real Bearer token, failing every one of that role's
+    calls with a confusing 401 after 7 retries, while the root
+    ScrumOrchestrator (never present in these fixtures) kept working via
+    the LITELLM_PROXY_API_KEY fallback below. Falling back the same way for
+    anything that doesn't look like a real key fixes this without needing
+    to change the fixtures at all - and is a reasonable defensive floor
+    regardless (state.litellm_keys should never be blindly trusted as a
+    literal Bearer token without at least this basic shape check).
     """
     state = get_scrum_state(callback_context.state)
     agent_name = callback_context.agent_name
     agent_key = state.litellm_keys.get(agent_name)
-    key_to_use = agent_key or os.getenv("LITELLM_PROXY_API_KEY")
+    key_to_use = agent_key if agent_key and agent_key.startswith("sk-") else os.getenv("LITELLM_PROXY_API_KEY")
 
     try:
         model = callback_context._invocation_context.agent.canonical_model
@@ -448,7 +475,7 @@ def _sync_and_commit_roadmap_on_exhaustion(callback_context: CallbackContext) ->
         branch_result = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, tool_context=callback_context)
         current_branch = (branch_result.get("stdout") or "").strip()
         if current_branch and current_branch != "HEAD":
-            git_push(
+            _git_push_impl(
                 branch=current_branch,
                 commit_message="chore: sync roadmap - sprint budget exhausted",
                 allow_protected=True,
@@ -677,8 +704,8 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
 
     return None
 
-_FAKE_TOOL_CALL_NAME_KEYS = ("function", "name")
-_FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args", "properties")
+_FAKE_TOOL_CALL_NAME_KEYS = ("function", "name", "function_name")
+_FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args", "properties", "parameters")
 _JSON_ENVELOPE_MESSAGE_KEYS = ("message", "content", "text")
 
 
@@ -706,6 +733,31 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
     second condition keeps a merely-JSON-shaped prose reply (e.g. `{"status":
     "ok", "note": "..."}`, which has neither) from ever being misread as an
     attempted call.
+
+    A live eval run surfaced two more variants the exact-key match still
+    missed entirely (both slipped through as raw text, scoring the eval
+    case a hard 0 rather than converting into the real call): `{"type":
+    "function", "function": {"name": "transfer_to_agent", "arguments":
+    {...}}}` - "function" as a nested object (name/arguments one level
+    deeper) rather than the tool name string directly - and
+    `{"function_name": "update_sprint_report", "arguments": {...}}` - no
+    "function"/"name" key at all, "function_name" instead. The nested-object
+    shape is unwrapped one level (its own name/arguments extracted the same
+    way) before the same key-based lookup runs; "function_name" is now one
+    of the recognized name keys.
+
+    A later eval run produced two more variants: "parameters" instead of
+    "arguments"/"args" (now a recognized args key too), and - the harder
+    one - a Python `repr()`-style envelope (single-quoted, e.g. `{'name':
+    'update_sprint_report', 'parameters': {...}}`) instead of valid JSON.
+    `json.loads` rejects single quotes outright, so that shape used to bail
+    out of this whole function immediately, leaving the text unrecovered.
+    `ast.literal_eval` is now tried as a fallback parser when `json.loads`
+    fails - the exact same JSON-or-Python-repr recovery already used for
+    tool *arguments* elsewhere (see `_coerce_dict_arg` in `tools/base.py`),
+    applied here to the fake-tool-call envelope itself. Safe the same way:
+    `ast.literal_eval` only ever produces Python literals, never executes
+    arbitrary code.
 
     Also recovers a third pattern the same local model produced (also GH
     issue #91): a genuine conversational reply wrapped in a JSON envelope -
@@ -743,18 +795,29 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
     text = (text_parts[0].text or "").strip()
     if not (text.startswith("{") and text.endswith("}")):
         return
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return
+    parsed = None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(text)
+        except Exception:
+            continue
+        break
     if not isinstance(parsed, dict):
         return
 
-    tool_name = next((parsed[k] for k in _FAKE_TOOL_CALL_NAME_KEYS if isinstance(parsed.get(k), str) and parsed[k].strip()), None)
-    has_args_key = any(k in parsed for k in _FAKE_TOOL_CALL_ARGS_KEYS)
-    type_is_function = parsed.get("type") == "function"
+    # {"type": "function", "function": {"name": "...", "arguments": {...}}} -
+    # "function" nested one level deeper as an object, rather than being the
+    # tool name string directly (the original GH issue #89 shape) or a
+    # sibling top-level key (GH issue #95's "properties" variant). Unwrap it
+    # so the same key-based lookup below covers both shapes.
+    nested_function = isinstance(parsed.get("function"), dict)
+    call_spec = parsed["function"] if nested_function else parsed
+
+    tool_name = next((call_spec[k] for k in _FAKE_TOOL_CALL_NAME_KEYS if isinstance(call_spec.get(k), str) and call_spec[k].strip()), None)
+    has_args_key = any(k in call_spec for k in _FAKE_TOOL_CALL_ARGS_KEYS)
+    type_is_function = parsed.get("type") == "function" or nested_function
     if tool_name and (type_is_function or has_args_key):
-        tool_args = next((parsed[k] for k in _FAKE_TOOL_CALL_ARGS_KEYS if isinstance(parsed.get(k), dict)), {})
+        tool_args = next((call_spec[k] for k in _FAKE_TOOL_CALL_ARGS_KEYS if isinstance(call_spec.get(k), dict)), {})
         logger.warning(
             f"recover_fake_tool_call_callback: {callback_context.agent_name} replied with text shaped like "
             f"a tool call ({tool_name!r}) instead of a real one (GH issue #89/#95) - converting it into an "
@@ -843,6 +906,24 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
     # conversation - a confusing "did it just reset?" regression.
     if len(llm_request.contents) > 1:
         return
+
+    # A live `adk eval` run's console is otherwise just one undifferentiated
+    # stream of tool-call lines across all ~10 scripted conversations back
+    # to back, with no marker for where one scenario ends and the next
+    # begins - print the opening prompt here, at the one point a session's
+    # true first turn is already known to have started (the len() check
+    # above), so it's obvious which scenario the following log lines belong
+    # to. Best-effort: contents[0] is expected to be the human's opening
+    # message on a fresh session, but this is just a log aid, never worth
+    # failing the actual turn over.
+    try:
+        opening_prompt = "".join(
+            p.text for p in (llm_request.contents[0].parts or []) if getattr(p, "text", None)
+        )
+    except (IndexError, AttributeError):
+        opening_prompt = ""
+    if opening_prompt:
+        print(f"\n=== New session - prompt: {opening_prompt} ===\n", file=sys.stderr)
 
     state = get_scrum_state(callback_context.state)
 
@@ -1153,7 +1234,7 @@ def agent_thinking_stop_callback(callback_context: CallbackContext, llm_response
 
 # --- Tool Call Visibility ---
 
-TRANSFER_LOOP_THRESHOLD = 6
+TRANSFER_LOOP_THRESHOLD = 3
 
 
 def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: str) -> Optional[Dict[str, Any]]:
@@ -1171,9 +1252,40 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     the streak. Mirrors _track_orchestrator_stall's "mechanical banner +
     blocking interaction" approach, but as a before_tool_callback gate since
     that's what actually sees each transfer's target agent.
+
+    Threshold lowered from 6 to 3: with the eval harness's own
+    ADK_EVAL_MAX_LLM_CALLS cap now at 20 (run_eval_shim.py), waiting for 6
+    identical bounces before breaking could alone burn nearly a third of an
+    eval case's whole call budget on one stuck pattern - and a session can
+    hit more than one. 3 identical bounces is already an unambiguous loop
+    in both eval and production; there's no legitimate reason the same two
+    agents hand off to each other 3 times running with zero other progress
+    in between.
+
+    A real eval run showed even THAT wasn't enough: the counter above resets
+    to 0 once it fires, so a model that never actually resolves the blocker
+    just restarts the identical 3-strike burst immediately - repeatedly,
+    burning the whole call budget in chunks instead of stopping. This pair
+    is now remembered (`_broken_transfer_pairs`) once it has broken the loop
+    once *in this session* - any further hop between the same two agents is
+    refused immediately, without needing another fresh streak of
+    TRANSFER_LOOP_THRESHOLD. A pair earning this once is not itself the
+    problem - real, distinct progress via other tools/agents is completely
+    unaffected - only *this exact already-proven-unproductive hop* is ever
+    blocked again.
     """
     state = tool_context.state
     pair = tuple(sorted((from_agent, to_agent)))
+    broken_pairs = list(state.get("_broken_transfer_pairs") or [])
+    if list(pair) in broken_pairs:
+        msg = (
+            f"🔁 [TRANSFER LOOP DETECTED] {from_agent} <-> {to_agent} already broke this exact loop "
+            "once this session - refusing again immediately. This hand-off has already proven "
+            "unproductive; call a tool that makes real progress, transfer to a genuinely different "
+            "role, or explain the blocker in plain text instead."
+        )
+        return {"status": "error", "message": msg}
+
     loop_state = state.get("_transfer_loop") or {}
     count = loop_state.get("count", 0) + 1 if loop_state.get("pair") == list(pair) else 1
     state["_transfer_loop"] = {"pair": list(pair), "count": count}
@@ -1182,6 +1294,7 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
         return None
 
     state["_transfer_loop"] = {"pair": None, "count": 0}
+    state["_broken_transfer_pairs"] = broken_pairs + [list(pair)]
     msg = (
         f"🔁 [TRANSFER LOOP DETECTED] {from_agent} and {to_agent} have handed off to each other "
         f"{count} times in a row with no other tool call in between - refusing this transfer. "
@@ -1199,6 +1312,111 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     except Exception:
         pass
     return {"status": "error", "message": msg}
+
+
+REPEATED_CALL_LOOP_THRESHOLD = 3
+
+
+def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_name: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Sibling to _detect_transfer_loop, for every OTHER tool: breaks an agent
+    calling the exact same tool with the exact same arguments over and over
+    with no other distinct call in between - real eval runs hit this
+    repeatedly and in more than one shape (QualityGuardian calling
+    calculate_kpis()/update_sprint_report(kpis=...) back to back a dozen+
+    times even after each call *succeeded*, apparently unable to tell it had
+    already made progress; ProductOwner calling
+    advance_story_stage(title_or_id="US-0006", stage="Ready") with
+    identical args repeatedly after the same rejection each time). Unlike
+    the transfer-loop breaker (which only cares about the pair of agents,
+    since bouncing to the same target IS the whole failure mode there),
+    this keys on the tool name AND its exact argument values - genuinely
+    different arguments (a different story ID, a different branch) are
+    real, distinct actions and must not be blocked.
+
+    Keying on exact args, not just tool name, matters: calculate_kpis()
+    always has empty args, so any 3 calls in a row are indistinguishable
+    from a loop by definition - but upsert_story called 3 times running for
+    3 different stories is real progress and must never trip this.
+
+    Same escalation as _detect_transfer_loop, and for the same reason: a
+    real eval run showed the model retrying the *exact* same already-broken
+    call again right after the counter below reset to 0, so this exact
+    signature is now remembered (`_broken_call_signatures`) once it has
+    broken the loop once *in this session* - a further occurrence is
+    refused immediately, without needing another fresh streak of
+    REPEATED_CALL_LOOP_THRESHOLD. Only this exact tool+args combination is
+    ever blocked again - a retry with genuinely different arguments is
+    unaffected.
+    """
+    state = tool_context.state
+    try:
+        args_key = json.dumps(args or {}, sort_keys=True, default=str)
+    except Exception:
+        args_key = repr(args)
+    signature = {"agent": agent_name, "tool": tool_name, "args": args_key}
+    broken_signatures = list(state.get("_broken_call_signatures") or [])
+    if signature in broken_signatures:
+        msg = (
+            f"🔁 [REPEATED CALL DETECTED] {agent_name} already broke this exact "
+            f"{tool_name} call once this session - refusing again immediately. These arguments have "
+            "already proven unproductive; use genuinely different arguments, address the actual "
+            "error message, or transfer to whichever role can actually make progress instead."
+        )
+        return {"status": "error", "message": msg}
+
+    loop_state = state.get("_repeated_call_loop") or {}
+    count = loop_state.get("count", 0) + 1 if loop_state.get("signature") == signature else 1
+    state["_repeated_call_loop"] = {"signature": signature, "count": count}
+
+    if count < REPEATED_CALL_LOOP_THRESHOLD:
+        return None
+
+    state["_repeated_call_loop"] = {"signature": None, "count": 0}
+    state["_broken_call_signatures"] = broken_signatures + [signature]
+    msg = (
+        f"🔁 [REPEATED CALL DETECTED] {agent_name} has called {tool_name} with the exact same "
+        f"arguments {count} times in a row with no other distinct call in between - refusing this "
+        "call. If it failed, that same call will keep failing the same way - address the actual "
+        "error message, use different arguments, or transfer to whichever role can actually make "
+        "progress instead of repeating this."
+    )
+    try:
+        from .tools.notifications import record_blocking_interaction
+        record_blocking_interaction(
+            "stalled",
+            f"{agent_name} repeated {tool_name} with identical arguments {count}x with no progress.",
+            detail=msg,
+            tool_context=tool_context,
+        )
+    except Exception:
+        pass
+    return {"status": "error", "message": msg}
+
+
+TOOL_LOG_ARG_VALUE_MAX_LEN = 20
+
+
+def _format_tool_log_arg_value(value: Any) -> str:
+    """Renders a single tool-call argument value for the console/transcript
+    log, truncated to TOOL_LOG_ARG_VALUE_MAX_LEN characters (plus an
+    ellipsis) - a real eval run's log was unreadable with argument *names*
+    only (every transfer_to_agent(agent_name) line looked identical; every
+    git_push(branch, commit_message, add_all) line gave no clue which
+    branch). Long values (file content, PR bodies, KPI dicts) would flood
+    the log or partially leak secrets if shown in full, so only the first
+    TOOL_LOG_ARG_VALUE_MAX_LEN characters ever appear."""
+    is_str = isinstance(value, str)
+    s = value if is_str else str(value)
+    truncated = s[:TOOL_LOG_ARG_VALUE_MAX_LEN] + ("..." if len(s) > TOOL_LOG_ARG_VALUE_MAX_LEN else "")
+    return f'"{truncated}"' if is_str else truncated
+
+
+def _format_tool_call(tool_name: str, args: Dict[str, Any]) -> str:
+    if not args:
+        return f"{tool_name}()"
+    rendered = ", ".join(f"{k}={_format_tool_log_arg_value(v)}" for k, v in args.items())
+    return f"{tool_name}({rendered})"
 
 
 def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict[str, Any]]:
@@ -1220,23 +1438,23 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     keeps the original single-line form, since that's a container log meant
     to be read with `docker compose logs`, not a live terminal.
 
-    Deliberately logs argument *names* only, not values - tool arguments can
-    carry large file contents or PR bodies, and printing full values here
-    would be noisy at best and a way to leak sensitive content into logs at
-    worst. Mostly a passive trace - only gates the specific transfer-loop
-    case, see _detect_transfer_loop.
+    Logs every argument's actual value (see _format_tool_call), truncated to
+    TOOL_LOG_ARG_VALUE_MAX_LEN characters - a real eval run's log was
+    otherwise an undifferentiated stream of `tool_name(arg1, arg2)` lines
+    giving no clue which branch/story/agent a given call actually concerned.
+    Truncation caps how much of any one value (including a would-be secret
+    like a commit message) can ever appear.
 
-    GH issue #127: also records this same names-only call description into
-    the shared transcript (state.transcript) and the durable per-run
-    transcript log, so tool calls show up per-subagent in the human-
-    readable markdown transcript (write_conversation_transcript in
-    tools/budget.py) alongside model turns - previously only the model's
-    own text was captured there, so every tool call was invisible in any
-    persisted record, not just the live console.
+    GH issue #127: also records this same call description into the shared
+    transcript (state.transcript) and the durable per-run transcript log,
+    so tool calls show up per-subagent in the human-readable markdown
+    transcript (write_conversation_transcript in tools/budget.py) alongside
+    model turns - previously only the model's own text was captured there,
+    so every tool call was invisible in any persisted record, not just the
+    live console.
     """
     agent_name = getattr(tool_context, "agent_name", None) or "?"
-    arg_names = ", ".join(args.keys()) if args else ""
-    call_desc = f"{tool.name}({arg_names})"
+    call_desc = _format_tool_call(tool.name, args)
 
     transcript_logger.info(f"[{agent_name}] TOOL CALL: {call_desc}")
     try:
@@ -1250,17 +1468,53 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     if tool.name == "transfer_to_agent":
         target_agent = (args or {}).get("agent_name")
         if target_agent:
+            # _detect_transfer_loop first, even for a self-transfer (pair =
+            # (agent_name, agent_name) - a degenerate but valid pair it
+            # already tracks correctly): a real eval run showed a model
+            # retrying the exact same blocked self-transfer over and over,
+            # burning tokens turn after turn until the sprint budget ran
+            # out, because the small per-call correction below never
+            # escalates on its own. Running the loop counter first means
+            # repeated self-transfers eventually hit TRANSFER_LOOP_THRESHOLD
+            # and get the same stronger "stop and take real action" banner
+            # (plus a recorded blocking interaction) as any other stuck
+            # ping-pong, instead of quietly repeating forever.
             loop_result = _detect_transfer_loop(tool_context, agent_name, target_agent)
             if loop_result is not None:
                 print(f"\U0001f501 [{agent_name}] transfer loop broken (-> {target_agent})", file=sys.stderr)
                 return loop_result
+            if target_agent == agent_name:
+                # ADK's own transfer resolution (resolve_and_derive_transfer_
+                # context, google/adk/workflow/utils/_transfer_utils.py)
+                # raises a bare ValueError("Agent '...' cannot transfer to
+                # itself") if the real transfer_to_agent tool actually runs
+                # with this shape - not caught by on_tool_error_callback,
+                # since it happens in the runner's own transfer-resolution
+                # step *after* the tool call, not inside tool dispatch. A
+                # real eval run against a local model hit this repeatedly
+                # (it emitted transfer_to_agent(agent_name=<its own name>) as
+                # a kind of no-op/self-continuation), crashing the whole
+                # node. Short-circuit here, before ADK's real tool ever
+                # runs, so that crash-prone path is never reached at all.
+                msg = (
+                    f"You are already {agent_name} - no transfer needed. Continue with your own "
+                    "tools directly, or transfer_to_agent to a DIFFERENT role if you actually need one."
+                )
+                print(f"⚠️ [{agent_name}] blocked self-transfer (agent_name={target_agent})", file=sys.stderr)
+                return {"status": "error", "message": msg}
     else:
-        # Any non-transfer tool call is real progress - reset the ping-pong
-        # streak so it only fires on genuinely unproductive bouncing.
+        # Any non-transfer tool call is real progress against the
+        # transfer-loop breaker - reset that streak so it only fires on
+        # genuinely unproductive bouncing.
         try:
             tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
         except Exception:
             pass
+        # But it can itself be a loop: see _detect_repeated_call_loop.
+        loop_result = _detect_repeated_call_loop(tool_context, agent_name, tool.name, args)
+        if loop_result is not None:
+            print(f"\U0001f501 [{agent_name}] repeated-call loop broken (-> {tool.name})", file=sys.stderr)
+            return loop_result
 
     if os.getenv("AGENT_MODE", "web") == "cli":
         try:
@@ -1269,6 +1523,32 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
         except Exception:
             pass
     print(f"\U0001f527 [{agent_name}] {call_desc}", file=sys.stderr)
+    return None
+
+
+TOOL_LOG_ERROR_MESSAGE_MAX_LEN = 100
+
+
+def log_tool_result_callback(
+    tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext, tool_response: Any
+) -> Optional[Dict[str, Any]]:
+    """
+    AfterToolCallback: prints a short, hard-to-miss warning line whenever a
+    tool's own response indicates failure ({"status": "error", ...} - the
+    convention every tool in tools/*.py already follows). Without this,
+    log_tool_invocation_callback's BEFORE-the-call line (see that function)
+    looks identical whether a call went on to succeed or fail - a real eval
+    run's console gave no way to tell, without reading the full transcript,
+    which calls this repo's own code-level gates actually rejected.
+
+    Only ever observes; never modifies the tool's real response (always
+    returns None) - a genuine tool bug should still surface exactly as it
+    would without this callback."""
+    if isinstance(tool_response, dict) and tool_response.get("status") == "error":
+        agent_name = getattr(tool_context, "agent_name", None) or "?"
+        message = str(tool_response.get("message") or tool_response.get("error") or "no message")
+        short_message = message[:TOOL_LOG_ERROR_MESSAGE_MAX_LEN] + ("..." if len(message) > TOOL_LOG_ERROR_MESSAGE_MAX_LEN else "")
+        print(f"❌ [{agent_name}] {tool.name} failed: {short_message}", file=sys.stderr)
     return None
 
 # --- Tool Dispatch Error Handling ---
@@ -1314,6 +1594,7 @@ COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, agent_thinking_start_callback],
     "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
+    "after_tool_callback": log_tool_result_callback,
     "on_tool_error_callback": on_tool_error_callback,
 }
 
@@ -1332,6 +1613,8 @@ product_owner = LlmAgent(
         plan_backlog_item,
         advance_story_stage,
         record_design_approval,
+        record_acceptance_check,
+        deny_review,
         set_priority,
         log_decision,
         create_from_template,
@@ -1425,6 +1708,7 @@ qa_agent = LlmAgent(
         gh_pr_review,
         check_build,
         advance_story_stage,
+        deny_review,
         merge_story_pr,
     ],
     **COMMON_AGENT_CALLBACKS,
@@ -1443,6 +1727,7 @@ architect = LlmAgent(
         write_file,
         upsert_adr,
         advance_story_stage,
+        deny_review,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
@@ -1505,5 +1790,6 @@ root_agent = LlmAgent(
         history_management_after_callback
     ],
     before_tool_callback=log_tool_invocation_callback,
+    after_tool_callback=log_tool_result_callback,
     on_tool_error_callback=on_tool_error_callback,
 )

@@ -93,7 +93,8 @@ Concretely, in this codebase (see "Story workflow" below for the full feature th
   model to check `spec-templates/DOD.md`/`DOR.md` first. `check_build()` actually attempts to
   install the project's dependencies rather than asking QA to "verify the build works" by reading
   the code. `create_sprint_report` refuses to run at all unless a *new* retro action or impediment
-  was logged since the last report.
+  was logged since the last report. `deny_review` refuses an empty, placeholder, or generic
+  ("not good", "denied") reason - a rejection isn't allowed to exist without saying what's wrong.
 - **No bypass path left open.** Enforcing order/ownership in one tool (`advance_story_stage`) is
   only real enforcement if every other way to change the same state is closed off too -
   `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status` directly to a
@@ -138,7 +139,7 @@ Every story passes through exactly these 6 stages, in this exact order, no skipp
 | IMPLEMENTED | Dev Team | Real, working code committed and pushed |
 | REVIEWED | Architect | Architectural/technical review complete |
 | TESTED | QA | `check_build()` passes; test strategy verified |
-| ACCEPTED | Product Owner | Acceptance criteria genuinely verified met |
+| ACCEPTED | Product Owner | Acceptance criteria genuinely verified met - requires `record_acceptance_check` (see below) |
 
 A stage is only ever completed via `advance_story_stage(title_or_id, stage)`
 (`agents/scrum_team/tools/requirements.py`), which enforces this **in code**, not just by asking
@@ -155,10 +156,19 @@ nicely in a prompt:
   shared sprint-wide approval - before it can move from DRAFT to READY ("the designs are cleared by
   stakeholder review, then they are ready"). Not required at Product/CEO/EVAL - see
   `requires_pre_ready_design_approval` in `agents/scrum_team/helpers.py`.
+- **Acceptance evidence before Accepted** (ISSUE-0043): `record_acceptance_check(title_or_id, note)`
+  must have been called for this story - a per-story **counter**
+  (`acceptance_check_count`), not a one-time flag, so a subsequent denial (see below) can require a
+  genuinely fresh check rather than reuse of the one that got denied.
 - **No bypass**: `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status`
   directly to any of the 6 stage names - only `advance_story_stage` can.
 - It also updates `specs/ROADMAP.md`'s per-stage checkboxes for that story automatically, in the
   same call - see below.
+
+REVIEWED/TESTED/ACCEPTED are also the three stages someone can *deny*, not just complete -
+`deny_review(title_or_id, stage, reason)` is the mechanical counterpart, restricted to that stage's
+owner, that refuses an empty/placeholder/generic reason ("not good", "denied", ...) so a rejection
+always says something Dev Team can act on. See RELEASE.md "Denying a review" for the full mechanics.
 
 ### 2. Specification Artifacts (`specs/`)
 Stored in your **target state repository** (configured via `STATE_REPO_PATH` - see [State Repository](STATE-REPOSITORY.md)), these are the actual documents generated and updated by the agents.

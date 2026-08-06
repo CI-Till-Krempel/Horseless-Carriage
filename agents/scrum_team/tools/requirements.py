@@ -1,10 +1,9 @@
 # agents/scrum_team/tools/requirements.py
 from __future__ import annotations
-import json
 import re
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file
+from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file, _coerce_dict_arg
 from ..helpers import (
     is_story_done,
     STORY_STAGES,
@@ -39,6 +38,46 @@ _BLANK_USER_STORY_PATTERN = re.compile(r"^as a\s*,\s*i want\s*,\s*so that\s*\.?\
 _PLACEHOLDER_USER_STORY = "As a <role>, I want <capability>, so that <benefit>."
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+# The three stage transitions that are conceptually a "review" someone can
+# deny (Architect's code review, QA's test review, PO's acceptance check) -
+# see deny_review below. Draft/Ready/Implemented aren't reviews of someone
+# else's completed work in the same sense, so they're not deniable this way.
+_DENIABLE_REVIEW_STAGES = ("Reviewed", "Tested", "Accepted")
+
+# Mirrors _story_readiness_issues' placeholder philosophy, applied to a
+# denial's own reason text instead of a story's content: a rejection that
+# just restates "denied" without saying what's actually wrong isn't
+# something DevTeam can act on any better than no reason at all. Matched
+# case-insensitively against the *whole* stripped reason (not a substring
+# search), so a real explanation that happens to contain one of these words
+# is never blocked.
+_GENERIC_DENIAL_REASONS = {
+    "no", "not good", "bad", "needs work", "not approved", "denied", "rejected",
+    "does not meet criteria", "doesn't meet criteria", "fix it", "try again",
+    "n/a", "na", "tbd", "not ready", "incomplete", "not done",
+}
+_MIN_DENIAL_REASON_LENGTH = 15
+
+
+def _is_concrete_denial_reason(reason: str) -> bool:
+    """
+    A denial reason must be real, specific, actionable text - not empty, not
+    a template placeholder, and not a generic one-liner that just restates
+    the verdict itself without saying what's actually wrong or what would
+    need to change. See ARCHITECTURE.md "Enforce Mandatory Process
+    Mechanically, Not Just by Prompting" - the same principle
+    _story_readiness_issues already applies to story content, applied here
+    to the *reason* a review is denied.
+    """
+    cleaned = (reason or "").strip()
+    if len(cleaned) < _MIN_DENIAL_REASON_LENGTH:
+        return False
+    if "<" in cleaned and ">" in cleaned:
+        return False
+    if cleaned.lower().rstrip(".!") in _GENERIC_DENIAL_REASONS:
+        return False
+    return True
 
 # GH issue #121: MoSCoW rank used to keep product_backlog actually sorted in
 # priority order. _preceding_story's docstring already asserted "backlog
@@ -121,10 +160,21 @@ def _render_story_block(story_id: str, title: str, stages_completed: List[str]) 
     return lines
 
 
+def _coerce_backlog_item_dict(value: Any, tool_name: str) -> Dict[str, Any]:
+    """Thin alias kept for this module's call sites - see _coerce_dict_arg
+    (agents/scrum_team/tools/base.py) for the JSON/Python-repr recovery
+    logic, shared with update_sprint_report's kpis argument."""
+    return _coerce_dict_arg(value, tool_name)
+
+
 def upsert_story(story: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     Requirements Management: Add or update a User Story by ID or Title.
     """
+    try:
+        story = _coerce_backlog_item_dict(story, "upsert_story")
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     story["type"] = "User Story"
     return upsert_backlog_item(story, tool_context=tool_context)
 
@@ -132,6 +182,10 @@ def upsert_epic(epic: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
     Requirements Management: Add or update an Epic by ID or Title.
     """
+    try:
+        epic = _coerce_backlog_item_dict(epic, "upsert_epic")
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     epic["type"] = "Epic"
     return upsert_backlog_item(epic, tool_context=tool_context)
 
@@ -147,6 +201,10 @@ def upsert_issue(issue: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     `specs/requirements/` instead of `specs/stories/` - see
     spec-templates/requirements/TEMPLATE-ISSUE.md.
     """
+    try:
+        issue = _coerce_backlog_item_dict(issue, "upsert_issue")
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     issue["type"] = "Issue"
     return upsert_backlog_item(issue, tool_context=tool_context)
 
@@ -677,6 +735,15 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     notes = item.get("value_hypothesis", "") or item.get("rationale", "")
     if item.get("dependencies"):
         notes += f"\n- Dependencies: {item.get('dependencies')}"
+    # deny_review's own recorded reason - surfaced here (not just left in
+    # conversation text) so DevTeam actually sees it via read_doc. Cleared by
+    # advance_story_stage once the story advances past the denied stage.
+    review_denial = item.get("review_denial")
+    if review_denial:
+        notes += (
+            f"\n- ⚠️ REVIEW DENIED at {review_denial.get('stage')} by "
+            f"{review_denial.get('by')}: {review_denial.get('reason')}"
+        )
     
     test_approach = item.get("test_approach", "")
     if item.get("tasks"):
@@ -994,6 +1061,21 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     "review comment on the PR first."
                 ),
             }
+        # ISSUE-0044: the check above is sprint-wide, not per-story - without
+        # this, a story deny_review just denied could still advance right
+        # after, as long as *some* Architect review call (even the very one
+        # that led to the denial) already satisfied it. Require a review
+        # call that's genuinely NEW since THIS story's own denial, not just
+        # since the last story that reached Reviewed at all.
+        denial = product_item.get("review_denial") or sprint_item.get("review_denial")
+        if denial and denial.get("stage") == "Reviewed" and architect_review_count <= denial.get("review_count_at_denial", -1):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Reviewed - it was denied: {denial.get('reason')}. "
+                    "Leave a NEW gh_pr_review/gh_pr_comment after addressing that, then retry."
+                ),
+            }
     elif stage == "Tested":
         pr_calls = s.get("pr_review_calls", {}) or {}
         qa_review_count = pr_calls.get("QA", 0)
@@ -1004,6 +1086,16 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     f"Cannot mark '{story_id}' Tested - no gh_pr_review/gh_pr_comment call from QA "
                     "has been recorded since the last story was Tested. Leave an actual review "
                     "comment on the PR first."
+                ),
+            }
+        # ISSUE-0044: same per-story freshness requirement as Reviewed above.
+        denial = product_item.get("review_denial") or sprint_item.get("review_denial")
+        if denial and denial.get("stage") == "Tested" and qa_review_count <= denial.get("review_count_at_denial", -1):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - it was denied: {denial.get('reason')}. "
+                    "Leave a NEW gh_pr_review/gh_pr_comment after addressing that, then retry."
                 ),
             }
         last_build = s.get("last_check_build")
@@ -1066,10 +1158,43 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     "retrying."
                 ),
             }
+    elif stage == "Accepted":
+        # ISSUE-0043: Accepted previously had no evidence gate at all - any
+        # role could call advance_story_stage(id, "Accepted") on assertion
+        # alone. Require record_acceptance_check to have actually run for
+        # THIS story first.
+        acceptance_count = product_item.get("acceptance_check_count") or sprint_item.get("acceptance_check_count") or 0
+        if acceptance_count <= 0:
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Accepted - call record_acceptance_check(title_or_id, "
+                    "note) first to record that the acceptance criteria were actually verified."
+                ),
+            }
+        # ISSUE-0044: same per-story freshness requirement as Reviewed/Tested
+        # above - a denial recorded here must be followed by a genuinely NEW
+        # record_acceptance_check call, not just re-use of the check that led
+        # to the denial.
+        denial = product_item.get("review_denial") or sprint_item.get("review_denial")
+        if denial and denial.get("stage") == "Accepted" and acceptance_count <= denial.get("acceptance_count_at_denial", -1):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Accepted - it was denied: {denial.get('reason')}. "
+                    "Call record_acceptance_check again after addressing that, then retry."
+                ),
+            }
 
     stages_completed.add(stage)
     ordered_stages = sorted(stages_completed, key=STORY_STAGES.index)
     update = {"stages_completed": ordered_stages, "status": stage}
+
+    # A resolved deny_review denial shouldn't linger as stale feedback once
+    # the story actually advances past the stage it was denied at.
+    existing_denial = product_item.get("review_denial") or sprint_item.get("review_denial")
+    if existing_denial and existing_denial.get("stage") == stage:
+        update["review_denial"] = None
 
     if sprint_idx is not None:
         sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
@@ -1154,3 +1279,161 @@ def record_design_approval(title_or_id: str, note: str = "", tool_context=None) 
                 else sprint_backlog[sprint_idx].get("id")) or title_or_id
     save_state_to_repo(tool_context)
     return {"status": "ok", "story_id": story_id, "design_approved": True}
+
+
+def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None) -> Dict[str, Any]:
+    """
+    Records that Product Owner has actually verified this story's acceptance
+    criteria are met (docs/DEVELOPMENT-WORKFLOW.md "Verify" node) - the
+    mechanical evidence advance_story_stage(..., "Accepted") now requires
+    (ISSUE-0043), instead of trusting the model's own assertion that
+    acceptance criteria were checked.
+
+    Deliberately a per-story COUNTER (`acceptance_check_count`), not a
+    one-time boolean like record_design_approval's `design_approved` -
+    Accepted is deniable via deny_review, and ISSUE-0044's snapshot
+    mechanism (a denial must be followed by a genuinely NEW signal, not just
+    re-use of whatever satisfied the gate before) needs something that can
+    grow past a snapshot taken at deny time. A boolean would already read
+    "True" going into a re-check, indistinguishable from never having been
+    reset.
+    """
+    from .scrum import save_state_to_repo
+
+    s = tool_context.state
+    sprint_backlog = list(s.get("sprint_backlog", []))
+    product_backlog = list(s.get("product_backlog", []))
+    sprint_idx = next((i for i, x in enumerate(sprint_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    if sprint_idx is None and product_idx is None:
+        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+
+    sprint_item = sprint_backlog[sprint_idx] if sprint_idx is not None else {}
+    product_item = product_backlog[product_idx] if product_idx is not None else {}
+    prior_count = product_item.get("acceptance_check_count") or sprint_item.get("acceptance_check_count") or 0
+    new_count = prior_count + 1
+    update = {"acceptance_check_count": new_count, "acceptance_check_note": note.strip()}
+    if sprint_idx is not None:
+        sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
+        s["sprint_backlog"] = sprint_backlog
+    if product_idx is not None:
+        product_backlog[product_idx] = {**product_backlog[product_idx], **update}
+        s["product_backlog"] = product_backlog
+
+    story_id = (product_backlog[product_idx].get("id") if product_idx is not None
+                else sprint_backlog[sprint_idx].get("id")) or title_or_id
+    save_state_to_repo(tool_context)
+    return {"status": "ok", "story_id": story_id, "acceptance_check_count": new_count}
+
+
+def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Denies one of the three review-gated stage transitions - Reviewed
+    (Architect's code review), Tested (QA), Accepted (Product Owner's
+    acceptance check) - instead of silently just not calling
+    advance_story_stage (see docs/DEVELOPMENT-WORKFLOW.md "Story stage
+    pipeline"). Previously there was no mechanical difference at all
+    between "I haven't gotten to this review yet" and "I reviewed it and
+    it's not good enough" - both just meant the stage-advancing tool call
+    never happened, so a rejection's reason (if the model even wrote one)
+    only ever existed in free-text conversation, with no code-level
+    guarantee DevTeam ever saw it or that it said anything concrete.
+
+    A denial is refused unless `reason` is real, specific text (see
+    _is_concrete_denial_reason) - not empty, a template placeholder, or a
+    generic restatement of the verdict itself ("not good", "denied", ...).
+    The accepted reason is written directly onto the story's own record
+    (both backlog copies) and re-rendered into its Markdown file's Notes
+    section (`_update_story_markdown`), which DevTeam already has `read_doc`
+    to read - so a denial is mechanically visible and actionable, not just
+    something said once in a conversation turn. Cleared automatically once
+    the story actually advances past the stage it was denied at (see
+    advance_story_stage) - a resolved denial shouldn't linger as stale
+    feedback forever.
+
+    For Reviewed/Tested specifically (ISSUE-0044), this also snapshots the
+    denying role's current `pr_review_calls` count - advance_story_stage's
+    own gate for those two stages requires the count to have grown past
+    THIS snapshot, not just past the sprint-wide baseline, before the SAME
+    story can complete that stage again. Without this, a denial had no
+    teeth: that sprint-wide counter (shared across every story, not scoped
+    to this one) could already be satisfied by the very review call that
+    prompted the denial, letting the stage complete right away regardless.
+    Accepted has its own per-story counter instead (ISSUE-0043's
+    `record_acceptance_check` / `acceptance_check_count`, since Product
+    Owner doesn't leave PR reviews) - this snapshots that count instead, so
+    a denied acceptance check requires a genuinely new
+    record_acceptance_check call before Accepted can complete again.
+    """
+    from .scrum import save_state_to_repo
+
+    if stage not in _DENIABLE_REVIEW_STAGES:
+        return {
+            "status": "error",
+            "message": f"deny_review only applies to {list(_DENIABLE_REVIEW_STAGES)}, not '{stage}'.",
+        }
+
+    agent_name = getattr(tool_context, "agent_name", None)
+    expected_owner = STAGE_OWNERS[stage]
+    if agent_name and agent_name != expected_owner:
+        return {
+            "status": "error",
+            "message": f"Stage '{stage}' can only be denied by {expected_owner}, not {agent_name}.",
+        }
+
+    if not _is_concrete_denial_reason(reason):
+        return {
+            "status": "error",
+            "message": (
+                f"reason must be a concrete, actionable explanation (at least "
+                f"{_MIN_DENIAL_REASON_LENGTH} characters, not a placeholder or a generic phrase like "
+                "'not good'/'denied') - state specifically what's wrong and what would need to change, "
+                "so DevTeam can actually act on it."
+            ),
+        }
+
+    s = tool_context.state
+    sprint_backlog = list(s.get("sprint_backlog", []))
+    product_backlog = list(s.get("product_backlog", []))
+    sprint_idx = next((i for i, x in enumerate(sprint_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    if sprint_idx is None and product_idx is None:
+        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+
+    sprint_item = sprint_backlog[sprint_idx] if sprint_idx is not None else {}
+    product_item = product_backlog[product_idx] if product_idx is not None else {}
+    story_id = product_item.get("id") or sprint_item.get("id") or title_or_id
+    title = product_item.get("title") or sprint_item.get("title") or title_or_id
+
+    review_denial = {"stage": stage, "reason": reason.strip(), "by": agent_name or expected_owner}
+    counter_key = {"Reviewed": "Architect", "Tested": "QA"}.get(stage)
+    if counter_key:
+        review_denial["review_count_at_denial"] = (s.get("pr_review_calls", {}) or {}).get(counter_key, 0)
+    elif stage == "Accepted":
+        review_denial["acceptance_count_at_denial"] = (
+            product_item.get("acceptance_check_count") or sprint_item.get("acceptance_check_count") or 0
+        )
+    update = {"review_denial": review_denial}
+    if sprint_idx is not None:
+        sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
+        s["sprint_backlog"] = sprint_backlog
+    if product_idx is not None:
+        product_backlog[product_idx] = {**product_backlog[product_idx], **update}
+        s["product_backlog"] = product_backlog
+
+    save_state_to_repo(tool_context)
+
+    merged_item = {**product_item, **sprint_item, **update, "id": story_id, "title": title}
+    story_md_result = _update_story_markdown(merged_item, tool_context)
+
+    return {
+        "status": "ok",
+        "story_id": story_id,
+        "stage": stage,
+        "reason": reason.strip(),
+        "message": (
+            f"Denial recorded for '{story_id}' at {stage} - see its story file "
+            "(read_doc) for DevTeam's next steps."
+        ),
+        "story_markdown": story_md_result,
+    }

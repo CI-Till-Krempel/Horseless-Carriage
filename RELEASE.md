@@ -228,6 +228,49 @@ silently failed would be exactly the kind of gap this mechanism exists to close.
 there's no longer a separate "now go tell the roadmap" step for a story once it's moving through
 stages at all.
 
+### Denying a review (Reviewed/Tested/Accepted) requires a concrete, actionable reason
+
+`advance_story_stage`'s Reviewed/Tested gates only ever checked that *some* `gh_pr_review`/
+`gh_pr_comment` call had been made since the last attempt - never whether it was an approval or a
+rejection, let alone what it said. Accepted had no stage-specific gate at all (see
+`record_acceptance_check` below - ISSUE-0043). So "denying" a review was mechanically
+indistinguishable from "haven't gotten to it yet": there was no tool call representing a rejection,
+and whatever reason a model did give only ever existed in free-text conversation, with no guarantee
+Dev Team ever saw it or that it said anything concrete.
+
+`deny_review(title_or_id, stage, reason, tool_context=None)` (`agents/scrum_team/tools/
+requirements.py`, docs/DEVELOPMENT-WORKFLOW.md's diagram 2) is the mechanical counterpart, callable
+only by that stage's owner (Architect for Reviewed, QA for Tested, Product Owner for Accepted) for
+exactly those three stages. It refuses a `reason` that's empty, shorter than 15 characters, a
+`<...>` template placeholder, or a generic restatement of the verdict itself ("not good", "denied",
+"needs work", ...) - a rejection has to actually say what's wrong and what would need to change. The
+accepted reason is written onto the story's own record (both backlog copies) and re-rendered into
+its Markdown file's Notes section (`_update_story_markdown`) - which Dev Team already has `read_doc`
+for - so it's mechanically visible and actionable, not just something said once in a PR comment or a
+conversation turn. Cleared automatically by `advance_story_stage` once the story actually advances
+past the stage it was denied at, so a resolved denial doesn't linger as stale feedback.
+
+**Accepted has its own evidence gate (ISSUE-0043).** Unlike Reviewed/Tested, Product Owner doesn't
+leave PR reviews, so there was nothing for Accepted's gate to check at all - any role could
+previously call `advance_story_stage(id, "Accepted")` on assertion alone.
+`record_acceptance_check(title_or_id, note, tool_context=None)` (`agents/scrum_team/tools/
+requirements.py`) records that Product Owner actually verified the acceptance criteria, as a
+per-story **counter** (`acceptance_check_count`) rather than a one-time flag like
+`record_design_approval`'s `design_approved`. `advance_story_stage`'s Accepted gate now refuses unless
+this count is above zero.
+
+**A denial has teeth, for Reviewed/Tested/Accepted (ISSUE-0044).** The Reviewed/Tested gates' own
+evidence check (`pr_review_calls[role] > baseline`) is sprint-wide, not scoped to one story - so a
+story that was just denied could otherwise still advance right away, as long as *some* review call
+from that role (even the very one that led to the denial) already satisfied the sprint-wide count.
+`deny_review` now snapshots the denying role's `pr_review_calls` count at deny time
+(`review_denial["review_count_at_denial"]`); `advance_story_stage` requires the count to have grown
+*past* that snapshot - a genuinely new review, not a reuse of the one that prompted the denial -
+before the same story can complete that stage. Accepted uses the same snapshot idea against its own
+per-story counter instead (`review_denial["acceptance_count_at_denial"]` vs.
+`acceptance_check_count`), since it has no sprint-wide review-call counter to snapshot: a denial there
+requires a genuinely new `record_acceptance_check` call, not just a retried `advance_story_stage`.
+
 ### Sprint retrospective enforcement
 
 `create_sprint_report` (`agents/scrum_team/tools/budget.py`) mechanically refuses to write a
