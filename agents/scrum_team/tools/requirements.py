@@ -15,6 +15,7 @@ from ..helpers import (
     BLOCKER_CATEGORIES,
     BLOCKER_CATEGORY_OWNERS,
     should_escalate_blocker_to_user,
+    sprint_backlog_pr_missing,
 )
 
 # Matches a bare item ID (US-0001, EP-0002, ISSUE-0003, ...) and nothing
@@ -623,8 +624,27 @@ def sync_requirements_from_markdown(tool_context=None) -> Dict[str, Any]:
         s["product_vision"] = vision.strip()
     if goals:
         s["product_goals"] = goals
-        
+
     return {"status": "ok", "vision_updated": bool(vision), "goals_updated": len(goals), "prd": primary_prd.name}
+
+
+def sync_architecture_vision_from_markdown(tool_context=None) -> Dict[str, Any]:
+    """
+    Mirrors sync_requirements_from_markdown above for the standing
+    specs/architecture/ARCHITECTURE-VISION.md document (see
+    upsert_architecture_vision, agents/scrum_team/tools/docs.py) - a single
+    well-known file, not a set of PRD-*.md files to pick a "primary" from,
+    so this just reads it directly instead of needing that function's
+    newest-mtime selection logic.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    path = repo_root / "specs" / "architecture" / "ARCHITECTURE-VISION.md"
+    if not path.exists():
+        return {"status": "ok", "message": "No ARCHITECTURE-VISION.md found."}
+    content = path.read_text(encoding="utf-8", errors="replace").strip()
+    if content:
+        tool_context.state["architecture_vision"] = content
+    return {"status": "ok", "architecture_vision_updated": bool(content)}
 
 def _parse_story_markdown(content: str) -> Dict[str, Any]:
     data = {}
@@ -995,6 +1015,11 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
             "stages_completed": sorted(stages_completed, key=STORY_STAGES.index),
         }
 
+    # Every non-Epic item must have a real product_backlog entry so its
+    # priority position can be verified at all (GH issue #106) - a purely
+    # data-integrity requirement, unlike the "must reach Accepted first"
+    # ordering restriction below, so it applies at every stage, Draft/Ready
+    # included.
     preceding = _preceding_story(product_backlog, story_id, title)
     if preceding is NOT_IN_PRODUCT_BACKLOG:
         return {
@@ -1005,15 +1030,28 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                 "Add it via plan_backlog_item/upsert_story first."
             ),
         }
-    if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
-        return {
-            "status": "error",
-            "message": (
-                f"Cannot advance '{story_id}' to {stage} - the higher-priority story "
-                f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
-                "Stories are worked one at a time, top to bottom, in backlog priority order."
-            ),
-        }
+    # One-at-a-time only gates actual DEVELOPMENT (Implemented onward), not
+    # backlog grooming (Draft/Ready) - see docs/ARCHITECTURE.md "a story
+    # can't advance past READY until the story immediately above it has
+    # reached ACCEPTED". Product Owner must be able to groom/ready many
+    # stories ahead of whichever one story is actively in development
+    # (a real eval run's feedback: "don't start implementing until we have
+    # enough stories ready for ~2 sprints") - without this exemption, this
+    # check (previously applied to every stage, including Draft) made it
+    # impossible for a second story to even reach Draft before the first
+    # was Accepted, which would make a Ready-backlog-sufficiency target
+    # above 1 permanently unsatisfiable.
+    if target_idx >= STORY_STAGES.index("Implemented"):
+        if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot advance '{story_id}' to {stage} - the higher-priority story "
+                    f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
+                    "Development happens one story at a time, top to bottom, in backlog priority "
+                    "order - Draft/Ready grooming may run ahead of it."
+                ),
+            }
 
     # Stage-specific content/process gates (ISSUE-0001 through ISSUE-0005,
     # ISSUE-0010) - advance_story_stage's ordering/ownership checks above
@@ -1049,6 +1087,14 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
             )
             return {"status": "error", "message": message}
     elif stage == "Implemented":
+        # Belt-and-suspenders alongside start_feature_branch's own check
+        # (agents/scrum_team/tools/github.py) - covers spike stories, which
+        # skip start_feature_branch entirely since they have no code to
+        # branch for, but must still not reach Implemented before this
+        # sprint's specs have actually merged into develop.
+        missing_msg = sprint_backlog_pr_missing(s)
+        if missing_msg:
+            return {"status": "error", "message": missing_msg}
         # Which approval type (if any) is required depends on the configured
         # INTERACTION_LEVEL (see docs/INTERACTION-LEVELS.md) - e.g. "budget"
         # instead of "sprint" at the CEO level, none at all for EVAL.
@@ -1309,8 +1355,17 @@ def record_design_approval(title_or_id: str, note: str = "", tool_context=None) 
     cover every story for the rest of the sprint/release, but one blanket
     approval doesn't stand in for having actually reviewed each story's own
     design.
+
+    At the Stakeholder level specifically, this now requires real evidence
+    instead of a bare assertion: this story's own create_story_spec_pr
+    (agents/scrum_team/tools/github.py) must have actually merged. A
+    real eval run's feedback was that stakeholder approval should happen
+    "by merge requests for the specific stories" - without this check,
+    calling this tool was itself the only "approval" that ever happened,
+    with no external artifact behind it at all.
     """
     from .scrum import save_state_to_repo
+    from .github import story_spec_pr_merged
 
     s = tool_context.state
     sprint_backlog = list(s.get("sprint_backlog", []))
@@ -1319,6 +1374,22 @@ def record_design_approval(title_or_id: str, note: str = "", tool_context=None) 
     product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
     if sprint_idx is None and product_idx is None:
         return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+
+    story_id_for_evidence = (
+        (product_backlog[product_idx].get("id") if product_idx is not None else None)
+        or (sprint_backlog[sprint_idx].get("id") if sprint_idx is not None else None)
+        or title_or_id
+    )
+    if requires_pre_ready_design_approval() and not story_spec_pr_merged(story_id_for_evidence, tool_context):
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot record design approval for '{story_id_for_evidence}' - its "
+                f"story-spec/{story_id_for_evidence} PR (see create_story_spec_pr) hasn't merged "
+                "yet. Call create_story_spec_pr(title_or_id) first and get it reviewed/merged, "
+                "then retry."
+            ),
+        }
 
     update = {"design_approved": True, "design_approval_note": note.strip()}
     if sprint_idx is not None:

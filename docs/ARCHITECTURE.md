@@ -9,7 +9,7 @@
   - **Scrum Master**: facilitation, impediments, retros/actions
   - **Dev Team**: estimates, implementation plan, risks, test approach
   - **QA**: test strategy and quality signals
-  - **Architect**: architectural risks and tradeoffs
+  - **Architect**: architectural risks and tradeoffs, and the standing architecture vision
 
 - Agents maintain a shared in-session "source of truth" of Scrum artifacts (vision, goals, backlog, sprint goal, sprint backlog, DoD, impediments, retro actions, decision log).
 
@@ -150,9 +150,12 @@ A stage is only ever completed via `advance_story_stage(title_or_id, stage)`
 nicely in a prompt:
 - **No skipping**: rejects the call if the stages before it aren't done yet.
 - **Stage ownership**: rejects the call if the calling agent isn't that stage's owner.
-- **One story at a time**: `product_backlog` list order is priority order - a story can't advance
-  past READY until the story immediately above it has reached ACCEPTED. A BLOCKED story (see below)
-  is skipped by this check, so a genuinely stuck story doesn't also freeze every lower-priority one.
+- **One story at a time, from Implemented onward**: `product_backlog` list order is priority order -
+  a story can't reach IMPLEMENTED until the story immediately above it has reached ACCEPTED. Draft/
+  Ready backlog grooming is exempt from this, so Product Owner can build up a deep Ready backlog (see
+  "Keep the Ready backlog deep" below) while Dev Team works through stories one at a time. A BLOCKED
+  story (see below) is skipped by this check, so a genuinely stuck story doesn't also freeze every
+  lower-priority one.
 - **BLOCKED refuses every call, at any stage**: a story with `blocked` set (see below) refuses every
   further `advance_story_stage` call for it, regardless of which stage that call targets.
 - **Content quality**: rejects marking READY (or the legacy "Done"/"Accepted") if the title/user
@@ -162,7 +165,21 @@ nicely in a prompt:
   must have `record_design_approval(title_or_id, note)` called for it - a per-story flag, not a
   shared sprint-wide approval - before it can move from DRAFT to READY ("the designs are cleared by
   stakeholder review, then they are ready"). Not required at Product/CEO/EVAL - see
-  `requires_pre_ready_design_approval` in `agents/scrum_team/helpers.py`.
+  `requires_pre_ready_design_approval` in `agents/scrum_team/helpers.py`. At Stakeholder level,
+  `record_design_approval` itself now requires real evidence: this story's own `create_story_spec_pr`
+  branch (`agents/scrum_team/tools/github.py`) must have actually merged, not just an assertion.
+- **This sprint's specs must be merged before implementing** (`sprint_backlog_pr_missing` in
+  `agents/scrum_team/helpers.py`): `start_feature_branch` and `advance_story_stage(..., "Implemented")`
+  both refuse until `create_sprint_backlog_pr` has succeeded for the *current* sprint - closing the
+  gap where Dev Team could start (or finish) a story before Product Owner's specs for that sprint
+  ever landed on `develop`.
+- **Ready backlog must be deep enough before implementing** (`ready_backlog_shortfall` in
+  `agents/scrum_team/helpers.py`): `create_sprint_backlog_pr` refuses to run at all while the Ready
+  backlog (non-Epic, non-BLOCKED stories that reached Ready but not yet Accepted) is short of
+  `TARGET_STORIES_PER_SPRINT × READY_BACKLOG_SPRINTS_TARGET` stories - since Dev Team can't start
+  until that PR merges, this mechanically forces Product Owner to keep drafting/readying stories
+  (using `product_vision`/`architecture_vision` to plan the roadmap/MVP scope and Epics top-down)
+  instead of publishing a thin sprint.
 - **Acceptance evidence before Accepted** (ISSUE-0043): `record_acceptance_check(title_or_id, note)`
   must have been called for this story - a per-story **counter**
   (`acceptance_check_count`), not a one-time flag, so a subsequent denial (see below) can require a
@@ -188,7 +205,10 @@ RELEASE.md "BLOCKED stories" and docs/DEVELOPMENT-WORKFLOW.md "Blocked stories" 
 Stored in your **target state repository** (configured via `STATE_REPO_PATH` - see [State Repository](STATE-REPOSITORY.md)), these are the actual documents generated and updated by the agents.
 
 - `specs/requirements/` — Active PRDs and SRS documents.
-- `specs/architecture/` — Architecture Decision Records (ADRs).
+- `specs/architecture/` — Architecture Decision Records (ADRs) plus the standing
+  `ARCHITECTURE-VISION.md` (`upsert_architecture_vision`) - the architecture counterpart to
+  `product_vision`: target system shape, quality attributes, tech-stack guardrails. Unlike an ADR
+  (one point-in-time decision), there's only ever one current architecture vision, revised in place.
 - `specs/stories/` — Refined User Stories.
 - `specs/workflows/` — Agentic workflows and runbooks.
 - `specs/reports/` — Sprint review reports and budget status.

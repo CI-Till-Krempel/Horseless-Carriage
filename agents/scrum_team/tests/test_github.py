@@ -1,4 +1,5 @@
 # agents/scrum_team/tests/test_github.py
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -550,7 +551,14 @@ class TestStartFeatureBranch(unittest.TestCase):
     def test_start_feature_branch_happy_path(self, mock_run, mock_git_push, mock_gh_pr_create):
         mock_git_push.return_value = {"status": "ok", "branch": "feature/US-1-add-login"}
         tool_context = MagicMock()
-        tool_context.state = {"repo": {"default_branch": "main", "develop_branch": "develop"}}
+        # sprint_number/sprint_backlog_pr_sprint must match - Dev Team
+        # mechanically cannot start a feature branch until THIS sprint's
+        # Sprint Backlog PR has actually merged (see sprint_backlog_pr_missing).
+        tool_context.state = {
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+        }
 
         result = start_feature_branch("US-1", "Add Login!", tool_context=tool_context)
 
@@ -578,7 +586,7 @@ class TestStartFeatureBranch(unittest.TestCase):
         mock_git_push.return_value = {"status": "ok", "branch": "feature/US-2-a-messy-slug-here"}
         mock_gh_pr_create.return_value = {"status": "ok"}
         tool_context = MagicMock()
-        tool_context.state = {}
+        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1}
 
         result = start_feature_branch("US-2", "A Messy Slug!! Here??", tool_context=tool_context)
 
@@ -591,12 +599,22 @@ class TestStartFeatureBranch(unittest.TestCase):
     def test_start_feature_branch_reports_error_when_develop_checkout_fails(self, mock_run):
         mock_run.return_value = {"status": "error", "stderr": "no such ref"}
         tool_context = MagicMock()
-        tool_context.state = {}
+        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1}
 
         result = start_feature_branch("US-3", "broken", tool_context=tool_context)
 
         self.assertEqual(result["status"], "error")
         self.assertIn("develop", result["message"])
+
+
+# A single Ready (not yet Accepted), non-Epic story - enough to satisfy
+# ready_backlog_shortfall's sufficiency gate once TARGET_STORIES_PER_SPRINT/
+# READY_BACKLOG_SPRINTS_TARGET are overridden to 1 each below; these tests
+# are about the git plumbing, not the sufficiency threshold itself (see
+# test_sprint_and_approval_gates.py for that).
+_ONE_READY_STORY = [{"id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready"]}]
+
+_LOW_BACKLOG_TARGET_ENV = {"TARGET_STORIES_PER_SPRINT": "1", "READY_BACKLOG_SPRINTS_TARGET": "1"}
 
 
 class TestCreateSprintBacklogPr(unittest.TestCase):
@@ -606,7 +624,9 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
     first subsequent push (normally DevTeam's start_feature_branch) swept
     them onto a feature branch instead of develop. create_sprint_backlog_pr
     commits+pushes them to their own branch, opens a "Sprint Backlog #<N>"
-    PR against develop, and merges it immediately.
+    PR against develop, and (once the Ready backlog holds enough queued-up
+    work, and - at levels requiring one - a fresh sprint/budget approval is
+    recorded) merges it.
     """
 
     @patch("agents.scrum_team.tools.github._run")
@@ -623,14 +643,20 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
     def test_happy_path_opens_and_merges_against_develop(self, mock_run, mock_git_push, mock_gh_pr_create):
         mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
         tool_context = MagicMock()
-        tool_context.state = {"sprint_number": 3, "repo": {"default_branch": "main", "develop_branch": "develop"}}
+        tool_context.state = {
+            "sprint_number": 3,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY,
+        }
 
         result = create_sprint_backlog_pr(tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["merged"])
         self.assertEqual(result["sprint_number"], 3)
         self.assertEqual(result["branch"], "sprint-backlog/3")
         mock_git_push.assert_called_once_with(
@@ -644,17 +670,19 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             head_is_resolved=True,
             tool_context=tool_context,
         )
-        # Final call is the merge - no explicit PR number needed, it
-        # resolves from the currently checked-out branch (same convention
-        # as merge_story_pr(pr_id=None)).
+        # Final call is the merge - explicitly targets this sprint's own
+        # branch (not just "whatever's currently checked out") so a later,
+        # idempotent re-call (e.g. after a required approval is recorded)
+        # can merge the already-open PR without re-checking it out first.
         mock_run.assert_called_with(
-            ["gh", "pr", "merge", "--merge", "--admin"], cwd=unittest.mock.ANY, tool_context=tool_context,
+            ["gh", "pr", "merge", "sprint-backlog/3", "--merge", "--admin"], cwd=unittest.mock.ANY, tool_context=tool_context,
         )
 
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "error", "stderr": "no such ref"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
     def test_reports_error_when_develop_checkout_fails(self, mock_run):
         tool_context = MagicMock()
-        tool_context.state = {"sprint_number": 1}
+        tool_context.state = {"sprint_number": 1, "product_backlog": _ONE_READY_STORY}
 
         result = create_sprint_backlog_pr(tool_context=tool_context)
 
@@ -663,9 +691,10 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.github.git_push", return_value={"status": "error", "branch": "sprint-backlog/1"})
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
     def test_reports_error_when_push_fails(self, mock_run, mock_git_push):
         tool_context = MagicMock()
-        tool_context.state = {"sprint_number": 1}
+        tool_context.state = {"sprint_number": 1, "product_backlog": _ONE_READY_STORY}
 
         result = create_sprint_backlog_pr(tool_context=tool_context)
 
@@ -675,9 +704,10 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "error", "stderr": "already exists"})
     @patch("agents.scrum_team.tools.github.git_push", return_value={"status": "ok", "branch": "sprint-backlog/1"})
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
     def test_reports_error_when_pr_create_fails(self, mock_run, mock_git_push, mock_gh_pr_create):
         tool_context = MagicMock()
-        tool_context.state = {"sprint_number": 1}
+        tool_context.state = {"sprint_number": 1, "product_backlog": _ONE_READY_STORY}
 
         result = create_sprint_backlog_pr(tool_context=tool_context)
 

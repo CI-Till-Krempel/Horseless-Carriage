@@ -5,7 +5,35 @@ import json
 import re
 from typing import Any, Dict
 from .base import _configured_repo_root, _run, _default_push_branch, _develop_branch_name, _with_eval_branch_prefix, _with_eval_title_prefix
-from ..helpers import required_pre_release_approval
+from ..helpers import (
+    required_pre_release_approval,
+    required_pre_implementation_approval,
+    sprint_backlog_pr_missing,
+    ready_backlog_shortfall,
+    get_interaction_level,
+)
+
+def story_spec_pr_merged(story_id: str, tool_context=None) -> bool:
+    """
+    True if this story's own create_story_spec_pr branch (story-spec/<id>)
+    has actually merged - the evidence record_design_approval requires at
+    the Stakeholder interaction level (see agents/scrum_team/tools/
+    requirements.py) instead of trusting the model's own assertion that a
+    stakeholder reviewed the story's spec. False on any lookup failure
+    (branch never existed, `gh` unreachable, etc.) - the caller decides
+    what to do with "not merged", this never raises.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    branch = _with_eval_branch_prefix(f"story-spec/{story_id}")
+    result = _run(["gh", "pr", "view", branch, "--json", "state"], cwd=repo_root, tool_context=tool_context)
+    if result.get("status") != "ok":
+        return False
+    try:
+        data = json.loads(result.get("stdout", "") or "{}")
+    except Exception:
+        return False
+    return data.get("state") == "MERGED"
+
 
 def _ensure_remote_branch_exists(repo_root: str, branch: str, tool_context=None) -> Dict[str, Any]:
     """
@@ -297,6 +325,11 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
     - slug: short human-readable description (e.g. "add-login"); sanitized
       to lowercase-hyphenated automatically.
     """
+    state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
+    missing_msg = sprint_backlog_pr_missing(state)
+    if missing_msg:
+        return {"status": "error", "message": missing_msg}
+
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)
     branch = f"feature/{story_id}-{_slugify(slug)}"
@@ -383,42 +416,107 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
             ),
         }
 
+    # A real eval run showed "start implementing" was only ever a prompt
+    # instruction away from "the backlog barely has any Ready work at all" -
+    # this is the single choke point (Dev Team can't start until this PR
+    # merges - see sprint_backlog_pr_missing) that mechanically forces
+    # Product Owner back into the requirements-engineering loop
+    # (upsert_epic/upsert_story/advance_story_stage) instead of publishing a
+    # thin sprint.
+    shortfall = ready_backlog_shortfall(state.get("product_backlog", []))
+    if shortfall > 0:
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot create the Sprint Backlog PR yet - the Ready backlog is {shortfall} "
+                "stories short of holding enough work queued up (see TARGET_STORIES_PER_SPRINT x "
+                "READY_BACKLOG_SPRINTS_TARGET in helpers.py). Keep running the requirements "
+                "engineering loop - upsert_prd/upsert_srs/update_roadmap/upsert_epic/upsert_story, "
+                "then advance_story_stage(..., 'Ready') - until enough stories are Ready, then retry."
+            ),
+        }
+
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)
     branch = f"sprint-backlog/{sprint_number}"
+    actual_branch = _with_eval_branch_prefix(branch)
 
-    fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
-    checkout_develop = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
-    if checkout_develop.get("status") == "error":
-        return {
-            "status": "error",
-            "message": f"Could not check out '{develop}': {checkout_develop.get('stderr') or checkout_develop.get('message')}",
-            "fetch": fetch,
-        }
-
-    checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
-    if checkout_branch.get("status") == "error":
-        return {
-            "status": "error",
-            "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}",
-        }
-
-    push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", tool_context=tool_context)
-    if push_res.get("status") != "ok":
-        return {"status": "error", "message": "Failed to push the sprint backlog branch.", "push": push_res}
-    actual_branch = push_res.get("branch", branch)
-
-    pr_title = f"Sprint Backlog #{sprint_number}" + (f": {title}" if title else "")
-    pr_res = gh_pr_create(
-        title=pr_title,
-        body=body or f"Sprint {sprint_number} planning output - roadmap, backlog, and stories reaching Ready this sprint.",
-        base=develop,
-        head=actual_branch,
-        head_is_resolved=True,
-        tool_context=tool_context,
+    # Idempotent re-call: if this sprint's backlog PR was already opened
+    # (e.g. a prior call pushed+opened it but had to stop short of merging
+    # because a required human approval wasn't recorded yet - see below),
+    # don't re-push/re-create it - just check whether it can merge now.
+    existing_pr = _run(
+        ["gh", "pr", "view", actual_branch, "--json", "number,state"],
+        cwd=repo_root, tool_context=tool_context,
     )
-    if pr_res.get("status") != "ok":
-        return {"status": "error", "message": "Failed to open the Sprint Backlog PR.", "push": push_res, "pr": pr_res}
+    already_open = False
+    if existing_pr.get("status") == "ok":
+        try:
+            already_open = bool(json.loads(existing_pr.get("stdout") or "{}").get("number"))
+        except Exception:
+            already_open = False
+
+    push_res = None
+    pr_res = None
+    if not already_open:
+        fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
+        checkout_develop = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+        if checkout_develop.get("status") == "error":
+            return {
+                "status": "error",
+                "message": f"Could not check out '{develop}': {checkout_develop.get('stderr') or checkout_develop.get('message')}",
+                "fetch": fetch,
+            }
+
+        checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+        if checkout_branch.get("status") == "error":
+            return {
+                "status": "error",
+                "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}",
+            }
+
+        push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", tool_context=tool_context)
+        if push_res.get("status") != "ok":
+            return {"status": "error", "message": "Failed to push the sprint backlog branch.", "push": push_res}
+        actual_branch = push_res.get("branch", branch)
+
+        pr_title = f"Sprint Backlog #{sprint_number}" + (f": {title}" if title else "")
+        pr_res = gh_pr_create(
+            title=pr_title,
+            body=body or f"Sprint {sprint_number} planning output - roadmap, backlog, and stories reaching Ready this sprint.",
+            base=develop,
+            head=actual_branch,
+            head_is_resolved=True,
+            tool_context=tool_context,
+        )
+        if pr_res.get("status") != "ok":
+            return {"status": "error", "message": "Failed to open the Sprint Backlog PR.", "push": push_res, "pr": pr_res}
+
+    # "Approve sprint planning" (Stakeholder level) / budget approval (CEO):
+    # this PR is now real approval evidence, not an instant self-merge - it
+    # stays open, unmerged, until a fresh approval of whatever type this
+    # interaction level requires before Implemented has been recorded (see
+    # required_pre_implementation_approval, agents/scrum_team/helpers.py).
+    # Reuses that existing approval type rather than inventing a new one:
+    # the same approval that unlocks Implemented also unlocks this merge.
+    required_approval = required_pre_implementation_approval()
+    if required_approval:
+        approvals = sum(1 for a in state.get("human_approvals", []) if a.get("type") == required_approval)
+        if approvals <= state.get("sprint_approval_baseline", 0):
+            return {
+                "status": "ok",
+                "merged": False,
+                "sprint_number": sprint_number,
+                "branch": actual_branch,
+                "push": push_res,
+                "pr": pr_res,
+                "message": (
+                    f"Sprint Backlog #{sprint_number} PR is open on '{actual_branch}' but not merged - "
+                    f"this interaction level requires a fresh '{required_approval}' human approval "
+                    f"before sprint planning can be approved. Call record_human_approval("
+                    f"'{required_approval}', ...) then call create_sprint_backlog_pr() again to merge it."
+                ),
+            }
 
     # No auto-merge sweeps a develop-targeted PR the way run_eval.py's
     # _merge_open_prs does for the main-targeted release/eval-report PRs
@@ -429,15 +527,121 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
     # matching how the harness already force-merges its own sprint-level
     # release PR - this PR is planning documentation, not code, so there's
     # no build/test gate meaningful to wait on.
-    merge_res = _run(["gh", "pr", "merge", "--merge", "--admin"], cwd=repo_root, tool_context=tool_context)
+    merge_res = _run(["gh", "pr", "merge", actual_branch, "--merge", "--admin"], cwd=repo_root, tool_context=tool_context)
+    if merge_res.get("status") == "ok" and tool_context and getattr(tool_context, "state", None):
+        # Only set once the merge actually succeeded - this is exactly what
+        # sprint_backlog_pr_missing (agents/scrum_team/helpers.py) checks
+        # before letting Dev Team start any story this sprint.
+        tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
+        from .scrum import save_state_to_repo
+        save_state_to_repo(tool_context)
 
     return {
         "status": "ok" if merge_res.get("status") == "ok" else "error",
+        "merged": merge_res.get("status") == "ok",
         "sprint_number": sprint_number,
         "branch": actual_branch,
         "push": push_res,
         "pr": pr_res,
         "merge": merge_res,
+    }
+
+def create_story_spec_pr(title_or_id: str, tool_context=None) -> Dict[str, Any]:
+    """
+    GitFlow: opens a PR containing just ONE story's own spec file, distinct
+    from create_sprint_backlog_pr above (which bundles every story reaching
+    Ready this sprint into one PR) - a real eval run's feedback was that
+    bundling gives a reviewer no way to approve one story's spec without
+    approving the whole sprint's; this is the "review every story"/
+    "stakeholder approval by merge request" mechanism for that.
+
+    - At EVAL/Product/CEO (no separate human spec-reviewer at these levels -
+      see docs/INTERACTION-LEVELS.md's existing rationale for why design
+      approval itself isn't required at those levels either): merges
+      immediately after opening, same as create_sprint_backlog_pr's
+      no-approval-required path.
+    - At Stakeholder: opens the PR and leaves it unmerged for the human to
+      review/merge - record_design_approval now requires evidence (a real
+      merge of THIS PR) instead of a bare assertion, at that level.
+    """
+    state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
+    product_backlog = state.get("product_backlog", []) or []
+    sprint_backlog = state.get("sprint_backlog", []) or []
+    match = next(
+        (x for x in list(product_backlog) + list(sprint_backlog)
+         if x.get("id") == title_or_id or x.get("title") == title_or_id),
+        None,
+    )
+    if not match:
+        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+    story_id = match.get("id") or title_or_id
+    title = match.get("title") or story_id
+
+    repo_root_path = _configured_repo_root(tool_context)
+    repo_root = str(repo_root_path)
+    is_issue = match.get("type") == "Issue"
+    spec_dir = repo_root_path / "specs" / ("requirements" if is_issue else "stories")
+    candidates = sorted(spec_dir.glob(f"{story_id}-*.md")) if spec_dir.exists() else []
+    if not candidates:
+        return {
+            "status": "error",
+            "message": f"No spec file found for '{story_id}' under {spec_dir} - call upsert_story/upsert_issue first.",
+        }
+    rel_path = str(candidates[0].relative_to(repo_root_path))
+
+    develop = _develop_branch_name(tool_context)
+    branch = f"story-spec/{story_id}"
+
+    fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
+    checkout_develop = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    if checkout_develop.get("status") == "error":
+        return {
+            "status": "error",
+            "message": f"Could not check out '{develop}': {checkout_develop.get('stderr') or checkout_develop.get('message')}",
+            "fetch": fetch,
+        }
+    checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    if checkout_branch.get("status") == "error":
+        return {
+            "status": "error",
+            "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}",
+        }
+
+    add_res = _run(["git", "add", rel_path], cwd=repo_root, tool_context=tool_context)
+    # add_all=False: stage only this one story's spec file (added just
+    # above), not every other pending write in the working tree - a
+    # per-story spec PR is meant to be reviewable on its own, not a smaller
+    # copy of the sprint backlog PR.
+    push_res = git_push(branch=branch, commit_message=f"docs: {story_id} spec", add_all=False, tool_context=tool_context)
+    if push_res.get("status") != "ok":
+        return {"status": "error", "message": "Failed to push the story spec branch.", "add": add_res, "push": push_res}
+    actual_branch = push_res.get("branch", branch)
+
+    pr_res = gh_pr_create(
+        title=f"Story Spec: {story_id} - {title}",
+        body=f"Spec for {story_id}, for review/approval before it can be marked Ready.",
+        base=develop,
+        head=actual_branch,
+        head_is_resolved=True,
+        tool_context=tool_context,
+    )
+    if pr_res.get("status") != "ok":
+        return {"status": "error", "message": "Failed to open the story spec PR.", "push": push_res, "pr": pr_res}
+
+    merge_res = None
+    merged = False
+    if get_interaction_level() != "Stakeholder":
+        merge_res = _run(["gh", "pr", "merge", actual_branch, "--merge", "--admin"], cwd=repo_root, tool_context=tool_context)
+        merged = merge_res.get("status") == "ok"
+
+    return {
+        "status": "ok",
+        "story_id": story_id,
+        "branch": actual_branch,
+        "push": push_res,
+        "pr": pr_res,
+        "merge": merge_res,
+        "merged": merged,
     }
 
 def mark_pr_ready_for_review(pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:

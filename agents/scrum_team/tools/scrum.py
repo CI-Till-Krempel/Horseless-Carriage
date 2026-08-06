@@ -22,9 +22,12 @@ REPO_STATE_KEYS = [
     "version",
     "product_vision",
     "product_goals",
+    "architecture_vision",
     "product_backlog",
     "definition_of_done",
     "sprint_goal",
+    "sprint_number",
+    "sprint_backlog_pr_sprint",
     "sprint_backlog",
     "impediment_log",
     "retro_actions",
@@ -84,9 +87,12 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("version", default_version)
     s.setdefault("product_vision", "")
     s.setdefault("product_goals", [])
+    s.setdefault("architecture_vision", "")
     s.setdefault("product_backlog", [])
     s.setdefault("definition_of_done", list(DEFAULT_DOD))
     s.setdefault("sprint_goal", "")
+    s.setdefault("sprint_number", 0)
+    s.setdefault("sprint_backlog_pr_sprint", 0)
     s.setdefault("sprint_backlog", [])
     s.setdefault("impediment_log", [])
     s.setdefault("retro_actions", [])
@@ -208,9 +214,14 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
 
     # 3. Load stories and requirements from Markdown
     try:
-        from .requirements import sync_stories_from_markdown, sync_requirements_from_markdown
+        from .requirements import (
+            sync_stories_from_markdown,
+            sync_requirements_from_markdown,
+            sync_architecture_vision_from_markdown,
+        )
         _ = sync_stories_from_markdown(tool_context)
         _ = sync_requirements_from_markdown(tool_context)
+        _ = sync_architecture_vision_from_markdown(tool_context)
     except Exception:
         pass
 

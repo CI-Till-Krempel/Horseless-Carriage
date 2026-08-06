@@ -24,6 +24,7 @@ from .requirements import (
     set_priority,
     sync_stories_from_markdown,
     sync_requirements_from_markdown,
+    sync_architecture_vision_from_markdown,
     advance_story_stage,
     record_design_approval,
     record_acceptance_check,
@@ -46,6 +47,7 @@ from .github import (
     repo_status,
     start_feature_branch,
     create_sprint_backlog_pr,
+    create_story_spec_pr,
     mark_pr_ready_for_review,
     merge_story_pr,
 )
@@ -56,6 +58,7 @@ from .docs import (
     upsert_prd,
     upsert_srs,
     upsert_adr,
+    upsert_architecture_vision,
     create_from_template,
     seed_repository,
 )

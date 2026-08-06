@@ -149,6 +149,22 @@ def upsert_srs(content: str, filename: str, tool_context=None) -> Dict[str, Any]
     path = f"specs/requirements/{filename}"
     return write_file(path, content, overwrite=True, tool_context=tool_context)
 
+def upsert_architecture_vision(content: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Architecture Management: create or update the standing Architecture
+    Vision document (specs/architecture/ARCHITECTURE-VISION.md) - target
+    system shape, key quality attributes, tech-stack guardrails, major
+    components/boundaries. Distinct from upsert_adr: an ADR records ONE
+    point-in-time decision, this is the single, living counterpart to
+    product_vision (see upsert_prd/sync_requirements_from_markdown) -
+    "architecture vision" was a real gap: product vision existed and drove
+    planning, architecture vision did not exist as an artifact at all. One
+    well-known filename, like specs/ROADMAP.md, rather than one-per-topic
+    like PRD-*.md - there's only ever one current architecture vision.
+    """
+    path = "specs/architecture/ARCHITECTURE-VISION.md"
+    return write_file(path, content, overwrite=True, tool_context=tool_context)
+
 def upsert_adr(title: str, context: str, decision: str, consequences: str, adr_id: str = None, status: str = "Proposed", tool_context=None) -> Dict[str, Any]:
     """
     Architecture Management: Create or update an Architecture Decision Record (ADR) in specs/architecture/.

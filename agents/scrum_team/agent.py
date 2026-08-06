@@ -287,6 +287,7 @@ from .tools import (
     create_release_pr,
     start_feature_branch,
     create_sprint_backlog_pr,
+    create_story_spec_pr,
     mark_pr_ready_for_review,
     merge_story_pr,
     gh_pr_check_logs,
@@ -296,6 +297,7 @@ from .tools import (
     upsert_prd,
     upsert_srs,
     upsert_adr,
+    upsert_architecture_vision,
 )
 # Not re-exported from .tools (agent-facing tools only) - this internal
 # variant is only for _sync_and_commit_roadmap_on_exhaustion below, which
@@ -1666,6 +1668,7 @@ product_owner = LlmAgent(
         create_sprint_report,
         create_release_pr,
         create_sprint_backlog_pr,
+        create_story_spec_pr,
         record_human_approval,
         read_doc,
         list_docs,
@@ -1773,6 +1776,7 @@ architect = LlmAgent(
         gh_pr_review,
         write_file,
         upsert_adr,
+        upsert_architecture_vision,
         advance_story_stage,
         deny_review,
         raise_story_blocker,
