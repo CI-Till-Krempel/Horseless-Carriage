@@ -95,6 +95,10 @@ Concretely, in this codebase (see "Story workflow" below for the full feature th
   the code. `create_sprint_report` refuses to run at all unless a *new* retro action or impediment
   was logged since the last report. `deny_review` refuses an empty, placeholder, or generic
   ("not good", "denied") reason - a rejection isn't allowed to exist without saying what's wrong.
+  `raise_story_blocker` applies the same check to a BLOCKED story's open question, and
+  `advance_story_stage` mechanically refuses every further call for that story until
+  `resolve_story_blocker` clears it - "the team is stuck" isn't allowed to be silently invisible to
+  the tooling either.
 - **No bypass path left open.** Enforcing order/ownership in one tool (`advance_story_stage`) is
   only real enforcement if every other way to change the same state is closed off too -
   `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status` directly to a
@@ -147,7 +151,10 @@ nicely in a prompt:
 - **No skipping**: rejects the call if the stages before it aren't done yet.
 - **Stage ownership**: rejects the call if the calling agent isn't that stage's owner.
 - **One story at a time**: `product_backlog` list order is priority order - a story can't advance
-  past READY until the story immediately above it has reached ACCEPTED.
+  past READY until the story immediately above it has reached ACCEPTED. A BLOCKED story (see below)
+  is skipped by this check, so a genuinely stuck story doesn't also freeze every lower-priority one.
+- **BLOCKED refuses every call, at any stage**: a story with `blocked` set (see below) refuses every
+  further `advance_story_stage` call for it, regardless of which stage that call targets.
 - **Content quality**: rejects marking READY (or the legacy "Done"/"Accepted") if the title/user
   story/acceptance criteria are missing or still placeholder text
   (`_story_readiness_issues` in `agents/scrum_team/tools/requirements.py`).
@@ -169,6 +176,13 @@ REVIEWED/TESTED/ACCEPTED are also the three stages someone can *deny*, not just 
 `deny_review(title_or_id, stage, reason)` is the mechanical counterpart, restricted to that stage's
 owner, that refuses an empty/placeholder/generic reason ("not good", "denied", ...) so a rejection
 always says something Dev Team can act on. See RELEASE.md "Denying a review" for the full mechanics.
+
+Orthogonal to all 6 stages above: a story can become BLOCKED from any of them, not just a fixed
+pipeline point, when the team genuinely can't proceed - a real open question, or a mechanical loop
+(`agent.py`'s loop-breakers raise this automatically). `raise_story_blocker`/`resolve_story_blocker`
+(any role may raise; only the question's category owner - Architect or Product Owner - may resolve)
+are the mechanical counterpart to "the team went back and forth without finding a solution." See
+RELEASE.md "BLOCKED stories" and docs/DEVELOPMENT-WORKFLOW.md "Blocked stories" for the full mechanics.
 
 ### 2. Specification Artifacts (`specs/`)
 Stored in your **target state repository** (configured via `STATE_REPO_PATH` - see [State Repository](STATE-REPOSITORY.md)), these are the actual documents generated and updated by the agents.

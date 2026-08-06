@@ -257,6 +257,55 @@ def is_low_quality_retro_text(text) -> bool:
     return len(cleaned) < _MIN_RETRO_FIELD_LEN or cleaned in _GENERIC_RETRO_PHRASES
 
 
+# --- BLOCKED stories (agents stuck on an unresolved question or loop) ---
+# raise_story_blocker/resolve_story_blocker (agents/scrum_team/tools/
+# requirements.py) mark a story BLOCKED - orthogonal to STORY_STAGES, since
+# it can happen from any stage, not just a fixed point in the pipeline.
+# "category" decides who's asked to clarify: a technical question goes to
+# Architect, a product/business question goes to Product Owner - or, at the
+# "Product" interaction level, straight to the human User instead, since
+# that human already IS the acting product owner day-to-day (same reasoning
+# as requires_pre_ready_design_approval's "Product: not required - this
+# human IS the Product Owner" note above). Technical questions always go to
+# Architect regardless of level - there's no "human Architect" role at any
+# level.
+BLOCKER_CATEGORIES = ("technical", "product")
+
+BLOCKER_CATEGORY_OWNERS = {"technical": "Architect", "product": "ProductOwner"}
+
+# Which internal agent names raising a blocker (via a loop-detection trip -
+# see agent.py's _detect_transfer_loop/_detect_repeated_call_loop) implies a
+# *technical* question rather than a product one - the roles that only ever
+# get stuck on implementation/architecture/test concerns, never on
+# priority/scope/acceptance ones.
+_TECHNICAL_BLOCKER_ROLES = {"DevTeam", "Architect", "QA"}
+
+
+def infer_blocker_category(*agent_names: str) -> str:
+    """
+    "technical" if any given agent name is one of the roles that only ever
+    gets stuck on implementation/architecture/test concerns
+    (_TECHNICAL_BLOCKER_ROLES); "product" otherwise (ProductOwner,
+    ScrumMaster, or unknown). Used by the loop-breakers in agent.py, which
+    only have agent names in scope, not the actual content of what's stuck -
+    a best-effort default category, not a substitute for a role explicitly
+    calling raise_story_blocker with the category it actually means.
+    """
+    return "technical" if any(name in _TECHNICAL_BLOCKER_ROLES for name in agent_names) else "product"
+
+
+def should_escalate_blocker_to_user(category: str, level: str | None = None) -> bool:
+    """
+    Whether a BLOCKED story's category should go straight to the human User
+    instead of being routed to Product Owner/Architect in-conversation -
+    true only for a "product"-category blocker at the "Product" interaction
+    level (see the module comment above). Technical questions always stay
+    with Architect, at every level - there's no human role standing in for
+    Architect the way Product's human stands in for Product Owner.
+    """
+    return category == "product" and (level or get_interaction_level()) == "Product"
+
+
 def new_sprint_item_blocked(state: dict) -> str | None:
     """
     Returns a rejection message if a previous sprint's close sequence was

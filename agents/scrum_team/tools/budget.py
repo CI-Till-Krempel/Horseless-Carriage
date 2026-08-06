@@ -539,6 +539,37 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # it's literally a suggested change to the number a CEO approves.
     report += _sprint_length_feedback(s)
 
+    # Any story still BLOCKED (raise_story_blocker, agents/scrum_team/tools/
+    # requirements.py) when the sprint closes - never mind an unresolved
+    # question, or a mechanical loop-detection trip that couldn't find a
+    # resolution this sprint. Rendered at every interaction level
+    # (unconditionally, unlike the detail-gated sections below): a
+    # Stakeholder giving guidance is exactly who this is for, but a CEO
+    # reading only the executive summary still needs to know the increment
+    # is incomplete because of a genuine open question, not just budget.
+    blocked_stories = []
+    seen_ids = set()
+    for collection in (s.get("product_backlog", []) or [], s.get("sprint_backlog", []) or []):
+        for item in collection:
+            blocked = item.get("blocked")
+            if not blocked:
+                continue
+            story_id = item.get("id") or item.get("title")
+            if story_id in seen_ids:
+                continue
+            seen_ids.add(story_id)
+            blocked_stories.append((story_id, item.get("title", story_id), blocked))
+
+    report += "\n## Open Questions for Stakeholder\n"
+    if blocked_stories:
+        for story_id, story_title, blocked in blocked_stories:
+            report += (
+                f"- **{story_id}** ({story_title}) - {blocked.get('category')}: {blocked.get('question')} "
+                f"(raised by {blocked.get('raised_by', 'unknown')})\n"
+            )
+    else:
+        report += "No stories are currently blocked.\n"
+
     if detail in ("full", "business"):
         report += "\n## Retrospective Actions (including efficiency improvements)\n"
         if retro:

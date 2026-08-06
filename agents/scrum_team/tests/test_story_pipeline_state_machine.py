@@ -31,6 +31,7 @@ from unittest.mock import MagicMock, patch
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
     upsert_story, set_priority, advance_story_stage, deny_review, record_acceptance_check,
+    raise_story_blocker, resolve_story_blocker,
 )
 from agents.scrum_team.tools.docs import upsert_prd, write_file
 from agents.scrum_team.tools.requirements import update_roadmap
@@ -262,3 +263,59 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         result = advance_story_stage(story_id, "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0].get("review_denial"))
+
+    # ------------------------------------------------------------------
+    # BLOCKED: DevTeam hits a genuine open question it can't answer alone
+    # (not a code-review rejection - see deny_review above), raises a
+    # blocker instead of guessing or looping; one-story-at-a-time ordering
+    # skips the BLOCKED story so a lower-priority one can still proceed;
+    # Architect (the "technical" category's resolver) answers it and the
+    # story can continue.
+    # ------------------------------------------------------------------
+
+    def test_blocked_story_is_skipped_and_next_story_proceeds(self, mock_gh_run, mock_quality_run):
+        tc = self._new_context()
+        story_a = self._plan_story(tc)
+        self._draft_to_ready(tc, story_a)
+
+        story_b_result = upsert_story(
+            {
+                "title": "Add logout flow",
+                "user_story": "As a user, I want to log out, so that my session ends.",
+                "acceptance_criteria": ["Given I'm logged in, when I click logout, then my session ends"],
+            },
+            tool_context=tc,
+        )
+        self.assertEqual(story_b_result["status"], "ok")
+        story_b = story_b_result["item"]["id"]
+        self.assertEqual(set_priority(story_b, "Must", tool_context=tc)["status"], "ok")
+
+        _as(tc, "DevTeam")
+        question = "Should sessions be revoked server-side on logout, or is client-side token deletion enough?"
+        block_result = raise_story_blocker(story_a, question, "technical", tool_context=tc)
+        self.assertEqual(block_result["status"], "ok")
+
+        # story_a is stuck at Ready, unresolved - it cannot advance further...
+        result = advance_story_stage(story_a, "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("BLOCKED", result["message"])
+
+        # ...but story_b (lower priority, behind story_a in product_backlog)
+        # is NOT frozen by it - the team moves on instead of staying stuck.
+        _as(tc, "ProductOwner")
+        self.assertEqual(advance_story_stage(story_b, "Draft", tool_context=tc)["status"], "ok")
+        result = advance_story_stage(story_b, "Ready", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+        _as(tc, "Architect")
+        resolution = "Server-side revocation - client-side deletion alone leaves the session valid if the token leaks."
+        resolve_result = resolve_story_blocker(story_a, resolution, tool_context=tc)
+        self.assertEqual(resolve_result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0].get("blocked"))
+
+        # Now that story_a is unblocked, it can proceed again.
+        _as(tc, "DevTeam")
+        self.assertEqual(write_file("src/app.py", "def login(): ...", overwrite=True, tool_context=tc)["status"], "ok")
+        self.assertEqual(log_story_tokens(story_a, 500, tool_context=tc)["status"], "ok")
+        result = advance_story_stage(story_a, "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "ok")

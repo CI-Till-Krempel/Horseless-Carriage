@@ -28,6 +28,8 @@ from .requirements import (
     record_design_approval,
     record_acceptance_check,
     deny_review,
+    raise_story_blocker,
+    resolve_story_blocker,
 )
 from .github import (
     configure_github_repo,

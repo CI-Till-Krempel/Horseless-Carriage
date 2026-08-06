@@ -361,6 +361,54 @@ class TestBudgetTools(unittest.TestCase):
         self.assertIn("## Full Process Detail", report)
         self.assertIn("Per-Agent Token Usage", report.split("## Full Process Detail")[1])
 
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_lists_blocked_stories(self, mock_write_file):
+        """
+        Acceptance Criteria: a story still BLOCKED (raise_story_blocker) when
+        the sprint closes must show up in the report as an "Open Questions
+        for Stakeholder" item, so the Stakeholder can give feedback/guidance
+        on it before the next sprint - the mechanical hand-off point between
+        "the team couldn't resolve it this sprint" and human review.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["product_backlog"] = [{
+            "id": "US-0001",
+            "title": "Add login flow",
+            "blocked": {
+                "question": "Which identity provider should this integrate with?",
+                "category": "product",
+                "raised_by": "DevTeam",
+            },
+        }]
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+        self.assertIn("## Open Questions for Stakeholder", report)
+        self.assertIn("US-0001", report)
+        self.assertIn("Which identity provider should this integrate with", report)
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_states_no_blocked_stories_when_none(self, mock_write_file):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+        self.assertIn("No stories are currently blocked.", report)
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_deduplicates_blocked_stories_across_backlogs(self, mock_write_file):
+        """A story blocked in both product_backlog and sprint_backlog (the
+        normal case - raise_story_blocker writes both copies) must appear
+        only once in the report."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        blocked = {"question": "Which identity provider?", "category": "product", "raised_by": "DevTeam"}
+        tool_context.state["product_backlog"] = [{"id": "US-0001", "title": "Add login flow", "blocked": blocked}]
+        tool_context.state["sprint_backlog"] = [{"id": "US-0001", "title": "Add login flow", "blocked": blocked}]
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+        self.assertEqual(report.count("US-0001"), 1)
+
     def test_create_sprint_report_executive_detail_at_ceo_level(self):
         """
         Acceptance Criteria: CEO gets budget + headline outcomes only - retro/impediment/estimate/

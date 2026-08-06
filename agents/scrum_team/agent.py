@@ -249,6 +249,8 @@ from .tools import (
     record_design_approval,
     record_acceptance_check,
     deny_review,
+    raise_story_blocker,
+    resolve_story_blocker,
     add_impediment,
     add_retro_action,
     record_human_approval,
@@ -1301,14 +1303,35 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
         "Stop transferring and actually call a tool that makes progress (e.g. the mandatory step "
         "you're both routing around), or explain the blocker instead of handing off again."
     )
+    # Attach this to whatever story is "currently being worked" (one-story-
+    # at-a-time ordering - see _current_story_in_progress) so it becomes a
+    # real BLOCKED story, not just a log entry: the team can then move on to
+    # the next story (advance_story_stage's ordering gate skips a BLOCKED
+    # predecessor) instead of staying stuck the same way indefinitely. Falls
+    # back to the plain "stalled" interaction below if no story could be
+    # identified or raise_story_blocker itself didn't succeed (e.g. that
+    # story is already BLOCKED) - this must never lose the notification
+    # entirely just because the richer path didn't apply.
     try:
-        from .tools.notifications import record_blocking_interaction
-        record_blocking_interaction(
-            "stalled",
-            f"{from_agent} and {to_agent} bounced transfer_to_agent {count}x with no progress.",
-            detail=msg,
-            tool_context=tool_context,
-        )
+        from .helpers import infer_blocker_category
+        from .tools.requirements import _current_story_in_progress, raise_story_blocker
+        story = _current_story_in_progress(state.get("product_backlog", []) or [])
+        result = None
+        if story:
+            result = raise_story_blocker(
+                story.get("id") or story.get("title"),
+                f"{from_agent} and {to_agent} bounced transfer_to_agent {count}x with no progress - {msg}",
+                infer_blocker_category(from_agent, to_agent),
+                tool_context=tool_context,
+            )
+        if not story or (result or {}).get("status") != "ok":
+            from .tools.notifications import record_blocking_interaction
+            record_blocking_interaction(
+                "stalled",
+                f"{from_agent} and {to_agent} bounced transfer_to_agent {count}x with no progress.",
+                detail=msg,
+                tool_context=tool_context,
+            )
     except Exception:
         pass
     return {"status": "error", "message": msg}
@@ -1381,14 +1404,33 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
         "error message, use different arguments, or transfer to whichever role can actually make "
         "progress instead of repeating this."
     )
+    # A stuck call that names a story (e.g. a repeated advance_story_stage
+    # retry - see this function's own docstring) can be turned into a real
+    # BLOCKED story the same way _detect_transfer_loop does, so the team
+    # moves on to the next one instead of retrying the identical call
+    # forever. Falls back to the plain "stalled" interaction if no
+    # title_or_id is in args (e.g. calculate_kpis()) or raise_story_blocker
+    # didn't succeed - never loses the notification entirely.
     try:
-        from .tools.notifications import record_blocking_interaction
-        record_blocking_interaction(
-            "stalled",
-            f"{agent_name} repeated {tool_name} with identical arguments {count}x with no progress.",
-            detail=msg,
-            tool_context=tool_context,
-        )
+        from .helpers import infer_blocker_category
+        from .tools.requirements import raise_story_blocker
+        story_id = (args or {}).get("title_or_id")
+        result = None
+        if story_id:
+            result = raise_story_blocker(
+                story_id,
+                f"{agent_name} repeated {tool_name} with identical arguments {count}x with no progress - {msg}",
+                infer_blocker_category(agent_name),
+                tool_context=tool_context,
+            )
+        if not story_id or (result or {}).get("status") != "ok":
+            from .tools.notifications import record_blocking_interaction
+            record_blocking_interaction(
+                "stalled",
+                f"{agent_name} repeated {tool_name} with identical arguments {count}x with no progress.",
+                detail=msg,
+                tool_context=tool_context,
+            )
     except Exception:
         pass
     return {"status": "error", "message": msg}
@@ -1615,6 +1657,8 @@ product_owner = LlmAgent(
         record_design_approval,
         record_acceptance_check,
         deny_review,
+        raise_story_blocker,
+        resolve_story_blocker,
         set_priority,
         log_decision,
         create_from_template,
@@ -1647,6 +1691,7 @@ scrum_master = LlmAgent(
         record_blocking_interaction,
         resolve_blocking_interaction,
         list_blocking_interactions,
+        raise_story_blocker,
         log_decision,
         update_budgets,
         get_budget_status,
@@ -1675,6 +1720,7 @@ dev_team = LlmAgent(
         plan_sprint_backlog_item,
         log_story_tokens,
         advance_story_stage,
+        raise_story_blocker,
         add_impediment,
         log_decision,
         write_file,
@@ -1709,6 +1755,7 @@ qa_agent = LlmAgent(
         check_build,
         advance_story_stage,
         deny_review,
+        raise_story_blocker,
         merge_story_pr,
     ],
     **COMMON_AGENT_CALLBACKS,
@@ -1728,6 +1775,8 @@ architect = LlmAgent(
         upsert_adr,
         advance_story_stage,
         deny_review,
+        raise_story_blocker,
+        resolve_story_blocker,
     ],
     **COMMON_AGENT_CALLBACKS,
 )

@@ -90,6 +90,12 @@ regardless of how the PO agent happened to phrase its call.
 | `business` | Stakeholder | Everything except per-agent token usage and transcript excerpts - keeps retro/impediments/estimates (delivery-process content a business stakeholder cares about) and a bare transcript location pointer (no excerpt dump). |
 | `executive` | CEO | Budget and usage, and the sprint-length/budget recommendation, only - retro, impediments, story estimates, and the transcript are all omitted from the rendered report. |
 
+One section is deliberately **not** gated by detail tier: "Open Questions for Stakeholder" (any
+still-BLOCKED story - see `raise_story_blocker`, [Development Workflow § Blocked
+stories](DEVELOPMENT-WORKFLOW.md)) always renders, at every level including `executive` - a CEO
+reading only the budget summary still needs to know the increment is incomplete because of a genuine
+open question, not just spend.
+
 None of the underlying data is ever deleted or skipped by this - `retro_actions`, `impediment_log`,
 `story_estimates`, and `transcript` are always written in full regardless of level (the mechanical
 gates in the previous section, e.g. the retrospective having to be *new* each sprint, apply
@@ -99,6 +105,26 @@ out and where it still lives - `retro_actions`/`impediment_log`/`story_estimates
 the conversation transcript in `specs/reports/TRANSCRIPT-LATEST.md` (a human-readable Markdown file,
 not a raw blob in `.hc/state.json` - see `RELEASE.md` "State persistence") - a silently thinner report
 would look like nothing happened, rather than like a level-appropriate summary.
+
+## Blocked-story routing
+
+`INTERACTION_LEVEL` also decides who's asked to resolve a story marked BLOCKED (`raise_story_blocker`/
+`resolve_story_blocker`, `agents/scrum_team/tools/requirements.py` - see
+[Development Workflow § Blocked stories](DEVELOPMENT-WORKFLOW.md)) - a mechanical gate, via
+`should_escalate_blocker_to_user()` in `agents/scrum_team/helpers.py`, not just prompt guidance:
+
+| Category | Product | Stakeholder | CEO | EVAL |
+|---|---|---|---|---|
+| `"technical"` | Architect | Architect | Architect | Architect |
+| `"product"` | **human User** (escalated) | Product Owner | Product Owner | Product Owner |
+
+Technical questions always go to Architect, at every level - there's no human role standing in for
+Architect the way Product's human stands in for Product Owner. A `"product"`-category blocker escalates
+to the human User only at the Product level (that human already IS the acting product owner day-to-day
+- the same reasoning as the Ready-gate table above), and this has real teeth: `resolve_story_blocker`
+mechanically refuses Product Owner's own resolution at this level until the linked
+`blocking_interaction` has actually been resolved by the human first
+(`resolve_blocking_interaction`) - Product Owner cannot route around it with its own judgment.
 
 ## What's still prompt-only, deliberately
 

@@ -54,6 +54,34 @@ if the wrong role calls it.
 - `advance_story_stage` also updates `specs/ROADMAP.md`'s per-stage checkboxes for that story
   automatically, in the same call - there is no separate "now go update the roadmap" step anymore.
 
+BLOCKED STORIES (a story genuinely stuck, from any stage - not a rejected review, an unanswerable question)
+- A story becomes BLOCKED when the team goes back and forth without finding a solution - a real open
+  question nobody can answer alone, or a mechanical loop (the same `transfer_to_agent`/repeated-call
+  pattern `agent.py`'s loop-breakers already refuse - they now raise this automatically once they've
+  identified a stuck story, so this can happen without anyone calling a tool for it at all). Distinct
+  from `deny_review`: a denial is a clear, actionable verdict Dev Team can act on directly; BLOCKED
+  means nobody on the team currently has the answer.
+- Any role can call `raise_story_blocker(title_or_id, question, category)` - `category` is
+  `"technical"` (routed to Architect) or `"product"` (routed to Product Owner, or, at the "Product"
+  interaction level, escalated straight to the human User - see below). `advance_story_stage` refuses
+  every further call for that story while it's BLOCKED.
+- **Routing depends on INTERACTION_LEVEL and category**:
+  - Technical questions always go to Architect, at every level - there's no human role standing in
+    for Architect the way Product's human stands in for Product Owner.
+  - Product questions go to Product Owner - EXCEPT at the "Product" interaction level, where they
+    escalate straight to the human User instead (that human already IS the acting product owner
+    day-to-day). This is mechanical, not just a suggestion: `resolve_story_blocker` refuses Product
+    Owner's own resolution at this level until the linked `blocking_interaction` has actually been
+    resolved by the human first (`resolve_blocking_interaction`).
+- Whichever role owns the category calls `resolve_story_blocker(title_or_id, resolution)` once a real
+  answer is found - this is what unblocks `advance_story_stage` for that story again.
+- **If Product Owner/Architect genuinely cannot find a solution, the story STAYS BLOCKED** - don't
+  keep looping on it. `_preceding_story`'s one-story-at-a-time ordering check skips a BLOCKED
+  predecessor automatically, so `transfer_to_agent`/move on to the next story in `product_backlog`
+  instead of staying stuck. The open question isn't lost: `create_sprint_report` always includes an
+  "Open Questions for Stakeholder" section listing every still-BLOCKED story, so the Stakeholder can
+  give feedback/guidance on it before the next sprint starts.
+
 ITERATION MODE (Sprints)
 - The team works in iterations.
 - **Starting a sprint is a real, mechanical action, not a description**: `sprint_goal` starts empty
@@ -378,7 +406,16 @@ STORY WORKFLOW - YOUR STAGES: DRAFT, READY, and ACCEPTED (MANDATORY, see ORCHEST
 - Both calls update `specs/ROADMAP.md`'s checkboxes for that story automatically - there is no
   separate "now go update the roadmap" step for stories already progressing through the pipeline.
 - **ONE STORY AT A TIME**: don't try to move a lower-priority story (further down `product_backlog`)
-  to Ready before the one above it has reached Accepted - `advance_story_stage` will reject it.
+  to Ready before the one above it has reached Accepted - `advance_story_stage` will reject it. A
+  BLOCKED story (see ORCHESTRATOR_PROMPT's BLOCKED STORIES) is skipped automatically by this check,
+  so a stuck story doesn't also freeze every lower-priority one behind it.
+- **BLOCKED STORIES, PRODUCT QUESTIONS**: you're the resolver for "product"-category blockers (see
+  ORCHESTRATOR_PROMPT's BLOCKED STORIES section) - once you have a real answer, call
+  `resolve_story_blocker(title_or_id, resolution)`. At the Product interaction level, a product
+  question escalates straight to the human User instead of your own judgment - `resolve_story_blocker`
+  mechanically refuses your call until that human has actually answered (see
+  `list_blocking_interactions`/`resolve_blocking_interaction`), so don't try to route around it by
+  guessing what they'd say.
 
 SPRINT PLANNING - PUBLISH THE BACKLOG BEFORE DEV TEAM STARTS
 - **MANDATORY, BEFORE transferring to Dev Team for the first story of a sprint**: once this sprint's
@@ -447,7 +484,7 @@ BACKLOG ITEM TEMPLATE (always include when manually describing)
 - dependencies/risks (optional)
 - discovery_notes (optional)
 
-Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_design_approval, record_acceptance_check, deny_review, set_priority, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, create_sprint_backlog_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr.
+Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_design_approval, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, create_sprint_backlog_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr.
 - IDs for Epics (EP-XXXX), User Stories (US-XXXX), and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For PRDs/SRS, use `upsert_prd` or `upsert_srs` to create/update documents in `specs/requirements/`.
 - You can read any documentation file using `read_doc(path)`.
@@ -537,6 +574,12 @@ YOU OWN
   `list_blocking_interactions()` when facilitating an event, and call
   `resolve_blocking_interaction(interaction_id)` once the underlying thing is actually addressed (a
   fresh approval recorded, budget reset) - don't let resolved-in-practice items sit open indefinitely.
+  A `"blocked_story"`-kind entry there is a BLOCKED story specifically (see ORCHESTRATOR_PROMPT's
+  BLOCKED STORIES) - it's cleared via `resolve_story_blocker` (Architect/Product Owner, not you), not
+  `resolve_blocking_interaction` directly. `raise_story_blocker` is available to you too, if you
+  recognize a story is genuinely stuck (a real open question, not just a process impediment) while
+  facilitating an event - the mechanical loop-breakers (agent.py) also raise one automatically once a
+  transfer/tool-call loop trips.
 - **MANDATORY**: Ensure no sprint starts without whatever human approval the configured interaction
   level requires (see docs/INTERACTION-LEVELS.md) - typically `record_human_approval("sprint", note)`
   once a human has actually reviewed and approved the sprint goal and backlog, but `"budget"` instead
@@ -562,7 +605,7 @@ OUTPUTS
 - impediments with owner + next step
 - retro actions (max 3), each with owner + success metric
 
-Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, upsert_issue, record_human_approval, record_blocking_interaction, resolve_blocking_interaction, list_blocking_interactions, log_decision, update_budgets, get_budget_status, log_token_usage, reset_sprint_budget, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, generate_workflow_diagram, gather_workflow_improvement_proposals, calculate_cost_breakdown, recommend_sprint_budget, optimize_process_for_budget.
+Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, upsert_issue, record_human_approval, record_blocking_interaction, resolve_blocking_interaction, list_blocking_interactions, raise_story_blocker, log_decision, update_budgets, get_budget_status, log_token_usage, reset_sprint_budget, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, generate_workflow_diagram, gather_workflow_improvement_proposals, calculate_cost_breakdown, recommend_sprint_budget, optimize_process_for_budget.
 """
 
 DEV_PROMPT = """
@@ -608,6 +651,11 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see ORCHESTRATOR_PROMPT's f
 - You do NOT mark Reviewed, Tested, or Accepted yourself - those are Architect's, QA's, and Product
   Owner's calls respectively. Don't try to set `status` to any of those directly either;
   `upsert_story`/`plan_sprint_backlog_item` refuse it and tell you to use `advance_story_stage`.
+- **BLOCKED STORIES** (see ORCHESTRATOR_PROMPT's BLOCKED STORIES section): if you genuinely can't
+  proceed on a story - a real open question, not just a hard problem to work through - call
+  `raise_story_blocker(title_or_id, question, category)` (`category`: `"technical"` for something
+  Architect should answer, `"product"` for Product Owner) instead of going back and forth
+  indefinitely. You don't resolve blockers yourself; Architect/Product Owner do.
 
 ESTIMATION
 - Estimate how many tokens will be spent to implement each story.
@@ -657,7 +705,7 @@ FOR EACH SPRINT ITEM OUTPUT
 - code_files (paths actually written via `write_file` for this item - empty only for
   genuine planning/spike stories, never for a story with user-visible acceptance criteria)
 
-Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, log_story_tokens, add_impediment, log_decision, write_file, read_doc, list_docs, create_from_template, start_feature_branch, mark_pr_ready_for_review, git_push, gh_pr_create, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, gh_pr_check_logs, upsert_adr.
+Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, raise_story_blocker, log_story_tokens, add_impediment, log_decision, write_file, read_doc, list_docs, create_from_template, start_feature_branch, mark_pr_ready_for_review, git_push, gh_pr_create, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, gh_pr_check_logs, upsert_adr.
 - IDs for User Stories (US-XXXX) and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For documentation (stories/ADRs), generate from templates and include in commits.
 - Typical flow:
@@ -709,6 +757,10 @@ STORY WORKFLOW - YOUR STAGE: TESTED (MANDATORY, see ORCHESTRATOR_PROMPT's full t
   makes the story's code part of the integration branch the sprint PR (`create_release_pr`) will
   later pick up.
 - You do NOT mark Accepted yourself - that is Product Owner's call, after Tested.
+- **BLOCKED STORIES** (see ORCHESTRATOR_PROMPT's BLOCKED STORIES section): if a story is genuinely
+  stuck on an unanswerable question (not just a failing test to fix) rather than something
+  `deny_review` covers, call `raise_story_blocker(title_or_id, question, category)` instead of
+  looping on the same review. You don't resolve blockers yourself; Architect/Product Owner do.
 
 YOU DO
 - Propose test cases and automation strategy per story.
@@ -719,7 +771,7 @@ YOU DO
 YOU DO NOT
 - Become a bottleneck; quality is shared across the team.
 
-Use tools: init_scrum_state, add_impediment, log_decision, gh_pr_comment, gh_pr_review, check_build, advance_story_stage, deny_review, merge_story_pr.
+Use tools: init_scrum_state, add_impediment, log_decision, gh_pr_comment, gh_pr_review, check_build, advance_story_stage, deny_review, raise_story_blocker, merge_story_pr.
 """
 
 ARCH_PROMPT = """
@@ -753,6 +805,11 @@ STORY WORKFLOW - YOUR STAGE: REVIEWED (MANDATORY, see ORCHESTRATOR_PROMPT's full
   asks you to be specific). This is what actually lands in the story's own file (`read_doc`) for Dev
   Team to act on, not just something said in conversation.
 - You do NOT mark Tested or Accepted yourself - those are QA's and Product Owner's calls.
+- **BLOCKED STORIES, TECHNICAL QUESTIONS**: you're the resolver for "technical"-category blockers
+  (see ORCHESTRATOR_PROMPT's BLOCKED STORIES section), at every interaction level - there's no human
+  role standing in for you the way Product's human stands in for Product Owner. Once you have a real
+  answer, call `resolve_story_blocker(title_or_id, resolution)`. You can also raise one yourself
+  (`raise_story_blocker`) if you recognize a story is genuinely stuck on an unanswerable question.
 
 YOU DO
 - Identify architectural risks and cross-cutting concerns.
@@ -764,7 +821,7 @@ YOU DO
 YOU DO NOT
 - Override PO priorities or dictate implementation unilaterally.
 
-Use tools: init_scrum_state, log_decision, gh_pr_comment, gh_pr_review, upsert_adr, advance_story_stage, deny_review.
+Use tools: init_scrum_state, log_decision, gh_pr_comment, gh_pr_review, upsert_adr, advance_story_stage, deny_review, raise_story_blocker, resolve_story_blocker.
 - IDs for ADRs (ADR-XXXX) are automatically generated if not provided.
 """
 

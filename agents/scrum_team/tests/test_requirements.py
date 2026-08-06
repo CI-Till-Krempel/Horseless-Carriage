@@ -8,6 +8,7 @@ from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
     advance_story_stage, upsert_backlog_item, record_design_approval, record_acceptance_check, plan_backlog_item,
     set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
+    raise_story_blocker, resolve_story_blocker,
 )
 
 
@@ -248,6 +249,25 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
+    def test_blocked_story_refuses_any_stage_advance(self, mock_save, mock_md, mock_roadmap):
+        """A BLOCKED story (raise_story_blocker) refuses every further
+        advance_story_stage call for it, from any stage, until
+        resolve_story_blocker clears it."""
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["product_backlog"][0]["blocked"] = {
+            "question": "Which payment gateway should this integrate with?",
+            "category": "product",
+            "raised_by": "DevTeam",
+            "escalated_to_user": False,
+        }
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("BLOCKED", result["message"])
+        self.assertIn("resolve_story_blocker", result["message"])
+
 
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
@@ -293,6 +313,28 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("US-0001", result["message"])
         self.assertIn("must reach Accepted first", result["message"])
+
+    def test_blocked_preceding_story_does_not_block_advancement(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria: a BLOCKED story (raise_story_blocker) shouldn't
+        also freeze every lower-priority story behind it - the team is meant
+        to move on to the next one while it waits (RELEASE.md "Blocked
+        stories"). _preceding_story must skip a BLOCKED predecessor and look
+        further back, not treat it as an ordinary incomplete story.
+        """
+        tc = self._two_story_context("ProductOwner", ["Ready"])
+        tc.state["product_backlog"][0]["blocked"] = {
+            "question": "Which auth provider should this integrate with?",
+            "category": "product",
+            "raised_by": "DevTeam",
+            "escalated_to_user": False,
+        }
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0002": {"estimate": 10, "actual": 5}}
+        tc.agent_name = "DevTeam"
+        result = advance_story_stage("US-0002", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
 
     def test_first_story_in_product_backlog_has_no_predecessor(self, mock_save, mock_md, mock_roadmap):
         tc = self._two_story_context("DevTeam", ["Ready"])
@@ -680,6 +722,193 @@ class TestDenyReviewSurfacesInStoryMarkdown(unittest.TestCase):
                 content = Path(result["path"]).read_text(encoding="utf-8")
                 self.assertIn("REVIEW DENIED", content)
                 self.assertIn("session token is never invalidated", content)
+
+    def test_blocked_appears_in_rendered_notes(self):
+        """Same as above, for raise_story_blocker's `blocked` field - a
+        BLOCKED story's open question must be visible via read_doc too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                item = {
+                    "id": "US-0001",
+                    "title": "Add login flow",
+                    "type": "User Story",
+                    "status": "Implemented",
+                    "user_story": "As a user, I want to log in, so that I can access my account.",
+                    "acceptance_criteria": ["Given valid creds, when I submit, then I'm logged in"],
+                    "blocked": {
+                        "question": "Which identity provider should this integrate with?",
+                        "category": "product",
+                        "raised_by": "DevTeam",
+                    },
+                }
+                result = _update_story_markdown(item, tool_context=MagicMock(state={}))
+                self.assertEqual(result["status"], "ok")
+                content = Path(result["path"]).read_text(encoding="utf-8")
+                self.assertIn("BLOCKED", content)
+                self.assertIn("Which identity provider should this integrate with", content)
+
+
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestRaiseStoryBlocker(unittest.TestCase):
+    """
+    Acceptance Criteria: a story can become BLOCKED from any stage (not just
+    a fixed pipeline point) when the team genuinely can't proceed - a real
+    open question, not a rejected review (see deny_review). Any role may
+    raise one; category ("technical"/"product") decides who's asked.
+    """
+
+    _VALID_QUESTION = "Which payment gateway should this integrate with - Stripe or the in-house one?"
+
+    def test_any_role_can_raise_a_blocker(self, mock_save, mock_md):
+        for role in ("ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect"):
+            with self.subTest(role=role):
+                tc = _tool_context(role, ["Ready"])
+                result = raise_story_blocker("US-0001", self._VALID_QUESTION, "product", tool_context=tc)
+                self.assertEqual(result["status"], "ok")
+
+    def test_sets_blocked_on_both_backlog_copies(self, mock_save, mock_md):
+        tc = _tool_context("DevTeam", ["Ready"])
+        result = raise_story_blocker("US-0001", self._VALID_QUESTION, "technical", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        for backlog in ("product_backlog", "sprint_backlog"):
+            blocked = tc.state[backlog][0]["blocked"]
+            self.assertEqual(blocked["question"], self._VALID_QUESTION)
+            self.assertEqual(blocked["category"], "technical")
+            self.assertEqual(blocked["raised_by"], "DevTeam")
+            self.assertFalse(blocked["escalated_to_user"])
+
+    def test_records_a_blocking_interaction(self, mock_save, mock_md):
+        tc = _tool_context("DevTeam", ["Ready"])
+        raise_story_blocker("US-0001", self._VALID_QUESTION, "technical", tool_context=tc)
+        interactions = tc.state["blocking_interactions"]
+        self.assertEqual(len(interactions), 1)
+        self.assertEqual(interactions[0]["kind"], "blocked_story")
+        self.assertIn("US-0001", interactions[0]["summary"])
+        blocked = tc.state["product_backlog"][0]["blocked"]
+        self.assertEqual(blocked["blocking_interaction_id"], interactions[0]["id"])
+
+    def test_escalates_to_user_for_product_category_at_product_level(self, mock_save, mock_md):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Product"}, clear=True):
+            tc = _tool_context("DevTeam", ["Ready"])
+            raise_story_blocker("US-0001", self._VALID_QUESTION, "product", tool_context=tc)
+            self.assertTrue(tc.state["product_backlog"][0]["blocked"]["escalated_to_user"])
+
+    def test_does_not_escalate_technical_category_at_product_level(self, mock_save, mock_md):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Product"}, clear=True):
+            tc = _tool_context("DevTeam", ["Ready"])
+            raise_story_blocker("US-0001", self._VALID_QUESTION, "technical", tool_context=tc)
+            self.assertFalse(tc.state["product_backlog"][0]["blocked"]["escalated_to_user"])
+
+    def test_rejects_invalid_category(self, mock_save, mock_md):
+        tc = _tool_context("DevTeam", ["Ready"])
+        result = raise_story_blocker("US-0001", self._VALID_QUESTION, "business", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_rejects_generic_question(self, mock_save, mock_md):
+        tc = _tool_context("DevTeam", ["Ready"])
+        for generic in ("not sure", "stuck", "tbd"):
+            with self.subTest(generic=generic):
+                result = raise_story_blocker("US-0001", generic, "technical", tool_context=tc)
+                self.assertEqual(result["status"], "error")
+
+    def test_unknown_story_errors(self, mock_save, mock_md):
+        tc = _tool_context("DevTeam", ["Ready"])
+        result = raise_story_blocker("US-9999", self._VALID_QUESTION, "technical", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_already_blocked_story_refuses_a_second_raise(self, mock_save, mock_md):
+        tc = _tool_context("DevTeam", ["Ready"])
+        raise_story_blocker("US-0001", self._VALID_QUESTION, "technical", tool_context=tc)
+        result = raise_story_blocker("US-0001", "A completely different question here", "product", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("already BLOCKED", result["message"])
+
+
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestResolveStoryBlocker(unittest.TestCase):
+    """Acceptance Criteria: only the category's owning role can clear a
+    BLOCKED story, and a "product" blocker escalated to the human User at
+    the Product interaction level requires that human's own resolution
+    first - Product Owner cannot route around it with its own judgment."""
+
+    _VALID_QUESTION = "Which payment gateway should this integrate with - Stripe or the in-house one?"
+    _VALID_RESOLUTION = "Decided on Stripe - it's already used by the billing service."
+
+    def _blocked_context(self, category, agent_name="DevTeam"):
+        """A story already BLOCKED, raised by DevTeam (an arbitrary raiser -
+        raise_story_blocker allows any role), with tc.agent_name then set to
+        whichever role the test wants to attempt resolve_story_blocker as.
+        Raised at the EVAL interaction level specifically - "Product" is the
+        one level where a "product"-category blocker escalates to the human
+        User instead (see test_escalated_product_blocker_requires_human_
+        resolution_first below), which these tests aren't about."""
+        tc = _tool_context("DevTeam", ["Ready"])
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            raise_story_blocker("US-0001", self._VALID_QUESTION, category, tool_context=tc)
+        tc.agent_name = agent_name
+        return tc
+
+    def test_product_owner_resolves_a_product_blocker(self, mock_save, mock_md):
+        tc = self._blocked_context("product", agent_name="ProductOwner")
+        result = resolve_story_blocker("US-0001", self._VALID_RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["blocked"])
+
+    def test_architect_resolves_a_technical_blocker(self, mock_save, mock_md):
+        tc = self._blocked_context("technical", agent_name="Architect")
+        result = resolve_story_blocker("US-0001", self._VALID_RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_wrong_role_cannot_resolve(self, mock_save, mock_md):
+        tc = self._blocked_context("technical", agent_name="ProductOwner")
+        result = resolve_story_blocker("US-0001", self._VALID_RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Architect", result["message"])
+
+    def test_not_blocked_story_errors(self, mock_save, mock_md):
+        tc = _tool_context("ProductOwner", ["Ready"])
+        result = resolve_story_blocker("US-0001", self._VALID_RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_rejects_generic_resolution(self, mock_save, mock_md):
+        tc = self._blocked_context("product", agent_name="ProductOwner")
+        result = resolve_story_blocker("US-0001", "fixed", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIsNotNone(tc.state["product_backlog"][0]["blocked"])
+
+    def test_resolves_the_linked_blocking_interaction(self, mock_save, mock_md):
+        tc = self._blocked_context("product", agent_name="ProductOwner")
+        interaction_id = tc.state["product_backlog"][0]["blocked"]["blocking_interaction_id"]
+        resolve_story_blocker("US-0001", self._VALID_RESOLUTION, tool_context=tc)
+        interaction = next(i for i in tc.state["blocking_interactions"] if i["id"] == interaction_id)
+        self.assertTrue(interaction["resolved"])
+
+    def test_escalated_product_blocker_requires_human_resolution_first(self, mock_save, mock_md):
+        """
+        Acceptance Criteria: at the Product interaction level, a "product"
+        blocker was escalated straight to the human User when raised - this
+        must mechanically refuse Product Owner's own resolution until that
+        human has actually resolved the linked blocking_interaction.
+        """
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Product"}, clear=True):
+            tc = _tool_context("DevTeam", ["Ready"])
+            raise_story_blocker("US-0001", self._VALID_QUESTION, "product", tool_context=tc)
+            tc.agent_name = "ProductOwner"
+
+            result = resolve_story_blocker("US-0001", self._VALID_RESOLUTION, tool_context=tc)
+            self.assertEqual(result["status"], "error")
+            self.assertIn("human User", result["message"])
+            self.assertIsNotNone(tc.state["product_backlog"][0]["blocked"])
+
+            from agents.scrum_team.tools.notifications import resolve_blocking_interaction
+            interaction_id = tc.state["product_backlog"][0]["blocked"]["blocking_interaction_id"]
+            resolve_blocking_interaction(interaction_id, tool_context=tc)
+
+            result = resolve_story_blocker("US-0001", self._VALID_RESOLUTION, tool_context=tc)
+            self.assertEqual(result["status"], "ok")
+            self.assertIsNone(tc.state["product_backlog"][0]["blocked"])
 
 
 class TestUpsertBacklogItemGuards(unittest.TestCase):
