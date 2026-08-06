@@ -11,13 +11,18 @@ source of truth for their slice; this page is the composite map plus the knobs t
 
 | Agent | Owns | Key tools |
 |---|---|---|
-| 🎯 **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
+| 🧑‍✈️ **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
 | 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_story`/`upsert_epic`/`upsert_issue`, `advance_story_stage`, `record_design_approval`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
-| 🧭 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `update_budgets`/`get_budget_status` |
+| 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `update_budgets`/`get_budget_status` |
 | 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
-| 🏛️ **Architect** | Technical review, ADRs | `advance_story_stage`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
-| 🧪 **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
-| 🛡️ **QualityGuardian** | KPI reporting | `calculate_kpis`, `update_sprint_report`, `upsert_issue` |
+| 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
+| 🕵️ **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
+| 🧑‍⚖️ **QualityGuardian** | KPI reporting | `calculate_kpis`, `update_sprint_report`, `upsert_issue` |
+
+Every role uses an actual human-figure emoji - a deliberate, consistent "persona" icon per role. Mermaid
+flowcharts have no native actor/stick-figure shape (that's a `sequenceDiagram`-only feature); a distinct
+person emoji per box is the closest equivalent and doubles as a legend-free visual cue for "this is a
+role," separate from the tool/state/gate icons below.
 
 Each `LlmAgent`'s exact `tools=[...]` list (`agents/scrum_team/agent.py`) is the hard boundary - a
 role literally cannot call a tool not listed there; ADK's dispatch rejects it (`on_tool_error_callback`
@@ -25,29 +30,34 @@ recovers gracefully instead of crashing - see RELEASE.md "Tool dispatch resilien
 
 Both flowcharts below share the same color key and icon vocabulary:
 
-**Roles** (color + icon, leads every box): 🟦🧑‍💼 ProductOwner · 🟧🧭 ScrumMaster · 🟩🧑‍💻 DevTeam ·
-🟪🏛️ Architect · 🟨🧪 QA · 🟫🛡️ QualityGuardian · ⬜ spans multiple roles (see the other diagram)
+**Roles** (color + persona icon, leads every box): 🟦🧑‍💼 ProductOwner · 🟧🧑‍🏫 ScrumMaster ·
+🟩🧑‍💻 DevTeam · 🟪👷 Architect · 🟨🕵️ QA · 🟫🧑‍⚖️ QualityGuardian ·
+⬜ spans multiple roles (see the other diagram)
 
 **Markers**: 🔧 tool call · 🔄 state change (sprint started / story stage advanced) ·
 ⚠️ mandatory condition · ❌ refused/errors if violated · 🟥👤 **human approval required** ·
 ◇ diamond = one-time routing decision (config-driven) · ⬡ hexagon = **iterative loop** - repeats
-until the condition holds (e.g. re-review after requested changes), not a single check
+until the condition holds (e.g. re-review, a failed build, or Product Owner acceptance sending a
+story back into development), not a single check
+
+**Interaction levels** (highlighted on every branch they affect - see section 3 for the full matrix):
+🔵 Product · 🟣 Stakeholder · 🟠 CEO · 🤖 EVAL (fully autonomous, no human at all)
 
 ## 1. Sprint lifecycle (the outer loop)
 
 ```mermaid
 flowchart TD
-    A["🧭 ScrumMaster\n🔧🔄 start_sprint(goal)\n❌ refuses blank goal / unfinished prior close"]:::sm --> B["🧑‍💼 ProductOwner\nplans backlog to Ready — see diagram 2"]:::po
+    A["🧑‍🏫 ScrumMaster\n🔧🔄 start_sprint(goal)\n❌ refuses blank goal / unfinished prior close"]:::sm --> B["🧑‍💼 ProductOwner\nplans backlog to Ready — see diagram 2"]:::po
     B --> C["🧑‍💼 ProductOwner\n🔧 create_sprint_backlog_pr\nSprint Backlog PR into develop, BEFORE any story starts"]:::po
     C --> D["Each story runs the Stage Pipeline\n(diagram 2) — one at a time, priority order"]:::multi
     D --> E{{"All stories as far\nas this sprint allows?"}}:::loop
     E -- "no — iterate" --> D
-    E -- yes --> F["🧭 ScrumMaster\n🔧 add_retro_action / add_impediment\n⚠️ MANDATORY: must be NEW since last report"]:::sm
+    E -- yes --> F["🧑‍🏫 ScrumMaster\n🔧 add_retro_action / add_impediment\n⚠️ MANDATORY: must be NEW since last report"]:::sm
     F --> G["🧑‍💼 ProductOwner\n🔧 create_sprint_report\n❌ refuses without a fresh retro/impediment"]:::po
-    G --> H["🛡️ QualityGuardian\n🔧 calculate_kpis + update_sprint_report"]:::qg
+    G --> H["🧑‍⚖️ QualityGuardian\n🔧 calculate_kpis + update_sprint_report"]:::qg
     H --> I{"Release approval\nrequired at this level?"}:::gate
-    I -- "Product / Stakeholder" --> J["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval('release')"]:::human
-    I -- "CEO / EVAL" --> K
+    I -- "🔵 Product / 🟣 Stakeholder" --> J["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval('release')"]:::human
+    I -- "🟠 CEO / 🤖 EVAL" --> K
     J --> K["🧑‍💼 ProductOwner\n🔧 create_release_pr\ndevelop → main"]:::po
     K --> A
 
@@ -67,30 +77,32 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Draft["🧑‍💼 ProductOwner (+🏛️ Architect feasibility)\n🔄 DRAFT\nconcept/mockup shaped into a real backlog item"]:::po
+    Draft["🧑‍💼 ProductOwner (+👷 Architect feasibility)\n🔄 DRAFT\nconcept/mockup shaped into a real backlog item"]:::po
     Draft -->|"🔧 advance_story_stage"| GateReady{"Stakeholder level?"}:::gate
-    GateReady -- yes --> Design["🟥👤 HUMAN APPROVAL\n🔧 record_design_approval\nPO records the stakeholder's sign-off on this story's design"]:::human
+    GateReady -- "🟣 Stakeholder" --> Design["🟥👤 HUMAN APPROVAL\n🔧 record_design_approval\nPO records the stakeholder's sign-off on this story's design"]:::human
     Design --> Ready
-    GateReady -- "no (Product/CEO/EVAL)" --> Ready["🧑‍💼 ProductOwner (+🏛️ Architect)\n🔄 READY\nreal title/story/AC + estimate"]:::po
+    GateReady -- "🔵 Product / 🟠 CEO / 🤖 EVAL" --> Ready["🧑‍💼 ProductOwner (+👷 Architect)\n🔄 READY\nreal title/story/AC + estimate"]:::po
     Ready --> GateImpl{"Approval required\nfor this level?"}:::gate
-    GateImpl -- "Product/Stakeholder: sprint" --> Approve1["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval"]:::human
-    GateImpl -- "CEO: budget" --> Approve1
-    GateImpl -- "EVAL: none" --> Branch
+    GateImpl -- "🔵 Product / 🟣 Stakeholder: sprint" --> Approve1["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval"]:::human
+    GateImpl -- "🟠 CEO: budget" --> Approve1
+    GateImpl -- "🤖 EVAL: none" --> Branch
     Approve1 --> Branch["🧑‍💻 DevTeam\n🔧 start_feature_branch\nfeature/story-id-slug → develop, draft PR"]:::dev
     Branch --> Code["🧑‍💻 DevTeam\n🔧 write_file + git_push\n❌ refuses direct push to protected branches"]:::dev
     Code --> PRReady["🧑‍💻 DevTeam\n🔧 mark_pr_ready_for_review"]:::dev
     PRReady --> Impl["🧑‍💻 DevTeam\n🔄 IMPLEMENTED\n🔧 advance_story_stage"]:::dev
-    Impl --> ArchReview["🏛️ Architect\n🔧 gh_pr_review / gh_pr_comment"]:::arch
+    Impl --> ArchReview["👷 Architect\n🔧 gh_pr_review / gh_pr_comment"]:::arch
     ArchReview --> ArchGate{{"Changes requested?"}}:::loop
-    ArchGate -- "❌ yes — iterate" --> Code
-    ArchGate -- "✅ approved" --> Reviewed["🏛️ Architect\n🔄 REVIEWED\n🔧 advance_story_stage"]:::arch
-    Reviewed --> Build["🧪 QA\n🔧 check_build\nreal dependency install + test run"]:::qa
-    Build --> BuildGate{{"Build & tests pass?"}}:::loop
-    BuildGate -- "❌ no — iterate" --> Code
-    BuildGate -- "✅ yes" --> Tested["🧪 QA\n🔄 TESTED\n🔧 advance_story_stage"]:::qa
-    Tested --> Merge["🧪 QA\n🔧 merge_story_pr\nfeature branch → develop"]:::qa
+    ArchGate -- "❌ yes — back to development" --> Code
+    ArchGate -- "✅ approved" --> Reviewed["👷 Architect\n🔄 REVIEWED\n🔧 advance_story_stage"]:::arch
+    Reviewed --> Build["🕵️ QA\n🔧 check_build\nreal dependency install + test run"]:::qa
+    Build --> BuildGate{{"Build/tests pass,\nno QA findings?"}}:::loop
+    BuildGate -- "❌ no — back to development" --> Code
+    BuildGate -- "✅ yes" --> Tested["🕵️ QA\n🔄 TESTED\n🔧 advance_story_stage"]:::qa
+    Tested --> Merge["🕵️ QA\n🔧 merge_story_pr\nfeature branch → develop"]:::qa
     Merge --> Verify["🧑‍💼 ProductOwner\nverifies acceptance criteria"]:::po
-    Verify --> Accepted["🧑‍💼 ProductOwner\n🔄 ACCEPTED\n🔧 advance_story_stage"]:::po
+    Verify --> AcceptGate{{"Acceptance criteria\nactually met?"}}:::loop
+    AcceptGate -- "❌ no — back to development" --> Code
+    AcceptGate -- "✅ yes" --> Accepted["🧑‍💼 ProductOwner\n🔄 ACCEPTED\n🔧 advance_story_stage"]:::po
 
     classDef po fill:#cfe2ff,stroke:#0d6efd,color:#000
     classDef sm fill:#ffe0b3,stroke:#fd7e14,color:#000
@@ -118,10 +130,10 @@ require a human, and how chatty the orchestrator is between them - full detail i
 
 | Level | Ready gate | Implemented gate | Release gate | Report detail |
 |---|---|---|---|---|
-| **Product** (default) | none | `sprint` approval | `release` approval | full |
-| **Stakeholder** | `record_design_approval` per story | `sprint` approval | `release` approval | business |
-| **CEO** | none | `budget` approval | none | executive |
-| **EVAL** | none | none | none | full |
+| 🔵 **Product** (default) | none | `sprint` approval | `release` approval | full |
+| 🟣 **Stakeholder** | `record_design_approval` per story | `sprint` approval | `release` approval | business |
+| 🟠 **CEO** | none | `budget` approval | none | executive |
+| 🤖 **EVAL** | none | none | none | full |
 
 ## Customization points
 
