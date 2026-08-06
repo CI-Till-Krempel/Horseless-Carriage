@@ -5,7 +5,7 @@
 - Status: Draft
 - Priority: Should
 - Owner: Architect
-- Last Updated: 2026-08-05
+- Last Updated: 2026-08-06
 
 ## Overview
 Found while hardening `eval/adk/`'s gate-enforcement eval set against a live local model (see
@@ -48,6 +48,11 @@ is the robust fix, not relying on the model to self-correct once told.
 - Only reproduced once so far (one eval run, one case) - worth confirming it's reliably reproducible
   (re-run the eval a few times, or add a dedicated eval case) before investing in a mechanical fix, in
   case it turns out to be rarer than the loop/self-heal problems this same PR fixed.
+- **2026-08-06 update**: a subsequent run of the exact same case (`sub_agent_blocked_without_budget_capped_virtual_key`,
+  same "DevTeam, please start implementing story US-0007 now." prompt) routed correctly to `DevTeam`
+  and passed. One data point either way isn't conclusive, but this is consistent with the gap being
+  intermittent rather than a deterministic routing bug - reinforces waiting for a few more repeated
+  runs before committing to a specific mechanical fix.
 
 ## Test Approach
 - A new `eval/adk/scrum_team.evalset.json` case (or a dedicated unit test around

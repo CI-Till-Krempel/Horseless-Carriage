@@ -1,4 +1,5 @@
 # agents/scrum_team/agent.py
+import ast
 import os
 import json
 import requests
@@ -702,7 +703,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     return None
 
 _FAKE_TOOL_CALL_NAME_KEYS = ("function", "name", "function_name")
-_FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args", "properties")
+_FAKE_TOOL_CALL_ARGS_KEYS = ("arguments", "args", "properties", "parameters")
 _JSON_ENVELOPE_MESSAGE_KEYS = ("message", "content", "text")
 
 
@@ -743,6 +744,19 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
     way) before the same key-based lookup runs; "function_name" is now one
     of the recognized name keys.
 
+    A later eval run produced two more variants: "parameters" instead of
+    "arguments"/"args" (now a recognized args key too), and - the harder
+    one - a Python `repr()`-style envelope (single-quoted, e.g. `{'name':
+    'update_sprint_report', 'parameters': {...}}`) instead of valid JSON.
+    `json.loads` rejects single quotes outright, so that shape used to bail
+    out of this whole function immediately, leaving the text unrecovered.
+    `ast.literal_eval` is now tried as a fallback parser when `json.loads`
+    fails - the exact same JSON-or-Python-repr recovery already used for
+    tool *arguments* elsewhere (see `_coerce_dict_arg` in `tools/base.py`),
+    applied here to the fake-tool-call envelope itself. Safe the same way:
+    `ast.literal_eval` only ever produces Python literals, never executes
+    arbitrary code.
+
     Also recovers a third pattern the same local model produced (also GH
     issue #91): a genuine conversational reply wrapped in a JSON envelope -
     `{"response_type": "info", "message": "..."}` - instead of plain text.
@@ -779,10 +793,13 @@ def recover_fake_tool_call_callback(callback_context: CallbackContext, llm_respo
     text = (text_parts[0].text or "").strip()
     if not (text.startswith("{") and text.endswith("}")):
         return
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return
+    parsed = None
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(text)
+        except Exception:
+            continue
+        break
     if not isinstance(parsed, dict):
         return
 
@@ -1242,9 +1259,31 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     in both eval and production; there's no legitimate reason the same two
     agents hand off to each other 3 times running with zero other progress
     in between.
+
+    A real eval run showed even THAT wasn't enough: the counter above resets
+    to 0 once it fires, so a model that never actually resolves the blocker
+    just restarts the identical 3-strike burst immediately - repeatedly,
+    burning the whole call budget in chunks instead of stopping. This pair
+    is now remembered (`_broken_transfer_pairs`) once it has broken the loop
+    once *in this session* - any further hop between the same two agents is
+    refused immediately, without needing another fresh streak of
+    TRANSFER_LOOP_THRESHOLD. A pair earning this once is not itself the
+    problem - real, distinct progress via other tools/agents is completely
+    unaffected - only *this exact already-proven-unproductive hop* is ever
+    blocked again.
     """
     state = tool_context.state
     pair = tuple(sorted((from_agent, to_agent)))
+    broken_pairs = list(state.get("_broken_transfer_pairs") or [])
+    if list(pair) in broken_pairs:
+        msg = (
+            f"🔁 [TRANSFER LOOP DETECTED] {from_agent} <-> {to_agent} already broke this exact loop "
+            "once this session - refusing again immediately. This hand-off has already proven "
+            "unproductive; call a tool that makes real progress, transfer to a genuinely different "
+            "role, or explain the blocker in plain text instead."
+        )
+        return {"status": "error", "message": msg}
+
     loop_state = state.get("_transfer_loop") or {}
     count = loop_state.get("count", 0) + 1 if loop_state.get("pair") == list(pair) else 1
     state["_transfer_loop"] = {"pair": list(pair), "count": count}
@@ -1253,6 +1292,7 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
         return None
 
     state["_transfer_loop"] = {"pair": None, "count": 0}
+    state["_broken_transfer_pairs"] = broken_pairs + [list(pair)]
     msg = (
         f"🔁 [TRANSFER LOOP DETECTED] {from_agent} and {to_agent} have handed off to each other "
         f"{count} times in a row with no other tool call in between - refusing this transfer. "
@@ -1296,6 +1336,16 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
     always has empty args, so any 3 calls in a row are indistinguishable
     from a loop by definition - but upsert_story called 3 times running for
     3 different stories is real progress and must never trip this.
+
+    Same escalation as _detect_transfer_loop, and for the same reason: a
+    real eval run showed the model retrying the *exact* same already-broken
+    call again right after the counter below reset to 0, so this exact
+    signature is now remembered (`_broken_call_signatures`) once it has
+    broken the loop once *in this session* - a further occurrence is
+    refused immediately, without needing another fresh streak of
+    REPEATED_CALL_LOOP_THRESHOLD. Only this exact tool+args combination is
+    ever blocked again - a retry with genuinely different arguments is
+    unaffected.
     """
     state = tool_context.state
     try:
@@ -1303,6 +1353,16 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
     except Exception:
         args_key = repr(args)
     signature = {"agent": agent_name, "tool": tool_name, "args": args_key}
+    broken_signatures = list(state.get("_broken_call_signatures") or [])
+    if signature in broken_signatures:
+        msg = (
+            f"🔁 [REPEATED CALL DETECTED] {agent_name} already broke this exact "
+            f"{tool_name} call once this session - refusing again immediately. These arguments have "
+            "already proven unproductive; use genuinely different arguments, address the actual "
+            "error message, or transfer to whichever role can actually make progress instead."
+        )
+        return {"status": "error", "message": msg}
+
     loop_state = state.get("_repeated_call_loop") or {}
     count = loop_state.get("count", 0) + 1 if loop_state.get("signature") == signature else 1
     state["_repeated_call_loop"] = {"signature": signature, "count": count}
@@ -1311,6 +1371,7 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
         return None
 
     state["_repeated_call_loop"] = {"signature": None, "count": 0}
+    state["_broken_call_signatures"] = broken_signatures + [signature]
     msg = (
         f"🔁 [REPEATED CALL DETECTED] {agent_name} has called {tool_name} with the exact same "
         f"arguments {count} times in a row with no other distinct call in between - refusing this "

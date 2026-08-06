@@ -720,6 +720,35 @@ class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
         self.assertTrue(all(r is not None and r["status"] == "error" for r in results))
         self.assertIn("TRANSFER LOOP DETECTED", results[-1]["message"])
 
+    def test_a_pair_that_already_broke_the_loop_is_blocked_immediately_next_time(self):
+        """
+        Acceptance Criteria: a real eval run showed a model retrying the
+        exact same already-broken self-transfer again right after the
+        counter reset to 0 - so it took another full TRANSFER_LOOP_THRESHOLD
+        streak to break it a second time, burning the whole call budget in
+        repeated bursts instead of actually stopping. Once a pair has broken
+        the loop once this session, any further occurrence must be refused
+        immediately - not after another fresh streak.
+        """
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "Architect"
+        tool_context.state = ScrumState().model_dump()
+
+        for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD):
+            log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+
+        # A single real (non-transfer) tool call in between - proving this
+        # isn't just the ordinary consecutive-streak counter still primed.
+        other_tool = BaseTool(name="repo_status", description="Report repo status.")
+        log_tool_invocation_callback(other_tool, {}, tool_context)
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("already broke this exact loop", result["message"])
+
 
 class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
     """
@@ -748,6 +777,34 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
         self.assertTrue(all(r is None for r in results[:-1]))
         self.assertEqual(results[-1]["status"], "error")
         self.assertIn("REPEATED CALL DETECTED", results[-1]["message"])
+
+    def test_a_signature_that_already_broke_the_loop_is_blocked_immediately_next_time(self):
+        """
+        Acceptance Criteria: a real eval run showed QualityGuardian retrying
+        the exact same already-broken update_sprint_report call again right
+        after the counter reset to 0 - so it took another full
+        REPEATED_CALL_LOOP_THRESHOLD streak to break it a second time,
+        burning the whole call budget in repeated bursts. Once this exact
+        tool+args combination has broken the loop once this session, any
+        further occurrence must be refused immediately.
+        """
+        tool = BaseTool(name="update_sprint_report", description="Update the sprint report.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "QualityGuardian"
+        tool_context.state = ScrumState().model_dump()
+
+        for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD):
+            log_tool_invocation_callback(tool, {"kpis": "calculate_kpis"}, tool_context)
+
+        # A single distinct call in between - proving this isn't just the
+        # ordinary consecutive-streak counter still primed.
+        log_tool_invocation_callback(tool, {"kpis": "calculate_kpis()"}, tool_context)
+
+        result = log_tool_invocation_callback(tool, {"kpis": "calculate_kpis"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("already broke this exact", result["message"])
 
     def test_does_not_block_when_arguments_differ(self):
         """A different story/branch/etc each call is real, distinct
@@ -870,6 +927,43 @@ class TestRecoverFakeToolCallCallback(unittest.TestCase):
         """
         response = self._response_with_text(
             '{"function_name": "update_sprint_report", "arguments": {"kpis": "calculate_kpis"}}'
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "QualityGuardian"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "update_sprint_report")
+        self.assertEqual(fc.args, {"kpis": "calculate_kpis"})
+
+    def test_converts_parameters_key_shape(self):
+        """
+        Acceptance Criteria: a later eval run produced "parameters" instead
+        of "arguments"/"args" - also a recognized args key now.
+        """
+        response = self._response_with_text(
+            '{"type": "function", "name": "update_sprint_report", "parameters": {"kpis": "calculate_kpis"}}'
+        )
+        callback_context = MagicMock()
+        callback_context.agent_name = "QualityGuardian"
+
+        recover_fake_tool_call_callback(callback_context, response)
+
+        fc = response.content.parts[0].function_call
+        self.assertEqual(fc.name, "update_sprint_report")
+        self.assertEqual(fc.args, {"kpis": "calculate_kpis"})
+
+    def test_converts_python_repr_style_envelope(self):
+        """
+        Acceptance Criteria: a later eval run produced a Python repr()-style
+        envelope - single-quoted, like str(some_dict) - instead of valid
+        JSON. json.loads rejects single quotes outright, so this used to
+        bail out of the whole function immediately, leaving the text
+        unrecovered. ast.literal_eval is now tried as a fallback parser.
+        """
+        response = self._response_with_text(
+            "{'type': 'function', 'name': 'update_sprint_report', 'parameters': {'kpis': 'calculate_kpis'}}"
         )
         callback_context = MagicMock()
         callback_context.agent_name = "QualityGuardian"

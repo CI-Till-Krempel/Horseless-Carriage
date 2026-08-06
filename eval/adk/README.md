@@ -622,6 +622,39 @@ apply in production too, not just eval - there's no legitimate reason to
 repeat an identical call 3 times running, whether it's failing or
 (uselessly) succeeding.
 
+**13. Both breakers from #12 reset to zero once they fire - so a model that
+never actually resolves the blocker just restarts the identical 3-strike
+burst immediately, over and over, burning the whole budget in repeated
+chunks instead of stopping.** A live run showed `ProductOwner` hit the
+transfer-loop breaker on the same self-transfer pattern 3 separate times in
+one session (9 of the 20 calls spent purely on repeated self-transfer
+bursts) before finally making real progress - and separately,
+`QualityGuardian`, immediately after being told to stop repeating
+`update_sprint_report(kpis="calculate_kpis")`, tried the *exact same call*
+again on its very next turn. Both sessions still ended in
+`LlmCallsLimitExceededError`. Fixed by giving both breakers a memory:
+`_detect_transfer_loop` now remembers every pair that has already broken
+the loop once *in this session* (`_broken_transfer_pairs`), and
+`_detect_repeated_call_loop` remembers every exact tool+args signature that
+has (`_broken_call_signatures`) - any further occurrence of an
+already-broken pair/signature is refused immediately, without needing
+another fresh 3-strike streak. This only ever forecloses the *exact*
+already-proven-unproductive hop/call again; real, distinct progress via
+other tools, other arguments, or other agent pairs is completely
+unaffected.
+
+**14. `recover_fake_tool_call_callback` (findings #2/#10) still missed two
+more shapes.** A later run produced `"parameters"` instead of
+`"arguments"`/`"args"`/`"properties"` (now a recognized args key too), and
+a harder case: a Python `repr()`-style envelope - single-quoted, e.g.
+`{'name': 'update_sprint_report', 'parameters': {...}}` - instead of valid
+JSON. `json.loads` rejects single quotes outright, so that shape used to
+bail out of the whole function immediately, leaving the text unrecovered
+and the eval case scored a hard 0. `ast.literal_eval` is now tried as a
+fallback parser when `json.loads` fails - the same JSON-or-Python-repr
+recovery `_coerce_dict_arg` (finding #6) already does for tool
+*arguments*, applied here to the fake-tool-call envelope itself.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this
