@@ -11,42 +11,44 @@ source of truth for their slice; this page is the composite map plus the knobs t
 
 | Agent | Owns | Key tools |
 |---|---|---|
-| **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
-| **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_story`/`upsert_epic`/`upsert_issue`, `advance_story_stage`, `record_design_approval`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
-| **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `update_budgets`/`get_budget_status` |
-| **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
-| **Architect** | Technical review, ADRs | `advance_story_stage`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
-| **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
-| **QualityGuardian** | KPI reporting | `calculate_kpis`, `update_sprint_report`, `upsert_issue` |
+| 🎯 **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
+| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_story`/`upsert_epic`/`upsert_issue`, `advance_story_stage`, `record_design_approval`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
+| 🧭 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `update_budgets`/`get_budget_status` |
+| 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
+| 🏛️ **Architect** | Technical review, ADRs | `advance_story_stage`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
+| 🧪 **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
+| 🛡️ **QualityGuardian** | KPI reporting | `calculate_kpis`, `update_sprint_report`, `upsert_issue` |
 
 Each `LlmAgent`'s exact `tools=[...]` list (`agents/scrum_team/agent.py`) is the hard boundary - a
 role literally cannot call a tool not listed there; ADK's dispatch rejects it (`on_tool_error_callback`
 recovers gracefully instead of crashing - see RELEASE.md "Tool dispatch resilience").
 
-Both flowcharts below share the same color key - each box leads with the **role** that owns it, and
-human approval points are called out explicitly (red, 👤) so they're never mistaken for an automated
-step:
+Both flowcharts below share the same color key and icon vocabulary:
 
-🟦 ProductOwner · 🟧 ScrumMaster · 🟩 DevTeam · 🟪 Architect · 🟨 QA · 🟫 QualityGuardian ·
-🟥 **👤 human approval required** · ⬜ spans multiple roles (expanded in the other diagram) ·
-◇ gray = automatic gate/check, no owner
+**Roles** (color + icon, leads every box): 🟦🧑‍💼 ProductOwner · 🟧🧭 ScrumMaster · 🟩🧑‍💻 DevTeam ·
+🟪🏛️ Architect · 🟨🧪 QA · 🟫🛡️ QualityGuardian · ⬜ spans multiple roles (see the other diagram)
+
+**Markers**: 🔧 tool call · 🔄 state change (sprint started / story stage advanced) ·
+⚠️ mandatory condition · ❌ refused/errors if violated · 🟥👤 **human approval required** ·
+◇ diamond = one-time routing decision (config-driven) · ⬡ hexagon = **iterative loop** - repeats
+until the condition holds (e.g. re-review after requested changes), not a single check
 
 ## 1. Sprint lifecycle (the outer loop)
 
 ```mermaid
 flowchart TD
-    A["ScrumMaster\nstart_sprint(goal)\nrefuses blank goal / unfinished prior close"]:::sm --> B["ProductOwner\nplans backlog to Ready — see diagram 2"]:::po
-    B --> C["ProductOwner\ncreate_sprint_backlog_pr\nSprint Backlog PR into develop, BEFORE any story starts"]:::po
+    A["🧭 ScrumMaster\n🔧🔄 start_sprint(goal)\n❌ refuses blank goal / unfinished prior close"]:::sm --> B["🧑‍💼 ProductOwner\nplans backlog to Ready — see diagram 2"]:::po
+    B --> C["🧑‍💼 ProductOwner\n🔧 create_sprint_backlog_pr\nSprint Backlog PR into develop, BEFORE any story starts"]:::po
     C --> D["Each story runs the Stage Pipeline\n(diagram 2) — one at a time, priority order"]:::multi
-    D --> E{"All stories as far\nas this sprint allows?"}:::gate
-    E -- no --> D
-    E -- yes --> F["ScrumMaster\nadd_retro_action / add_impediment\nMANDATORY: must be NEW since last report"]:::sm
-    F --> G["ProductOwner\ncreate_sprint_report\nrefuses without a fresh retro/impediment"]:::po
-    G --> H["QualityGuardian\ncalculate_kpis + update_sprint_report"]:::qg
+    D --> E{{"All stories as far\nas this sprint allows?"}}:::loop
+    E -- "no — iterate" --> D
+    E -- yes --> F["🧭 ScrumMaster\n🔧 add_retro_action / add_impediment\n⚠️ MANDATORY: must be NEW since last report"]:::sm
+    F --> G["🧑‍💼 ProductOwner\n🔧 create_sprint_report\n❌ refuses without a fresh retro/impediment"]:::po
+    G --> H["🛡️ QualityGuardian\n🔧 calculate_kpis + update_sprint_report"]:::qg
     H --> I{"Release approval\nrequired at this level?"}:::gate
-    I -- "Product / Stakeholder" --> J["👤 HUMAN APPROVAL\nrecord_human_approval('release')"]:::human
+    I -- "Product / Stakeholder" --> J["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval('release')"]:::human
     I -- "CEO / EVAL" --> K
-    J --> K["ProductOwner\ncreate_release_pr\ndevelop → main"]:::po
+    J --> K["🧑‍💼 ProductOwner\n🔧 create_release_pr\ndevelop → main"]:::po
     K --> A
 
     classDef po fill:#cfe2ff,stroke:#0d6efd,color:#000
@@ -58,32 +60,37 @@ flowchart TD
     classDef human fill:#ff8787,stroke:#c92a2a,stroke-width:3px,color:#000
     classDef gate fill:#f1f3f5,stroke:#868e96,color:#000
     classDef multi fill:#ffffff,stroke:#495057,stroke-dasharray: 5 5,color:#000
+    classDef loop fill:#fff9db,stroke:#f08c00,stroke-width:2px,color:#000
 ```
 
 ## 2. Story stage pipeline (per story, exactly 6 stages, no skipping)
 
 ```mermaid
 flowchart TD
-    Draft["ProductOwner (+Architect feasibility)\nDRAFT\nconcept/mockup shaped into a real backlog item"]:::po
-    Draft -->|"advance_story_stage"| GateReady{"Stakeholder level?"}:::gate
-    GateReady -- yes --> Design["👤 HUMAN APPROVAL\nrecord_design_approval\nPO records the stakeholder's sign-off on this story's design"]:::human
+    Draft["🧑‍💼 ProductOwner (+🏛️ Architect feasibility)\n🔄 DRAFT\nconcept/mockup shaped into a real backlog item"]:::po
+    Draft -->|"🔧 advance_story_stage"| GateReady{"Stakeholder level?"}:::gate
+    GateReady -- yes --> Design["🟥👤 HUMAN APPROVAL\n🔧 record_design_approval\nPO records the stakeholder's sign-off on this story's design"]:::human
     Design --> Ready
-    GateReady -- "no (Product/CEO/EVAL)" --> Ready["ProductOwner (+Architect)\nREADY\nreal title/story/AC + estimate"]:::po
+    GateReady -- "no (Product/CEO/EVAL)" --> Ready["🧑‍💼 ProductOwner (+🏛️ Architect)\n🔄 READY\nreal title/story/AC + estimate"]:::po
     Ready --> GateImpl{"Approval required\nfor this level?"}:::gate
-    GateImpl -- "Product/Stakeholder: sprint" --> Approve1["👤 HUMAN APPROVAL\nrecord_human_approval"]:::human
+    GateImpl -- "Product/Stakeholder: sprint" --> Approve1["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval"]:::human
     GateImpl -- "CEO: budget" --> Approve1
     GateImpl -- "EVAL: none" --> Branch
-    Approve1 --> Branch["DevTeam\nstart_feature_branch\nfeature/story-id-slug → develop, draft PR"]:::dev
-    Branch --> Code["DevTeam\nwrite_file + git_push\nrefuses direct push to protected branches"]:::dev
-    Code --> PRReady["DevTeam\nmark_pr_ready_for_review"]:::dev
-    PRReady --> Impl["DevTeam\nIMPLEMENTED — advance_story_stage"]:::dev
-    Impl --> ArchReview["Architect\ngh_pr_review / gh_pr_comment"]:::arch
-    ArchReview --> Reviewed["Architect\nREVIEWED — advance_story_stage"]:::arch
-    Reviewed --> Build["QA\ncheck_build\nreal dependency install + test run, 0 failures"]:::qa
-    Build --> Tested["QA\nTESTED — advance_story_stage"]:::qa
-    Tested --> Merge["QA\nmerge_story_pr\nfeature branch → develop"]:::qa
-    Merge --> Verify["ProductOwner\nverifies acceptance criteria"]:::po
-    Verify --> Accepted["ProductOwner\nACCEPTED — advance_story_stage"]:::po
+    Approve1 --> Branch["🧑‍💻 DevTeam\n🔧 start_feature_branch\nfeature/story-id-slug → develop, draft PR"]:::dev
+    Branch --> Code["🧑‍💻 DevTeam\n🔧 write_file + git_push\n❌ refuses direct push to protected branches"]:::dev
+    Code --> PRReady["🧑‍💻 DevTeam\n🔧 mark_pr_ready_for_review"]:::dev
+    PRReady --> Impl["🧑‍💻 DevTeam\n🔄 IMPLEMENTED\n🔧 advance_story_stage"]:::dev
+    Impl --> ArchReview["🏛️ Architect\n🔧 gh_pr_review / gh_pr_comment"]:::arch
+    ArchReview --> ArchGate{{"Changes requested?"}}:::loop
+    ArchGate -- "❌ yes — iterate" --> Code
+    ArchGate -- "✅ approved" --> Reviewed["🏛️ Architect\n🔄 REVIEWED\n🔧 advance_story_stage"]:::arch
+    Reviewed --> Build["🧪 QA\n🔧 check_build\nreal dependency install + test run"]:::qa
+    Build --> BuildGate{{"Build & tests pass?"}}:::loop
+    BuildGate -- "❌ no — iterate" --> Code
+    BuildGate -- "✅ yes" --> Tested["🧪 QA\n🔄 TESTED\n🔧 advance_story_stage"]:::qa
+    Tested --> Merge["🧪 QA\n🔧 merge_story_pr\nfeature branch → develop"]:::qa
+    Merge --> Verify["🧑‍💼 ProductOwner\nverifies acceptance criteria"]:::po
+    Verify --> Accepted["🧑‍💼 ProductOwner\n🔄 ACCEPTED\n🔧 advance_story_stage"]:::po
 
     classDef po fill:#cfe2ff,stroke:#0d6efd,color:#000
     classDef sm fill:#ffe0b3,stroke:#fd7e14,color:#000
@@ -93,6 +100,7 @@ flowchart TD
     classDef qg fill:#e8d0b3,stroke:#8b5a2b,color:#000
     classDef human fill:#ff8787,stroke:#c92a2a,stroke-width:3px,color:#000
     classDef gate fill:#f1f3f5,stroke:#868e96,color:#000
+    classDef loop fill:#fff9db,stroke:#f08c00,stroke-width:2px,color:#000
 ```
 
 `advance_story_stage` (`tools/requirements.py`) is the *only* tool that marks a stage complete, and
