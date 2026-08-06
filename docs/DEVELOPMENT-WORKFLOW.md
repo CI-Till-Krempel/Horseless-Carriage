@@ -180,6 +180,16 @@ require a human, and how chatty the orchestrator is between them - full detail i
 | Which model backs each role | `config/model-templates/*.yaml` (`setup_llm.py`) | Provider/model per agent alias |
 | Report verbosity per level | `report_detail_level()` in `helpers.py` | What `create_sprint_report` renders (full/business/executive) |
 
+## Verifying the tooling actually follows this state machine
+
+`agents/scrum_team/tests/test_story_pipeline_state_machine.py` reads diagram 2 as a literal state
+machine and drives one story through it by calling the real tool functions in the documented order -
+no LLM, no ADK runner, just the same scripted Python calls a correctly-behaving conversation would
+make. Covers the golden path (every review approved first try) and all three review-fix loops
+(Architect's code review, QA's, Product Owner's acceptance check - deny → fix → re-review → advance).
+Only genuine external boundaries (git/gh subprocess calls, the real pytest run) are mocked; every
+gate/state mutation runs for real.
+
 ## Related docs
 
 [Architecture](ARCHITECTURE.md) (system diagram, "enforce in code" principle) ·
