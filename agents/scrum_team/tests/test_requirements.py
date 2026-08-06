@@ -278,6 +278,90 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestStageRejectionLoopBreaker(unittest.TestCase):
+    """
+    Acceptance Criteria: a real eval run showed advance_story_stage(story,
+    stage) rejected for the exact same content/evidence reason 9 times in a
+    row, with neither agent.py's _detect_transfer_loop nor
+    _detect_repeated_call_loop ever tripping - both only catch a single
+    action repeated back-to-back with nothing else interleaved, but this
+    loop was a repeating multi-step sequence (check_build -> gh_pr_comment ->
+    advance_story_stage(rejected) -> transfer_to_agent -> ...), so no single
+    call ever repeated "in a row". _reject_stage_transition (requirements.py)
+    tracks the (story, stage) pair itself, surviving whatever real, distinct
+    tool calls happen between attempts.
+    """
+
+    def test_survives_intervening_calls_then_blocks_at_threshold(self, mock_save, mock_md, mock_roadmap):
+        from agents.scrum_team.tools.quality import check_build
+
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+
+        for i in range(2):
+            # No QA gh_pr_review/gh_pr_comment call recorded - the same
+            # content-gate rejection every time, but with a genuinely
+            # different, real tool call (check_build) in between, exactly
+            # the shape that defeated the two existing loop breakers.
+            with patch("agents.scrum_team.tools.quality._run", return_value={"status": "ok", "stdout": "", "stderr": ""}), \
+                 patch("agents.scrum_team.tools.quality._configured_repo_root", return_value=Path(tempfile.gettempdir())):
+                check_build(tool_context=tc)
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+            self.assertEqual(result["status"], "error")
+            self.assertIn("gh_pr_review/gh_pr_comment", result["message"])
+            self.assertIsNone(tc.state["product_backlog"][0].get("blocked"))
+
+        # 3rd rejection: same (story, stage) pair, still no QA review call -
+        # this is the one that trips the breaker.
+        result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("STAGE REJECTION LOOP DETECTED", result["message"])
+        self.assertIsNotNone(tc.state["product_backlog"][0].get("blocked"))
+
+        # BLOCKED now refuses any further call for this story, same as any
+        # other BLOCKED story (raise_story_blocker's own mechanism).
+        result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("BLOCKED", result["message"])
+
+    def test_a_genuinely_different_rejection_reason_does_not_carry_the_streak(self, mock_save, mock_md, mock_roadmap):
+        """Two different content-gate rejections for the SAME stage are
+        different keys internally only by stage, not by reason - but this
+        confirms a real fix (satisfying gate 1, hitting gate 2) doesn't
+        itself get treated as 3 identical failures; the streak only grows on
+        an actual repeat of advance_story_stage failing again."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+
+        result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertIn("gh_pr_review/gh_pr_comment", result["message"])
+
+        # Now satisfy the QA-review-call gate - the very next rejection (if
+        # any) is a fresh cause, not a continuation of the same failure.
+        tc.state["pr_review_calls"] = {"QA": 1}
+        result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertIn("check_build", result["message"])
+        self.assertIsNone(tc.state["product_backlog"][0].get("blocked"))
+
+    def test_success_clears_the_streak(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+
+        result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tc.state["_stage_rejection_streaks"]["US-0001:Tested"], 1)
+
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("US-0001:Tested", tc.state.get("_stage_rejection_streaks", {}))
+
+
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestOneStoryAtATimeOrdering(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #106): stories are worked one at a time,

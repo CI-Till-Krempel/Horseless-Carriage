@@ -215,13 +215,26 @@ def _scan_security_vulnerabilities(tool_context=None) -> Dict[str, Any]:
 
 def check_build(tool_context=None) -> Dict[str, Any]:
     """
-    Attempts to actually install the project's declared dependencies -
-    the mechanical Definition-of-Done check (see spec-templates/DOD.md)
-    for "the build runs", which QA must run for every story before it's
-    accepted as Done. Catches the exact class of failure a real eval run
-    hit (requirements.txt pinning SQLAlchemy==3.1.1, a version that
-    doesn't exist - the app would never even install, let alone run) that
-    code review alone missed.
+    Actually installs the project's declared dependencies - the mechanical
+    Definition-of-Done check (see spec-templates/DOD.md) for "the build
+    runs", which QA must run for every story before it's accepted as Done.
+    Catches the exact class of failure a real eval run hit (requirements.txt
+    pinning SQLAlchemy==3.1.1, a version that doesn't exist - the app would
+    never even install, let alone run) that code review alone missed.
+
+    A REAL install, not `pip install --dry-run`/`npm install --dry-run` (an
+    earlier version of this used those) - a dry run only resolves versions,
+    it never actually installs anything, so a later real `pytest` run (see
+    advance_story_stage's Tested gate/_execute_test_suite_coverage) could
+    never import any third-party dependency regardless of what DevTeam did
+    to the test file. A real eval run hit exactly this: QA and DevTeam
+    bounced a story back and forth 9 times on an identical
+    ModuleNotFoundError, since the true fix (an actual install, which no
+    tool in the pipeline ever did) was never something either role could
+    reach. Safe to install for real here: this runs inside the agent's own
+    disposable container, not a developer's host machine - and it still
+    catches an unresolvable pinned version exactly the same way a dry run
+    did.
 
     Supports Python (requirements.txt) and Node (package.json) projects
     today; anything else is reported as "not checked" rather than a false
@@ -231,18 +244,11 @@ def check_build(tool_context=None) -> Dict[str, Any]:
 
     if (repo_root / "requirements.txt").exists():
         checked = "requirements.txt"
-        cmd = ["pip", "install", "--dry-run", "-r", "requirements.txt"]
+        cmd = ["pip", "install", "-r", "requirements.txt"]
         result = _run(cmd, cwd=str(repo_root), tool_context=tool_context)
-        if result.get("status") == "error" and "--dry-run" in (result.get("stderr") or ""):
-            # Older pip without --dry-run support - fall back to a real
-            # install rather than reporting a false failure. Safe here:
-            # this runs inside the agent's own disposable container, not a
-            # developer's host machine.
-            cmd = ["pip", "install", "-r", "requirements.txt"]
-            result = _run(cmd, cwd=str(repo_root), tool_context=tool_context)
     elif (repo_root / "package.json").exists():
         checked = "package.json"
-        cmd = ["npm", "install", "--dry-run"]
+        cmd = ["npm", "install"]
         result = _run(cmd, cwd=str(repo_root), tool_context=tool_context)
     else:
         result = {

@@ -25,6 +25,7 @@ from agents.scrum_team.agent import (
     _stories_ready_for_next_stage_count,
     ensure_state_initialized_callback,
     inject_litellm_key_callback,
+    _sync_and_commit_roadmap_on_exhaustion,
 )
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.budget import reset_sprint_budget
@@ -1332,6 +1333,161 @@ class TestCriticalHaltNotifications(unittest.TestCase):
             check_cost_budget_callback(mock_context, MagicMock(model=None))
 
         self.assertEqual(len(mock_context.state["blocking_interactions"]), 2)
+
+
+class TestSprintCloseoutGrace(unittest.TestCase):
+    """
+    Acceptance Criteria: a real eval run produced no sprint report and no
+    release PR at all on token-budget exhaustion, since every subsequent
+    call for every agent was replaced with a canned halt response the
+    instant the main budget tripped - nobody ever got a turn to run the
+    SPRINT CLOSE SEQUENCE (retro -> create_sprint_report -> KPIs ->
+    create_release_pr). ScrumMaster/ProductOwner/QualityGuardian/
+    ScrumOrchestrator now get a small, bounded extra allowance
+    (closeout_grace_percent, agents/scrum_team/helpers.py) specifically to
+    finish that sequence for real; DevTeam/QA/Architect still hard-halt
+    immediately, unconditionally - no more code should get written past the
+    cap.
+    """
+
+    def _context(self, agent_name, token_total, token_usage):
+        mock_context = MagicMock()
+        mock_context.agent_name = agent_name
+        state = ScrumState()
+        state.budgets.total = token_total
+        state.token_usage.total = token_usage
+        if agent_name != "ScrumOrchestrator":
+            state.litellm_keys[agent_name] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+        return mock_context
+
+    def test_grace_role_gets_a_real_call_through_within_the_grace_ceiling(self):
+        # 100 main budget, 5% default grace -> ceiling 105; 104 is over the
+        # main budget but still under grace.
+        for agent_name in ("ScrumMaster", "ProductOwner", "QualityGuardian", "ScrumOrchestrator"):
+            with self.subTest(agent_name=agent_name):
+                mock_context = self._context(agent_name, 100, 104)
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                self.assertIsNone(result, f"{agent_name} should still get a real call within grace")
+
+    def test_non_grace_role_hard_halts_immediately_with_no_grace_at_all(self):
+        for agent_name in ("DevTeam", "QA", "Architect"):
+            with self.subTest(agent_name=agent_name):
+                mock_context = self._context(agent_name, 100, 104)
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                self.assertIsNotNone(result, f"{agent_name} must not get any grace")
+
+    def test_grace_role_also_hard_halts_once_the_grace_ceiling_is_exceeded(self):
+        # 100 main budget, 5% default grace -> ceiling 105; 106 is past both.
+        mock_context = self._context("ProductOwner", 100, 106)
+        with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+            result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNotNone(result)
+
+    def test_grace_percent_is_configurable_via_env(self):
+        mock_context = self._context("ProductOwner", 100, 104)
+        with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "0"}):
+            with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNotNone(result, "0% grace should hard-halt exactly like today's unconditional behavior")
+
+    def test_usd_budget_grants_the_same_grace(self):
+        mock_context = self._context("ProductOwner", 1000000, 0)
+        mock_context.state["budgets"]["total_usd"] = 10.0
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
+            with patch("requests.post") as mock_post:
+                # 10.4 is over the $10 ceiling but under the 5% grace ceiling ($10.50).
+                mock_post.return_value.json.return_value = [{"spend": 10.4}]
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNone(result)
+
+    def test_usd_budget_hard_halts_a_non_grace_role_even_within_the_grace_window(self):
+        mock_context = self._context("DevTeam", 1000000, 0)
+        mock_context.state["budgets"]["total_usd"] = 10.0
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
+            with patch("requests.post") as mock_post:
+                mock_post.return_value.json.return_value = [{"spend": 10.4}]
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNotNone(result)
+
+
+class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):
+    """
+    Acceptance Criteria: a real eval run hit exhaustion mid-story with a
+    feature branch checked out - the roadmap sync commit landed there
+    instead of develop, leaving develop's own specs/ROADMAP.md stale. Must
+    check out the configured develop branch first, sync after (the sync
+    renders from in-memory state, not disk), then push to develop - falling
+    back to whatever's currently checked out only if switching to develop
+    itself fails.
+    """
+
+    def _context(self):
+        mock_context = MagicMock()
+        mock_context.state = ScrumState().model_dump()
+        return mock_context
+
+    def test_checks_out_develop_before_syncing_and_pushes_there(self):
+        mock_context = self._context()
+        calls = []
+
+        def fake_run(cmd, cwd=None, tool_context=None):
+            calls.append(cmd)
+            return {"status": "ok", "stdout": "", "stderr": ""}
+
+        with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
+             patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
+             patch("agents.scrum_team.agent._run", side_effect=fake_run) as mock_run, \
+             patch("agents.scrum_team.agent.sync_all_active_stories_to_roadmap") as mock_sync, \
+             patch("agents.scrum_team.agent._git_push_impl") as mock_push:
+            _sync_and_commit_roadmap_on_exhaustion(mock_context)
+
+        self.assertIn(["git", "fetch", "origin", "develop"], calls)
+        self.assertIn(["git", "checkout", "-B", "develop", "origin/develop"], calls)
+        self.assertTrue(mock_sync.called)
+        mock_push.assert_called_once_with(
+            branch="develop",
+            commit_message="chore: sync roadmap - sprint budget exhausted",
+            allow_protected=True,
+            tool_context=mock_context,
+        )
+
+    def test_falls_back_to_current_branch_if_develop_checkout_fails(self):
+        mock_context = self._context()
+
+        def fake_run(cmd, cwd=None, tool_context=None):
+            if cmd[:2] == ["git", "fetch"] or cmd[:2] == ["git", "checkout"]:
+                return {"status": "error", "stderr": "no network"}
+            if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+                return {"status": "ok", "stdout": "feature/US-001-todo\n"}
+            return {"status": "ok", "stdout": "", "stderr": ""}
+
+        with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
+             patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
+             patch("agents.scrum_team.agent._run", side_effect=fake_run), \
+             patch("agents.scrum_team.agent.sync_all_active_stories_to_roadmap"), \
+             patch("agents.scrum_team.agent._git_push_impl") as mock_push:
+            _sync_and_commit_roadmap_on_exhaustion(mock_context)
+
+        mock_push.assert_called_once_with(
+            branch="feature/US-001-todo",
+            commit_message="chore: sync roadmap - sprint budget exhausted",
+            allow_protected=True,
+            tool_context=mock_context,
+        )
+
+    def test_never_raises_even_if_everything_fails(self):
+        mock_context = self._context()
+        with patch("agents.scrum_team.agent._configured_repo_root", side_effect=Exception("boom")):
+            _sync_and_commit_roadmap_on_exhaustion(mock_context)  # must not raise
 
 
 class TestEnsureStateInitializedCallback(unittest.TestCase):

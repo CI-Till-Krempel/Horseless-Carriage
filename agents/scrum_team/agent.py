@@ -226,7 +226,15 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 
 from . import tui
-from .helpers import get_process_overhead_percentage, is_story_done, get_interaction_level, STORY_STAGES, get_env_with_deprecated_fallback
+from .helpers import (
+    get_process_overhead_percentage,
+    is_story_done,
+    get_interaction_level,
+    STORY_STAGES,
+    get_env_with_deprecated_fallback,
+    closeout_grace_percent,
+    SPRINT_CLOSEOUT_GRACE_ROLES,
+)
 from .prompts import (
     ORCHESTRATOR_PROMPT,
     PO_PROMPT,
@@ -323,7 +331,7 @@ from .tools.budget import (
 # _sync_and_commit_roadmap_on_exhaustion below, the mechanical last-gasp
 # roadmap sync triggered when the sprint budget runs out mid-turn.
 from .tools.requirements import sync_all_active_stories_to_roadmap
-from .tools.base import _configured_repo_root, _run, _redact_secrets
+from .tools.base import _configured_repo_root, _run, _redact_secrets, _develop_branch_name
 from .state import ScrumState, Budgets, TokenUsage
 
 # --- LiteLLM Proxy wiring ---
@@ -466,21 +474,42 @@ def _sync_and_commit_roadmap_on_exhaustion(callback_context: CallbackContext) ->
     specs/ROADMAP.md to whatever every story's real stage is and committing
     it, so task status stays visible even though development just stopped.
 
+    Targets the configured develop branch explicitly, not whatever happens
+    to be checked out - a real eval run hit exhaustion mid-story with a
+    feature branch checked out, so the sync commit landed there instead of
+    develop, leaving develop's own specs/ROADMAP.md stale (still showing an
+    earlier stage than the story had actually reached). The sync itself
+    renders purely from in-memory state, not from whatever was on disk, so
+    it's correct to check out develop first and sync after.
+
     Best-effort: any failure here (no network, git error) must not prevent
     the caller from still returning its own canned budget-exceeded response.
+    Falls back to whatever's currently checked out if switching to develop
+    itself fails (e.g. no network) - never regress below the previous,
+    less-precise behavior just because the safer path isn't reachable.
     """
     try:
+        repo_root = str(_configured_repo_root(callback_context))
+        develop = _develop_branch_name(callback_context)
+        branch = develop
+        fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=callback_context)
+        checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=callback_context)
+        if fetch.get("status") != "ok" or checkout.get("status") != "ok":
+            branch_result = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, tool_context=callback_context)
+            current_branch = (branch_result.get("stdout") or "").strip()
+            branch = current_branch if current_branch and current_branch != "HEAD" else None
+
         # CallbackContext already exposes .state/.agent_name the same way
         # tool functions expect tool_context to (used elsewhere in this same
-        # callback), so it can stand in for tool_context here.
+        # callback), so it can stand in for tool_context here. Runs AFTER
+        # the checkout above (not before) since it renders straight from
+        # in-memory state - the resulting write is correct on whichever
+        # branch is now actually checked out.
         sync_all_active_stories_to_roadmap(callback_context)
 
-        repo_root = str(_configured_repo_root(callback_context))
-        branch_result = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, tool_context=callback_context)
-        current_branch = (branch_result.get("stdout") or "").strip()
-        if current_branch and current_branch != "HEAD":
+        if branch:
             _git_push_impl(
-                branch=current_branch,
+                branch=branch,
                 commit_message="chore: sync roadmap - sprint budget exhausted",
                 allow_protected=True,
                 tool_context=callback_context,
@@ -609,15 +638,27 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     token_usage = state.token_usage.total
     if token_limit > 0 and token_usage >= token_limit:
         _sync_roadmap_on_exhaustion_once(callback_context)
-        msg = (
-            f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
-            f"Current usage: {token_usage:,}. Agent execution halted."
-        )
-        _notify_critical_halt(callback_context, msg)
-        return LlmResponse(
-            content=types.Content(role="model", parts=[types.Part(text=msg)]),
-            model_version=llm_request.model or "unknown"
-        )
+        # SPRINT CLOSE SEQUENCE grace (see closeout_grace_percent/
+        # SPRINT_CLOSEOUT_GRACE_ROLES, helpers.py): a real eval run produced
+        # no sprint report and no release PR at all, since every subsequent
+        # call for every agent was hard-halted the instant the main budget
+        # tripped - nobody ever got a turn to run retro/create_sprint_report/
+        # KPIs/create_release_pr. DevTeam/QA/Architect still halt immediately
+        # here, unconditionally - their work is frozen; only closing the
+        # sprint out for real still needs turns.
+        grace_limit = token_limit * (1 + closeout_grace_percent() / 100.0)
+        if agent_name in SPRINT_CLOSEOUT_GRACE_ROLES and token_usage < grace_limit:
+            pass
+        else:
+            msg = (
+                f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
+                f"Current usage: {token_usage:,}. Agent execution halted."
+            )
+            _notify_critical_halt(callback_context, msg)
+            return LlmResponse(
+                content=types.Content(role="model", parts=[types.Part(text=msg)]),
+                model_version=llm_request.model or "unknown"
+            )
 
     # 2. Check USD Budget (Remote Guardrail via LiteLLM Proxy)
     if os.environ.get("LLM_LOCAL_PROVIDER") == "true":
@@ -688,15 +729,20 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
 
         if current_spend >= budget_limit:
             _sync_roadmap_on_exhaustion_once(callback_context)
-            msg = (
-                f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
-                f"Current spend: ${current_spend:.2f}. Agent execution halted."
-            )
-            _notify_critical_halt(callback_context, msg)
-            return LlmResponse(
-                content=types.Content(role="model", parts=[types.Part(text=msg)]),
-                model_version=llm_request.model or "unknown"
-            )
+            # Same SPRINT CLOSE SEQUENCE grace as the token check above.
+            grace_usd_limit = budget_limit * (1 + closeout_grace_percent() / 100.0)
+            if agent_name in SPRINT_CLOSEOUT_GRACE_ROLES and current_spend < grace_usd_limit:
+                pass
+            else:
+                msg = (
+                    f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
+                    f"Current spend: ${current_spend:.2f}. Agent execution halted."
+                )
+                _notify_critical_halt(callback_context, msg)
+                return LlmResponse(
+                    content=types.Content(role="model", parts=[types.Part(text=msg)]),
+                    model_version=llm_request.model or "unknown"
+                )
     except requests.RequestException as e:
         _sync_roadmap_on_exhaustion_once(callback_context)
         msg = f"❌ [BUDGET ERROR] Could not verify budget status with LiteLLM proxy: {e}. Agent execution halted to prevent unmonitored spending."

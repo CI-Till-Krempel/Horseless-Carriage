@@ -8,6 +8,40 @@ def get_process_overhead_percentage() -> float:
     return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
 
 
+def closeout_grace_percent() -> float:
+    """
+    How much EXTRA token/USD budget (as a percentage of the main sprint
+    ceiling) ScrumMaster/ProductOwner/QualityGuardian/ScrumOrchestrator may
+    still spend, combined, after the main budget is exhausted - specifically
+    to finish the SPRINT CLOSE SEQUENCE (retro -> create_sprint_report ->
+    KPIs -> create_release_pr) for real, rather than skipping it entirely.
+    A real eval run produced no sprint report and no release PR at all on
+    exhaustion, since every subsequent model call for every agent was
+    replaced with a canned halt response the instant the main budget
+    tripped - see check_cost_budget_callback/SPRINT_CLOSEOUT_GRACE_ROLES,
+    agents/scrum_team/agent.py. DevTeam/QA/Architect get none of this grace -
+    their work is frozen at exhaustion; only closing the sprint out still
+    needs turns. Configurable via SPRINT_CLOSEOUT_GRACE_PERCENT; default 5.0
+    (5%) - small on purpose. Each agent's own LiteLLM virtual-key budget is
+    still the ultimate financial backstop underneath this either way.
+    """
+    return float(os.getenv("SPRINT_CLOSEOUT_GRACE_PERCENT", "5.0"))
+
+
+# The roles the SPRINT CLOSE SEQUENCE actually needs a real turn from once
+# the main budget trips (see closeout_grace_percent above) - ScrumMaster
+# (retro), ProductOwner (create_sprint_report/create_release_pr),
+# QualityGuardian (calculate_kpis/update_sprint_report), and
+# ScrumOrchestrator itself: run_eval.py's continuation nudges
+# (_run_one_sprint's _CONTINUE_NUDGE) are sent as a fresh top-level message
+# each time, which re-enters through the root agent - if ScrumOrchestrator
+# were hard-halted too, a nudge could never even route to ScrumMaster in the
+# first place, silently reproducing the exact failure this grace exists to
+# fix. ScrumOrchestrator has no code-writing tools, so including it adds
+# negligible cost risk.
+SPRINT_CLOSEOUT_GRACE_ROLES = frozenset({"ScrumMaster", "ProductOwner", "QualityGuardian", "ScrumOrchestrator"})
+
+
 # --- Budget env var naming (GH issue #81) ---
 # TOTAL_USD_BUDGET replaces SPRINT_USD_BUDGET as the canonical name for the
 # whole-engagement, never-reset-per-sprint USD ceiling - the old name looked
