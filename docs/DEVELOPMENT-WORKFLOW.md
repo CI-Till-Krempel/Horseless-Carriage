@@ -12,11 +12,11 @@ source of truth for their slice; this page is the composite map plus the knobs t
 | Agent | Owns | Key tools |
 |---|---|---|
 | 🧑‍✈️ **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
-| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_design_approval`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
+| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_design_approval`, `deny_review`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
 | 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `update_budgets`/`get_budget_status` |
 | 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
-| 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
-| 🕵️ **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
+| 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `deny_review`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
+| 🕵️ **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `deny_review`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
 | 🧑‍⚖️ **QualityGuardian** | KPI reporting | `calculate_kpis`, `update_sprint_report`, `upsert_issue` |
 
 Every role uses an actual human-figure emoji - a deliberate, consistent "persona" icon per role. Mermaid
@@ -114,16 +114,16 @@ flowchart TD
     PRReady --> Impl["🧑‍💻 DevTeam\n🔄 IMPLEMENTED\n🔧 advance_story_stage"]:::dev
     Impl --> ArchReview["👷 Architect\n🔧 gh_pr_review / gh_pr_comment"]:::arch
     ArchReview --> ArchGate{{"Changes requested?"}}:::loop
-    ArchGate -- "❌ yes — back to development" --> Code
+    ArchGate -- "❌ yes — 🔧 deny_review(reason)\nback to development" --> Code
     ArchGate -- "✅ approved" --> Reviewed["👷 Architect\n🔄 REVIEWED\n🔧 advance_story_stage"]:::arch
     Reviewed --> Build["🕵️ QA\n🔧 check_build\nreal dependency install + test run"]:::qa
     Build --> BuildGate{{"Build/tests pass,\nno QA findings?"}}:::loop
-    BuildGate -- "❌ no — back to development" --> Code
+    BuildGate -- "❌ no — 🔧 deny_review(reason)\nback to development" --> Code
     BuildGate -- "✅ yes" --> Tested["🕵️ QA\n🔄 TESTED\n🔧 advance_story_stage"]:::qa
     Tested --> Merge["🕵️ QA\n🔧 merge_story_pr\nfeature branch → develop"]:::qa
     Merge --> Verify["🧑‍💼 ProductOwner\nverifies acceptance criteria"]:::po
     Verify --> AcceptGate{{"Acceptance criteria\nactually met?"}}:::loop
-    AcceptGate -- "❌ no — back to development" --> Code
+    AcceptGate -- "❌ no — 🔧 deny_review(reason)\nback to development" --> Code
     AcceptGate -- "✅ yes" --> Accepted["🧑‍💼 ProductOwner\n🔄 ACCEPTED\n🔧 advance_story_stage"]:::po
 
     classDef po fill:#cfe2ff,stroke:#0d6efd,color:#000
@@ -143,6 +143,16 @@ backlog item is Accepted), and content quality - never just prompt instructions.
 could set `status` to a stage name directly (`upsert_story`/`upsert_epic`/`plan_sprint_backlog_item`)
 refuses to (`blocks_direct_status_set`). Each successful call also re-renders `specs/ROADMAP.md`'s
 checkboxes for that story in the same call - no separate step.
+
+Its counterpart, `deny_review(title_or_id, stage, reason)`, is the *only* way to deny Reviewed/
+Tested/Accepted mechanically instead of just never calling `advance_story_stage` (with the "why", if
+stated at all, left in conversation text only). It refuses a `reason` that's empty, a template
+placeholder, or a generic restatement of the verdict itself ("not good", "denied", ...) - a denial
+must actually say what's wrong. The accepted reason is written onto the story's own record and
+re-rendered into its Markdown file (Notes section), which Dev Team already reads via `read_doc` - so
+a denial is mechanically visible and actionable, not something that only ever existed in a PR
+comment or a conversation turn. Cleared automatically once the story advances past the stage it was
+denied at.
 
 ## 3. Interaction levels (who's in the loop, and how much)
 

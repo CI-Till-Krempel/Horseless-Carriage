@@ -93,7 +93,8 @@ Concretely, in this codebase (see "Story workflow" below for the full feature th
   model to check `spec-templates/DOD.md`/`DOR.md` first. `check_build()` actually attempts to
   install the project's dependencies rather than asking QA to "verify the build works" by reading
   the code. `create_sprint_report` refuses to run at all unless a *new* retro action or impediment
-  was logged since the last report.
+  was logged since the last report. `deny_review` refuses an empty, placeholder, or generic
+  ("not good", "denied") reason - a rejection isn't allowed to exist without saying what's wrong.
 - **No bypass path left open.** Enforcing order/ownership in one tool (`advance_story_stage`) is
   only real enforcement if every other way to change the same state is closed off too -
   `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status` directly to a
@@ -159,6 +160,11 @@ nicely in a prompt:
   directly to any of the 6 stage names - only `advance_story_stage` can.
 - It also updates `specs/ROADMAP.md`'s per-stage checkboxes for that story automatically, in the
   same call - see below.
+
+REVIEWED/TESTED/ACCEPTED are also the three stages someone can *deny*, not just complete -
+`deny_review(title_or_id, stage, reason)` is the mechanical counterpart, restricted to that stage's
+owner, that refuses an empty/placeholder/generic reason ("not good", "denied", ...) so a rejection
+always says something Dev Team can act on. See RELEASE.md "Denying a review" for the full mechanics.
 
 ### 2. Specification Artifacts (`specs/`)
 Stored in your **target state repository** (configured via `STATE_REPO_PATH` - see [State Repository](STATE-REPOSITORY.md)), these are the actual documents generated and updated by the agents.

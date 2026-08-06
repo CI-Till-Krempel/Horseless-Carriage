@@ -228,6 +228,27 @@ silently failed would be exactly the kind of gap this mechanism exists to close.
 there's no longer a separate "now go tell the roadmap" step for a story once it's moving through
 stages at all.
 
+### Denying a review (Reviewed/Tested/Accepted) requires a concrete, actionable reason
+
+`advance_story_stage`'s Reviewed/Tested gates only ever checked that *some* `gh_pr_review`/
+`gh_pr_comment` call had been made since the last attempt - never whether it was an approval or a
+rejection, let alone what it said. Accepted had no stage-specific gate at all. So "denying" a review
+was mechanically indistinguishable from "haven't gotten to it yet": there was no tool call
+representing a rejection, and whatever reason a model did give only ever existed in free-text
+conversation, with no guarantee Dev Team ever saw it or that it said anything concrete.
+
+`deny_review(title_or_id, stage, reason, tool_context=None)` (`agents/scrum_team/tools/
+requirements.py`, docs/DEVELOPMENT-WORKFLOW.md's diagram 2) is the mechanical counterpart, callable
+only by that stage's owner (Architect for Reviewed, QA for Tested, Product Owner for Accepted) for
+exactly those three stages. It refuses a `reason` that's empty, shorter than 15 characters, a
+`<...>` template placeholder, or a generic restatement of the verdict itself ("not good", "denied",
+"needs work", ...) - a rejection has to actually say what's wrong and what would need to change. The
+accepted reason is written onto the story's own record (both backlog copies) and re-rendered into
+its Markdown file's Notes section (`_update_story_markdown`) - which Dev Team already has `read_doc`
+for - so it's mechanically visible and actionable, not just something said once in a PR comment or a
+conversation turn. Cleared automatically by `advance_story_stage` once the story actually advances
+past the stage it was denied at, so a resolved denial doesn't linger as stale feedback.
+
 ### Sprint retrospective enforcement
 
 `create_sprint_report` (`agents/scrum_team/tools/budget.py`) mechanically refuses to write a

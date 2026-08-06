@@ -1,11 +1,13 @@
 # agents/scrum_team/tests/test_requirements.py
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
     advance_story_stage, upsert_backlog_item, record_design_approval, plan_backlog_item, set_priority,
-    upsert_story, upsert_epic, upsert_issue,
+    upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
 )
 
 
@@ -422,6 +424,132 @@ class TestRecordDesignApproval(unittest.TestCase):
         tc = _tool_context("ProductOwner", [])
         result = record_design_approval("US-9999", "note", tool_context=tc)
         self.assertEqual(result["status"], "error")
+
+
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestDenyReview(unittest.TestCase):
+    """
+    Acceptance Criteria: a review (Architect's code review, QA's, or Product
+    Owner's acceptance check) can only be denied with a concrete, actionable
+    reason - not silently (just never calling advance_story_stage, with the
+    "why" left in conversation text only, if stated at all) and not with an
+    empty/placeholder/generic non-reason ("not good", "denied", ...) that
+    gives Dev Team nothing to act on.
+    """
+
+    _VALID_REASON = "The pagination logic off-by-one errors on the last page - fix the loop bound."
+
+    def test_architect_denies_reviewed_with_concrete_reason(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        result = deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        for backlog in ("product_backlog", "sprint_backlog"):
+            denial = tc.state[backlog][0]["review_denial"]
+            self.assertEqual(denial["stage"], "Reviewed")
+            self.assertEqual(denial["reason"], self._VALID_REASON)
+            self.assertEqual(denial["by"], "Architect")
+
+    def test_qa_denies_tested_with_concrete_reason(self, mock_save, mock_md):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        result = deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Tested")
+
+    def test_product_owner_denies_accepted_with_concrete_reason(self, mock_save, mock_md):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        result = deny_review("US-0001", "Accepted", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Accepted")
+
+    def test_rejects_empty_reason(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        result = deny_review("US-0001", "Reviewed", "", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("review_denial", tc.state["product_backlog"][0])
+
+    def test_rejects_too_short_reason(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        result = deny_review("US-0001", "Reviewed", "bad code", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_rejects_generic_reason(self, mock_save, mock_md):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        for generic in ("not good", "denied", "needs work", "does not meet criteria"):
+            with self.subTest(generic=generic):
+                result = deny_review("US-0001", "Tested", generic, tool_context=tc)
+                self.assertEqual(result["status"], "error")
+
+    def test_rejects_placeholder_reason(self, mock_save, mock_md):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        result = deny_review("US-0001", "Accepted", "<describe what's wrong here>", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_rejects_wrong_role(self, mock_save, mock_md):
+        tc = _tool_context("DevTeam", ["Ready", "Implemented"])
+        result = deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Architect", result["message"])
+
+    def test_rejects_non_deniable_stage(self, mock_save, mock_md):
+        tc = _tool_context("ProductOwner", [])
+        result = deny_review("US-0001", "Draft", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_unknown_story_errors(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        result = deny_review("US-9999", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
+    def test_advancing_past_denied_stage_clears_the_denial(self, mock_save, mock_md):
+        """A resolved denial shouldn't linger as stale feedback once the
+        story actually advances past the stage it was denied at."""
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        self.assertIsNotNone(tc.state["product_backlog"][0]["review_denial"])
+
+        # A real review call from Architect happened (re-review) - satisfies
+        # advance_story_stage's own "Reviewed" gate, unrelated to deny_review.
+        tc.state["pr_review_calls"] = {"Architect": 1}
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+            result = advance_story_stage("US-0001", "Reviewed", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+    def test_denying_a_different_stage_does_not_clear_an_unrelated_denial(self, mock_save, mock_md):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
+        # Some other, unrelated progress happens (e.g. re-review not yet done) -
+        # the denial must survive until the SAME stage actually advances.
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Reviewed")
+
+
+class TestDenyReviewSurfacesInStoryMarkdown(unittest.TestCase):
+    """_update_story_markdown itself (not mocked here) must fold a recorded
+    review_denial into the story's rendered Notes section, so it's visible
+    via `read_doc` - not just something said once in conversation."""
+
+    def test_review_denial_appears_in_rendered_notes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                item = {
+                    "id": "US-0001",
+                    "title": "Add login flow",
+                    "type": "User Story",
+                    "status": "Implemented",
+                    "user_story": "As a user, I want to log in, so that I can access my account.",
+                    "acceptance_criteria": ["Given valid creds, when I submit, then I'm logged in"],
+                    "review_denial": {
+                        "stage": "Reviewed",
+                        "reason": "The session token is never invalidated on logout - fix that first.",
+                        "by": "Architect",
+                    },
+                }
+                result = _update_story_markdown(item, tool_context=MagicMock(state={}))
+                self.assertEqual(result["status"], "ok")
+                content = Path(result["path"]).read_text(encoding="utf-8")
+                self.assertIn("REVIEW DENIED", content)
+                self.assertIn("session token is never invalidated", content)
 
 
 class TestUpsertBacklogItemGuards(unittest.TestCase):
