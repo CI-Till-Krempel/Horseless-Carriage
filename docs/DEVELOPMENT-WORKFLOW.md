@@ -12,7 +12,7 @@ source of truth for their slice; this page is the composite map plus the knobs t
 | Agent | Owns | Key tools |
 |---|---|---|
 | 🧑‍✈️ **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
-| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_story`/`upsert_epic`/`upsert_issue`, `advance_story_stage`, `record_design_approval`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
+| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_design_approval`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
 | 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `update_budgets`/`get_budget_status` |
 | 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
 | 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
@@ -45,6 +45,9 @@ development.
 **Interaction levels** (highlighted on every branch they affect - see section 3 for the full matrix):
 🔵 Product · 🟣 Stakeholder · 🟠 CEO · 🤖 EVAL (fully autonomous, no human at all)
 
+**Artifacts**: 📄 marks a node that actually writes a persisted document/file (as opposed to just
+state or a PR) - the exact path is named on the node itself.
+
 ## 1. Sprint lifecycle (the outer loop)
 
 ```mermaid
@@ -55,7 +58,7 @@ flowchart TD
     D --> E{{"All stories as far\nas this sprint allows?"}}:::loop
     E -- "no — iterate" --> D
     E -- yes --> F["🧑‍🏫 ScrumMaster\n🔧 add_retro_action / add_impediment\n⚠️ MANDATORY: must be NEW since last report"]:::sm
-    F --> G["🧑‍💼 ProductOwner\n🔧 create_sprint_report\n❌ refuses without a fresh retro/impediment"]:::po
+    F --> G["🧑‍💼 ProductOwner\n🔧 create_sprint_report\n📄 specs/reports/SPRINT-REPORT-N.md\n❌ refuses without a fresh retro/impediment"]:::po
     G --> H["🧑‍⚖️ QualityGuardian\n🔧 calculate_kpis + update_sprint_report"]:::qg
     H --> I{"Release approval\nrequired at this level?"}:::gate
     I -- "🔵 Product / 🟣 Stakeholder" --> J["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval('release')"]:::human
@@ -82,8 +85,17 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Draft["🧑‍💼 ProductOwner (+👷 Architect feasibility)\n🔄 DRAFT\nconcept/mockup shaped into a real backlog item"]:::po
-    Draft -->|"🔧 advance_story_stage"| GateReady{"Stakeholder level?"}:::gate
+    subgraph ReqEng["📋 Requirements engineering & product workflow — happens while a story sits in DRAFT"]
+        direction TB
+        Vision["🧑‍💼 ProductOwner\n🔧 upsert_prd\n📄 specs/requirements/PRD-*.md\n🔄 parsed into product_vision/product_goals"]:::po
+        Vision --> SRSDoc["🧑‍💼 ProductOwner\n🔧 upsert_srs (optional, technical detail)\n📄 specs/requirements/SRS-*.md"]:::po
+        Vision --> Roadmap["🧑‍💼 ProductOwner\n🔧 update_roadmap\n📄 specs/ROADMAP.md"]:::po
+        Roadmap --> Epic["🧑‍💼 ProductOwner\n🔧 upsert_epic\ngroups related stories"]:::po
+        Epic --> StoryDraft["🧑‍💼 ProductOwner (+👷 Architect input)\n🔧 upsert_story\n📄 specs/stories/US-*.md"]:::po
+        StoryDraft --> Prioritize["🧑‍💼 ProductOwner\n🔧 set_priority / plan_backlog_item"]:::po
+    end
+    Prioritize --> Draft["🧑‍💼 ProductOwner (+👷 Architect feasibility)\n🔄 DRAFT\n🔧 advance_story_stage\ntitle/user story/AC refined until real, not placeholder"]:::po
+    Draft --> GateReady{"Stakeholder level?"}:::gate
     GateReady -- "🟣 Stakeholder" --> Design["🟥👤 HUMAN APPROVAL\n🔧 record_design_approval\nPO records the stakeholder's sign-off on this story's design"]:::human
     Design --> DesignGate{{"Design approved?"}}:::loop
     DesignGate -- "❌ no — revise & resubmit" --> Draft
