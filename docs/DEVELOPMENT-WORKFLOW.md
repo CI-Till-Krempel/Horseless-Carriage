@@ -12,11 +12,11 @@ source of truth for their slice; this page is the composite map plus the knobs t
 | Agent | Owns | Key tools |
 |---|---|---|
 | 🧑‍✈️ **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
-| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_design_approval`, `record_acceptance_check`, `deny_review`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
-| 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `update_budgets`/`get_budget_status` |
-| 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
-| 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `deny_review`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
-| 🕵️ **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `deny_review`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
+| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_design_approval`, `record_acceptance_check`, `deny_review`, `raise_story_blocker`/`resolve_story_blocker`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
+| 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `raise_story_blocker`, `update_budgets`/`get_budget_status` |
+| 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `raise_story_blocker`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
+| 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `deny_review`, `raise_story_blocker`/`resolve_story_blocker`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
+| 🕵️ **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `deny_review`, `raise_story_blocker`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
 | 🧑‍⚖️ **QualityGuardian** | KPI reporting | `calculate_kpis`, `update_sprint_report`, `upsert_issue` |
 
 Every role uses an actual human-figure emoji - a deliberate, consistent "persona" icon per role. Mermaid
@@ -44,6 +44,10 @@ development.
 
 **Interaction levels** (highlighted on every branch they affect - see section 3 for the full matrix):
 🔵 Product · 🟣 Stakeholder · 🟠 CEO · 🤖 EVAL (fully autonomous, no human at all)
+
+**🚫 BLOCKED**: not drawn as a branch off every single node below (it would make both diagrams
+illegible) - any stage in diagram 2 can transition here instead, whenever the team genuinely can't
+proceed, including a mechanical loop-detection trip. See "Blocked stories" after diagram 2.
 
 **Artifacts**: 📄 marks a node that actually writes a persisted document/file (as opposed to just
 state or a PR) - the exact path is named on the node itself.
@@ -161,6 +165,55 @@ called - and, after a denial, called again - before `advance_story_stage(id, "Ac
 this is a per-story counter, not a one-time flag, precisely so a denial can require a genuinely new
 check instead of reuse of the one that got denied.
 
+### Blocked stories (🚫 - any stage, any time)
+
+Distinct from `deny_review` above: a denial is a clear, actionable verdict Dev Team can act on
+directly. BLOCKED means nobody on the team currently has the answer - a real open question, or a
+mechanical loop (the same `transfer_to_agent`/repeated-tool-call pattern the loop-breakers in
+`agent.py` already refuse - they now raise this automatically once they've identified a stuck story,
+so it can happen with no tool call at all on anyone's part).
+
+```mermaid
+flowchart LR
+    Any["Any stage in the\npipeline above"]:::multi --> Raise["🔧 raise_story_blocker(id, question, category)\ncallable by any role"]:::multi
+    Raise --> Blocked["🚫 BLOCKED\n❌ advance_story_stage refuses\nfurther calls for this story"]:::human
+    Blocked --> Route{"category?"}:::gate
+    Route -- "technical" --> Arch["👷 Architect resolves\n(every interaction level)"]:::arch
+    Route -- "product" --> POGate{"🔵 Product level?"}:::gate
+    POGate -- "no" --> PO["🧑‍💼 ProductOwner resolves"]:::po
+    POGate -- "yes" --> User["🟥👤 human User resolves\n(escalated - see docs/INTERACTION-LEVELS.md)"]:::human
+    Arch --> ResolveGate{{"Answer found?"}}:::loop
+    PO --> ResolveGate
+    User --> ResolveGate
+    ResolveGate -- "✅ yes — 🔧 resolve_story_blocker(id, resolution)" --> Any
+    ResolveGate -- "❌ still stuck — team moves on" --> Skip["Next story in product_backlog\n(_preceding_story skips this one)"]:::multi
+    Skip --> Report["📄 create_sprint_report's\n'Open Questions for Stakeholder'"]:::po
+
+    classDef po fill:#cfe2ff,stroke:#0d6efd,color:#000
+    classDef arch fill:#e6d9f7,stroke:#6f42c1,color:#000
+    classDef human fill:#ff8787,stroke:#c92a2a,stroke-width:3px,color:#000
+    classDef gate fill:#f1f3f5,stroke:#868e96,color:#000
+    classDef loop fill:#fff9db,stroke:#f08c00,stroke-width:2px,color:#000
+    classDef multi fill:#ffffff,stroke:#495057,stroke-dasharray: 5 5,color:#000
+```
+
+- `raise_story_blocker(title_or_id, question, category)` - any role, once it recognizes the team is
+  genuinely stuck. `category` is `"technical"` (Architect) or `"product"` (Product Owner - or the
+  human User directly at the "Product" interaction level, since that human already IS the acting
+  product owner day-to-day). Refuses a vague `question` the same way `deny_review` refuses a vague
+  `reason`. Writes a `blocked` record onto the story (both backlog copies, re-rendered into its
+  Markdown file) and raises a `blocking_interactions` entry (kind `"blocked_story"`).
+- `advance_story_stage` refuses every further call for that story while `blocked` is set - resolved
+  only by `resolve_story_blocker(title_or_id, resolution)`, callable only by the category's owning
+  role. At the "Product" level, a `"product"`-category blocker mechanically refuses Product Owner's
+  own resolution until the linked `blocking_interaction` has actually been resolved by the human
+  first - the escalation has teeth, not just a notification Product Owner could route around.
+- One-story-at-a-time ordering (`_preceding_story`) skips a BLOCKED predecessor automatically, so a
+  stuck story doesn't also freeze every lower-priority one behind it - the team moves on to the next
+  story instead of staying stuck.
+- If it's never resolved this sprint, it isn't lost: `create_sprint_report` always includes an "Open
+  Questions for Stakeholder" section listing every still-BLOCKED story, at every interaction level.
+
 ## 3. Interaction levels (who's in the loop, and how much)
 
 `INTERACTION_LEVEL` (`.env`, four values) decides which of the two gate diamonds above actually
@@ -186,14 +239,16 @@ require a human, and how chatty the orchestrator is between them - full detail i
 | Sprint token/USD ceilings | `.env` budget vars - see [Budget Management](BUDGET.md) | When `check_cost_budget_callback` halts a sprint |
 | Which model backs each role | `config/model-templates/*.yaml` (`setup_llm.py`) | Provider/model per agent alias |
 | Report verbosity per level | `report_detail_level()` in `helpers.py` | What `create_sprint_report` renders (full/business/executive) |
+| Who resolves a BLOCKED story's category | `BLOCKER_CATEGORY_OWNERS` / `should_escalate_blocker_to_user()` in `helpers.py` | Which role (or the human User) a `raise_story_blocker` category routes to |
 
 ## Verifying the tooling actually follows this state machine
 
 `agents/scrum_team/tests/test_story_pipeline_state_machine.py` reads diagram 2 as a literal state
 machine and drives one story through it by calling the real tool functions in the documented order -
 no LLM, no ADK runner, just the same scripted Python calls a correctly-behaving conversation would
-make. Covers the golden path (every review approved first try) and all three review-fix loops
-(Architect's code review, QA's, Product Owner's acceptance check - deny → fix → re-review → advance).
+make. Covers the golden path (every review approved first try), all three review-fix loops
+(Architect's code review, QA's, Product Owner's acceptance check - deny → fix → re-review → advance),
+and the BLOCKED path above (raise → a lower-priority story proceeds anyway → resolve → advance).
 Only genuine external boundaries (git/gh subprocess calls, the real pytest run) are mocked; every
 gate/state mutation runs for real.
 

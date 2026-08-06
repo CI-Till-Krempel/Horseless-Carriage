@@ -34,6 +34,28 @@ Persisted the same way as `record_human_approval`/`add_impediment`: written into
 so a blocking interaction survives a crash immediately after it's recorded, not just once something
 else happens to save state later.
 
+## Loop detection and BLOCKED stories
+
+Two more mechanical triggers (`agents/scrum_team/agent.py`), both a `before_tool_callback` on every
+role: `_detect_transfer_loop` (`TRANSFER_LOOP_THRESHOLD`, default 3) refuses a `transfer_to_agent`
+ping-pong between the same two agents repeated with no other tool call in between; its sibling
+`_detect_repeated_call_loop` (`REPEATED_CALL_LOOP_THRESHOLD`, default 3) refuses any other tool
+called with the exact same arguments repeatedly. Both remember an already-broken pair/signature for
+the rest of the session (`_broken_transfer_pairs`/`_broken_call_signatures`), so a model that
+immediately retries the identical already-refused pattern is blocked right away, not after another
+full threshold streak.
+
+Rather than just logging a `"stalled"` blocking interaction (the original behavior, still the
+fallback if no story can be identified), a trip now tries to turn this into a real
+`raise_story_blocker` call (see [Development Workflow § Blocked stories](DEVELOPMENT-WORKFLOW.md)):
+a repeated tool call that names a story directly in its own arguments (e.g. a stuck
+`advance_story_stage(title_or_id="US-0006", ...)` retry) blocks that story; a transfer-loop trip (no
+story ID of its own) blocks whichever story is "currently being worked" under one-story-at-a-time
+ordering (`_current_story_in_progress`). Either way, this closes the same gap
+`raise_story_blocker`/`resolve_story_blocker` close for a *recognized* stuck question, but for a loop
+the team never explicitly flagged as one: it still ends up as a real BLOCKED story, not just a log
+entry nobody acts on.
+
 ## The notification plugin interface
 
 `Notifier` (`agents/scrum_team/tools/notifications.py`) is a small base class with one method,

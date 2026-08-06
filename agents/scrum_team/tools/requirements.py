@@ -12,6 +12,9 @@ from ..helpers import (
     is_source_file,
     required_pre_implementation_approval,
     requires_pre_ready_design_approval,
+    BLOCKER_CATEGORIES,
+    BLOCKER_CATEGORY_OWNERS,
+    should_escalate_blocker_to_user,
 )
 
 # Matches a bare item ID (US-0001, EP-0002, ISSUE-0003, ...) and nothing
@@ -744,7 +747,17 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
             f"\n- ⚠️ REVIEW DENIED at {review_denial.get('stage')} by "
             f"{review_denial.get('by')}: {review_denial.get('reason')}"
         )
-    
+    # raise_story_blocker's own recorded question - surfaced here the same
+    # way as review_denial above, so a BLOCKED story's open question is
+    # mechanically visible (read_doc), not just left in conversation text.
+    # Cleared by resolve_story_blocker once answered.
+    blocked = item.get("blocked")
+    if blocked:
+        notes += (
+            f"\n- \U0001f6ab BLOCKED ({blocked.get('category')}) - raised by {blocked.get('raised_by')}: "
+            f"{blocked.get('question')}"
+        )
+
     test_approach = item.get("test_approach", "")
     if item.get("tasks"):
         test_approach += "\n\n### Tasks\n" + "\n".join([f"- {t}" for t in item.get("tasks", [])])
@@ -801,10 +814,19 @@ NOT_IN_PRODUCT_BACKLOG = object()
 
 def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title: str):
     """
-    The nearest User Story before story_id/title in product_backlog order -
-    backlog order is priority order (see RELEASE.md "Story workflow").
-    Epics are skipped: they aren't advanced through the STORY_STAGES pipeline
-    themselves, so they shouldn't block a real story behind them.
+    The nearest non-BLOCKED User Story before story_id/title in
+    product_backlog order - backlog order is priority order (see
+    RELEASE.md "Story workflow"). Epics are skipped: they aren't advanced
+    through the STORY_STAGES pipeline themselves, so they shouldn't block a
+    real story behind them.
+
+    A BLOCKED predecessor (see raise_story_blocker) is skipped too, not
+    just Epics - a story stuck on an unresolved question shouldn't also
+    freeze every lower-priority story behind it; the team is meant to move
+    on to the next one while it waits (see RELEASE.md "Blocked stories").
+    The blocked story itself stays exactly where it is in product_backlog -
+    only the ordering *check* looks past it, so its priority position is
+    preserved for whenever it's resolved.
 
     Returns NOT_IN_PRODUCT_BACKLOG (not None) if story_id/title isn't in
     product_backlog at all - callers must treat that as "ordering can't be
@@ -817,9 +839,29 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     )
     if idx is None:
         return NOT_IN_PRODUCT_BACKLOG
-    if idx == 0:
-        return None
-    return stories_only[idx - 1]
+    for j in range(idx - 1, -1, -1):
+        if not stories_only[j].get("blocked"):
+            return stories_only[j]
+    return None
+
+
+def _current_story_in_progress(product_backlog: List[Dict[str, Any]]):
+    """
+    The story "currently being worked" under one-story-at-a-time ordering:
+    the first non-Epic, non-BLOCKED story in product_backlog order that
+    hasn't reached Accepted yet. Used to attach a story to a loop-detection
+    trip that has no story ID of its own (an unproductive transfer_to_agent
+    ping-pong, unlike a stuck advance_story_stage retry which already names
+    one in its own arguments) - see agent.py's _detect_transfer_loop.
+    """
+    for item in product_backlog:
+        if item.get("type", "User Story") == "Epic":
+            continue
+        if item.get("blocked"):
+            continue
+        if "Accepted" not in (item.get("stages_completed") or []):
+            return item
+    return None
 
 
 def _sync_roadmap_for_story(story_id: str, tool_context) -> Dict[str, Any]:
@@ -924,6 +966,17 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
     story_id = product_item.get("id") or sprint_item.get("id") or title_or_id
     title = product_item.get("title") or sprint_item.get("title") or title_or_id
     stages_completed = set(_story_stages_completed(product_item, sprint_item))
+
+    blocked = product_item.get("blocked") or sprint_item.get("blocked")
+    if blocked:
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot advance '{story_id}' - it is BLOCKED ({blocked.get('category')}): "
+                f"{blocked.get('question')}. Call resolve_story_blocker('{story_id}', resolution) "
+                "once this has been answered, then retry."
+            ),
+        }
 
     target_idx = STORY_STAGES.index(stage)
     missing = [st for st in STORY_STAGES[:target_idx] if st not in stages_completed]
@@ -1435,5 +1488,221 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
             f"Denial recorded for '{story_id}' at {stage} - see its story file "
             "(read_doc) for DevTeam's next steps."
         ),
+        "story_markdown": story_md_result,
+    }
+
+
+def raise_story_blocker(title_or_id: str, question: str, category: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Marks a story BLOCKED - orthogonal to STORY_STAGES (can happen from any
+    stage, not just a fixed point in the pipeline), for when the team
+    genuinely can't proceed: a real open question nobody on the team can
+    answer, or a mechanical loop-detection trip (see agent.py's
+    _detect_transfer_loop/_detect_repeated_call_loop, which call this same
+    function once a stuck story can be identified). advance_story_stage
+    refuses every further call for this story while `blocked` is set.
+
+    `category` is "technical" (routed to Architect) or "product" (routed to
+    Product Owner - or, at the "Product" interaction level, escalated
+    straight to the human User instead, since that human already IS the
+    acting product owner day-to-day - see should_escalate_blocker_to_user,
+    agents/scrum_team/helpers.py). Any role may call this - whoever
+    recognizes the team is stuck first, not just whoever will resolve it.
+
+    `question` must be real, specific text (reuses _is_concrete_denial_reason's
+    placeholder/genericity checks - the same "must be processable, not just a
+    verdict" philosophy applies to a blocker's open question as much as to a
+    denial's reason). Always raises a blocking_interaction too (kind
+    "blocked_story"), so a human reviewing list_blocking_interactions/the
+    console log sees it exactly like any other "absolutely necessary human
+    feedback" moment (GH issue #53), even before create_sprint_report's own
+    "Open Questions for Stakeholder" section surfaces it at sprint close.
+    """
+    from .scrum import save_state_to_repo
+    from .notifications import record_blocking_interaction
+
+    if category not in BLOCKER_CATEGORIES:
+        return {
+            "status": "error",
+            "message": f"category must be one of {list(BLOCKER_CATEGORIES)}, not '{category}'.",
+        }
+
+    if not _is_concrete_denial_reason(question):
+        return {
+            "status": "error",
+            "message": (
+                f"question must be a concrete, actionable question (at least "
+                f"{_MIN_DENIAL_REASON_LENGTH} characters, not a placeholder or a generic phrase) - "
+                "state specifically what's blocking progress and what answer would unblock it."
+            ),
+        }
+
+    s = tool_context.state
+    sprint_backlog = list(s.get("sprint_backlog", []))
+    product_backlog = list(s.get("product_backlog", []))
+    sprint_idx = next((i for i, x in enumerate(sprint_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    if sprint_idx is None and product_idx is None:
+        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+
+    sprint_item = sprint_backlog[sprint_idx] if sprint_idx is not None else {}
+    product_item = product_backlog[product_idx] if product_idx is not None else {}
+    story_id = product_item.get("id") or sprint_item.get("id") or title_or_id
+    title = product_item.get("title") or sprint_item.get("title") or title_or_id
+
+    if product_item.get("blocked") or sprint_item.get("blocked"):
+        return {
+            "status": "error",
+            "message": f"'{story_id}' is already BLOCKED - call resolve_story_blocker first if this has been answered.",
+        }
+
+    agent_name = getattr(tool_context, "agent_name", None)
+    escalate = should_escalate_blocker_to_user(category)
+    interaction_result = record_blocking_interaction(
+        "blocked_story",
+        f"'{story_id}' is BLOCKED ({category}): {question.strip()}",
+        detail=(
+            f"Raised by {agent_name or 'unknown'}. Resolve via "
+            f"{BLOCKER_CATEGORY_OWNERS[category]}'s resolve_story_blocker('{story_id}', resolution)"
+            + (" once the human User has answered (see resolve_blocking_interaction)." if escalate else ".")
+        ),
+        tool_context=tool_context,
+    )
+
+    blocked = {
+        "question": question.strip(),
+        "category": category,
+        "raised_by": agent_name or "unknown",
+        "raised_at_stage": product_item.get("status") or sprint_item.get("status"),
+        "escalated_to_user": escalate,
+        "blocking_interaction_id": (interaction_result.get("interaction") or {}).get("id"),
+    }
+    update = {"blocked": blocked}
+    if sprint_idx is not None:
+        sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
+        s["sprint_backlog"] = sprint_backlog
+    if product_idx is not None:
+        product_backlog[product_idx] = {**product_backlog[product_idx], **update}
+        s["product_backlog"] = product_backlog
+
+    save_state_to_repo(tool_context)
+
+    merged_item = {**product_item, **sprint_item, **update, "id": story_id, "title": title}
+    story_md_result = _update_story_markdown(merged_item, tool_context)
+
+    resolver = BLOCKER_CATEGORY_OWNERS[category]
+    return {
+        "status": "ok",
+        "story_id": story_id,
+        "blocked": blocked,
+        "message": (
+            f"'{story_id}' is now BLOCKED. "
+            + (
+                f"At the Product interaction level, this waits on the human User to answer - see "
+                "list_blocking_interactions/resolve_blocking_interaction - before Product Owner can "
+                "call resolve_story_blocker."
+                if escalate else
+                f"{resolver} should attempt to resolve it (resolve_story_blocker) - if it can't be "
+                "resolved this sprint, the team moves on to the next story (see "
+                "_preceding_story/create_sprint_report's 'Open Questions for Stakeholder')."
+            )
+        ),
+        "story_markdown": story_md_result,
+    }
+
+
+def resolve_story_blocker(title_or_id: str, resolution: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Clears a story's BLOCKED state (see raise_story_blocker) once an answer
+    has actually been found, unblocking advance_story_stage for it again.
+    Callable only by the category's owning role (Architect for "technical",
+    Product Owner for "product") - mirrors deny_review being resolved by a
+    fresh action from the role whose judgment the stage belongs to.
+
+    At the "Product" interaction level, a "product"-category blocker was
+    escalated straight to the human User when raised (see
+    should_escalate_blocker_to_user) - this refuses Product Owner's own
+    resolution until the linked blocking_interaction has actually been
+    resolved by that human first (resolve_blocking_interaction), so the
+    human's answer is a real precondition, not just a courtesy notification
+    Product Owner could route around.
+
+    `resolution` must be real, specific text (same _is_concrete_denial_reason
+    check as the question/reason on the other side of this mechanism) - what
+    the actual answer was, not just "fixed" or "resolved".
+    """
+    from .scrum import save_state_to_repo
+    from .notifications import resolve_blocking_interaction
+
+    s = tool_context.state
+    sprint_backlog = list(s.get("sprint_backlog", []))
+    product_backlog = list(s.get("product_backlog", []))
+    sprint_idx = next((i for i, x in enumerate(sprint_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
+    if sprint_idx is None and product_idx is None:
+        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
+
+    sprint_item = sprint_backlog[sprint_idx] if sprint_idx is not None else {}
+    product_item = product_backlog[product_idx] if product_idx is not None else {}
+    story_id = product_item.get("id") or sprint_item.get("id") or title_or_id
+    title = product_item.get("title") or sprint_item.get("title") or title_or_id
+
+    blocked = product_item.get("blocked") or sprint_item.get("blocked")
+    if not blocked:
+        return {"status": "error", "message": f"'{story_id}' is not currently BLOCKED."}
+
+    category = blocked.get("category")
+    expected_resolver = BLOCKER_CATEGORY_OWNERS.get(category)
+    agent_name = getattr(tool_context, "agent_name", None)
+    if agent_name and expected_resolver and agent_name != expected_resolver:
+        return {
+            "status": "error",
+            "message": f"A '{category}' blocker can only be resolved by {expected_resolver}, not {agent_name}.",
+        }
+
+    if blocked.get("escalated_to_user"):
+        interactions = s.get("blocking_interactions", []) or []
+        interaction = next((i for i in interactions if i.get("id") == blocked.get("blocking_interaction_id")), None)
+        if interaction and not interaction.get("resolved"):
+            return {
+                "status": "error",
+                "message": (
+                    f"'{story_id}' was escalated to the human User (Product interaction level) - "
+                    f"waiting on blocking_interaction #{interaction['id']} to be resolved "
+                    "(resolve_blocking_interaction) before Product Owner can clear this here."
+                ),
+            }
+
+    if not _is_concrete_denial_reason(resolution):
+        return {
+            "status": "error",
+            "message": (
+                f"resolution must be a concrete, actionable answer (at least "
+                f"{_MIN_DENIAL_REASON_LENGTH} characters, not a placeholder or a generic phrase) - "
+                "state what was actually decided/found, not just that it's 'resolved'."
+            ),
+        }
+
+    if blocked.get("blocking_interaction_id") is not None:
+        resolve_blocking_interaction(blocked["blocking_interaction_id"], tool_context=tool_context)
+
+    update = {"blocked": None}
+    if sprint_idx is not None:
+        sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
+        s["sprint_backlog"] = sprint_backlog
+    if product_idx is not None:
+        product_backlog[product_idx] = {**product_backlog[product_idx], **update}
+        s["product_backlog"] = product_backlog
+
+    save_state_to_repo(tool_context)
+
+    merged_item = {**product_item, **sprint_item, **update, "id": story_id, "title": title}
+    story_md_result = _update_story_markdown(merged_item, tool_context)
+
+    return {
+        "status": "ok",
+        "story_id": story_id,
+        "resolution": resolution.strip(),
+        "message": f"'{story_id}' is no longer BLOCKED - advance_story_stage may be called for it again.",
         "story_markdown": story_md_result,
     }

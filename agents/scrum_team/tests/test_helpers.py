@@ -8,6 +8,8 @@ from agents.scrum_team.helpers import (
     required_pre_release_approval,
     report_detail_level,
     get_env_with_deprecated_fallback,
+    infer_blocker_category,
+    should_escalate_blocker_to_user,
 )
 
 
@@ -51,6 +53,44 @@ class TestInteractionLevel(unittest.TestCase):
         self.assertEqual(report_detail_level("Stakeholder"), "business")
         self.assertEqual(report_detail_level("CEO"), "executive")
         self.assertEqual(report_detail_level("EVAL"), "full")
+
+
+class TestBlockerRouting(unittest.TestCase):
+    """Acceptance Criteria: a BLOCKED story's category decides who's asked -
+    Architect for technical, Product Owner for product (or the human User
+    directly at the Product interaction level) - see raise_story_blocker/
+    resolve_story_blocker (agents/scrum_team/tools/requirements.py)."""
+
+    def test_infer_blocker_category_technical_roles(self):
+        for role in ("DevTeam", "Architect", "QA"):
+            with self.subTest(role=role):
+                self.assertEqual(infer_blocker_category(role), "technical")
+
+    def test_infer_blocker_category_defaults_to_product(self):
+        self.assertEqual(infer_blocker_category("ProductOwner"), "product")
+        self.assertEqual(infer_blocker_category("ScrumMaster"), "product")
+        self.assertEqual(infer_blocker_category("SomeUnknownRole"), "product")
+
+    def test_infer_blocker_category_technical_if_any_agent_is_technical(self):
+        """A transfer-loop pair has two agents - if either one is a
+        technical role, the pair's stuck question is technical."""
+        self.assertEqual(infer_blocker_category("ProductOwner", "Architect"), "technical")
+        self.assertEqual(infer_blocker_category("ProductOwner", "ScrumMaster"), "product")
+
+    def test_should_escalate_blocker_to_user_only_product_category_at_product_level(self):
+        self.assertTrue(should_escalate_blocker_to_user("product", "Product"))
+        self.assertFalse(should_escalate_blocker_to_user("technical", "Product"))
+
+    def test_should_escalate_blocker_to_user_false_at_other_levels(self):
+        for level in ("Stakeholder", "CEO", "EVAL"):
+            with self.subTest(level=level):
+                self.assertFalse(should_escalate_blocker_to_user("product", level))
+
+    def test_should_escalate_blocker_to_user_reads_from_environment_when_level_not_given(self):
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Product"}, clear=True):
+            self.assertTrue(should_escalate_blocker_to_user("product"))
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "CEO"}, clear=True):
+            self.assertFalse(should_escalate_blocker_to_user("product"))
 
 
 class TestGetEnvWithDeprecatedFallback(unittest.TestCase):

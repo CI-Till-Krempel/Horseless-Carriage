@@ -271,6 +271,43 @@ per-story counter instead (`review_denial["acceptance_count_at_denial"]` vs.
 `acceptance_check_count`), since it has no sprint-wide review-call counter to snapshot: a denial there
 requires a genuinely new `record_acceptance_check` call, not just a retried `advance_story_stage`.
 
+### BLOCKED stories (a genuinely stuck story, from any stage)
+
+Distinct from `deny_review` above: a denial is a clear, actionable verdict Dev Team can act on
+directly. BLOCKED means nobody on the team currently has an answer at all - a real open question, or
+a mechanical loop (see [Blocking Interactions & Notifications § Loop detection and BLOCKED
+stories](docs/NOTIFICATIONS.md)). Orthogonal to `STORY_STAGES` - it can happen from any stage, not
+just a fixed point in the pipeline, and doesn't itself advance or roll back the story's stage.
+
+`raise_story_blocker(title_or_id, question, category, tool_context=None)` (`agents/scrum_team/tools/
+requirements.py`) - callable by any role, once it recognizes the team is genuinely stuck. Refuses a
+`question` that's empty, a template placeholder, or too short, same as `deny_review`'s `reason` check
+(`_is_concrete_denial_reason` is shared between them). `category` is `"technical"` (routed to
+Architect) or `"product"` (routed to Product Owner - or, at the "Product" interaction level,
+escalated straight to the human User instead, since that human already IS the acting product owner
+day-to-day - see `should_escalate_blocker_to_user`, `agents/scrum_team/helpers.py`). Writes a
+`blocked` record onto the story (both backlog copies, re-rendered into its Markdown file's Notes
+section the same way `review_denial` is) and raises a `blocking_interactions` entry (kind
+`"blocked_story"`).
+
+`advance_story_stage` refuses every further call for a BLOCKED story, at any stage, until
+`resolve_story_blocker(title_or_id, resolution, tool_context=None)` clears it - callable only by the
+category's owning role (mirrors `deny_review` being resolved by a fresh action from the role whose
+judgment the stage belongs to). At the "Product" interaction level specifically, a `"product"`-category
+blocker's escalation has teeth: `resolve_story_blocker` mechanically refuses Product Owner's own
+resolution until the linked `blocking_interaction` has actually been resolved by the human first
+(`resolve_blocking_interaction`) - not just a notification Product Owner could route around with its
+own judgment.
+
+**The team moves on instead of staying stuck.** `_preceding_story` (the one-story-at-a-time ordering
+check) now skips a BLOCKED predecessor when looking for the nearest story that must already be
+Accepted - the BLOCKED story itself stays exactly where it is in `product_backlog` (so its priority
+position is preserved for whenever it's resolved), but no longer freezes every lower-priority story
+behind it. If it's genuinely never resolved this sprint, it isn't silently dropped: `create_sprint_report`
+now always includes an "Open Questions for Stakeholder" section (ungated by interaction-level detail
+tier, unlike Retrospective Actions/Impediments below) listing every story still BLOCKED when the
+sprint closes, so the Stakeholder can give feedback/guidance on it before the next sprint starts.
+
 ### Sprint retrospective enforcement
 
 `create_sprint_report` (`agents/scrum_team/tools/budget.py`) mechanically refuses to write a

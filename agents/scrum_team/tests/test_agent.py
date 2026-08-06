@@ -749,6 +749,52 @@ class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("already broke this exact loop", result["message"])
 
+    def test_transfer_loop_raises_a_story_blocker_for_the_story_in_progress(self):
+        """
+        Acceptance Criteria: a transfer_to_agent ping-pong has no story ID of
+        its own in scope, unlike a stuck advance_story_stage retry - but the
+        loop breaker should still turn it into a real BLOCKED story (see
+        _current_story_in_progress, agents/scrum_team/tools/requirements.py)
+        so one-story-at-a-time ordering can skip it and the team moves on,
+        instead of just logging a "stalled" interaction with no story link.
+        """
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [{
+            "id": "US-0001",
+            "title": "Add login flow",
+            "type": "User Story",
+            "stages_completed": ["Draft", "Ready"],
+        }]
+
+        for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD):
+            result = log_tool_invocation_callback(tool, {"agent_name": "ScrumMaster"}, tool_context)
+
+        self.assertEqual(result["status"], "error")
+        blocked = tool_context.state["product_backlog"][0].get("blocked")
+        self.assertIsNotNone(blocked)
+        self.assertIn("bounced transfer_to_agent", blocked["question"])
+
+    def test_transfer_loop_falls_back_to_plain_stalled_interaction_with_no_story_in_progress(self):
+        """No story in product_backlog (or every one already Accepted/
+        BLOCKED) - must still record the original plain "stalled" blocking
+        interaction, never silently drop the notification just because the
+        richer story-linked path didn't apply."""
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+
+        for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD):
+            result = log_tool_invocation_callback(tool, {"agent_name": "ScrumMaster"}, tool_context)
+
+        self.assertEqual(result["status"], "error")
+        interactions = tool_context.state.get("blocking_interactions", [])
+        self.assertEqual(len(interactions), 1)
+        self.assertEqual(interactions[0]["kind"], "stalled")
+
 
 class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
     """
@@ -820,6 +866,55 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
         ]
 
         self.assertTrue(all(r is None for r in results))
+
+    def test_repeated_call_loop_raises_a_story_blocker_when_args_name_a_story(self):
+        """
+        Acceptance Criteria: a stuck advance_story_stage retry (this class's
+        own docstring cites the exact real-eval case -
+        advance_story_stage(title_or_id="US-0006", stage="Ready") repeated
+        after the same rejection) names a story right in its own args -
+        unlike the transfer-loop case, no separate lookup is needed. The
+        loop breaker should turn this into a real BLOCKED story instead of
+        just a "stalled" interaction with no story link.
+        """
+        tool = BaseTool(name="advance_story_stage", description="Advance a story's stage.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [{
+            "id": "US-0006",
+            "title": "Add checkout flow",
+            "type": "User Story",
+            "stages_completed": ["Draft"],
+        }]
+
+        result = None
+        for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD):
+            result = log_tool_invocation_callback(tool, {"title_or_id": "US-0006", "stage": "Ready"}, tool_context)
+
+        self.assertEqual(result["status"], "error")
+        blocked = tool_context.state["product_backlog"][0].get("blocked")
+        self.assertIsNotNone(blocked)
+        self.assertEqual(blocked["category"], "product")
+        self.assertIn("repeated advance_story_stage", blocked["question"])
+
+    def test_repeated_call_loop_falls_back_to_plain_stalled_interaction_with_no_story_named(self):
+        """calculate_kpis()-style calls have no title_or_id at all - must
+        still record the plain "stalled" interaction, same as before this
+        story-linking existed."""
+        tool = BaseTool(name="update_sprint_report", description="Update the sprint report.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "QualityGuardian"
+        tool_context.state = ScrumState().model_dump()
+
+        result = None
+        for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD):
+            result = log_tool_invocation_callback(tool, {"kpis": "calculate_kpis"}, tool_context)
+
+        self.assertEqual(result["status"], "error")
+        interactions = tool_context.state.get("blocking_interactions", [])
+        self.assertEqual(len(interactions), 1)
+        self.assertEqual(interactions[0]["kind"], "stalled")
 
     def test_a_different_tool_call_in_between_resets_the_streak(self):
         tool = BaseTool(name="calculate_kpis", description="Calculate KPIs.")
