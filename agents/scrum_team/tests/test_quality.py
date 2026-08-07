@@ -1,5 +1,6 @@
 # agents/scrum_team/tests/test_quality.py
 import json
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -97,6 +98,47 @@ class TestQualityTools(unittest.TestCase):
         self.assertEqual(result["test_coverage"], 0.8)
         self.assertEqual(result["tests_run"], 5)
         self.assertEqual(result["tests_failed"], 2)
+
+    @patch("agents.scrum_team.tools.quality._configured_repo_root")
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_execute_test_suite_coverage_puts_repo_root_on_pythonpath(self, mock_run, mock_repo_root):
+        """
+        Acceptance Criteria (ISSUE-0047): a real eval run bounced a story
+        back and forth 9 times (QA/DevTeam) on an identical
+        "ModuleNotFoundError: No module named 'app'" for a completely normal
+        layout (root-level app.py, tests under tests/) - cwd=repo_root alone
+        does not put repo_root on sys.path for pytest's default import mode.
+        PYTHONPATH must be set explicitly, not left to whatever the
+        generated project's own pytest.ini/conftest.py may or may not do.
+        """
+        from pathlib import Path
+        mock_repo_root.return_value = Path("/app/eval-output/clone")
+        mock_run.return_value = {"status": "ok", "returncode": 0, "stdout": "1 passed in 0.1s", "stderr": ""}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("PYTHONPATH", None)
+            _execute_test_suite_coverage(tool_context=tool_context)
+
+        self.assertEqual(mock_run.call_args.kwargs["env_overrides"], {"PYTHONPATH": "/app/eval-output/clone"})
+
+    @patch("agents.scrum_team.tools.quality._configured_repo_root")
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_execute_test_suite_coverage_prepends_to_existing_pythonpath(self, mock_run, mock_repo_root):
+        from pathlib import Path
+        mock_repo_root.return_value = Path("/app/eval-output/clone")
+        mock_run.return_value = {"status": "ok", "returncode": 0, "stdout": "1 passed in 0.1s", "stderr": ""}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch.dict("os.environ", {"PYTHONPATH": "/some/other/path"}):
+            _execute_test_suite_coverage(tool_context=tool_context)
+
+        self.assertEqual(
+            mock_run.call_args.kwargs["env_overrides"],
+            {"PYTHONPATH": f"/app/eval-output/clone{os.pathsep}/some/other/path"},
+        )
 
     @patch("agents.scrum_team.tools.quality._run")
     def test_execute_test_suite_coverage_zero_tests(self, mock_run):

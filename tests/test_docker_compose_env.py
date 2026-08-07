@@ -33,8 +33,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #   docker-compose at all.
 # - EVAL_RUN_ID: the eval harness's own internal run-isolation id, set by
 #   run_eval.py itself for its own subprocess, not read from the host .env.
+# - PYTHONPATH: _execute_test_suite_coverage (tools/quality.py, ISSUE-0047)
+#   reads this only to preserve+prepend the container's own already-running
+#   process environment when it sets PYTHONPATH for the pytest subprocess it
+#   shells out to (repo_root, so a generated project's own tests/ can import
+#   its root-level modules) - not sourced from the host's .env, and not a
+#   user-facing setting at all.
 _NOT_EXPECTED_FROM_COMPOSE = {
     "INTERNAL_STATE_REPO_PATH",
+    "PYTHONPATH",
     "GITHUB_ACTIONS",
     "GITHUB_REPOSITORY",
     "GITHUB_RUN_ID",

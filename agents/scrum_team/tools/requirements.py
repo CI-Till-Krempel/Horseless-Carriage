@@ -355,6 +355,19 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
                     # (roadmap checkbox stays unchecked forever). Check both.
                     sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == s or x.get("title") == s), {})
                     product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                    if product_data:
+                        # ISSUE-0047: without this, a story placed under a
+                        # version here (rather than via plan_backlog_item)
+                        # never gets its product_backlog.version field set -
+                        # _sync_roadmap_for_story's later automatic re-syncs
+                        # (every advance_story_stage call) key off exactly
+                        # that field, so they kept targeting "Backlog
+                        # (unplanned)" instead, leaving this section a
+                        # permanently stale one-time snapshot (a real eval
+                        # run's roadmap showed this exact story checked off
+                        # correctly under "Backlog (unplanned)" but stuck at
+                        # all-unchecked, placeholder-titled here).
+                        product_data["version"] = version
                     s_id = product_data.get("id") or sprint_data.get("id") or s
                     s_title = product_data.get("title") or sprint_data.get("title") or ""
                     stages_completed = _story_stages_completed(product_data, sprint_data)
@@ -381,6 +394,11 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
             for s in stories:
                 sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == s or x.get("title") == s), {})
                 product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                if product_data:
+                    # ISSUE-0047: same version-tagging as the existing-section
+                    # branch above - without it, _sync_roadmap_for_story's
+                    # later automatic re-syncs never find this section again.
+                    product_data["version"] = version
                 s_id = product_data.get("id") or sprint_data.get("id") or s
                 s_title = product_data.get("title") or sprint_data.get("title") or s
                 stages_completed = _story_stages_completed(product_data, sprint_data)

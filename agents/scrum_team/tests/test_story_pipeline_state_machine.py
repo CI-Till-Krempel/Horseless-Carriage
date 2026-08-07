@@ -53,7 +53,7 @@ from agents.scrum_team.tools.quality import check_build
 _OK_RUN_RESULT = {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
 
 
-def _fake_run(cmd, cwd=None, tool_context=None, timeout=None):
+def _fake_run(cmd, cwd=None, tool_context=None, timeout=None, env_overrides=None):
     """Stands in for every real git/gh subprocess call (github.py) and the
     real pytest run check_build/_execute_test_suite_coverage would otherwise
     shell out to (quality.py) - this file never touches a real repo, network,

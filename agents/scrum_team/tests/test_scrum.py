@@ -250,6 +250,45 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIn("specs/ROADMAP.md", tool_context.state["sprint_files_touched"])
 
+    def test_update_roadmap_tags_stories_with_their_version(self):
+        """
+        Acceptance Criteria (ISSUE-0047): a story placed under a version via
+        update_roadmap's own `stories` argument (not plan_backlog_item) must
+        still get its product_backlog.version field set - otherwise
+        _sync_roadmap_for_story's later automatic re-syncs (every
+        advance_story_stage call) keep targeting "Backlog (unplanned)"
+        instead, leaving this version's section a permanently stale one-time
+        snapshot. A real eval run's roadmap showed exactly this: correct,
+        live-synced checkboxes under "Backlog (unplanned)", but a stuck,
+        placeholder-titled, all-unchecked duplicate under "v1.0.0" for the
+        same story.
+        """
+        import tempfile
+        from pathlib import Path
+        from agents.scrum_team.tools.requirements import _sync_roadmap_for_story
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Create To-Do List", "type": "User Story", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp_dir)):
+                update_roadmap("v1.0.0", goals=["Ship the MVP"], stories=["US-0001"], tool_context=tool_context)
+
+                self.assertEqual(tool_context.state["product_backlog"][0]["version"], "v1.0.0")
+
+                # Simulate a later stage transition's automatic re-sync - it
+                # must now target v1.0.0 (real title, live checkboxes), not
+                # silently keep writing a separate "Backlog (unplanned)".
+                result = _sync_roadmap_for_story("US-0001", tool_context)
+                self.assertEqual(result["status"], "ok")
+                roadmap_text = (Path(tmp_dir) / "specs" / "ROADMAP.md").read_text()
+
+        v1_section = roadmap_text.split("### v1.0.0")[1]
+        self.assertIn("[US-0001] Create To-Do List", v1_section)
+
     def test_plan_sprint_backlog_item(self):
         """
         Acceptance Criteria:
