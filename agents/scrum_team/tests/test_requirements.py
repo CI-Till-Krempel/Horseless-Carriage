@@ -1310,5 +1310,27 @@ class TestDeclareBacklogScopeComplete(unittest.TestCase):
         self.assertEqual(tc.state["decision_log"][0]["rationale"], justification)
 
 
+class TestResolveStoryRef(unittest.TestCase):
+    """
+    Acceptance Criteria (ISSUE-0048): update_roadmap's stories= lookup must
+    resolve a combined "ID: Title"/"ID - Title" string to the real ID, not
+    just an exact id/title match - a real eval run's Product Owner called
+    update_roadmap with exactly this shape, silently rendering every story
+    in that version with an empty title and no checkboxes at all.
+    """
+
+    def test_extracts_the_leading_id_from_various_separators(self):
+        from agents.scrum_team.tools.requirements import _resolve_story_ref
+        self.assertEqual(_resolve_story_ref("US-0001: Create To-Do List"), "US-0001")
+        self.assertEqual(_resolve_story_ref("US-0001 - Create To-Do List"), "US-0001")
+        self.assertEqual(_resolve_story_ref("US-0001 Create To-Do List"), "US-0001")
+        self.assertEqual(_resolve_story_ref("EP-0002: Some Epic"), "EP-0002")
+
+    def test_leaves_a_bare_id_or_title_only_string_unchanged(self):
+        from agents.scrum_team.tools.requirements import _resolve_story_ref
+        self.assertEqual(_resolve_story_ref("US-0001"), "US-0001")
+        self.assertEqual(_resolve_story_ref("Create To-Do List"), "Create To-Do List")
+
+
 if __name__ == "__main__":
     unittest.main()
