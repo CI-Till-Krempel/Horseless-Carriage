@@ -435,8 +435,16 @@ of only being noticed anecdotally.
   using the cheap `scrum-eval-cheap` model alias (see `litellm.yaml`) and budgets
   from `EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_USD_BUDGET_PER_SPRINT` in `.env` (reusing the
   same guardrails from ["Budget Management"](docs/BUDGET.md)), currently
-  4,000,000 tokens/$3 per sprint (GH issue #81: 2,600,000 was too tight for later,
-  more complex sprints - a real run hit ~2.8M tokens and truncated sprints 4-5).
+  5,000,000 tokens/$3 per sprint (GH issue #81: 2,600,000 was too tight for later,
+  more complex sprints - a real run hit ~2.8M tokens and truncated sprints 4-5;
+  ISSUE-0045: 4,000,000 was then too tight for a sprint 1 that also has to draft
+  and merge the whole product's requirements up front). `eval.yml` also sets
+  `READY_BACKLOG_SPRINTS_TARGET=1` for this workflow only (real usage keeps the
+  product default of 2, see `helpers.py`'s `ready_backlog_sprints_target`) -
+  this fixed scenario's entire backlog is 6 stories, so the product default of
+  2 sprints × 3 stories/sprint demanded the *whole* backlog be Ready before
+  Sprint 1 could even publish, forcing 100% of requirements engineering into a
+  single pre-Sprint-1 burst (see ISSUE-0045).
   The **token** budget resets at the start
   of every sprint (`_run_one_sprint`'s `state_delta` zeroes `token_usage`, the
   harness-side equivalent of the `reset_sprint_budget` tool used in

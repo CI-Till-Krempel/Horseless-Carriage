@@ -92,8 +92,23 @@ jobs:
             # ever need recalibrating without a code change. GH issue #81:
             # 2,600,000 was too tight for later, more complex sprints (a real
             # run hit ~2.8M and truncated sprints 4-5) - bumped with headroom.
-            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ vars.EVAL_SPRINT_TOKEN_BUDGET || '4000000' }}"
+            # 0.1.0-run25 then hit 4,072,826 in sprint 1 alone (see
+            # ISSUE-0045) - bumped again with real headroom above that.
+            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ vars.EVAL_SPRINT_TOKEN_BUDGET || '5000000' }}"
             echo "EVAL_USD_BUDGET_PER_SPRINT=${{ vars.EVAL_USD_BUDGET_PER_SPRINT || '3.0' }}"
+            # ISSUE-0045: this fixed scenario's entire product backlog is 6
+            # stories - the default READY_BACKLOG_SPRINTS_TARGET=2 (see
+            # helpers.py) times TARGET_STORIES_PER_SPRINT=3 demands exactly 6
+            # Ready stories before Sprint 1's backlog can even be published,
+            # forcing 100% of the requirements engineering for the whole
+            # product into a single pre-Sprint-1 burst (0.1.0-run25 spent
+            # 1.5M of its 4M sprint-1 token budget there, on ProductOwner
+            # alone, before any code was written). Scoped to this workflow's
+            # isolated eval container only, not the real-usage default in
+            # docker-compose.yaml/.local.yaml/.local-hostollama.yaml - a
+            # 2-sprint Ready buffer is still the right call for a real
+            # engagement with an open-ended backlog.
+            echo "READY_BACKLOG_SPRINTS_TARGET=${{ vars.READY_BACKLOG_SPRINTS_TARGET || '1' }}"
           } > .env.eval
 
       - name: Start dependency services
