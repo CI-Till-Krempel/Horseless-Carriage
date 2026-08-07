@@ -253,6 +253,7 @@ from .tools import (
     update_roadmap,
     plan_backlog_item,
     set_priority,
+    declare_backlog_scope_complete,
     advance_story_stage,
     record_design_approval,
     record_acceptance_check,
@@ -586,12 +587,31 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
     "continue" nudge required. A grace-eligible role hitting this branch
     (meaning it exhausted its own grace allowance too) has nowhere better to
     go, so it still just gets the plain halt text as before.
+
+    ISSUE-0046: 0.1.0-run26 showed the redirect alone isn't sufficient - the
+    grace ceiling is small on purpose (see closeout_grace_percent), and
+    ProductOwner's first two moves after being handed off to were both wrong
+    (an invalid stage transition, then a stray transfer to Architect),
+    burning the entire grace allowance on wrong guesses before Scrum
+    Master's retro turn ever happened - which then pushed a *grace-eligible*
+    role past its own ceiling with nowhere left to redirect. The message
+    below is now explicit about the exact remaining sequence and says not to
+    attempt anything else, to cut those wrong guesses off at the source
+    rather than just paying for them out of a bigger grace budget.
     """
     _notify_critical_halt(callback_context, msg)
     parts = [types.Part(text=msg)]
     if agent_name not in SPRINT_CLOSEOUT_GRACE_ROLES:
         parts = [
-            types.Part(text=msg + " Handing off to ProductOwner to attempt the sprint close-out sequence with the remaining grace allowance."),
+            types.Part(text=msg + (
+                " Handing off to ProductOwner. While over budget: go straight through the SPRINT "
+                "CLOSE SEQUENCE's remaining steps - transfer to Scrum Master for the retrospective "
+                "(if not already logged this sprint), Scrum Master transfers to QualityGuardian for "
+                "calculate_kpis()/update_sprint_report(kpis=...), QualityGuardian transfers back to "
+                "ProductOwner for create_sprint_report then create_release_pr. Do not attempt any "
+                "other action first (no story-stage transitions, no other transfers) - the grace "
+                "allowance is small and every wrong guess spends it without making progress."
+            )),
             types.Part(function_call=types.FunctionCall(name="transfer_to_agent", args={"agent_name": "ProductOwner"})),
         ]
     return LlmResponse(
@@ -1740,6 +1760,7 @@ product_owner = LlmAgent(
         raise_story_blocker,
         resolve_story_blocker,
         set_priority,
+        declare_backlog_scope_complete,
         log_decision,
         create_from_template,
         gh_release_create,

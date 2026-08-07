@@ -423,7 +423,7 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
     # Product Owner back into the requirements-engineering loop
     # (upsert_epic/upsert_story/advance_story_stage) instead of publishing a
     # thin sprint.
-    shortfall = ready_backlog_shortfall(state.get("product_backlog", []))
+    shortfall = ready_backlog_shortfall(state.get("product_backlog", []), state.get("backlog_scope_complete", False))
     if shortfall > 0:
         return {
             "status": "error",
@@ -432,7 +432,10 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 "stories short of holding enough work queued up (see TARGET_STORIES_PER_SPRINT x "
                 "READY_BACKLOG_SPRINTS_TARGET in helpers.py). Keep running the requirements "
                 "engineering loop - upsert_prd/upsert_srs/update_roadmap/upsert_epic/upsert_story, "
-                "then advance_story_stage(..., 'Ready') - until enough stories are Ready, then retry."
+                "then advance_story_stage(..., 'Ready') - until enough stories are Ready, then retry. "
+                "If the product's real remaining scope is genuinely smaller than this target (ISSUE-0046: "
+                "never invent filler/'buffer' stories just to clear it), call "
+                "declare_backlog_scope_complete(justification) instead."
             ),
         }
 

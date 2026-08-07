@@ -1362,13 +1362,15 @@ class TestSprintCloseoutGrace(unittest.TestCase):
         return mock_context
 
     def test_grace_role_gets_a_real_call_through_within_the_grace_ceiling(self):
-        # 100 main budget, 5% default grace -> ceiling 105; 104 is over the
-        # main budget but still under grace.
+        # 100 main budget, pinned 5% grace -> ceiling 105; 104 is over the
+        # main budget but still under grace. Pinned explicitly, not relying
+        # on the ambient default (see ISSUE-0046).
         for agent_name in ("ScrumMaster", "ProductOwner", "QualityGuardian", "ScrumOrchestrator"):
             with self.subTest(agent_name=agent_name):
                 mock_context = self._context(agent_name, 100, 104)
-                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
-                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "5"}):
+                    with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                        result = check_cost_budget_callback(mock_context, MagicMock(model=None))
                 self.assertIsNone(result, f"{agent_name} should still get a real call within grace")
 
     def test_non_grace_role_hard_halts_immediately_with_no_grace_at_all(self):
@@ -1399,10 +1401,14 @@ class TestSprintCloseoutGrace(unittest.TestCase):
                 self.assertEqual(function_calls[0].args, {"agent_name": "ProductOwner"})
 
     def test_grace_role_also_hard_halts_once_the_grace_ceiling_is_exceeded(self):
-        # 100 main budget, 5% default grace -> ceiling 105; 106 is past both.
+        # 100 main budget, pinned 5% grace -> ceiling 105; 106 is past both.
+        # Pinned explicitly (not relying on the ambient default) so this
+        # test doesn't silently break the next time the default itself
+        # changes (see ISSUE-0046, which raised it from 5.0 to 20.0).
         mock_context = self._context("ProductOwner", 100, 106)
-        with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
-            result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "5"}):
+            with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
         self.assertIsNotNone(result)
         # Already a grace-eligible role with its own grace spent - nowhere
         # better to redirect to, so no synthetic transfer, just the plain

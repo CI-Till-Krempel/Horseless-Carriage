@@ -483,6 +483,26 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             ),
         }
 
+    # ISSUE-0046: same "prompt-only wasn't enough" lesson as the retro gate
+    # right above - QualityGuardian was never once transferred to across
+    # every real eval run so far (nothing in the SPRINT CLOSE SEQUENCE
+    # actually told another agent to hand off to it), so every KPI trend in
+    # every report came back "never computed." Mirrors retro_baseline
+    # exactly: kpi_update_count only increases via a real update_sprint_report
+    # call (tools/quality.py), so this demands a *fresh* one since the last
+    # sprint report, not just "one exists somewhere in history."
+    kpi_baseline = s.get("kpi_baseline", 0)
+    if s.get("kpi_update_count", 0) <= kpi_baseline:
+        return {
+            "status": "error",
+            "message": (
+                "Cannot close the sprint report: no fresh KPI update has been logged since the "
+                "last sprint report. Transfer to QualityGuardian to call calculate_kpis() then "
+                "update_sprint_report(kpis=...) with that returned dict first, then transfer back "
+                "and retry create_sprint_report. This is mandatory, not optional."
+            ),
+        }
+
     # GH issue #164: convert this sprint's retro/impediment findings into
     # real backlog work before rendering the report below, so the report
     # can actually say what each item was filed as instead of the finding
@@ -610,6 +630,49 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     elif estimates:
         omitted_sections.append("Story Estimates vs Actual Tokens")
 
+    # ISSUE-0046: previously computed via calculate_kpis/update_sprint_report
+    # (tools/quality.py) but never actually rendered anywhere in the report
+    # itself - stored in state.sprint_report_kpis purely for
+    # run_eval_analysis.py's cross-sprint trend charts, with no human-visible
+    # counterpart in the document QualityGuardian's own prompt says should
+    # "include the KPI dashboard in the sprint report". Rendered here now
+    # that the gate above guarantees it's fresh for this sprint.
+    kpis = s.get("sprint_report_kpis") or {}
+    if detail in ("full", "business"):
+        report += "\n## KPI Dashboard\n"
+        if kpis:
+            team_effectiveness = kpis.get("team_effectiveness") or {}
+            result_quality = kpis.get("result_quality") or {}
+            maintainability = kpis.get("maintainability") or {}
+            security = kpis.get("security") or {}
+            if team_effectiveness.get("say_do_ratio") is not None:
+                report += f"- Say-Do Ratio: {team_effectiveness['say_do_ratio']}\n"
+            if team_effectiveness.get("commitment_reliability") is not None:
+                report += f"- Commitment Reliability: {team_effectiveness['commitment_reliability']}\n"
+            if result_quality.get("defect_escape_rate") is not None:
+                report += f"- Defect Escape Rate: {result_quality['defect_escape_rate']}\n"
+            if result_quality.get("customer_satisfaction") is not None:
+                report += f"- Customer Satisfaction: {result_quality['customer_satisfaction']}\n"
+            if maintainability.get("test_coverage_available"):
+                report += (
+                    f"- Test Coverage: {maintainability.get('test_coverage')} "
+                    f"({maintainability.get('tests_run', 0)} run, {maintainability.get('tests_failed', 0)} failed)\n"
+                )
+            elif maintainability.get("test_coverage_note"):
+                report += f"- Test Coverage: not available ({maintainability['test_coverage_note']})\n"
+            if maintainability.get("code_complexity_available"):
+                report += f"- Code Complexity: {maintainability.get('code_complexity')}\n"
+            elif maintainability.get("code_complexity_note"):
+                report += f"- Code Complexity: not available ({maintainability['code_complexity_note']})\n"
+            if security.get("vulnerability_scan_available"):
+                report += f"- Security Scan: {security.get('vulnerability_scan_results')}\n"
+            elif security.get("vulnerability_scan_note"):
+                report += f"- Security Scan: not available ({security['vulnerability_scan_note']})\n"
+        else:
+            report += "No KPI data recorded for this sprint.\n"
+    else:
+        omitted_sections.append("KPI Dashboard")
+
     # GH issue #127: the multi-agent transcript is now a human-readable
     # Markdown file written into the target repo (write_conversation_
     # transcript), not a raw blob inside the target repo's git-committed
@@ -666,6 +729,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # sprint's gate demands something *new* again rather than trivially
     # passing forever on the same old entries.
     s["retro_baseline"] = process_signals
+    s["kpi_baseline"] = s.get("kpi_update_count", 0)
 
     # ISSUE-0001: closing this sprint's report "uses up" its human
     # pre-implementation approval - the next sprint's stories can't reach

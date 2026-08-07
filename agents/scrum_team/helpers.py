@@ -21,11 +21,22 @@ def closeout_grace_percent() -> float:
     tripped - see check_cost_budget_callback/SPRINT_CLOSEOUT_GRACE_ROLES,
     agents/scrum_team/agent.py. DevTeam/QA/Architect get none of this grace -
     their work is frozen at exhaustion; only closing the sprint out still
-    needs turns. Configurable via SPRINT_CLOSEOUT_GRACE_PERCENT; default 5.0
-    (5%) - small on purpose. Each agent's own LiteLLM virtual-key budget is
-    still the ultimate financial backstop underneath this either way.
+    needs turns. Configurable via SPRINT_CLOSEOUT_GRACE_PERCENT; default 20.0
+    (20%, raised from an original 5.0 - see ISSUE-0046). 5% (a real run's
+    main sprint ceiling was 5,000,000, so 250,000 tokens of grace) wasn't
+    enough headroom in practice: the close-out sequence is several sequential
+    agent hops (a non-grace role's redirect to ProductOwner,
+    ProductOwner -> Scrum Master for retro, Scrum Master -> QualityGuardian
+    for KPIs, QualityGuardian -> ProductOwner for create_sprint_report/
+    create_release_pr), each of which costs real tokens purely to reason
+    about the next hand-off - a real run burned its entire 5% grace on two
+    wrong guesses (an invalid stage transition, a stray transfer to
+    Architect) before ever reaching Scrum Master's retro turn, then froze
+    with nowhere left to redirect. Each agent's own LiteLLM virtual-key
+    budget is still the ultimate financial backstop underneath this either
+    way.
     """
-    return float(os.getenv("SPRINT_CLOSEOUT_GRACE_PERCENT", "5.0"))
+    return float(os.getenv("SPRINT_CLOSEOUT_GRACE_PERCENT", "20.0"))
 
 
 # The roles the SPRINT CLOSE SEQUENCE actually needs a real turn from once
@@ -402,7 +413,7 @@ def ready_backlog_sprints_target() -> int:
         return 2
 
 
-def ready_backlog_shortfall(product_backlog: list) -> int:
+def ready_backlog_shortfall(product_backlog: list, backlog_scope_complete: bool = False) -> int:
     """
     How many more stories must reach Ready before the backlog holds
     target_stories_per_sprint() * ready_backlog_sprints_target() stories
@@ -410,7 +421,23 @@ def ready_backlog_shortfall(product_backlog: list) -> int:
     Counts non-Epic, non-BLOCKED items only - the same population
     _preceding_story's one-story-at-a-time ordering check considers "real"
     backlog work (agents/scrum_team/tools/requirements.py).
+
+    `backlog_scope_complete` (state key set by declare_backlog_scope_complete,
+    tools/requirements.py - ISSUE-0046): an honest escape hatch, deliberately
+    NOT an automatic cap based on however many items merely happen to be in
+    product_backlog right now - that would silently satisfy this gate for
+    any real, open-ended backlog too (a PO could just never enter more than
+    the target and this gate would trivially stop demanding more, which
+    defeats its whole purpose). A real eval run's fixed, deliberately-
+    closed-scope product ran genuinely out of real stories against a target
+    of 3 and, with no honest way to say so, fabricated two throwaway
+    "Additional Buffer Story" entries purely to pad the count instead. This
+    flag requires an explicit, justified Product Owner declaration that
+    real scope is genuinely exhausted (see declare_backlog_scope_complete)
+    before the target is waived - never inferred just from list length.
     """
+    if backlog_scope_complete:
+        return 0
     ready_count = sum(
         1 for x in (product_backlog or [])
         if x.get("type", "User Story") != "Epic"

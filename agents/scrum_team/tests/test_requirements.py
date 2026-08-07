@@ -8,7 +8,7 @@ from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
     advance_story_stage, upsert_backlog_item, record_design_approval, record_acceptance_check, plan_backlog_item,
     set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
-    raise_story_blocker, resolve_story_blocker,
+    raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
 )
 
 
@@ -95,6 +95,50 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("source file", result["message"])
+
+    def test_implemented_rejects_blank_or_placeholder_earlier_work_justification(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (ISSUE-0046): implemented_via_earlier_work is an
+        honest escape hatch, not a universal bypass - a blank or generic
+        placeholder justification must still be rejected, same as
+        is_low_quality_retro_text already does for retro/impediment text.
+        """
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["specs/stories/US-0001-Add-real-feature.md"]
+        for bad_justification in (None, "", "  ", "done", "n/a"):
+            with self.subTest(justification=bad_justification):
+                result = advance_story_stage(
+                    "US-0001", "Implemented", implemented_via_earlier_work=bad_justification, tool_context=tc,
+                )
+                self.assertEqual(result["status"], "error")
+                self.assertIn("source file", result["message"])
+
+    def test_implemented_accepts_a_real_earlier_work_justification(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (ISSUE-0046): a real eval run's DevTeam wrote the
+        entire app (app.py/templates/index.html/test_app.py) once during
+        US-0001, then had genuinely nothing new to write for US-0002 through
+        US-0005 - with no honest way to say so, it fabricated a throwaway
+        one-line "verification" stub file 4 times purely to satisfy this
+        check (cluttering the repo root, docked in the report's Code
+        Quality score). A substantive justification must now be accepted
+        instead, and logged to decision_log for audit rather than silently
+        bypassing the check.
+        """
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["specs/stories/US-0001-Add-real-feature.md"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        justification = "Already implemented as part of US-0000's app.py edit in commit abc123."
+
+        result = advance_story_stage(
+            "US-0001", "Implemented", implemented_via_earlier_work=justification, tool_context=tc,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(tc.state["decision_log"]), 1)
+        self.assertEqual(tc.state["decision_log"][0]["rationale"], justification)
 
     def test_implemented_requires_actual_tokens_logged(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("DevTeam", ["Ready"])
@@ -1228,6 +1272,42 @@ class TestPriorityAffectsBacklogOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         ids = [x["id"] for x in tc.state["product_backlog"]]
         self.assertEqual(ids, ["US-0002", "US-0001"])
+
+
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestDeclareBacklogScopeComplete(unittest.TestCase):
+    """
+    Acceptance Criteria (ISSUE-0046): an honest, justified escape hatch from
+    ready_backlog_shortfall's target - a real eval run's fixed,
+    deliberately-closed-scope product genuinely ran out of real stories
+    against the target and, with no honest way to say so, fabricated two
+    throwaway "Additional Buffer Story" entries purely to pad the count.
+    """
+
+    def _tc(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.agent_name = "ProductOwner"
+        return tc
+
+    def test_rejects_blank_or_placeholder_justification(self, mock_save):
+        tc = self._tc()
+        for bad in (None, "", "  ", "done", "n/a"):
+            with self.subTest(justification=bad):
+                result = declare_backlog_scope_complete(bad, tool_context=tc)
+                self.assertEqual(result["status"], "error")
+                self.assertFalse(tc.state["backlog_scope_complete"])
+
+    def test_accepts_a_real_justification_and_logs_it(self, mock_save):
+        tc = self._tc()
+        justification = "All 6 product-vision stories are Accepted or Ready; the vision explicitly excludes further scope."
+
+        result = declare_backlog_scope_complete(justification, tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(tc.state["backlog_scope_complete"])
+        self.assertEqual(len(tc.state["decision_log"]), 1)
+        self.assertEqual(tc.state["decision_log"][0]["rationale"], justification)
 
 
 if __name__ == "__main__":
