@@ -60,7 +60,7 @@ class _FakeGhRuns:
     def merge(self, branch):
         self.pr_states[branch] = "MERGED"
 
-    def __call__(self, cmd, cwd=None, tool_context=None, timeout=None):
+    def __call__(self, cmd, cwd=None, tool_context=None, timeout=None, env_overrides=None):
         if cmd and cmd[:3] == ["gh", "pr", "view"]:
             branch = cmd[3] if len(cmd) > 3 else None
             state = self.pr_states.get(branch)

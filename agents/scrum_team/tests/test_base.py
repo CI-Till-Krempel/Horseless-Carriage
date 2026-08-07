@@ -197,6 +197,16 @@ class TestRunTimeoutAndStdin(unittest.TestCase):
 
         self.assertEqual(mock_subprocess_run.call_args.kwargs["stdin"], subprocess_module.DEVNULL)
 
+    def test_env_overrides_are_applied_to_the_subprocess_environment(self):
+        """Acceptance Criteria (ISSUE-0047): env_overrides must reach the
+        actual subprocess call, layered on top of (not replacing) the
+        inherited environment/GH_TOKEN/git-identity injection above."""
+        with patch("subprocess.run") as mock_subprocess_run:
+            mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            _run(["pytest"], env_overrides={"PYTHONPATH": "/some/repo"})
+
+        self.assertEqual(mock_subprocess_run.call_args.kwargs["env"]["PYTHONPATH"], "/some/repo")
+
     def test_timeout_expired_returns_a_clean_error_not_a_raised_exception(self):
         import subprocess as subprocess_module
         with patch("subprocess.run", side_effect=subprocess_module.TimeoutExpired(cmd=["git", "push"], timeout=120)):

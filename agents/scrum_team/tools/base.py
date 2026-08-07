@@ -189,7 +189,7 @@ _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 120
 
 
 def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
-         timeout: float = _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS) -> Dict[str, Any]:
+         timeout: float = _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS, env_overrides: dict | None = None) -> Dict[str, Any]:
     """
     Run a shell command non-interactively and capture output.
     Injects GH_TOKEN if present in session.state.
@@ -200,6 +200,10 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
     timeout (default _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS) bounds every other
     hang (a network stall on `git push`, `gh pr checks --watch`, etc.) -
     see GH issue #113.
+
+    env_overrides: applied last, after the GH_TOKEN/git-identity injection
+    below - see _execute_test_suite_coverage (tools/quality.py, ISSUE-0047)
+    for why PYTHONPATH specifically needs this.
     """
     env = os.environ.copy()
     if tool_context and getattr(tool_context, "state", None):
@@ -228,6 +232,9 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
             env["GIT_AUTHOR_EMAIL"] = f"{agent_name.lower().replace(' ', '_')}@horseless-carriage.local"
             env["GIT_COMMITTER_NAME"] = agent_name
             env["GIT_COMMITTER_EMAIL"] = f"{agent_name.lower().replace(' ', '_')}@horseless-carriage.local"
+
+    if env_overrides:
+        env.update(env_overrides)
 
     try:
         p = subprocess.run(

@@ -27,12 +27,33 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
     Runs pytest with coverage against the configured target repo and parses
     the real coverage percentage and pass/fail counts from its output,
     rather than fabricating a number.
+
+    PYTHONPATH is explicitly set to repo_root (prepended ahead of anything
+    already set) - ISSUE-0047: a real eval run bounced a story back and
+    forth 9 times (QA/DevTeam) on an identical
+    "ModuleNotFoundError: No module named 'app'", for a project laid out
+    exactly like check_build's own docstring describes as normal (a
+    root-level app.py, tests under tests/). Running pytest with cwd=repo_root
+    does NOT put repo_root on sys.path - pytest's default "prepend" import
+    mode (no tests/__init__.py, no conftest.py/pytest.ini at repo_root)
+    inserts each test file's own containing directory (tests/) instead, so
+    `from app import ...` in tests/test_app.py never resolves regardless of
+    how many times a cheap model rewrites the test file itself (it tried
+    inserting tests/'s own directory into sys.path, which was already
+    implicitly there and never the actual gap). This is the harness's own
+    responsibility to get right, the same way check_build's real `pip
+    install` fixed the sibling case of this exact symptom (a missing
+    third-party dependency) - not something to leave for whichever
+    generated project happens to add its own pytest.ini/conftest.py.
     """
     repo_root = _configured_repo_root(tool_context)
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    pythonpath = str(repo_root) if not existing_pythonpath else f"{repo_root}{os.pathsep}{existing_pythonpath}"
     result = _run(
         ["pytest", "--cov", "--cov-report=term", "-q", "--no-header"],
         cwd=str(repo_root),
         tool_context=tool_context,
+        env_overrides={"PYTHONPATH": pythonpath},
     )
 
     if result.get("status") == "error" and "returncode" not in result:
