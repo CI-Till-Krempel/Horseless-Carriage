@@ -289,6 +289,38 @@ class TestScrumTools(unittest.TestCase):
         v1_section = roadmap_text.split("### v1.0.0")[1]
         self.assertIn("[US-0001] Create To-Do List", v1_section)
 
+    def test_update_roadmap_resolves_a_combined_id_and_title_string(self):
+        """
+        Acceptance Criteria (ISSUE-0048): a real eval run's Product Owner
+        called update_roadmap(stories=["US-0001: Create To-Do List", ...])
+        instead of bare IDs. The old exact id/title match found neither (id
+        is "US-0001", title is "Create To-Do List" - the combined string
+        equals neither), so every story in that version rendered with an
+        empty/garbled title and no stages_completed at all (every checkbox
+        unchecked), permanently - this is the real cause the maintainer's
+        "roadmap changes only merged to develop, not main" hypothesis turned
+        out not to be (main and develop held byte-identical, equally-broken
+        ROADMAP.md content for the run that surfaced this).
+        """
+        import tempfile
+        from pathlib import Path
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Create To-Do List", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp_dir)):
+                update_roadmap("v0.1.0", stories=["US-0001: Create To-Do List"], tool_context=tool_context)
+                roadmap_text = (Path(tmp_dir) / "specs" / "ROADMAP.md").read_text()
+
+        self.assertEqual(tool_context.state["product_backlog"][0]["version"], "v0.1.0")
+        v_section = roadmap_text.split("### v0.1.0")[1]
+        self.assertIn("[US-0001] Create To-Do List", v_section)
+        self.assertIn("- [x] IMPLEMENTED", v_section)
+
     def test_plan_sprint_backlog_item(self):
         """
         Acceptance Criteria:

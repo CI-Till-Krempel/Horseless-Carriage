@@ -278,6 +278,31 @@ def upsert_issue(issue: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     issue["type"] = "Issue"
     return upsert_backlog_item(issue, tool_context=tool_context)
 
+
+# ISSUE-0048: matches a real item ID at the START of a longer string (e.g.
+# "US-0001: Create To-Do List", "US-0001 - Create To-Do List") - a real
+# eval run's Product Owner called update_roadmap(stories=["US-0001: Create
+# To-Do List", ...]) instead of bare IDs. update_roadmap's lookup only ever
+# matched on an exact id/title equality, so "US-0001: Create To-Do List"
+# matched neither product_backlog's id ("US-0001") nor its title ("Create
+# To-Do List") - every story in that version silently rendered with an
+# empty/garbled title and no stages_completed (everything unchecked),
+# permanently, since nothing about that mismatch was ever surfaced as an
+# error for anyone to notice or retry.
+_LEADING_ID_PATTERN = re.compile(r"^([A-Za-z]{2,6}-\d{2,6})\s*[:\-–—]?\s+")
+
+
+def _resolve_story_ref(s: str) -> str:
+    """Returns the lookup key update_roadmap should actually match
+    product_backlog/sprint_backlog against - the leading ID token if `s`
+    starts with one (however it's punctuated/suffixed), else `s` unchanged
+    (a bare title, or already a bare ID with no title attached at all)."""
+    if not isinstance(s, str):
+        return s
+    match = _LEADING_ID_PATTERN.match(s)
+    return match.group(1) if match else s
+
+
 def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = None, tool_context=None) -> Dict[str, Any]:
     """
     Requirements Management: Update the product roadmap (specs/ROADMAP.md) for a specific version.
@@ -353,8 +378,9 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
                     # from that - so checking product_backlog alone silently
                     # never sees a story marked Done during the sprint
                     # (roadmap checkbox stays unchecked forever). Check both.
-                    sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == s or x.get("title") == s), {})
-                    product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                    key = _resolve_story_ref(s)
+                    sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == key or x.get("title") == key), {})
+                    product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == key or x.get("title") == key), {})
                     if product_data:
                         # ISSUE-0047: without this, a story placed under a
                         # version here (rather than via plan_backlog_item)
@@ -392,8 +418,9 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
         insertion.append("\nStories")
         if stories:
             for s in stories:
-                sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == s or x.get("title") == s), {})
-                product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == s or x.get("title") == s), {})
+                key = _resolve_story_ref(s)
+                sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == key or x.get("title") == key), {})
+                product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == key or x.get("title") == key), {})
                 if product_data:
                     # ISSUE-0047: same version-tagging as the existing-section
                     # branch above - without it, _sync_roadmap_for_story's
