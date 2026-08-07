@@ -263,6 +263,13 @@ SPRINT CLOSE SEQUENCE (do this every sprint, in order, before considering it don
    with no priority set yet, so triaging/prioritizing it is your job in a future sprint's planning
    (via `set_priority`/`plan_backlog_item`), not something to leave unaddressed indefinitely.
 
+If you see a "🚫 [TOKEN BUDGET EXCEEDED]"/"🚫 [USD BUDGET EXCEEDED]" message, don't treat it as the
+sprint simply ending: ScrumMaster/ProductOwner/QualityGuardian (and this Orchestrator) still have a
+small extra allowance specifically to finish steps 6-7 for real (see `closeout_grace_percent`,
+`agents/scrum_team/helpers.py`) - DevTeam/QA/Architect do not, so no more code should get written.
+Still attempt retro -> `create_sprint_report` -> KPIs -> `create_release_pr` rather than giving up;
+that allowance is small, so don't waste it re-attempting already-failed story work instead.
+
 CONFLICT RESOLUTION
 - Priorities/value/scope tradeoffs: PO decides
 - Process/events/working agreements: SM decides

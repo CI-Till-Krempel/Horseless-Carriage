@@ -49,6 +49,71 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 # else's completed work in the same sense, so they're not deniable this way.
 _DENIABLE_REVIEW_STAGES = ("Reviewed", "Tested", "Accepted")
 
+# A real eval run showed advance_story_stage('US-001', 'Tested') rejected 9
+# times in a row for the identical reason, with neither of agent.py's own
+# loop breakers (_detect_transfer_loop/_detect_repeated_call_loop) ever
+# tripping - both only catch a single action repeated back-to-back with
+# nothing else interleaved, but this loop was a repeating multi-step
+# SEQUENCE (check_build -> gh_pr_comment -> advance_story_stage(rejected) ->
+# transfer_to_agent -> DevTeam edits/pushes -> transfer back), so no single
+# call ever repeated "in a row" even though the same (story, stage) pair
+# kept failing the same way. See _reject_stage_transition below - this
+# threshold matches TRANSFER_LOOP_THRESHOLD/REPEATED_CALL_LOOP_THRESHOLD's
+# existing convention (agents/scrum_team/agent.py).
+STAGE_REJECTION_LOOP_THRESHOLD = 3
+
+
+def _reject_stage_transition(tool_context, story_id: str, stage: str, error_response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Wraps every content/evidence-gate rejection inside advance_story_stage
+    (the Ready/Implemented/Reviewed/Tested/Accepted `elif` blocks) - never
+    the structural checks above them (unknown stage, wrong owner,
+    out-of-order, already BLOCKED), which aren't "the team attempting the
+    same real work and failing" the same way. Tracks a rejection streak per
+    (story_id, stage) pair in state (mirrors agent.py's own
+    _transfer_loop/_repeated_call_loop state-dict pattern) that survives
+    whatever other genuine tool calls happen between attempts - that's
+    exactly what let the real eval run's loop evade the two existing
+    breakers. Below STAGE_REJECTION_LOOP_THRESHOLD, returns error_response
+    unchanged; at the threshold, raises a story blocker instead (same
+    escalation _detect_transfer_loop already uses) and returns a
+    loop-detected message, so the team moves on rather than repeating the
+    identical failure forever.
+    """
+    s = tool_context.state
+    key = f"{story_id}:{stage}"
+    streaks = dict(s.get("_stage_rejection_streaks") or {})
+    count = streaks.get(key, 0) + 1
+    streaks[key] = count
+    s["_stage_rejection_streaks"] = streaks
+
+    if count < STAGE_REJECTION_LOOP_THRESHOLD:
+        return error_response
+
+    streaks[key] = 0
+    s["_stage_rejection_streaks"] = streaks
+    from ..helpers import infer_blocker_category
+    agent_name = getattr(tool_context, "agent_name", None) or STAGE_OWNERS.get(stage, "")
+    question = (
+        f"advance_story_stage('{story_id}', '{stage}') has been rejected {count} times in a row for "
+        f"the same reason - most recently: {error_response.get('message')}"
+    )
+    block_result = raise_story_blocker(story_id, question, infer_blocker_category(agent_name), tool_context=tool_context)
+    if block_result.get("status") == "ok":
+        return {
+            "status": "error",
+            "message": (
+                f"\U0001f501 [STAGE REJECTION LOOP DETECTED] '{story_id}' has failed to reach {stage} "
+                f"the same way {count} times in a row - marking it BLOCKED instead of rejecting again. "
+                f"{question} Call resolve_story_blocker('{story_id}', resolution) once this has "
+                "genuinely been addressed, then retry."
+            ),
+        }
+    # raise_story_blocker itself failed (e.g. this story is already BLOCKED
+    # for a different reason) - fall back to the original rejection rather
+    # than lose it.
+    return error_response
+
 # Mirrors _story_readiness_issues' placeholder philosophy, applied to a
 # denial's own reason text instead of a story's content: a rejection that
 # just restates "denied" without saying what's actually wrong isn't
@@ -1129,7 +1194,7 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         touched = s.get("sprint_files_touched", []) or []
         source_touch_count = sum(1 for f in touched if is_source_file(f))
         if not is_spike and source_touch_count <= s.get("dev_touch_baseline", 0):
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Implemented - no real source file has been written "
@@ -1137,29 +1202,29 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     "doesn't count). Write the actual code, or set {'spike': true} on this backlog "
                     "item if it's a genuine planning/spike story with no code to write."
                 ),
-            }
+            })
         estimates = s.get("story_estimates", {}) or {}
         est_entry = estimates.get(story_id) or estimates.get(title) or estimates.get(title_or_id)
         if not isinstance(est_entry, dict) or est_entry.get("actual") is None:
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Implemented - actual tokens spent haven't been "
                     "logged yet. Call log_story_tokens(title_or_id, actual_tokens) first."
                 ),
-            }
+            })
     elif stage == "Reviewed":
         pr_calls = s.get("pr_review_calls", {}) or {}
         architect_review_count = pr_calls.get("Architect", 0)
         if architect_review_count <= s.get("architect_review_baseline", 0):
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Reviewed - no gh_pr_review/gh_pr_comment call from "
                     "Architect has been recorded since the last story was Reviewed. Leave an actual "
                     "review comment on the PR first."
                 ),
-            }
+            })
         # ISSUE-0044: the check above is sprint-wide, not per-story - without
         # this, a story deny_review just denied could still advance right
         # after, as long as *some* Architect review call (even the very one
@@ -1168,49 +1233,49 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         # since the last story that reached Reviewed at all.
         denial = product_item.get("review_denial") or sprint_item.get("review_denial")
         if denial and denial.get("stage") == "Reviewed" and architect_review_count <= denial.get("review_count_at_denial", -1):
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Reviewed - it was denied: {denial.get('reason')}. "
                     "Leave a NEW gh_pr_review/gh_pr_comment after addressing that, then retry."
                 ),
-            }
+            })
     elif stage == "Tested":
         pr_calls = s.get("pr_review_calls", {}) or {}
         qa_review_count = pr_calls.get("QA", 0)
         if qa_review_count <= s.get("qa_review_baseline", 0):
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - no gh_pr_review/gh_pr_comment call from QA "
                     "has been recorded since the last story was Tested. Leave an actual review "
                     "comment on the PR first."
                 ),
-            }
+            })
         # ISSUE-0044: same per-story freshness requirement as Reviewed above.
         denial = product_item.get("review_denial") or sprint_item.get("review_denial")
         if denial and denial.get("stage") == "Tested" and qa_review_count <= denial.get("review_count_at_denial", -1):
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - it was denied: {denial.get('reason')}. "
                     "Leave a NEW gh_pr_review/gh_pr_comment after addressing that, then retry."
                 ),
-            }
+            })
         last_build = s.get("last_check_build")
         if not last_build:
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": f"Cannot mark '{story_id}' Tested - check_build() hasn't been called yet. Call it first.",
-            }
+            })
         if last_build.get("passing") is False:
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - the last check_build() result failed. Fix "
                     "the build and call check_build() again until it passes before retrying."
                 ),
-            }
+            })
         # GH issue #114: check_build() only verifies the build/dependency
         # install, not that any tests actually ran or passed - this gate
         # previously accepted a clean build + a QA PR comment as sufficient
@@ -1221,14 +1286,14 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         coverage_result = _execute_test_suite_coverage(tool_context)
         tests_run = coverage_result.get("tests_run", 0)
         if tests_run <= 0:
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - running the test suite found no tests "
                     f"actually ran ({coverage_result.get('note') or 'no coverage summary found'}). "
                     "A story can't be Tested with an empty or unrunnable test suite."
                 ),
-            }
+            })
         if not coverage_result.get("available"):
             # A real eval run hit this with tests_run > 0 (some tests did run,
             # possibly all passing) but the coverage summary itself couldn't be
@@ -1239,7 +1304,7 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
             # tests did run, and surface the real pytest output so whatever's
             # actually wrong (harness-side coverage parsing, a real test
             # dependency issue, etc.) is at least visible instead of a black box.
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - {tests_run} test(s) ran but the coverage "
@@ -1247,16 +1312,16 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
                     "This may not be a problem with your test suite - check the output above before "
                     "changing test/CI configuration further; a human may need to look at this."
                 ),
-            }
+            })
         if coverage_result.get("tests_failed", 0) > 0:
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - {coverage_result['tests_failed']} of "
                     f"{coverage_result['tests_run']} tests failed. Fix the failing tests before "
                     "retrying."
                 ),
-            }
+            })
     elif stage == "Accepted":
         # ISSUE-0043: Accepted previously had no evidence gate at all - any
         # role could call advance_story_stage(id, "Accepted") on assertion
@@ -1264,26 +1329,35 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         # THIS story first.
         acceptance_count = product_item.get("acceptance_check_count") or sprint_item.get("acceptance_check_count") or 0
         if acceptance_count <= 0:
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Accepted - call record_acceptance_check(title_or_id, "
                     "note) first to record that the acceptance criteria were actually verified."
                 ),
-            }
+            })
         # ISSUE-0044: same per-story freshness requirement as Reviewed/Tested
         # above - a denial recorded here must be followed by a genuinely NEW
         # record_acceptance_check call, not just re-use of the check that led
         # to the denial.
         denial = product_item.get("review_denial") or sprint_item.get("review_denial")
         if denial and denial.get("stage") == "Accepted" and acceptance_count <= denial.get("acceptance_count_at_denial", -1):
-            return {
+            return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Accepted - it was denied: {denial.get('reason')}. "
                     "Call record_acceptance_check again after addressing that, then retry."
                 ),
-            }
+            })
+
+    # The stage-content gate (if any) actually passed this time - clear this
+    # (story, stage) pair's rejection streak so a later, genuinely fresh
+    # attempt at some OTHER stage doesn't inherit a stale count.
+    streaks = s.get("_stage_rejection_streaks")
+    if streaks and f"{story_id}:{stage}" in streaks:
+        streaks = dict(streaks)
+        streaks.pop(f"{story_id}:{stage}", None)
+        s["_stage_rejection_streaks"] = streaks
 
     stages_completed.add(stage)
     ordered_stages = sorted(stages_completed, key=STORY_STAGES.index)
