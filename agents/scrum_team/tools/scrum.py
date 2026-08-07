@@ -37,6 +37,9 @@ REPO_STATE_KEYS = [
     "token_usage",
     "story_estimates",
     "sprint_report_kpis",
+    "kpi_update_count",
+    "kpi_baseline",
+    "backlog_scope_complete",
     "repo",
     "messages",
     "hc_version",
@@ -103,6 +106,9 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("story_estimates", {})
     s.setdefault("transcript", [])
     s.setdefault("retro_baseline", 0)
+    s.setdefault("kpi_update_count", 0)
+    s.setdefault("kpi_baseline", 0)
+    s.setdefault("backlog_scope_complete", False)
     s.setdefault("human_approvals", [])
     s.setdefault("sprint_approval_baseline", 0)
     s.setdefault("release_approval_baseline", 0)

@@ -414,6 +414,24 @@ class TestQualityTools(unittest.TestCase):
         update_sprint_report(kpis=kpis, tool_context=tool_context)
         self.assertEqual(tool_context.state["sprint_report_kpis"], kpis)
 
+    def test_update_sprint_report_bumps_kpi_update_count(self):
+        """
+        Acceptance Criteria (ISSUE-0046): create_sprint_report's kpi_baseline
+        gate (tools/budget.py) needs a real signal that QualityGuardian
+        actually ran this sprint, mirroring retro_baseline's
+        len(retro_actions)+len(impediment_log) pattern - across every real
+        eval run before this existed, nothing ever incremented, so nothing
+        ever forced the hand-off, so the KPI trends came back "never
+        computed" every single time.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        self.assertEqual(tool_context.state["kpi_update_count"], 0)
+        update_sprint_report(kpis={"team_effectiveness": {"say_do_ratio": 0.8}}, tool_context=tool_context)
+        self.assertEqual(tool_context.state["kpi_update_count"], 1)
+        update_sprint_report(kpis={"team_effectiveness": {"say_do_ratio": 0.9}}, tool_context=tool_context)
+        self.assertEqual(tool_context.state["kpi_update_count"], 2)
+
     def test_update_sprint_report_rejects_non_dict_kpis(self):
         """
         Acceptance Criteria: a genuinely unrecoverable kpis shape (not the

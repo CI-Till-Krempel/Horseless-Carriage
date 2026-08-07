@@ -30,6 +30,9 @@ class ScrumState(BaseModel):
     litellm_keys: Dict[str, str] = Field(default_factory=dict)
     story_estimates: Dict[str, Any] = Field(default_factory=dict)
     sprint_report_kpis: Dict = Field(default_factory=dict)
+    kpi_update_count: int = 0
+    kpi_baseline: int = 0
+    backlog_scope_complete: bool = False
     repo: Dict[str, str] = Field(default_factory=dict)
     github_app: Dict[str, str] = Field(default_factory=dict)
     github_token: Optional[str] = None

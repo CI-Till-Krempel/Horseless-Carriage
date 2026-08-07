@@ -22,6 +22,7 @@ from .requirements import (
     plan_backlog_item,
     upsert_backlog_item,
     set_priority,
+    declare_backlog_scope_complete,
     sync_stories_from_markdown,
     sync_requirements_from_markdown,
     sync_architecture_vision_from_markdown,

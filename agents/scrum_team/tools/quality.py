@@ -337,6 +337,16 @@ def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, A
     ScrumState(**data) (see get_scrum_state in agent.py), and a bad
     sprint_report_kpis shape there crashes the *next* turn - regardless of
     which agent's - nowhere near this tool or this call.
+
+    Bumps kpi_update_count (see create_sprint_report's kpi_baseline gate,
+    tools/budget.py) - ISSUE-0046: across every real eval run so far,
+    QualityGuardian was never once transferred to, since nothing in the
+    SPRINT CLOSE SEQUENCE actually told another agent to hand off to it -
+    the KPI trends in every report came back "never computed." The prompt
+    alone saying this step matters wasn't enough, the same lesson
+    create_sprint_report's retro_baseline gate already learned about the
+    retrospective step - so a fresh call here is now mechanically required
+    before create_sprint_report will complete, not just requested.
     """
     if isinstance(kpis, str) and kpis.strip() in _CALCULATE_KPIS_CALL_ALIASES:
         kpis = calculate_kpis(tool_context=tool_context)
@@ -351,9 +361,7 @@ def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, A
                     "call calculate_kpis() first and pass its returned object here, not a tool name."
                 ),
             }
-    # In a real implementation, this would format the KPIs into a nice
-    # dashboard and append it to the sprint report.
-    # For now, we'll just store the KPIs in the state.
     if tool_context and hasattr(tool_context, "state"):
         tool_context.state["sprint_report_kpis"] = kpis
+        tool_context.state["kpi_update_count"] = tool_context.state.get("kpi_update_count", 0) + 1
     return {"status": "ok", "kpis": kpis}

@@ -10,6 +10,7 @@ from agents.scrum_team.helpers import (
     get_env_with_deprecated_fallback,
     infer_blocker_category,
     should_escalate_blocker_to_user,
+    ready_backlog_shortfall,
 )
 
 
@@ -135,6 +136,39 @@ class TestGetEnvWithDeprecatedFallback(unittest.TestCase):
             with patch("builtins.print", side_effect=lambda *a, **k: warnings.append(a)):
                 get_env_with_deprecated_fallback("NEW_NAME", "OLD_NAME")
         self.assertEqual(len(warnings), 0)
+
+
+@patch.dict("os.environ", {"TARGET_STORIES_PER_SPRINT": "3", "READY_BACKLOG_SPRINTS_TARGET": "2"})
+class TestReadyBacklogShortfall(unittest.TestCase):
+    """
+    Acceptance Criteria (ISSUE-0046): backlog_scope_complete is an explicit,
+    justified escape hatch from the target - never an automatic cap based on
+    however many items merely happen to be in product_backlog, which would
+    silently satisfy the gate for any real, open-ended backlog too (a real
+    eval run's fabricated "Additional Buffer Story" entries showed what
+    happens without an honest way to say scope is genuinely exhausted).
+    """
+
+    def test_reports_shortfall_against_the_full_target_regardless_of_backlog_size(self):
+        # Only 2 real stories exist at all, both Ready - an open-ended
+        # backlog that simply hasn't been detailed further yet must still
+        # report the full shortfall (target 6, ready 2 -> short 4), not
+        # silently succeed just because that's everything currently entered.
+        backlog = [
+            {"id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0002", "type": "User Story", "stages_completed": ["Draft", "Ready"]},
+        ]
+        self.assertEqual(ready_backlog_shortfall(backlog), 4)
+
+    def test_backlog_scope_complete_waives_the_target_entirely(self):
+        backlog = [
+            {"id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0002", "type": "User Story", "stages_completed": ["Draft", "Ready"]},
+        ]
+        self.assertEqual(ready_backlog_shortfall(backlog, backlog_scope_complete=True), 0)
+
+    def test_backlog_scope_complete_defaults_to_false(self):
+        self.assertEqual(ready_backlog_shortfall([]), 6)
 
 
 if __name__ == "__main__":

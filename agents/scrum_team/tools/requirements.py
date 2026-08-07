@@ -16,6 +16,7 @@ from ..helpers import (
     BLOCKER_CATEGORY_OWNERS,
     should_escalate_blocker_to_user,
     sprint_backlog_pr_missing,
+    is_low_quality_retro_text,
 )
 
 # Matches a bare item ID (US-0001, EP-0002, ISSUE-0003, ...) and nothing
@@ -581,6 +582,56 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
             return {"status": "ok", "item": x}
     return {"status": "error", "message": "Item not found."}
 
+
+def declare_backlog_scope_complete(justification: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Product Owner's honest escape hatch from create_sprint_backlog_pr's
+    Ready-backlog sufficiency gate (ready_backlog_shortfall, helpers.py) -
+    ISSUE-0046. That gate demands target_stories_per_sprint() x
+    ready_backlog_sprints_target() stories be Ready-or-further, with no
+    automatic ceiling tied to how much real backlog remains (an automatic
+    cap based on however many items merely happen to be in product_backlog
+    would silently satisfy the gate for any real, open-ended backlog too -
+    a Product Owner could just never enter more than the target). A real
+    eval run's fixed, deliberately-closed-scope product genuinely ran out of
+    real stories against that target and, with no honest way to say so,
+    fabricated two throwaway "Additional Buffer Story" entries purely to pad
+    the count instead of legitimately proceeding with fewer.
+
+    Call this ONLY when the product's real remaining scope is genuinely
+    smaller than the target - never to shortcut a backlog that's merely thin
+    because requirements engineering hasn't caught up yet. Requires a real,
+    specific justification (logged to decision_log for audit, not a silent
+    bypass) - a placeholder like "done" or "n/a" is rejected.
+
+    Deliberately does not auto-clear on a later upsert_story - once
+    declared, more scope discovered later is still welcome (this only
+    waives the *minimum*, it never forbids going deeper), so there's no
+    reason to force re-declaring it every sprint.
+    """
+    reason = (justification or "").strip()
+    if not reason or is_low_quality_retro_text(reason):
+        return {
+            "status": "error",
+            "message": (
+                "declare_backlog_scope_complete requires a real, specific justification for why the "
+                "product's remaining scope is genuinely smaller than the Ready-backlog target - not a "
+                "placeholder. State what remains and why nothing more is legitimately in scope."
+            ),
+        }
+    from .scrum import save_state_to_repo
+    s = tool_context.state
+    s["backlog_scope_complete"] = True
+    s["decision_log"] = list(s.get("decision_log", [])) + [{
+        "title": "Ready-backlog sufficiency target waived",
+        "decision": "Declared backlog scope complete via declare_backlog_scope_complete",
+        "rationale": reason,
+        "owner": getattr(tool_context, "agent_name", None) or "ProductOwner",
+    }]
+    save_state_to_repo(tool_context)
+    return {"status": "ok", "backlog_scope_complete": True}
+
+
 def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
     """
     Scan specs/stories/*.md and specs/requirements/ISSUE-*.md (Issues are
@@ -1003,11 +1054,20 @@ def sync_all_active_stories_to_roadmap(tool_context) -> Dict[str, Any]:
     return {"status": "ok" if overall_ok else "error", "versions_synced": list(versions.keys()), "results": results}
 
 
-def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict[str, Any]:
+def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_work: str = None, tool_context=None) -> Dict[str, Any]:
     """
     The single, mandatory mechanism for moving a story through the fixed
     Draft -> Ready -> Implemented -> Reviewed -> Tested -> Accepted pipeline
     (see RELEASE.md "Story workflow" and spec-templates/DOD.md, DOR.md).
+
+    `implemented_via_earlier_work`: only meaningful for the Implemented
+    transition - see its check below (ISSUE-0046). An honest escape hatch,
+    parallel to the existing `spike` backlog-item flag, for when this
+    story's real work already landed as part of an *earlier* story's
+    write_file calls this sprint (e.g. one broad app.py edit covering
+    several closely-related stories in one pass) - state the earlier
+    story/commit here instead of fabricating a throwaway file just to
+    satisfy the "wrote real code" check.
 
     Enforces, in code rather than by asking nicely in a prompt (which
     repeatedly wasn't enough on its own in real eval runs):
@@ -1194,15 +1254,38 @@ def advance_story_stage(title_or_id: str, stage: str, tool_context=None) -> Dict
         touched = s.get("sprint_files_touched", []) or []
         source_touch_count = sum(1 for f in touched if is_source_file(f))
         if not is_spike and source_touch_count <= s.get("dev_touch_baseline", 0):
-            return _reject_stage_transition(tool_context, story_id, stage, {
-                "status": "error",
-                "message": (
-                    f"Cannot mark '{story_id}' Implemented - no real source file has been written "
-                    "via write_file since the last story was Implemented (story/spec markdown "
-                    "doesn't count). Write the actual code, or set {'spike': true} on this backlog "
-                    "item if it's a genuine planning/spike story with no code to write."
-                ),
-            })
+            # ISSUE-0046: a real eval run's app.py already covered several
+            # closely-related stories' logic in one broad write_file pass
+            # (US-0001's), so US-0002 through US-0005 each hit this branch
+            # with genuinely nothing new to write - and, with no honest way
+            # to say so, fabricated a throwaway one-line "verification" stub
+            # file 4 times in a row purely to satisfy this check (cluttering
+            # the repo root, docked in the report's Code Quality score).
+            # implemented_via_earlier_work is the honest way out: a
+            # substantive justification is logged to decision_log (an
+            # auditable trail, not a silent bypass) instead of accepting
+            # literally any new file as proof.
+            justification = (implemented_via_earlier_work or "").strip()
+            if not justification or is_low_quality_retro_text(justification):
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Implemented - no real source file has been written "
+                        "via write_file since the last story was Implemented (story/spec markdown "
+                        "doesn't count). Write the actual code, set {'spike': true} on this backlog "
+                        "item if it's a genuine planning/spike story with no code to write, or - if "
+                        "this story's real work already landed as part of an earlier story's "
+                        "write_file calls this sprint - pass a real, specific "
+                        "implemented_via_earlier_work explaining which earlier story/commit covered "
+                        "it. Do not fabricate an unrelated file just to satisfy this check."
+                    ),
+                })
+            s["decision_log"] = list(s.get("decision_log", [])) + [{
+                "title": f"{story_id} marked Implemented without a new source touch",
+                "decision": "Accepted via implemented_via_earlier_work instead of requiring a new write_file call",
+                "rationale": justification,
+                "owner": agent_name or "DevTeam",
+            }]
         estimates = s.get("story_estimates", {}) or {}
         est_entry = estimates.get(story_id) or estimates.get(title) or estimates.get(title_or_id)
         if not isinstance(est_entry, dict) or est_entry.get("actual") is None:
