@@ -1379,12 +1379,35 @@ class TestSprintCloseoutGrace(unittest.TestCase):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
                 self.assertIsNotNone(result, f"{agent_name} must not get any grace")
 
+    def test_non_grace_role_halt_redirects_to_product_owner_instead_of_freezing(self):
+        # ISSUE-0045 / 0.1.0-run25: a non-grace role halted with a plain-text
+        # canned reply has no tools left (including transfer_to_agent) - if
+        # it's the *active* agent when the budget trips, the grace allowance
+        # above can never actually be used by anyone, and every subsequent
+        # "continue" nudge just re-invokes the same frozen agent forever. The
+        # halt response must instead carry a real transfer_to_agent
+        # function_call back to a grace-eligible role, so ADK actually hands
+        # control off.
+        for agent_name in ("DevTeam", "QA", "Architect"):
+            with self.subTest(agent_name=agent_name):
+                mock_context = self._context(agent_name, 100, 104)
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                function_calls = [p.function_call for p in result.content.parts if getattr(p, "function_call", None)]
+                self.assertEqual(len(function_calls), 1, f"{agent_name}'s halt response must contain exactly one transfer")
+                self.assertEqual(function_calls[0].name, "transfer_to_agent")
+                self.assertEqual(function_calls[0].args, {"agent_name": "ProductOwner"})
+
     def test_grace_role_also_hard_halts_once_the_grace_ceiling_is_exceeded(self):
         # 100 main budget, 5% default grace -> ceiling 105; 106 is past both.
         mock_context = self._context("ProductOwner", 100, 106)
         with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
             result = check_cost_budget_callback(mock_context, MagicMock(model=None))
         self.assertIsNotNone(result)
+        # Already a grace-eligible role with its own grace spent - nowhere
+        # better to redirect to, so no synthetic transfer, just the plain
+        # halt text (unlike the non-grace-role case above).
+        self.assertFalse(any(getattr(p, "function_call", None) for p in result.content.parts))
 
     def test_grace_percent_is_configurable_via_env(self):
         mock_context = self._context("ProductOwner", 100, 104)

@@ -345,6 +345,29 @@ _CONTINUE_NUDGE = (
 )
 
 
+def _sprint_should_abort_run(sprint_result: dict) -> bool:
+    """
+    True if this sprint's outcome means the whole run should stop rather
+    than continuing to the next sprint's fresh per-sprint token/state reset.
+
+    A critical budget/USD halt (agent.py's check_cost_budget_callback) only
+    aborts the run if the sprint could NOT close out cleanly afterwards -
+    since check_cost_budget_callback's SPRINT CLOSE SEQUENCE grace
+    (SPRINT_CLOSEOUT_GRACE_ROLES/closeout_grace_percent) now redirects a
+    frozen non-grace agent back to ProductOwner instead of leaving it stuck
+    (GH issue from 0.1.0-run25), a halted sprint can genuinely still finish
+    with a real sprint report. If it did, stop_reason is
+    "sprint_report_produced" and the sprint ended in a clean state - safe to
+    move on. A critical halt with any other stop_reason means the grace
+    allowance itself ran out (or something is still stuck) and state is left
+    mid-sprint - a real run previously hit an unrelated transfer-loop crash
+    in the *next* sprint after silently continuing from exactly that kind of
+    unclean state (GH issue #167) - stop for real in that case, same as
+    before this function existed.
+    """
+    return bool(sprint_result["critical_halt"]) and sprint_result["stop_reason"] != "sprint_report_produced"
+
+
 async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, session_id: str, message_text: str, max_events: int, deadline: float, max_nudges: int = 4) -> dict:
     """
     Sends message_text, then - if the model stops with plain text and no
@@ -583,20 +606,21 @@ async def _main_async(args: argparse.Namespace) -> dict:
         if sprint_result["stop_reason"] == "max_duration_exceeded":
             break
 
-        if sprint_result["critical_halt"]:
-            # Previously this fell through to the next sprint's fresh
-            # token/state reset as if the halt never happened (a real run
-            # hit this in sprint 1, then bounced into an unrelated
-            # transfer-loop crash in sprint 2) - a token/USD guardrail
-            # tripping is a genuine "stop the run" signal, not a per-sprint
-            # speed bump to silently absorb.
+        if _sprint_should_abort_run(sprint_result):
             print(
-                f"--- sprint {sprint_number}/{args.sprints} hit a critical budget halt - stopping run ---",
+                f"--- sprint {sprint_number}/{args.sprints} hit a critical budget halt with no clean "
+                "sprint close-out - stopping run ---",
                 file=sys.stderr,
             )
             manifest["stopped_early"] = True
             manifest["stop_reason"] = "budget_critical_halt"
             break
+        elif sprint_result["critical_halt"]:
+            print(
+                f"--- sprint {sprint_number}/{args.sprints} hit a critical budget halt but closed out "
+                "cleanly via the grace allowance - continuing ---",
+                file=sys.stderr,
+            )
 
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
     return manifest

@@ -560,6 +560,46 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str) -> None:
     callback_context.state["critical_halt_notified"] = True
 
 
+def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmRequest, msg: str, agent_name: str) -> LlmResponse:
+    """
+    Builds the LlmResponse for check_cost_budget_callback's two "budget
+    actually exceeded" branches (token and USD). A non-grace role
+    (DevTeam/QA/Architect) has no tools available once its own model call is
+    replaced by this canned response - including transfer_to_agent - so if
+    it happens to be the *active* agent when the budget trips, the SPRINT
+    CLOSE SEQUENCE grace (SPRINT_CLOSEOUT_GRACE_ROLES/closeout_grace_percent
+    above) can never actually run: nobody ever transfers control back to a
+    grace-eligible role. A real eval run (0.1.0-run25) hit exactly this -
+    ProductOwner handed off to DevTeam right as the budget tripped, then
+    every remaining "continue" nudge re-invoked the now-frozen DevTeam and
+    got this same message verbatim, 5 times - the sprint ended with no
+    report and no release PR despite the grace allowance never actually
+    being touched.
+
+    For a non-grace role, synthesizes a transfer_to_agent(ProductOwner)
+    function_call alongside the halt text - the same pattern
+    recover_fake_tool_call_callback below already uses to inject a
+    function_call part into an LlmResponse. ADK dispatches this precisely as
+    if the model had called transfer_to_agent itself (see
+    base_llm_flow.py's _postprocess_async / _handle_before_model_callback),
+    including resuming ProductOwner within the very same turn - no extra
+    "continue" nudge required. A grace-eligible role hitting this branch
+    (meaning it exhausted its own grace allowance too) has nowhere better to
+    go, so it still just gets the plain halt text as before.
+    """
+    _notify_critical_halt(callback_context, msg)
+    parts = [types.Part(text=msg)]
+    if agent_name not in SPRINT_CLOSEOUT_GRACE_ROLES:
+        parts = [
+            types.Part(text=msg + " Handing off to ProductOwner to attempt the sprint close-out sequence with the remaining grace allowance."),
+            types.Part(function_call=types.FunctionCall(name="transfer_to_agent", args={"agent_name": "ProductOwner"})),
+        ]
+    return LlmResponse(
+        content=types.Content(role="model", parts=parts),
+        model_version=llm_request.model or "unknown",
+    )
+
+
 def ensure_state_initialized_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
     BeforeModelCallback: mechanically calls init_scrum_state() once per
@@ -654,11 +694,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                 f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
                 f"Current usage: {token_usage:,}. Agent execution halted."
             )
-            _notify_critical_halt(callback_context, msg)
-            return LlmResponse(
-                content=types.Content(role="model", parts=[types.Part(text=msg)]),
-                model_version=llm_request.model or "unknown"
-            )
+            return _budget_halt_response(callback_context, llm_request, msg, agent_name)
 
     # 2. Check USD Budget (Remote Guardrail via LiteLLM Proxy)
     if os.environ.get("LLM_LOCAL_PROVIDER") == "true":
@@ -738,11 +774,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                     f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
                     f"Current spend: ${current_spend:.2f}. Agent execution halted."
                 )
-                _notify_critical_halt(callback_context, msg)
-                return LlmResponse(
-                    content=types.Content(role="model", parts=[types.Part(text=msg)]),
-                    model_version=llm_request.model or "unknown"
-                )
+                return _budget_halt_response(callback_context, llm_request, msg, agent_name)
     except requests.RequestException as e:
         _sync_roadmap_on_exhaustion_once(callback_context)
         msg = f"❌ [BUDGET ERROR] Could not verify budget status with LiteLLM proxy: {e}. Agent execution halted to prevent unmonitored spending."
