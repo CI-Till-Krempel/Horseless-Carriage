@@ -56,7 +56,10 @@ Usage:
   python3 run_adk_eval.py --host-ollama        Force a native Ollama on this host (GPU-accelerated on macOS) regardless of platform.
   python3 run_adk_eval.py --docker-ollama      Force the dockerized Ollama service even on macOS (CPU-only there).
   python3 run_adk_eval.py --ci                 Run against the cheap cloud model (see adk-eval.yml).
-  python3 run_adk_eval.py --debug              Force LOG_LEVEL=debug for the eval run (verbose - see agent.py's logging).
+  python3 run_adk_eval.py --debug              Force LOG_LEVEL=debug for the eval run (app-level debug logging - see
+                                                agent.py's logging). Does NOT include LiteLLM's own raw request/response
+                                                dump - that's a separate, much noisier opt-in: set LITELLM_LOG_VERBOSE=1
+                                                in your env file too if you actually need the exact model payload.
   python3 run_adk_eval.py --env-file .env.foo  Use a different env file for docker compose.
   python3 run_adk_eval.py --dry-run            Print the commands that would run, without running them.
 """

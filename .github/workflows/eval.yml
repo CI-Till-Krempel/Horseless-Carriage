@@ -71,6 +71,17 @@ jobs:
           {
             echo "GOOGLE_API_KEY=$GOOGLE_API_KEY"
             echo "LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY"
+            # ScrumOrchestrator is deliberately never given a per-agent
+            # virtual key (see run_eval.py's _SPECIALIST_AGENT_NAMES) - its
+            # own model calls authenticate to the proxy via
+            # LITELLM_PROXY_API_KEY instead (agent.py's fallback-key guard).
+            # Without this, every orchestrator call fails with "Missing
+            # credentials" after 7 retries. Reusing the master key here is
+            # the documented convention (.env.example:
+            # "<any_value_or_master_key>") - the proxy's
+            # general_settings.master_key accepts it as a valid bearer
+            # token for any request.
+            echo "LITELLM_PROXY_API_KEY=$LITELLM_MASTER_KEY"
             echo "DATABASE_URL=postgresql://llm_user:llm_password@db:5432/litellm_db"
             echo "GITHUB_APP_ID=$EVAL_GITHUB_APP_ID"
             echo "GITHUB_APP_PRIVATE_KEY=$PRIVATE_KEY_SINGLE_LINE"
