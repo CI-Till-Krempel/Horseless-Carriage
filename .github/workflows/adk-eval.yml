@@ -15,7 +15,12 @@ jobs:
     # environment), this eval set is ~10 short, scripted single/few-turn
     # conversations against a cheap Gemini model (eval/adk/litellm.ci.yaml)
     # - cheap and fast enough to run automatically on every release tag as a
-    # regression gate, with no manual approval step.
+    # regression gate, with no manual approval step. Still uses its own
+    # "adk-eval" environment (created with zero protection rules, unlike
+    # "eval-approval") rather than repo-level secrets, purely to scope
+    # GOOGLE_API_KEY/LITELLM_MASTER_KEY to this one workflow instead of
+    # exposing them repo-wide.
+    environment: adk-eval
     steps:
       - uses: actions/checkout@v4
 
