@@ -63,6 +63,18 @@ this shim).
    unaffected, and the final, most useful log line (which names the eval
    case) is untouched.
 
+5. A compact expected-vs-actual tool-call diff for every failed case,
+   alongside (not instead of) `adk eval`'s own tabulate table. That table
+   wraps each invocation's args/call-IDs across 15-20 lines, interleaving
+   fragments from different tool calls into adjacent cells - genuinely
+   hard to eyeball whether a failure is a real trajectory mismatch or
+   something else entirely (GH issue #196; this is exactly what made
+   diagnosing #191, #192 and #194 slower than it needed to be). This
+   patches `pretty_print_eval_result` (cli_eval.py) to print one line per
+   side per invocation, straight from the same `FunctionCall` objects the
+   table is built from - no parsing of already-rendered text, and no
+   change to the table itself.
+
 Invoked by run_adk_eval.py's adk_eval_command() in place of the bare `adk`
 executable - same arguments (eval, AGENT_MODULE_PATH, EVAL_SET_PATH,
 --config_file_path, --print_detailed_results), so this is a drop-in
@@ -76,6 +88,8 @@ import sys
 import click
 from google.adk.agents.run_config import RunConfig
 from google.adk.evaluation.base_eval_service import EvaluateConfig, InferenceConfig
+from google.adk.evaluation.eval_case import get_all_tool_calls
+from google.adk.evaluation.eval_metrics import EvalStatus
 
 DEFAULT_MAX_LLM_CALLS = 20
 _TESTS_FAILED_PATTERN = re.compile(r"Tests failed:\s*(\d+)")
@@ -120,6 +134,49 @@ def _patch_default(cls, **defaults):
 _patch_default(InferenceConfig, parallelism=1)
 _patch_default(EvaluateConfig, parallelism=1)
 _patch_default(RunConfig, max_llm_calls=int(os.environ.get("ADK_EVAL_MAX_LLM_CALLS", DEFAULT_MAX_LLM_CALLS)))
+
+
+def format_tool_call(function_call) -> str:
+    """One compact "name(arg=value, ...)" line for a single genai_types.FunctionCall."""
+    args = ", ".join(f"{k}={v!r}" for k, v in (function_call.args or {}).items())
+    return f"{function_call.name}({args})"
+
+
+def _print_compact_tool_call_diff(eval_result) -> None:
+    """See module docstring point 4. Reads the exact same actual/expected
+    Invocation objects pretty_print_eval_result's own tabulate table is
+    built from - not the rendered table text - so this never inherits the
+    table's own wrapping/readability problems."""
+    click.echo("Compact tool-call diff:")
+    for i, per_invocation_result in enumerate(eval_result.eval_metric_result_per_invocation):
+        expected_invocation = per_invocation_result.expected_invocation
+        expected_calls = (
+            [format_tool_call(t) for t in get_all_tool_calls(expected_invocation.intermediate_data)]
+            if expected_invocation
+            else []
+        )
+        actual_calls = [
+            format_tool_call(t)
+            for t in get_all_tool_calls(per_invocation_result.actual_invocation.intermediate_data)
+        ]
+        click.echo(f"  invocation {i}: expected: {expected_calls}")
+        click.echo(f"  invocation {i}: actual:   {actual_calls}")
+
+
+def _patch_pretty_print_eval_result() -> None:
+    import google.adk.cli.cli_eval as cli_eval_module
+
+    original = cli_eval_module.pretty_print_eval_result
+
+    def patched(eval_result):
+        original(eval_result)
+        if eval_result.final_eval_status != EvalStatus.PASSED:
+            _print_compact_tool_call_diff(eval_result)
+
+    cli_eval_module.pretty_print_eval_result = patched
+
+
+_patch_pretty_print_eval_result()
 
 from google.adk.cli import main  # noqa: E402  (must import after patching above)
 
