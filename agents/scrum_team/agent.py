@@ -1354,6 +1354,7 @@ def agent_thinking_stop_callback(callback_context: CallbackContext, llm_response
 # --- Tool Call Visibility ---
 
 TRANSFER_LOOP_THRESHOLD = 3
+TRANSFER_ROTATION_THRESHOLD = 6
 
 
 def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: str) -> Optional[Dict[str, Any]]:
@@ -1392,6 +1393,30 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     problem - real, distinct progress via other tools/agents is completely
     unaffected - only *this exact already-proven-unproductive hop* is ever
     blocked again.
+
+    GH issue #191: the pair-streak counter above only ever compares the
+    *current* hop's pair against the *immediately preceding* one, so it
+    only catches a direct two-agent ping-pong. A real eval run hit a
+    three-agent rotation instead - ScrumOrchestrator -> ProductOwner ->
+    ScrumMaster -> ScrumOrchestrator -> ... - where every hop's pair
+    differs from the one before it, so `count` above never advanced past 1
+    and the pair breaker never fired; the session spun through the entire
+    ADK_EVAL_MAX_LLM_CALLS budget with zero other tool calls before dying
+    on LlmCallsLimitExceededError. `_transfer_rotation_count` tracks a
+    second, simpler signal alongside the pair-specific one: how many
+    transfer_to_agent hops have happened in a row, to *any* target, with no
+    other tool call in between - regardless of which agents are involved or
+    what pattern they form. TRANSFER_ROTATION_THRESHOLD is set higher than
+    TRANSFER_LOOP_THRESHOLD so this never fires before a real 2-agent
+    ping-pong would have (that stays the fast path), and stays well clear
+    of legitimate short routing chains (Orchestrator handing off to a
+    specialist, who immediately hands off again) while still breaking a
+    3+-agent rotation in well under one eval case's call budget. Like
+    _broken_transfer_pairs above, once this fires the counter is pinned at
+    the threshold (not reset to 0) so it keeps refusing every further
+    transfer_to_agent call - regardless of target - until a real tool call
+    actually happens; a rotation that already burned this many hops with no
+    progress isn't a pattern worth letting restart from zero.
     """
     state = tool_context.state
     pair = tuple(sorted((from_agent, to_agent)))
@@ -1409,17 +1434,32 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     count = loop_state.get("count", 0) + 1 if loop_state.get("pair") == list(pair) else 1
     state["_transfer_loop"] = {"pair": list(pair), "count": count}
 
-    if count < TRANSFER_LOOP_THRESHOLD:
+    rotation_count = state.get("_transfer_rotation_count", 0) + 1
+    state["_transfer_rotation_count"] = rotation_count
+
+    if count < TRANSFER_LOOP_THRESHOLD and rotation_count < TRANSFER_ROTATION_THRESHOLD:
         return None
 
-    state["_transfer_loop"] = {"pair": None, "count": 0}
-    state["_broken_transfer_pairs"] = broken_pairs + [list(pair)]
-    msg = (
-        f"🔁 [TRANSFER LOOP DETECTED] {from_agent} and {to_agent} have handed off to each other "
-        f"{count} times in a row with no other tool call in between - refusing this transfer. "
-        "Stop transferring and actually call a tool that makes progress (e.g. the mandatory step "
-        "you're both routing around), or explain the blocker instead of handing off again."
-    )
+    if count >= TRANSFER_LOOP_THRESHOLD:
+        state["_transfer_loop"] = {"pair": None, "count": 0}
+        state["_broken_transfer_pairs"] = broken_pairs + [list(pair)]
+        hop_count = count
+        msg = (
+            f"🔁 [TRANSFER LOOP DETECTED] {from_agent} and {to_agent} have handed off to each other "
+            f"{count} times in a row with no other tool call in between - refusing this transfer. "
+            "Stop transferring and actually call a tool that makes progress (e.g. the mandatory step "
+            "you're both routing around), or explain the blocker instead of handing off again."
+        )
+    else:
+        state["_transfer_rotation_count"] = TRANSFER_ROTATION_THRESHOLD
+        hop_count = rotation_count
+        msg = (
+            f"🔁 [TRANSFER LOOP DETECTED] {rotation_count} transfer_to_agent hops in a row with no "
+            f"other tool call in between (most recently {from_agent} -> {to_agent}) - refusing this "
+            "transfer. This looks like an unproductive rotation between roles rather than a direct "
+            "two-agent ping-pong. Stop transferring and actually call a tool that makes progress, or "
+            "explain the blocker in plain text instead."
+        )
     # Attach this to whatever story is "currently being worked" (one-story-
     # at-a-time ordering - see _current_story_in_progress) so it becomes a
     # real BLOCKED story, not just a log entry: the team can then move on to
@@ -1437,7 +1477,7 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
         if story:
             result = raise_story_blocker(
                 story.get("id") or story.get("title"),
-                f"{from_agent} and {to_agent} bounced transfer_to_agent {count}x with no progress - {msg}",
+                f"{from_agent} and {to_agent} bounced transfer_to_agent {hop_count}x with no progress - {msg}",
                 infer_blocker_category(from_agent, to_agent),
                 tool_context=tool_context,
             )
@@ -1445,7 +1485,7 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
             from .tools.notifications import record_blocking_interaction
             record_blocking_interaction(
                 "stalled",
-                f"{from_agent} and {to_agent} bounced transfer_to_agent {count}x with no progress.",
+                f"{from_agent} and {to_agent} bounced transfer_to_agent {hop_count}x with no progress.",
                 detail=msg,
                 tool_context=tool_context,
             )
@@ -1667,6 +1707,7 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
         # genuinely unproductive bouncing.
         try:
             tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
+            tool_context.state["_transfer_rotation_count"] = 0
         except Exception:
             pass
         # But it can itself be a loop: see _detect_repeated_call_loop.

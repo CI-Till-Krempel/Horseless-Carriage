@@ -797,6 +797,105 @@ class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
         self.assertEqual(interactions[0]["kind"], "stalled")
 
 
+class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #191): a real eval run hit a three-agent
+    rotation - ScrumOrchestrator -> ProductOwner -> ScrumMaster ->
+    ScrumOrchestrator -> ... - that the pair-based loop breaker never
+    catches, since every hop's sorted pair differs from the one before it
+    and the pair-streak counter never advances past 1. The rotation counter
+    must catch this within TRANSFER_ROTATION_THRESHOLD hops regardless of
+    which agents are involved, well before ADK_EVAL_MAX_LLM_CALLS is spent.
+    """
+
+    def _rotate(self, tool_context, hops):
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        result = None
+        for from_agent, to_agent in hops:
+            tool_context.agent_name = from_agent
+            result = log_tool_invocation_callback(tool, {"agent_name": to_agent}, tool_context)
+        return result
+
+    def test_three_agent_rotation_is_eventually_blocked(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        cycle = [
+            ("ScrumOrchestrator", "ProductOwner"),
+            ("ProductOwner", "ScrumMaster"),
+            ("ScrumMaster", "ScrumOrchestrator"),
+        ]
+        hops = (cycle * agent_module.TRANSFER_ROTATION_THRESHOLD)[: agent_module.TRANSFER_ROTATION_THRESHOLD]
+        result = self._rotate(tool_context, hops)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("TRANSFER LOOP DETECTED", result["message"])
+
+        # None of these hops ever repeats the same pair twice in a row, so
+        # the pair-based breaker alone (unchanged) must not be what fired.
+        self.assertIn("hops in a row", result["message"])
+
+    def test_rotation_shorter_than_threshold_is_not_blocked(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        cycle = [
+            ("ScrumOrchestrator", "ProductOwner"),
+            ("ProductOwner", "ScrumMaster"),
+            ("ScrumMaster", "ScrumOrchestrator"),
+        ]
+        hops = (cycle * agent_module.TRANSFER_ROTATION_THRESHOLD)[: agent_module.TRANSFER_ROTATION_THRESHOLD - 1]
+        result = self._rotate(tool_context, hops)
+
+        self.assertIsNone(result)
+
+    def test_a_real_tool_call_resets_the_rotation_counter(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        cycle = [
+            ("ScrumOrchestrator", "ProductOwner"),
+            ("ProductOwner", "ScrumMaster"),
+            ("ScrumMaster", "ScrumOrchestrator"),
+        ]
+        # One full lap - short of the threshold.
+        self._rotate(tool_context, cycle)
+
+        other_tool = BaseTool(name="repo_status", description="Report repo status.")
+        tool_context.agent_name = "ScrumOrchestrator"
+        log_tool_invocation_callback(other_tool, {}, tool_context)
+
+        # Another full lap should not be enough on its own, since real
+        # progress reset the streak in between.
+        result = self._rotate(tool_context, cycle)
+
+        self.assertIsNone(result)
+
+    def test_rotation_breaker_keeps_refusing_further_transfers_once_tripped(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        cycle = [
+            ("ScrumOrchestrator", "ProductOwner"),
+            ("ProductOwner", "ScrumMaster"),
+            ("ScrumMaster", "ScrumOrchestrator"),
+        ]
+        hops = (cycle * agent_module.TRANSFER_ROTATION_THRESHOLD)[: agent_module.TRANSFER_ROTATION_THRESHOLD]
+        self._rotate(tool_context, hops)
+
+        # A further transfer attempt - even to a role not previously
+        # involved in the rotation - must still be refused until a real
+        # tool call actually happens.
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context.agent_name = "ScrumOrchestrator"
+        result = log_tool_invocation_callback(tool, {"agent_name": "DevTeam"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("TRANSFER LOOP DETECTED", result["message"])
+
+
 class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
     """
     Acceptance Criteria: real eval runs showed non-transfer tools stuck in
