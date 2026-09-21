@@ -1,5 +1,6 @@
 # agents/scrum_team/tests/test_run_eval_shim.py
 import io
+import logging
 import unittest
 from contextlib import redirect_stderr
 from unittest.mock import patch
@@ -84,6 +85,85 @@ class TestRun(unittest.TestCase):
 
         with patch.object(run_eval_shim.main, "main", fake_main):
             self.assertEqual(run_eval_shim.run(), 2)
+
+
+class TestSuppressRedundantExceptionRelogs(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #195): a real eval run logged the same
+    LlmCallsLimitExceededError's full stack trace three times in a row as
+    it propagated up - _node_runner.py's "Node execution failed with
+    exception", runners.py's "Root node %s failed.", then
+    local_eval_service.py's "Inference failed for eval case `%s` ..." -
+    ~90 near-identical lines for one root cause. The two earlier, context-
+    free re-logs must be suppressed; the final one (which actually names
+    the failing eval case) must always get through, and unrelated log
+    records must never be touched.
+    """
+
+    def _emit(self, logger_name, msg, exc_info=False, args=()):
+        logger = logging.getLogger(logger_name)
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        logger.addHandler(handler)
+        logger.propagate = False
+        try:
+            if exc_info:
+                try:
+                    raise ValueError("boom")
+                except ValueError:
+                    logger.error(msg, *args, exc_info=True)
+            else:
+                logger.error(msg, *args)
+        finally:
+            logger.removeHandler(handler)
+        return stream.getvalue()
+
+    def test_suppresses_the_node_runner_relog(self):
+        output = self._emit(
+            "google_adk.google.adk.workflow._node_runner",
+            "Node execution failed with exception",
+            exc_info=True,
+        )
+        self.assertEqual(output, "")
+
+    def test_suppresses_the_runners_relog(self):
+        output = self._emit(
+            "google_adk.google.adk.runners",
+            "Root node %s failed.",
+            exc_info=True,
+            args=("ScrumOrchestrator",),
+        )
+        self.assertEqual(output, "")
+
+    def test_does_not_suppress_the_local_eval_service_summary(self):
+        output = self._emit(
+            "google_adk.google.adk.evaluation.local_eval_service",
+            "Inference failed for eval case `%s` with error %s.",
+            exc_info=True,
+            args=("some_case_id", "boom"),
+        )
+        self.assertIn("Inference failed for eval case", output)
+
+    def test_does_not_suppress_a_matching_message_from_an_unrelated_logger(self):
+        """Keying on (logger, message) together, not message alone - a
+        coincidentally identical message from a different module must not
+        be swallowed."""
+        output = self._emit(
+            "some.other.module",
+            "Node execution failed with exception",
+            exc_info=True,
+        )
+        self.assertIn("Node execution failed with exception", output)
+
+    def test_does_not_suppress_the_same_logger_with_no_exc_info(self):
+        """Only the exact exception-dump call is targeted - a plain,
+        non-exception log line from the same logger must pass through."""
+        output = self._emit(
+            "google_adk.google.adk.workflow._node_runner",
+            "Node execution failed with exception",
+            exc_info=False,
+        )
+        self.assertIn("Node execution failed with exception", output)
 
 
 if __name__ == "__main__":
