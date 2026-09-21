@@ -895,6 +895,51 @@ class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("TRANSFER LOOP DETECTED", result["message"])
 
+    def test_a_read_only_status_call_once_per_lap_does_not_evade_the_breaker(self):
+        """
+        Acceptance Criteria (GH issue #191 follow-up): a real eval run
+        (create_release_pr_rejects_without_release_approval) rotated
+        ScrumOrchestrator -> ProductOwner -> ScrumMaster -> DevTeam ->
+        ScrumOrchestrator -> ... but slipped in one
+        list_blocking_interactions()/get_budget_status() call per lap -
+        just often enough to reset the rotation counter (see the
+        before_tool callback's "any non-transfer tool call is real
+        progress" reset) before it ever reached
+        TRANSFER_ROTATION_THRESHOLD, so the breaker never fired and the
+        session burned its entire call budget without ever reaching
+        create_release_pr. These read-only calls must not count as
+        progress for this purpose.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        transfer_tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        status_tool = BaseTool(name="list_blocking_interactions", description="List blocking interactions.")
+
+        lap = [
+            ("ScrumOrchestrator", "ProductOwner"),
+            ("ProductOwner", "ScrumMaster"),
+            ("ScrumMaster", "DevTeam"),
+            ("DevTeam", "ScrumOrchestrator"),
+        ]
+        result = None
+        # Same bound as the real eval run's ADK_EVAL_MAX_LLM_CALLS (20) -
+        # this rotation must trip well within that, not just eventually.
+        for _ in range(5):
+            for from_agent, to_agent in lap:
+                tool_context.agent_name = from_agent
+                result = log_tool_invocation_callback(transfer_tool, {"agent_name": to_agent}, tool_context)
+                if result is not None:
+                    break
+            else:
+                tool_context.agent_name = "ScrumMaster"
+                log_tool_invocation_callback(status_tool, {}, tool_context)
+                continue
+            break
+
+        self.assertIsNotNone(result, "the rotation padded with read-only calls must still be caught")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("TRANSFER LOOP DETECTED", result["message"])
+
 
 class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
     """

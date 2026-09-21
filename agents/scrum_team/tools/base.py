@@ -100,6 +100,78 @@ def _develop_branch_name(tool_context=None) -> str:
         pass
     return os.getenv("GITHUB_DEVELOP_BRANCH") or "develop"
 
+_SAFE_DIRECTORIES_CONFIGURED: set[str] = set()
+
+
+def _ensure_git_safe_directory(path: Path) -> None:
+    """
+    Marks `path` as a git safe.directory, once per process. Without this,
+    every git command run inside this repo fails with "fatal: detected
+    dubious ownership in repository at ..." whenever the process's EUID
+    doesn't match the directory's owning UID (git's CVE-2022-24765
+    mitigation) - which happens whenever STATE_REPO_PATH/
+    INTERNAL_STATE_REPO_PATH is a bind-mounted directory created by a
+    different user than the one running inside the container.
+
+    A real ADK eval run hit exactly this: run_adk_eval.py's
+    prepare_scratch_state_repo() creates the scratch state repo on the
+    HOST, bind-mounted into the agent container at /app/state_repo - and
+    both run_adk_eval.py and the test suite (run_tests.py) deliberately
+    invoke the container with --entrypoint "" (entrypoint.sh's own git
+    config setup is skipped, since the test suite mocks every external
+    call and has no need for it - but the ADK eval run does real git
+    operations against a real bind-mounted repo, so nothing else in that
+    path ever configures safe.directory for it). Every start_feature_branch
+    call failed its `git checkout develop` this way, cascading into a
+    fabricated "story doesn't exist" derailment instead of ever reaching
+    the branch-protection behavior the eval case exists to test (GH issue
+    tracking this: see docs/EVALUATION.md).
+
+    Fixed defensively here, at the single choke point every git-invoking
+    tool already calls to resolve which repo to operate in, rather than in
+    the container entrypoint/compose plumbing - this self-heals regardless
+    of how the container is invoked (which has already changed twice for
+    unrelated reasons), and covers any future real deployment where
+    STATE_REPO_PATH happens to be a bind-mounted/network volume owned by a
+    different user, not just this eval path.
+
+    This function is called from _configured_repo_root on every single
+    tool call that resolves a repo path - including every test in this
+    suite, since conftest.py's _isolated_repo_root fixture always calls
+    through to the real _configured_repo_root first. Shelling out to `git
+    config` unconditionally here would mean hundreds of subprocess calls
+    per test run, each permanently appending an entry to whatever
+    .gitconfig the test process writes to. Checking ownership first (the
+    exact condition git itself checks) means the subprocess only ever runs
+    when there's a real mismatch to fix - which is never true for a
+    same-user tmp_path in a test, only for a genuinely different-owner
+    bind mount like the eval's scratch state repo.
+
+    Runs at most once per resolved path per process either way (a path
+    already confirmed same-owner needn't be re-stat'd every call). Every
+    failure mode here - the path not existing yet, os.geteuid() not being
+    available (Windows), the stat or git call itself failing - is
+    swallowed: this must never be what makes a tool call raise instead of
+    returning a normal error result, and the actual git command about to
+    run will surface its own clear error anyway if the real problem is
+    something else entirely.
+    """
+    key = str(path)
+    if key in _SAFE_DIRECTORIES_CONFIGURED:
+        return
+    _SAFE_DIRECTORIES_CONFIGURED.add(key)
+    try:
+        if path.stat().st_uid == os.geteuid():
+            return
+        subprocess.run(
+            ["git", "config", "--global", "--add", "safe.directory", key],
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def _configured_repo_root(tool_context=None) -> Path:
     """
     Determine which repository directory to operate in.
@@ -112,19 +184,25 @@ def _configured_repo_root(tool_context=None) -> Path:
     # 1. Internal path (highest priority for Docker environment)
     internal_path = os.getenv("INTERNAL_STATE_REPO_PATH")
     if internal_path:
-        return Path(internal_path).resolve()
-        
+        resolved = Path(internal_path).resolve()
+        _ensure_git_safe_directory(resolved)
+        return resolved
+
     # 2. Public environment variable
     if os.getenv("STATE_REPO_PATH"):
-        return Path(os.getenv("STATE_REPO_PATH")).expanduser().resolve()
-    
+        resolved = Path(os.getenv("STATE_REPO_PATH")).expanduser().resolve()
+        _ensure_git_safe_directory(resolved)
+        return resolved
+
     # 3. State-persisted path
     try:
         if tool_context and getattr(tool_context, "state", None):
             repo_cfg = tool_context.state.get("repo", {}) or {}
             p = repo_cfg.get("local_path")
             if p:
-                return Path(p).expanduser().resolve()
+                resolved = Path(p).expanduser().resolve()
+                _ensure_git_safe_directory(resolved)
+                return resolved
     except Exception:
         pass
     return _project_root()

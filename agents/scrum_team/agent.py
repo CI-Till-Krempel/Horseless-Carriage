@@ -1356,6 +1356,20 @@ def agent_thinking_stop_callback(callback_context: CallbackContext, llm_response
 TRANSFER_LOOP_THRESHOLD = 3
 TRANSFER_ROTATION_THRESHOLD = 6
 
+# Pure status/info reads - never mutate session.state, so calling one can
+# never itself be evidence the team is making real progress. Excluded from
+# resetting the transfer-loop/rotation counters (see the before_tool
+# callback below) so a rotation that pads itself with one of these per lap
+# still trips the loop breaker instead of evading it forever. Deliberately
+# narrow and explicit rather than "anything that doesn't write state" -
+# only tools verified read-only by inspection belong here.
+_READ_ONLY_STATUS_TOOLS = frozenset({
+    "list_blocking_interactions",
+    "get_budget_status",
+    "list_docs",
+    "read_doc",
+})
+
 
 def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: str) -> Optional[Dict[str, Any]]:
     """
@@ -1704,12 +1718,26 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     else:
         # Any non-transfer tool call is real progress against the
         # transfer-loop breaker - reset that streak so it only fires on
-        # genuinely unproductive bouncing.
-        try:
-            tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
-            tool_context.state["_transfer_rotation_count"] = 0
-        except Exception:
-            pass
+        # genuinely unproductive bouncing. EXCEPT the read-only status
+        # tools in _READ_ONLY_STATUS_TOOLS: a real eval run
+        # (create_release_pr_rejects_without_release_approval) showed a
+        # rotation that never repeated the same pair 3x running (dodging
+        # TRANSFER_LOOP_THRESHOLD) and never sustained 6 transfer_to_agent
+        # hops in a row either (dodging TRANSFER_ROTATION_THRESHOLD,
+        # GH issue #191's fix) - because it slipped in exactly one
+        # list_blocking_interactions()/get_budget_status() call per lap,
+        # just often enough to reset both counters before either could
+        # fire, and burned the entire ADK_EVAL_MAX_LLM_CALLS budget without
+        # ever calling create_release_pr. These tools can never make actual
+        # progress on their own (nothing about the story/sprint/backlog
+        # changes from calling them) - only genuinely state-changing calls
+        # should count as evidence the team is unstuck.
+        if tool.name not in _READ_ONLY_STATUS_TOOLS:
+            try:
+                tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
+                tool_context.state["_transfer_rotation_count"] = 0
+            except Exception:
+                pass
         # But it can itself be a loop: see _detect_repeated_call_loop.
         loop_result = _detect_repeated_call_loop(tool_context, agent_name, tool.name, args)
         if loop_result is not None:
