@@ -4,7 +4,17 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agents.scrum_team.tools.base import _hc_version, _default_push_branch, _develop_branch_name, _run, _redact_cmd, _redact_secrets
+import agents.scrum_team.tools.base as base_module
+from agents.scrum_team.tools.base import (
+    _configured_repo_root,
+    _default_push_branch,
+    _develop_branch_name,
+    _ensure_git_safe_directory,
+    _hc_version,
+    _redact_cmd,
+    _redact_secrets,
+    _run,
+)
 from agents.scrum_team.state import ScrumState
 
 
@@ -215,6 +225,86 @@ class TestRunTimeoutAndStdin(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertTrue(result.get("timed_out"))
         self.assertIn("timed out", result["message"])
+
+
+class TestEnsureGitSafeDirectory(unittest.TestCase):
+    """
+    Acceptance Criteria: a real ADK eval run's start_feature_branch calls
+    all failed with "fatal: detected dubious ownership in repository at
+    '/app/state_repo'" - the scratch state repo is created on the HOST by
+    run_adk_eval.py's prepare_scratch_state_repo(), then bind-mounted into
+    the agent container at a different EUID, tripping git's own
+    CVE-2022-24765 safety check. _ensure_git_safe_directory must configure
+    `git config --global --add safe.directory <path>` for exactly this
+    case - but must never shell out at all when the path is already owned
+    by the current user (the common case for every test's own tmp_path,
+    and for a normal non-bind-mounted STATE_REPO_PATH), since this runs on
+    every single _configured_repo_root call across the whole test suite.
+    """
+
+    def setUp(self):
+        patcher = patch.object(base_module, "_SAFE_DIRECTORIES_CONFIGURED", set())
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_does_not_shell_out_for_a_same_owner_path(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("subprocess.run") as mock_subprocess_run:
+                _ensure_git_safe_directory(Path(tmp_dir))
+            mock_subprocess_run.assert_not_called()
+
+    def test_configures_safe_directory_for_a_different_owner_path(self):
+        fake_path = Path("/app/state_repo")
+        fake_stat = MagicMock(st_uid=12345)
+        with (
+            patch("pathlib.Path.stat", return_value=fake_stat),
+            patch("os.geteuid", return_value=0, create=True),
+            patch("subprocess.run") as mock_subprocess_run,
+        ):
+            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            _ensure_git_safe_directory(fake_path)
+
+        mock_subprocess_run.assert_called_once()
+        actual_cmd = mock_subprocess_run.call_args[0][0]
+        self.assertEqual(actual_cmd, ["git", "config", "--global", "--add", "safe.directory", str(fake_path)])
+
+    def test_only_runs_once_per_path_even_when_called_repeatedly(self):
+        fake_path = Path("/app/state_repo")
+        fake_stat = MagicMock(st_uid=12345)
+        with (
+            patch("pathlib.Path.stat", return_value=fake_stat),
+            patch("os.geteuid", return_value=0, create=True),
+            patch("subprocess.run") as mock_subprocess_run,
+        ):
+            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            _ensure_git_safe_directory(fake_path)
+            _ensure_git_safe_directory(fake_path)
+            _ensure_git_safe_directory(fake_path)
+
+        mock_subprocess_run.assert_called_once()
+
+    def test_swallows_a_failure_instead_of_raising(self):
+        fake_path = Path("/app/state_repo")
+        fake_stat = MagicMock(st_uid=12345)
+        with (
+            patch("pathlib.Path.stat", return_value=fake_stat),
+            patch("os.geteuid", return_value=0, create=True),
+            patch("subprocess.run", side_effect=OSError("git not found")),
+        ):
+            _ensure_git_safe_directory(fake_path)  # must not raise
+
+    def test_configured_repo_root_calls_through_for_internal_state_repo_path(self):
+        """_configured_repo_root's highest-priority branch (Docker mount
+        point) is exactly the one that hit this in the real eval run -
+        confirm the wiring actually reaches _ensure_git_safe_directory."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with (
+                patch.dict("os.environ", {"INTERNAL_STATE_REPO_PATH": tmp_dir}, clear=True),
+                patch("agents.scrum_team.tools.base._ensure_git_safe_directory") as mock_ensure,
+            ):
+                resolved = _configured_repo_root(tool_context=None)
+
+        mock_ensure.assert_called_once_with(resolved)
 
 
 if __name__ == "__main__":
