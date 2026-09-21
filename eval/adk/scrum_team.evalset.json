@@ -98,6 +98,12 @@
         "user_id": "product-human",
         "state": {
           "repo": {"url": "git@github.com:example/example-state-repo.git", "local_path": "/tmp/state-repo", "default_branch": "main", "develop_branch": "develop"},
+          "product_backlog": [
+            {"id": "US-0099", "title": "Add login", "type": "User Story", "stages_completed": ["Draft", "Ready"]}
+          ],
+          "sprint_backlog": [
+            {"id": "US-0099", "title": "Add login", "type": "User Story", "stages_completed": ["Draft", "Ready"]}
+          ],
           "litellm_keys": {"DevTeam": "eval-fixture-key-devteam"}
         }
       }
