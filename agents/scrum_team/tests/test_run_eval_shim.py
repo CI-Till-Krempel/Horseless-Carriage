@@ -2,10 +2,15 @@
 import io
 import logging
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
 import click
+import google.adk.cli.cli_eval as cli_eval_module
+from google.adk.evaluation.eval_case import IntermediateData, Invocation
+from google.adk.evaluation.eval_metrics import EvalStatus
+from google.adk.evaluation.eval_result import EvalCaseResult, EvalMetricResultPerInvocation
+from google.genai import types as genai_types
 
 from eval.adk import run_eval_shim
 
@@ -164,6 +169,81 @@ class TestSuppressRedundantExceptionRelogs(unittest.TestCase):
             exc_info=False,
         )
         self.assertIn("Node execution failed with exception", output)
+
+
+def _make_invocation(tool_calls):
+    return Invocation(
+        invocation_id="inv-1",
+        user_content=genai_types.Content(role="user", parts=[genai_types.Part(text="prompt")]),
+        final_response=genai_types.Content(role="model", parts=[genai_types.Part(text="response")]),
+        intermediate_data=IntermediateData(tool_uses=list(tool_calls)),
+    )
+
+
+def _make_eval_case_result(status, actual_invocation, expected_invocation):
+    per_invocation_result = EvalMetricResultPerInvocation(
+        actual_invocation=actual_invocation,
+        expected_invocation=expected_invocation,
+        eval_metric_results=[],
+    )
+    return EvalCaseResult(
+        eval_set_file="dummy.evalset.json",
+        eval_set_id="hc-scrum-team-gate-enforcement-v1",
+        eval_id="git_push_refuses_protected_develop",
+        final_eval_status=status,
+        eval_metric_results=[],
+        overall_eval_metric_results=[],
+        eval_metric_result_per_invocation=[per_invocation_result],
+        session_id="dummy-session",
+    )
+
+
+class TestCompactToolCallDiff(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #196): adk eval's own tabulate table wraps
+    each invocation's args/call-IDs across 15-20 lines, interleaving
+    fragments from different tool calls into adjacent cells - genuinely
+    hard to eyeball whether a failure is a real trajectory mismatch.
+    pretty_print_eval_result must additionally print one compact,
+    single-line-per-side diff for every failed case, built directly from
+    the same FunctionCall objects the table itself uses - not parsed from
+    the rendered table text - while never touching the table for a passed
+    case.
+    """
+
+    def test_format_tool_call_is_compact_and_single_line(self):
+        call = genai_types.FunctionCall(name="git_push", args={"branch": "develop"})
+        self.assertEqual(run_eval_shim.format_tool_call(call), "git_push(branch='develop')")
+
+    def test_no_diff_is_printed_for_a_passed_case(self):
+        invocation = _make_invocation([genai_types.FunctionCall(name="git_push", args={"branch": "develop"})])
+        eval_result = _make_eval_case_result(EvalStatus.PASSED, invocation, invocation)
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli_eval_module.pretty_print_eval_result(eval_result)
+
+        self.assertNotIn("Compact tool-call diff", out.getvalue())
+
+    def test_diff_is_printed_alongside_the_original_table_for_a_failed_case(self):
+        expected_invocation = _make_invocation([genai_types.FunctionCall(name="git_push", args={"branch": "develop"})])
+        actual_invocation = _make_invocation(
+            [genai_types.FunctionCall(name="transfer_to_agent", args={"agent_name": "DevTeam"})]
+        )
+        eval_result = _make_eval_case_result(EvalStatus.FAILED, actual_invocation, expected_invocation)
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli_eval_module.pretty_print_eval_result(eval_result)
+        output = out.getvalue()
+
+        # The original table output is untouched.
+        self.assertIn("Eval Id: git_push_refuses_protected_develop", output)
+        # The new compact diff is present and actually readable on one line
+        # per side, unlike the wrapped table.
+        self.assertIn("Compact tool-call diff", output)
+        self.assertIn("expected: [\"git_push(branch='develop')\"]", output)
+        self.assertIn("actual:   [\"transfer_to_agent(agent_name='DevTeam')\"]", output)
 
 
 if __name__ == "__main__":
