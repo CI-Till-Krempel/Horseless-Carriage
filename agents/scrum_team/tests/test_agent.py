@@ -1727,6 +1727,53 @@ class TestSetupLoggingRespectsLogLevel(unittest.TestCase):
         self.assertEqual(self._file_handler_level(), logging.DEBUG)
 
 
+class TestSetupLoggingLitellmVerboseOptIn(unittest.TestCase):
+    """
+    Acceptance Criteria: LOG_LEVEL=DEBUG alone used to also force
+    litellm.set_verbose=True (a real ADK eval run's console/CI log
+    ballooned to 16 MB for a handful of LLM calls this way - every system
+    prompt + full tool schema list, printed 2-3x per call via several
+    different internal litellm code paths, none of it going through the
+    logging module at all). That must now require a separate, explicit
+    LITELLM_LOG_VERBOSE=1 opt-in - LOG_LEVEL=DEBUG by itself must not
+    enable it, regardless of how verbose *our own* app logging gets.
+    """
+
+    def tearDown(self):
+        import logging
+        import os
+        root_logger = logging.getLogger()
+        for h in list(root_logger.handlers):
+            if isinstance(h, logging.FileHandler):
+                root_logger.removeHandler(h)
+                h.close()
+        import litellm
+        litellm.set_verbose = False
+        os.environ.pop("LITELLM_LOG_VERBOSE", None)
+
+    def test_debug_log_level_alone_does_not_enable_litellm_verbose(self):
+        import os
+        import litellm
+        with patch.dict(os.environ, {"LOG_LEVEL": "DEBUG"}, clear=False):
+            os.environ.pop("LITELLM_LOG_VERBOSE", None)
+            agent_module._setup_logging()
+        self.assertFalse(litellm.set_verbose)
+
+    def test_opt_in_enables_verbose_even_at_a_quiet_log_level(self):
+        import os
+        import litellm
+        with patch.dict(os.environ, {"LOG_LEVEL": "INFO", "LITELLM_LOG_VERBOSE": "1"}, clear=False):
+            agent_module._setup_logging()
+        self.assertTrue(litellm.set_verbose)
+
+    def test_opt_in_also_works_alongside_debug_log_level(self):
+        import os
+        import litellm
+        with patch.dict(os.environ, {"LOG_LEVEL": "DEBUG", "LITELLM_LOG_VERBOSE": "true"}, clear=False):
+            agent_module._setup_logging()
+        self.assertTrue(litellm.set_verbose)
+
+
 class TestPatchedAdkAcompletion(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #126): a transient LiteLLM proxy

@@ -12,21 +12,38 @@ import litellm
 # --- Logging Setup ---
 def _setup_logging():
     log_level_str = os.getenv("LOG_LEVEL", "INFO").upper()
-    
+    # Separate, more surgical opt-in for LiteLLM's own raw wire-level
+    # request/response dump - LOG_LEVEL=DEBUG alone used to also force this
+    # on (both litellm.set_verbose's un-filtered print()s and exempting the
+    # noisy-logger filter below), which is what balloons a routine debug
+    # run's console/CI log to double-digit megabytes for a handful of LLM
+    # calls: every system prompt + full tool schema list gets printed 2-3x
+    # per call via several different internal litellm code paths, none of
+    # it going through the noise filter at all (litellm.set_verbose prints
+    # directly, bypassing the logging module entirely). A real CI run's
+    # 16 MB log was diagnosed from a single ERROR-level traceback - none of
+    # that bulk was actually needed. LOG_LEVEL=DEBUG still gets full detail
+    # from *our own* application code; opt into the raw provider wire trace
+    # explicitly with LITELLM_LOG_VERBOSE=1 when actually diagnosing a
+    # model-payload-level issue.
+    litellm_verbose = os.getenv("LITELLM_LOG_VERBOSE", "").strip().lower() in ("1", "true", "yes")
+
     # Ensure sessions directory exists for the log file
     log_file = os.path.join("/app/sessions", f"agent-{os.getenv('SESSION_ID', 'default')}.log")
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    
+
     # Root logger configuration
     root_logger = logging.getLogger()
     # We set root logger to DEBUG to allow all logs to be captured by handlers
     root_logger.setLevel(logging.DEBUG)
-    
+
     # Function to set level for all stream handlers in a logger and add noise filter
     class ConsoleNoiseFilter(logging.Filter):
         def filter(self, record):
-            # If we are in DEBUG mode globally, show everything
-            if log_level_str == "DEBUG":
+            # Only the explicit provider-verbose opt-in shows everything now
+            # - LOG_LEVEL=DEBUG alone no longer exempts noisy loggers (see
+            # LITELLM_LOG_VERBOSE above).
+            if litellm_verbose:
                 return True
             # Silence specific noisy loggers at INFO/DEBUG level on console
             noisy_loggers = ["LiteLLM", "openai", "httpx", "urllib3", "google.adk"]
@@ -64,10 +81,10 @@ def _setup_logging():
     fh.setFormatter(formatter)
     root_logger.addHandler(fh)
     
-    # LiteLLM specific logging
-    if log_level_str == "DEBUG":
+    # LiteLLM specific logging - see LITELLM_LOG_VERBOSE above.
+    if litellm_verbose:
         litellm.set_verbose = True
-    
+
     root_logger.info(f"Logging initialized. Console level: {log_level_str}, File: {log_file}")
 
 # GH issue #127: a raw, per-run record of the actual conversation and tool

@@ -34,18 +34,35 @@ this shim).
    graceful per-case failure path as any other inference-time exception),
    not a crash of the whole `adk eval` run.
 
+3. A real process exit code on eval failure. `cli_eval` (cli_tools_click.py)
+   prints "Tests passed: X / Tests failed: Y" and, for each case, "Overall
+   Eval Status: FAILED" - but never calls `ctx.exit()`/raises on a nonzero
+   failure count, so its click.Group returns/exits 0 regardless (only
+   actual infra errors - missing agent module, bad eval-set file, etc. -
+   raise a ClickException and exit nonzero). A real CI run once went green
+   with "Tests passed: 0 / Tests failed: 10" - the exact silent-100%-
+   failure this eval set exists to catch. Rather than patching `cli_eval`
+   itself (its whole body runs inside one click command function, nothing
+   to hook), this intercepts every click.echo() call and tallies any
+   "Tests failed: N" text - message text is cli_tools_click.py's only
+   externally observable signal of the actual result, since the command's
+   own return value is always None.
+
 Invoked by run_adk_eval.py's adk_eval_command() in place of the bare `adk`
 executable - same arguments (eval, AGENT_MODULE_PATH, EVAL_SET_PATH,
 --config_file_path, --print_detailed_results), so this is a drop-in
 replacement, not a different command shape.
 """
 import os
+import re
 import sys
 
+import click
 from google.adk.agents.run_config import RunConfig
 from google.adk.evaluation.base_eval_service import EvaluateConfig, InferenceConfig
 
 DEFAULT_MAX_LLM_CALLS = 20
+_TESTS_FAILED_PATTERN = re.compile(r"Tests failed:\s*(\d+)")
 
 
 def _patch_default(cls, **defaults):
@@ -65,5 +82,40 @@ _patch_default(RunConfig, max_llm_calls=int(os.environ.get("ADK_EVAL_MAX_LLM_CAL
 
 from google.adk.cli import main  # noqa: E402  (must import after patching above)
 
+
+def run() -> int:
+    """Runs `adk eval` with standalone_mode=False (so click returns instead
+    of calling sys.exit itself) and tallies every "Tests failed: N" message
+    cli_eval prints, returning a nonzero exit code if any eval case failed -
+    see module docstring point 3 for why this can't just trust click's own
+    return value/exit code."""
+    failure_counts = []
+    original_echo = click.echo
+
+    def _tallying_echo(message=None, *args, **kwargs):
+        if message is not None:
+            match = _TESTS_FAILED_PATTERN.search(str(message))
+            if match:
+                failure_counts.append(int(match.group(1)))
+        return original_echo(message, *args, **kwargs)
+
+    click.echo = _tallying_echo
+    try:
+        exit_code = main.main(standalone_mode=False)
+    except click.ClickException as e:
+        e.show()
+        exit_code = e.exit_code
+    except click.exceptions.Abort:
+        original_echo("Aborted!", file=sys.stderr)
+        exit_code = 1
+    finally:
+        click.echo = original_echo
+
+    exit_code = exit_code or 0
+    if exit_code == 0 and sum(failure_counts) > 0:
+        return 1
+    return exit_code
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
