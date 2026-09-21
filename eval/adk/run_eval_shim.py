@@ -48,11 +48,27 @@ this shim).
    externally observable signal of the actual result, since the command's
    own return value is always None.
 
+4. Duplicate tracebacks for the same failure. When an eval case's
+   inference raises (e.g. LlmCallsLimitExceededError), ADK logs the full
+   stack trace at three separate catch sites as it propagates up:
+   _node_runner.py's "Node execution failed with exception", then
+   runners.py's "Root node %s failed.", then finally
+   local_eval_service.py's "Inference failed for eval case `%s` ..." -
+   the only one of the three that actually names which case failed. A real
+   CI run showed each LlmCallsLimitExceededError logged ~90 near-identical
+   lines this way (GH issue #195) - exactly the kind of noise point 3's
+   sibling log-hygiene work already trimmed elsewhere. The two earlier,
+   context-free re-logs are suppressed at the source via a logging.Filter
+   on their specific loggers - real, distinct failures elsewhere are
+   unaffected, and the final, most useful log line (which names the eval
+   case) is untouched.
+
 Invoked by run_adk_eval.py's adk_eval_command() in place of the bare `adk`
 executable - same arguments (eval, AGENT_MODULE_PATH, EVAL_SET_PATH,
 --config_file_path, --print_detailed_results), so this is a drop-in
 replacement, not a different command shape.
 """
+import logging
 import os
 import re
 import sys
@@ -63,6 +79,31 @@ from google.adk.evaluation.base_eval_service import EvaluateConfig, InferenceCon
 
 DEFAULT_MAX_LLM_CALLS = 20
 _TESTS_FAILED_PATTERN = re.compile(r"Tests failed:\s*(\d+)")
+
+# logger name -> the exact (pre-format) message that catch site logs with
+# exc_info, for the two intermediate re-logs of the same underlying
+# failure - see module docstring point 4. Matched on the raw message
+# rather than the exception itself: by the time local_eval_service.py logs
+# its own summary, the exception has usually been re-wrapped (e.g.
+# DynamicNodeFailError chained from the original LlmCallsLimitExceededError
+# via __context__), so there's no single exception identity shared across
+# all three log calls to key off - but each catch site's own message text
+# is fixed and specific to that log call, so matching on (logger, message)
+# reliably identifies exactly these two re-logs and nothing else.
+_NOISY_RELOG_LOGGERS = {
+    "google_adk.google.adk.workflow._node_runner": "Node execution failed with exception",
+    "google_adk.google.adk.runners": "Root node %s failed.",
+}
+
+
+class _SuppressRedundantExceptionRelogs(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        expected_msg = _NOISY_RELOG_LOGGERS.get(record.name)
+        return not (expected_msg is not None and record.msg == expected_msg and record.exc_info)
+
+
+for _logger_name in _NOISY_RELOG_LOGGERS:
+    logging.getLogger(_logger_name).addFilter(_SuppressRedundantExceptionRelogs())
 
 
 def _patch_default(cls, **defaults):
