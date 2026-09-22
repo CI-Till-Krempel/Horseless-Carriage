@@ -9,6 +9,7 @@ from agents.scrum_team.tools.requirements import (
     advance_story_stage, upsert_backlog_item, record_design_approval, record_acceptance_check, plan_backlog_item,
     set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
     raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
+    update_roadmap, _strip_story_block_from_other_versions,
 )
 
 
@@ -1330,6 +1331,127 @@ class TestResolveStoryRef(unittest.TestCase):
         from agents.scrum_team.tools.requirements import _resolve_story_ref
         self.assertEqual(_resolve_story_ref("US-0001"), "US-0001")
         self.assertEqual(_resolve_story_ref("Create To-Do List"), "Create To-Do List")
+
+
+class TestStripStoryBlockFromOtherVersions(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #212): a story's rendered block must be
+    removable from every version section except the one being kept, using
+    only the section headings/story-block shape update_roadmap already
+    writes - the mechanism update_roadmap now uses to avoid leaving a
+    story duplicated under an old version section.
+    """
+
+    def test_removes_the_block_from_a_different_section_but_keeps_the_current_one(self):
+        import re
+        lines = [
+            "### v1.0.0",
+            "Stories",
+            "- [US-0001] Create To-Do List",
+            "  - [x] DRAFT",
+            "  - [x] READY",
+            "  - [ ] IMPLEMENTED",
+            "  - [ ] REVIEWED",
+            "  - [ ] TESTED",
+            "  - [ ] ACCEPTED",
+            "### v1.1.0",
+            "Stories",
+            "- [US-0001] Create To-Do List",
+            "  - [x] DRAFT",
+            "  - [x] READY",
+            "  - [x] IMPLEMENTED",
+            "  - [x] REVIEWED",
+            "  - [x] TESTED",
+            "  - [x] ACCEPTED",
+        ]
+        keep_re = re.compile(r"^###\s+v1\.1\.0(\s*$|\s+—)")
+
+        result = _strip_story_block_from_other_versions(lines, "US-0001", keep_re)
+
+        self.assertEqual(result.count("- [US-0001] Create To-Do List"), 1)
+        self.assertIn("### v1.1.0", result)
+        v11_idx = result.index("### v1.1.0")
+        self.assertIn("- [US-0001] Create To-Do List", result[v11_idx:])
+
+    def test_leaves_other_stories_in_the_stripped_section_untouched(self):
+        import re
+        lines = [
+            "### v1.0.0",
+            "Stories",
+            "- [US-0001] Create To-Do List",
+            "  - [x] DRAFT",
+            "- [US-0002] Add Task",
+            "  - [x] DRAFT",
+            "### v1.1.0",
+            "Stories",
+            "- [US-0001] Create To-Do List",
+            "  - [x] DRAFT",
+        ]
+        keep_re = re.compile(r"^###\s+v1\.1\.0(\s*$|\s+—)")
+
+        result = _strip_story_block_from_other_versions(lines, "US-0001", keep_re)
+
+        self.assertIn("- [US-0002] Add Task", result)
+        self.assertEqual(result.count("- [US-0001] Create To-Do List"), 1)
+
+
+class TestUpdateRoadmapCrossVersionDedup(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #212): update_roadmap must not leave a
+    story duplicated under an older version section once it's been
+    written into a new one - a real eval run's generated ROADMAP.md
+    accumulated 5 near-duplicate version sections, each re-listing every
+    story, because nothing ever cleaned up a story's entry left behind
+    under whichever version section held it before.
+    """
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo")
+    def test_moving_a_story_to_a_new_version_removes_it_from_the_old_one(self, mock_save):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                tc = MagicMock()
+                tc.state = {
+                    "product_backlog": [
+                        {"id": "US-0001", "title": "Create To-Do List", "type": "User Story", "stages_completed": ["Draft", "Ready"]},
+                    ],
+                    "sprint_backlog": [],
+                }
+
+                first = update_roadmap("v1.0.0", goals=["Ship MVP"], stories=["US-0001"], tool_context=tc)
+                self.assertEqual(first["status"], "ok")
+
+                tc.state["product_backlog"][0]["stages_completed"] = [
+                    "Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted",
+                ]
+                second = update_roadmap("v1.1.0", goals=["Polish UX"], stories=["US-0001"], tool_context=tc)
+                self.assertEqual(second["status"], "ok")
+
+                content = (Path(tmp) / "specs" / "ROADMAP.md").read_text(encoding="utf-8")
+                self.assertEqual(content.count("[US-0001]"), 1)
+                v11_idx = content.index("### v1.1.0")
+                self.assertIn("[US-0001]", content[v11_idx:])
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo")
+    def test_a_second_story_sharing_the_old_section_is_not_removed(self, mock_save):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                tc = MagicMock()
+                tc.state = {
+                    "product_backlog": [
+                        {"id": "US-0001", "title": "Create To-Do List", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+                        {"id": "US-0002", "title": "Add Task", "type": "User Story", "stages_completed": ["Draft", "Ready"]},
+                    ],
+                    "sprint_backlog": [],
+                }
+
+                update_roadmap("v1.0.0", goals=["Ship MVP"], stories=["US-0001", "US-0002"], tool_context=tc)
+                result = update_roadmap("v1.1.0", goals=["Polish UX"], stories=["US-0001"], tool_context=tc)
+                self.assertEqual(result["status"], "ok")
+
+                content = (Path(tmp) / "specs" / "ROADMAP.md").read_text(encoding="utf-8")
+                self.assertEqual(content.count("[US-0001]"), 1)
+                self.assertEqual(content.count("[US-0002]"), 1)
+                self.assertIn("[US-0002]", content[content.index("### v1.0.0"):content.index("### v1.1.0")])
 
 
 if __name__ == "__main__":
