@@ -235,17 +235,28 @@ class TestEnsureGitSafeDirectory(unittest.TestCase):
     run_adk_eval.py's prepare_scratch_state_repo(), then bind-mounted into
     the agent container at a different EUID, tripping git's own
     CVE-2022-24765 safety check. _ensure_git_safe_directory must configure
-    `git config --global --add safe.directory <path>` for exactly this
-    case - but must never shell out at all when the path is already owned
-    by the current user (the common case for every test's own tmp_path,
-    and for a normal non-bind-mounted STATE_REPO_PATH), since this runs on
-    every single _configured_repo_root call across the whole test suite.
+    `git config --global --add safe.directory *` for exactly this case -
+    but must never shell out at all when the path is already owned by the
+    current user (the common case for every test's own tmp_path, and for a
+    normal non-bind-mounted STATE_REPO_PATH), since this runs on every
+    single _configured_repo_root call across the whole test suite.
+
+    Marks `*`, not the specific path, since a later run also hit "dubious
+    ownership in repository at './.state-repo-remote.git'" -
+    prepare_scratch_state_repo's own local bare "origin" remote, a
+    *separate* nested repository under the same working tree that git
+    checks ownership of independently when git_push accesses it over the
+    local filesystem transport. Marking only the parent working tree safe
+    never covers that nested repo too.
     """
 
     def setUp(self):
         patcher = patch.object(base_module, "_SAFE_DIRECTORIES_CONFIGURED", set())
         patcher.start()
         self.addCleanup(patcher.stop)
+        patcher2 = patch.object(base_module, "_SAFE_DIRECTORY_WILDCARD_SET", False)
+        patcher2.start()
+        self.addCleanup(patcher2.stop)
 
     def test_does_not_shell_out_for_a_same_owner_path(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -266,7 +277,7 @@ class TestEnsureGitSafeDirectory(unittest.TestCase):
 
         mock_subprocess_run.assert_called_once()
         actual_cmd = mock_subprocess_run.call_args[0][0]
-        self.assertEqual(actual_cmd, ["git", "config", "--global", "--add", "safe.directory", str(fake_path)])
+        self.assertEqual(actual_cmd, ["git", "config", "--global", "--add", "safe.directory", "*"])
 
     def test_only_runs_once_per_path_even_when_called_repeatedly(self):
         fake_path = Path("/app/state_repo")
@@ -280,6 +291,26 @@ class TestEnsureGitSafeDirectory(unittest.TestCase):
             _ensure_git_safe_directory(fake_path)
             _ensure_git_safe_directory(fake_path)
             _ensure_git_safe_directory(fake_path)
+
+        mock_subprocess_run.assert_called_once()
+
+    def test_a_second_different_mismatched_path_does_not_shell_out_again(self):
+        """The scratch state repo's own local bare remote
+        (./.state-repo-remote.git) is a genuinely different path from the
+        working tree - once the wildcard is already set from fixing the
+        first one, a second mismatched path must be covered for free, not
+        trigger a second git config subprocess call."""
+        first_path = Path("/app/state_repo")
+        second_path = Path("/app/state_repo/.state-repo-remote.git")
+        fake_stat = MagicMock(st_uid=12345)
+        with (
+            patch("pathlib.Path.stat", return_value=fake_stat),
+            patch("os.geteuid", return_value=0, create=True),
+            patch("subprocess.run") as mock_subprocess_run,
+        ):
+            mock_subprocess_run.return_value = MagicMock(returncode=0)
+            _ensure_git_safe_directory(first_path)
+            _ensure_git_safe_directory(second_path)
 
         mock_subprocess_run.assert_called_once()
 
