@@ -230,6 +230,37 @@ def _render_story_block(story_id: str, title: str, stages_completed: List[str]) 
     return lines
 
 
+def _strip_story_block_from_other_versions(lines: List[str], story_id: str, keep_version_re: "re.Pattern") -> List[str]:
+    """
+    Removes story_id's rendered block (see _render_story_block) from every
+    "### <version>" section other than the one keep_version_re matches.
+
+    GH issue #212: update_roadmap already tracks which version section it
+    just wrote a story into (product_backlog[...]["version"] a few lines
+    above each call site), but never used that to clean up the story's
+    leftover entry under whichever version section held it before - so a
+    story accumulated a near-duplicate entry under every version string
+    ever passed to update_roadmap for it (5 near-duplicate sections, one
+    per sprint, in one real eval run's generated ROADMAP.md).
+    """
+    story_header_re = re.compile(rf"^- \[{re.escape(story_id)}\] ")
+    result = []
+    in_kept_section = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("###"):
+            in_kept_section = bool(keep_version_re.match(line))
+        if not in_kept_section and story_header_re.match(line):
+            i += 1
+            while i < len(lines) and lines[i].startswith("  - ["):
+                i += 1
+            continue
+        result.append(line)
+        i += 1
+    return result
+
+
 def _coerce_backlog_item_dict(value: Any, tool_name: str) -> Dict[str, Any]:
     """Thin alias kept for this module's call sites - see _coerce_dict_arg
     (agents/scrum_team/tools/base.py) for the JSON/Python-repr recovery
@@ -432,6 +463,17 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
                 insertion.extend(_render_story_block(s_id, s_title, stages_completed))
         insertion.append("\n")
         new_lines = new_lines[:insertion_idx] + insertion + new_lines[insertion_idx:]
+
+    # GH issue #212: each story just written into `version`'s section
+    # above must not also linger under whichever version section held it
+    # before - see _strip_story_block_from_other_versions.
+    if stories:
+        for s in stories:
+            key = _resolve_story_ref(s)
+            sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == key or x.get("title") == key), {})
+            product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == key or x.get("title") == key), {})
+            story_id = product_data.get("id") or sprint_data.get("id") or s
+            new_lines = _strip_story_block_from_other_versions(new_lines, story_id, version_heading_re)
 
     roadmap_path.write_text("\n".join(new_lines), encoding="utf-8")
     _record_touched_file(str(roadmap_path.relative_to(repo_root)), tool_context)
