@@ -15,14 +15,32 @@ happened (specs/stories/EP-1-New-Epic.md, ST-1-New-Story.md,
 
 Every module that resolves a repo path imports its own bound reference via
 `from .base import _configured_repo_root` (docs.py, requirements.py,
-github.py, budget.py, scrum.py, quality.py) - each is a separate name
-bound at import time, so patching base.py's copy alone would not affect
-calls made through the others (this is exactly how an earlier attempt at
-isolating agents.scrum_team.tools.requirements._configured_repo_root
-still let save_state_to_repo - which resolves its own path via
-agents.scrum_team.tools.scrum's copy - leak `.hc/state.json`). This
-autouse fixture patches all of them for every test, so no test can leak
-regardless of which module's copy it goes through.
+github.py, budget.py, scrum.py, quality.py, and agent.py itself) - each is
+a separate name bound at import time, so patching base.py's copy alone
+would not affect calls made through the others (this is exactly how an
+earlier attempt at isolating agents.scrum_team.tools.requirements.
+_configured_repo_root still let save_state_to_repo - which resolves its
+own path via agents.scrum_team.tools.scrum's copy - leak `.hc/state.json`).
+This autouse fixture patches all of them for every test, so no test can
+leak regardless of which module's copy it goes through.
+
+agents.scrum_team.agent itself was missing from this list for a while -
+its own _sync_and_commit_roadmap_on_exhaustion (a before_model_callback
+that runs real `git fetch`/`git checkout -B <develop>`/commit/push
+whenever check_cost_budget_callback detects exhaustion, including simply
+being unable to reach the LiteLLM proxy at all - not just a real budget
+overage) resolves its repo path via agent.py's own bound
+_configured_repo_root, so a test reaching that path without *also*
+explicitly patching it away fell straight through this fixture, unnoticed,
+to the real project root. Running the suite via this project's own
+Docker-based run_tests.py never surfaces this - INTERNAL_STATE_REPO_PATH
+is always set there, so even an unpatched call resolves to an ephemeral
+container path - but running pytest directly against a host checkout
+(bypassing run_tests.py, e.g. to route around an unrelated container-only
+constraint elsewhere) let it commit and attempt to push a real "chore:
+sync roadmap - sprint budget exhausted" commit straight onto this actual
+repo's checked-out branch - it happened twice in one afternoon before
+being traced to this gap.
 
 The patch calls through to the REAL _configured_repo_root first and only
 substitutes the isolated tmp_path when that real call actually fell
@@ -51,6 +69,7 @@ _MODULES_WITH_REPO_ROOT = [
     "agents.scrum_team.tools.budget",
     "agents.scrum_team.tools.scrum",
     "agents.scrum_team.tools.quality",
+    "agents.scrum_team.agent",
 ]
 
 

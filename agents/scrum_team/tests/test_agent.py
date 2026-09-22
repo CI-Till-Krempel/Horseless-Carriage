@@ -28,6 +28,7 @@ from agents.scrum_team.agent import (
     _sync_and_commit_roadmap_on_exhaustion,
 )
 from agents.scrum_team.state import ScrumState
+from agents.scrum_team.tools.base import _project_root
 from agents.scrum_team.tools.budget import reset_sprint_budget
 from google.genai import types
 from google.adk.models.llm_response import LlmResponse
@@ -1661,6 +1662,42 @@ class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):
         mock_context = self._context()
         with patch("agents.scrum_team.agent._configured_repo_root", side_effect=Exception("boom")):
             _sync_and_commit_roadmap_on_exhaustion(mock_context)  # must not raise
+
+    def test_does_not_touch_the_real_project_root_without_any_explicit_patch(self):
+        """
+        Acceptance Criteria: agent.py imports its own bound copy of
+        _configured_repo_root (`from .tools.base import
+        _configured_repo_root, ...`) - conftest.py's autouse
+        _isolated_repo_root fixture must cover this module too, not just
+        tools.base/docs/requirements/github/budget/scrum/quality, or an
+        unpatched real run (e.g. via check_cost_budget_callback's
+        requests.RequestException branch, which fires whenever the LiteLLM
+        proxy is simply unreachable - not just over budget) falls through
+        to the real project root and runs real git commands against this
+        actual checkout. This really happened, twice, before being traced
+        to this gap - see conftest.py's docstring.
+
+        Deliberately does NOT patch agent._configured_repo_root itself,
+        unlike every other test in this class - this test's whole point is
+        to prove the autouse fixture alone is sufficient, with no
+        additional per-test protection.
+        """
+        mock_context = self._context()
+        real_project_root = str(_project_root())
+
+        with patch("agents.scrum_team.agent._run") as mock_run, \
+             patch("agents.scrum_team.agent.sync_all_active_stories_to_roadmap"), \
+             patch("agents.scrum_team.agent._git_push_impl") as mock_push:
+            mock_run.return_value = {"status": "ok", "stdout": "", "stderr": ""}
+            _sync_and_commit_roadmap_on_exhaustion(mock_context)
+
+        for call in mock_run.call_args_list:
+            cwd = call.kwargs.get("cwd")
+            self.assertNotEqual(cwd, real_project_root, "must never run real git commands against this checkout")
+        for call in mock_push.call_args_list:
+            tool_context = call.kwargs.get("tool_context")
+            resolved = str(agent_module._configured_repo_root(tool_context))
+            self.assertNotEqual(resolved, real_project_root, "must never resolve to this checkout for the push either")
 
 
 class TestEnsureStateInitializedCallback(unittest.TestCase):
