@@ -259,6 +259,37 @@ class TestAgent(unittest.TestCase):
         self.assertIn("500,000 tokens used", text)
         self.assertNotIn("CORRUPTED", text)
 
+    def test_sprint_status_injection_shows_configured_repo_branches(self):
+        """
+        The repo dict configure_github_repo/init_scrum_state actually write
+        only ever has default_branch/develop_branch keys, never a plain
+        "branch" key - reading state.repo.get('branch', 'N/A') always
+        rendered "(N/A)" regardless of what was actually configured. Assert
+        the real GitFlow branch names show up instead.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        state = ScrumState()
+        state.repo = {
+            "url": "git@github.com:example/example-state-repo.git",
+            "local_path": "/tmp/state-repo",
+            "default_branch": "main",
+            "develop_branch": "develop",
+        }
+        mock_context.state = state.model_dump()
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.previous_interaction_id = None
+        mock_llm_request.contents = []
+
+        sprint_status_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("git@github.com:example/example-state-repo.git", text)
+        self.assertIn("default: main", text)
+        self.assertIn("develop: develop", text)
+        self.assertNotIn("N/A", text)
+
     def test_prints_opening_prompt_on_new_session(self):
         """
         Acceptance Criteria: a live `adk eval` run's console is otherwise one

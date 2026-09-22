@@ -1090,7 +1090,7 @@ def sprint_status_injection_callback(callback_context: CallbackContext, llm_requ
 - Sprint Backlog: {completed_items}/{total_items} items completed.
 - Token Usage: {token_usage:,} / {token_limit:,} tokens used.
 - USD Budget Limit: ${usd_limit:.2f}
-- Repository: {state.repo.get('url', 'Not configured')} ({state.repo.get('branch', 'N/A')})
+- Repository: {state.repo.get('url', 'Not configured')} (default: {state.repo.get('default_branch', 'N/A')}, develop: {state.repo.get('develop_branch', 'N/A')})
 - Interaction Level: {get_interaction_level()} (see docs/INTERACTION-LEVELS.md - controls which
   record_human_approval type, if any, is required before implementing stories / releasing)
 - Product Vision: {product_vision or "Not yet defined"}
