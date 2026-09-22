@@ -521,6 +521,40 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             ),
         }
 
+    # GH issue #210: refuse to close the report if summary/accomplishments
+    # name a story as delivered that hasn't actually reached Accepted yet.
+    # A real eval run's Sprint 1 report claimed "Delivered full To-Do List
+    # Web App MVP ... covering US-0001 through US-0006" while only 1/6 had
+    # actually reached Accepted - the same report's own "Sprint Length
+    # Feedback" section (computed separately, from real backlog state)
+    # contradicted it outright. Mirrors the retro/kpi gates above: this is
+    # a mechanical check on the report's *content*, not just a process
+    # precondition for writing one at all.
+    from .requirements import _story_stages_completed
+    product_backlog = s.get("product_backlog", []) or []
+    sprint_backlog = s.get("sprint_backlog", []) or []
+    claimed_text = " ".join([summary, *accomplishments])
+    overclaimed = []
+    for item in product_backlog:
+        story_id = item.get("id")
+        if not story_id or not re.search(rf"\b{re.escape(story_id)}\b", claimed_text):
+            continue
+        sprint_item = next((x for x in sprint_backlog if x.get("id") == story_id), {})
+        if "Accepted" not in _story_stages_completed(item, sprint_item):
+            overclaimed.append(story_id)
+    if overclaimed:
+        claim_subject = "it has" if len(overclaimed) == 1 else "they have"
+        return {
+            "status": "error",
+            "message": (
+                "Cannot close the sprint report: summary/accomplishments mention "
+                f"{', '.join(sorted(overclaimed))} as delivered, but {claim_subject} not "
+                "reached Accepted yet. Only claim a story as delivered once "
+                "advance_story_stage has actually marked it Accepted - state what was "
+                "really finished this sprint instead."
+            ),
+        }
+
     # GH issue #164: convert this sprint's retro/impediment findings into
     # real backlog work before rendering the report below, so the report
     # can actually say what each item was filed as instead of the finding

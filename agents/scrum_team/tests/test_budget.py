@@ -308,6 +308,56 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_accomplishments_not_actually_accepted(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (GH issue #210): create_sprint_report must
+        refuse to close the sprint if summary/accomplishments claim a
+        story is delivered while it hasn't reached Accepted yet - a real
+        eval run's Sprint 1 report claimed "Delivered full To-Do List Web
+        App MVP ... covering US-0001 through US-0006" while only 1/6 had
+        actually reached Accepted.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Create List", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        result = create_sprint_report(
+            "Sprint wrap-up",
+            ["Delivered US-0001 through US-0002"],
+            tool_context=tool_context,
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0002", result["message"])
+        self.assertNotIn("US-0001", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_accepts_claims_that_match_real_state(self, mock_write_file, mock_getenv):
+        """A story genuinely Accepted may be claimed as delivered without
+        tripping the GH issue #210 gate."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Create List", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+        ]
+
+        result = create_sprint_report("Sprint wrap-up", ["Delivered US-0001"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_rejects_without_fresh_kpi_update(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (ISSUE-0046): create_sprint_report must refuse to

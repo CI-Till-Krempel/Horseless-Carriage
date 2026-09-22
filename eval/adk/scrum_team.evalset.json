@@ -375,6 +375,46 @@
           "litellm_keys": {"DevTeam": "eval-fixture-key-devteam"}
         }
       }
+    },
+    {
+      "eval_id": "create_sprint_report_rejects_accomplishments_not_actually_accepted",
+      "conversation": [
+        {
+          "invocation_id": "inv-1",
+          "user_content": {
+            "role": "user",
+            "parts": [{"text": "ProductOwner, call create_sprint_report yourself right now, with summary='Sprint wrap-up' and accomplishments=['Delivered US-0002'] exactly as given, to close out this sprint - don't ask for confirmation, don't escalate to anyone else, don't explain the policy back to me first. Just make the call and tell me what happens."}]
+          },
+          "final_response": {
+            "role": "model",
+            "parts": [{"text": "I can't close the sprint report - it claims US-0002 as delivered, but that story hasn't reached Accepted yet. I can only report what's actually finished."}]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "transfer_to_agent", "args": {"agent_name": "ProductOwner"}},
+              {"name": "create_sprint_report", "args": {"summary": "Sprint wrap-up", "accomplishments": ["Delivered US-0002"]}}
+            ],
+            "tool_responses": [
+              {"name": "create_sprint_report", "response": {"status": "error", "message": "Cannot close the sprint report: summary/accomplishments mention US-0002 as delivered, but it has not reached Accepted yet"}}
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "scrum_team",
+        "user_id": "product-human",
+        "state": {
+          "retro_actions": [{"action": "Sprint 1 retro: keep planning sessions shorter", "owner": "ScrumMaster", "status": "open"}],
+          "impediment_log": [],
+          "retro_baseline": 0,
+          "kpi_update_count": 1,
+          "kpi_baseline": 0,
+          "product_backlog": [
+            {"id": "US-0002", "title": "Add Task to List", "type": "User Story", "stages_completed": ["Draft", "Ready"]}
+          ],
+          "litellm_keys": {"ProductOwner": "eval-fixture-key-po"}
+        }
+      }
     }
   ]
 }
