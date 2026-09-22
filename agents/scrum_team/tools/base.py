@@ -312,12 +312,31 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
     for why PYTHONPATH specifically needs this.
     """
     env = os.environ.copy()
+    if cmd and cmd[0] == "git":
+        # Unconditional, even with no token below: a repo_url can be
+        # git@github.com:... (see .env.example's GITHUB_REPO_URL) before any
+        # token has ever been seeded into session state (e.g. the very first
+        # configure_github_repo call of a session), in which case the HTTPS
+        # rewrite below never fires and git falls through to a genuine SSH
+        # connection. Without this, that connection hits an unknown-host-key
+        # prompt against a container with no known_hosts/SSH agent and a
+        # closed stdin (see this function's DEVNULL below) - ssh can't read
+        # an answer, so it hangs until the timeout, and the orchestrator
+        # just retries the same failing call, appearing to hang forever with
+        # no reply. BatchMode=yes makes ssh fail fast instead of prompting;
+        # StrictHostKeyChecking=accept-new does TOFU pinning non-interactively
+        # (standard for CI/automation) instead of blocking on confirmation.
+        env.setdefault(
+            "GIT_SSH_COMMAND",
+            "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new "
+            "-o UserKnownHostsFile=/tmp/.hc_ssh_known_hosts",
+        )
     if tool_context and getattr(tool_context, "state", None):
         token = tool_context.state.get("github_token")
         if token:
             env["GH_TOKEN"] = token
             env["GITHUB_TOKEN"] = token
-            
+
             # If it's a git command, inject authentication and SSH-to-HTTPS translation
             if cmd and cmd[0] == "git":
                 auth_value = base64.b64encode(f"x-access-token:{token}".encode()).decode()
