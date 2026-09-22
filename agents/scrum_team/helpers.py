@@ -1,7 +1,10 @@
 # agents/scrum_team/helpers.py
 from __future__ import annotations
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 def get_process_overhead_percentage() -> float:
     """Gets the process overhead percentage from environment variables."""
@@ -369,9 +372,26 @@ def sprint_backlog_pr_missing(state: dict) -> str | None:
     compares that against the *current* `sprint_number` (not just "was it
     ever set") so a stale success from a previous sprint can't silently
     satisfy this one.
+
+    Debug-logs the exact state this decision was based on whenever it
+    rejects: a real ADK eval run showed this firing "sprint_number is
+    unset" despite the eval case's own fixture seeding sprint_number: 1 at
+    the exact commit that run checked out - session-state resolution
+    somewhere between the eval harness and this call apparently isn't 100%
+    reliable, and tracing it from the tool-call log alone wasn't enough to
+    pin down. This gives the next occurrence something concrete to compare
+    against the fixture instead of having to infer it.
     """
     sprint_number = state.get("sprint_number", 0)
     if sprint_number <= 0:
+        logger.debug(
+            "sprint_backlog_pr_missing rejecting: sprint_number=%r, "
+            "sprint_backlog_pr_sprint=%r, product_backlog ids=%r, state keys=%r",
+            state.get("sprint_number"),
+            state.get("sprint_backlog_pr_sprint"),
+            [item.get("id") for item in (state.get("product_backlog") or []) if isinstance(item, dict)],
+            sorted(state.keys()) if hasattr(state, "keys") else type(state),
+        )
         return "No sprint has been started yet (sprint_number is unset) - ask Scrum Master to call start_sprint(goal) first."
     if state.get("sprint_backlog_pr_sprint") != sprint_number:
         return (

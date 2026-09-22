@@ -75,6 +75,23 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+# GH issue: a CI run's log showed this script's own progress banners
+# ("--- Preparing scratch state repo ---", "--- Running ADK eval set ---",
+# etc.) all appearing bunched up together, out of order, well *after* the
+# subprocess output (docker pull, the live eval run itself) they were
+# meant to bracket - reading like a second eval run starting from
+# scratch right after the first one's results, when nothing of the sort
+# happened. Cause: stdout isn't a TTY once GitHub Actions redirects it to
+# a log file, so Python defaults to full block-buffering instead of line-
+# buffering - every print() call here just queues into that buffer and
+# only actually flushes at process exit, while subprocess.run()'s
+# inherited-stdout output (a different, unbuffered file descriptor) is
+# written immediately. Forcing line buffering here means each print()
+# lands in the log at the moment it's actually called, interleaved
+# correctly with the subprocess output around it - exactly what already
+# happens for free when stdout is a real terminal.
+sys.stdout.reconfigure(line_buffering=True)
+
 import lib_docker
 
 EVAL_SET_PATH = "eval/adk/scrum_team.evalset.json"
