@@ -226,6 +226,43 @@ class TestRunTimeoutAndStdin(unittest.TestCase):
         self.assertTrue(result.get("timed_out"))
         self.assertIn("timed out", result["message"])
 
+    def test_git_command_gets_non_interactive_ssh_options(self):
+        """A repo_url can be git@github.com:... (see .env.example's
+        GITHUB_REPO_URL) before any token has ever been seeded into session
+        state - e.g. the very first configure_github_repo call of a fresh
+        session, or a session with no GITHUB_TOKEN/GITHUB_APP_* configured
+        at all. Without this, that connection hits an unknown-host-key
+        prompt against a container with no known_hosts/SSH agent, and since
+        stdin is closed (see test_stdin_is_explicitly_closed above) ssh
+        can't read an answer - it hangs until the timeout, and the
+        orchestrator just retries the same failing call forever."""
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                _run(["git", "clone", "git@github.com:example/repo.git", "/tmp/repo"])
+
+        ssh_command = mock_subprocess_run.call_args.kwargs["env"]["GIT_SSH_COMMAND"]
+        self.assertIn("BatchMode=yes", ssh_command)
+        self.assertIn("StrictHostKeyChecking=accept-new", ssh_command)
+
+    def test_non_git_command_does_not_get_ssh_options(self):
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                _run(["gh", "auth", "status"])
+
+        self.assertNotIn("GIT_SSH_COMMAND", mock_subprocess_run.call_args.kwargs["env"])
+
+    def test_git_ssh_command_respects_an_explicit_override(self):
+        """env.setdefault - a caller/deployment that already mounted real
+        SSH keys and set its own GIT_SSH_COMMAND must not be overridden."""
+        with patch.dict("os.environ", {"GIT_SSH_COMMAND": "ssh -i /custom/key"}, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                _run(["git", "clone", "git@github.com:example/repo.git", "/tmp/repo"])
+
+        self.assertEqual(mock_subprocess_run.call_args.kwargs["env"]["GIT_SSH_COMMAND"], "ssh -i /custom/key")
+
 
 class TestEnsureGitSafeDirectory(unittest.TestCase):
     """
