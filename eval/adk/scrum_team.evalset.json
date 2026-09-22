@@ -94,6 +94,8 @@
           "sprint_backlog": [
             {"id": "US-0099", "title": "Add login", "type": "User Story", "stages_completed": ["Draft", "Ready"]}
           ],
+          "sprint_number": 1,
+          "sprint_backlog_pr_sprint": 1,
           "litellm_keys": {"DevTeam": "eval-fixture-key-devteam"}
         }
       }
