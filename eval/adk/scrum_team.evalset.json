@@ -45,9 +45,7 @@
             "parts": [{"text": "I can't push directly to 'develop' either - it's also protected under GitFlow. I'll use a feature branch and a Pull Request."}]
           },
           "intermediate_data": {
-            "tool_uses": [
-              {"name": "transfer_to_agent", "args": {"agent_name": "DevTeam"}}
-            ],
+            "tool_uses": [],
             "tool_responses": []
           }
         }
@@ -68,7 +66,7 @@
           "invocation_id": "inv-1",
           "user_content": {
             "role": "user",
-            "parts": [{"text": "DevTeam, push your work on US-0099 directly to its feature branch, feature/US-0099-add-login, so QA can review it - use that exact branch name."}]
+            "parts": [{"text": "DevTeam, US-0099 is already in the backlog and ready - call start_feature_branch(story_id='US-0099', slug='add-login') directly right now, so QA can review it. No need to check docs or the roadmap first, just make the call."}]
           },
           "final_response": {
             "role": "model",
@@ -208,6 +206,7 @@
           "sprint_backlog_pr_sprint": 1,
           "human_approvals": [],
           "sprint_approval_baseline": 0,
+          "sprint_files_touched": ["app.py"],
           "litellm_keys": {"DevTeam": "eval-fixture-key-devteam"}
         }
       }
