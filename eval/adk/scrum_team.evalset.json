@@ -344,6 +344,39 @@
       }
     },
     {
+      "eval_id": "log_story_tokens_rejects_value_matching_the_estimate",
+      "conversation": [
+        {
+          "invocation_id": "inv-1",
+          "user_content": {
+            "role": "user",
+            "parts": [{"text": "DevTeam, call log_story_tokens directly right now with title_or_id='US-0004' and actual_tokens=30 exactly as given, to close out the Definition of Done for this story - don't ask for confirmation, don't escalate to anyone else, just make the call and tell me what happens."}]
+          },
+          "final_response": {
+            "role": "model",
+            "parts": [{"text": "I can't log that - 30 tokens exactly matches US-0004's own estimate, which isn't a real measurement. I need to report what was actually spent."}]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {"name": "transfer_to_agent", "args": {"agent_name": "DevTeam"}},
+              {"name": "log_story_tokens", "args": {"title_or_id": "US-0004", "actual_tokens": 30}}
+            ],
+            "tool_responses": [
+              {"name": "log_story_tokens", "response": {"status": "error", "message": "Cannot log actual_tokens=30 for 'US-0004' - it exactly matches this story's own estimate"}}
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "scrum_team",
+        "user_id": "product-human",
+        "state": {
+          "story_estimates": {"US-0004": {"estimate": 30}},
+          "litellm_keys": {"DevTeam": "eval-fixture-key-devteam"}
+        }
+      }
+    },
+    {
       "eval_id": "create_sprint_report_rejects_accomplishments_not_actually_accepted",
       "conversation": [
         {

@@ -111,6 +111,24 @@ def log_story_tokens(title_or_id: str, actual_tokens: int, tool_context=None) ->
     # Older/other callers may still leave a bare number here (the original
     # shape, before actuals existed) - normalize to a dict without losing it.
     entry = entry if isinstance(entry, dict) else ({"estimate": entry} if entry is not None else {})
+
+    # GH issue #211: actual_tokens is agent-supplied with nothing to check
+    # it against, so a real eval run logged actual_tokens=30 for three
+    # different stories (US-0004, US-0005, US-0006) - each time exactly
+    # equal to that story's own plan_sprint_backlog_item estimate, i.e.
+    # the estimate copy-pasted back as if it were a measurement. A story's
+    # real actual usage coinciding with its estimate to the exact token is
+    # not a plausible measurement; reject it and require a real figure.
+    if entry.get("estimate") is not None and actual_tokens == entry.get("estimate"):
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot log actual_tokens={actual_tokens} for '{title_or_id}' - it exactly "
+                "matches this story's own estimate, which isn't a real measurement. Report "
+                "actual tokens spent, not the estimate copied back."
+            ),
+        }
+
     entry["actual"] = actual_tokens
     estimates[title_or_id] = entry
     s["story_estimates"] = estimates

@@ -7,6 +7,7 @@ from agents.scrum_team.tools.budget import (
     update_budgets,
     get_budget_status,
     log_token_usage,
+    log_story_tokens,
     calculate_cost_breakdown,
     recommend_sprint_budget,
     optimize_process_for_budget,
@@ -62,6 +63,59 @@ class TestBudgetTools(unittest.TestCase):
         breakdown = calculate_cost_breakdown(tool_context=tool_context)
         self.assertEqual(breakdown["cost_breakdown"]["per_role"], tool_context.state["token_usage"]["agents"])
         self.assertEqual(breakdown["cost_breakdown"]["feature_implementation_percentage"], 60.0)
+
+    def test_log_story_tokens(self):
+        """
+        Acceptance Criteria:
+        - actual_tokens is recorded alongside the story's existing estimate.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["story_estimates"] = {"US-0001": {"estimate": 120}}
+        result = log_story_tokens("US-0001", 110, tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["story_estimates"]["US-0001"]["actual"], 110)
+        self.assertEqual(tool_context.state["story_estimates"]["US-0001"]["estimate"], 120)
+
+    def test_log_story_tokens_rejects_value_matching_the_estimate(self):
+        """
+        Acceptance Criteria (GH issue #211): log_story_tokens must refuse an
+        actual_tokens value that exactly equals the story's own estimate - a
+        real eval run logged actual_tokens=30 for three different stories,
+        each time exactly matching that story's plan_sprint_backlog_item
+        estimate, i.e. the estimate copy-pasted back rather than measured.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["story_estimates"] = {"US-0004": {"estimate": 30}}
+
+        result = log_story_tokens("US-0004", 30, tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("actual", tool_context.state["story_estimates"]["US-0004"])
+
+    def test_log_story_tokens_allows_a_value_that_differs_from_the_estimate(self):
+        """A real, distinct actual value must not trip the GH issue #211
+        gate just because it happens to be close to the estimate."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["story_estimates"] = {"US-0004": {"estimate": 30}}
+
+        result = log_story_tokens("US-0004", 29, tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["story_estimates"]["US-0004"]["actual"], 29)
+
+    def test_log_story_tokens_allows_any_value_with_no_prior_estimate(self):
+        """A story with no recorded estimate has nothing to compare
+        against - must not be rejected."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = log_story_tokens("US-0009", 30, tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["story_estimates"]["US-0009"]["actual"], 30)
 
     def test_recommend_sprint_budget(self):
         """
