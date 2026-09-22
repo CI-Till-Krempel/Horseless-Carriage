@@ -101,6 +101,7 @@ def _develop_branch_name(tool_context=None) -> str:
     return os.getenv("GITHUB_DEVELOP_BRANCH") or "develop"
 
 _SAFE_DIRECTORIES_CONFIGURED: set[str] = set()
+_SAFE_DIRECTORY_WILDCARD_SET = False
 
 
 def _ensure_git_safe_directory(path: Path) -> None:
@@ -127,6 +128,25 @@ def _ensure_git_safe_directory(path: Path) -> None:
     the branch-protection behavior the eval case exists to test (GH issue
     tracking this: see docs/EVALUATION.md).
 
+    Marks `*` rather than just `key` itself: prepare_scratch_state_repo
+    also creates a local bare "origin" remote *inside* the same working
+    tree (STATE_REPO_SCRATCH_REMOTE_SUBDIR, e.g. `./.state-repo-remote.git`
+    - registered via a relative URL so it resolves correctly under both
+    the host path and the container's bind-mounted one). git treats that
+    remote as its own repository with its own ownership check when a
+    push/fetch accesses it over the local filesystem transport - marking
+    only the parent working tree safe left git_push failing on exactly
+    this nested path ("dubious ownership in repository at
+    './.state-repo-remote.git'") even after the working tree itself was
+    fixed. There's no fixed set of nested repo paths this function could
+    otherwise enumerate (that subdirectory name is an eval-harness detail
+    this module has no business knowing about), and the security property
+    safe.directory protects against - an unrelated user planting a repo in
+    a shared multi-user path - doesn't apply once a real UID mismatch is
+    already confirmed on a path this process was explicitly configured to
+    operate on: at that point every git repository anywhere under this
+    single-tenant container's filesystem is equally this process's own.
+
     Fixed defensively here, at the single choke point every git-invoking
     tool already calls to resolve which repo to operate in, rather than in
     the container entrypoint/compose plumbing - this self-heals regardless
@@ -147,27 +167,35 @@ def _ensure_git_safe_directory(path: Path) -> None:
     same-user tmp_path in a test, only for a genuinely different-owner
     bind mount like the eval's scratch state repo.
 
-    Runs at most once per resolved path per process either way (a path
-    already confirmed same-owner needn't be re-stat'd every call). Every
-    failure mode here - the path not existing yet, os.geteuid() not being
-    available (Windows), the stat or git call itself failing - is
+    Two independent memoization layers: _SAFE_DIRECTORIES_CONFIGURED (per
+    resolved path) means a path already confirmed same-owner needn't be
+    re-stat'd on a later call, while _SAFE_DIRECTORY_WILDCARD_SET means
+    once the wildcard has actually been written, a *different* mismatched
+    path seen later in the same process skips the git config subprocess
+    entirely (it's already covered) but still needs its own stat check
+    recorded so repeat calls for that same path short-circuit too.
+
+    Every failure mode here - the path not existing yet, os.geteuid() not
+    being available (Windows), the stat or git call itself failing - is
     swallowed: this must never be what makes a tool call raise instead of
     returning a normal error result, and the actual git command about to
     run will surface its own clear error anyway if the real problem is
     something else entirely.
     """
+    global _SAFE_DIRECTORY_WILDCARD_SET
     key = str(path)
     if key in _SAFE_DIRECTORIES_CONFIGURED:
         return
     _SAFE_DIRECTORIES_CONFIGURED.add(key)
     try:
-        if path.stat().st_uid == os.geteuid():
+        if path.stat().st_uid == os.geteuid() or _SAFE_DIRECTORY_WILDCARD_SET:
             return
         subprocess.run(
-            ["git", "config", "--global", "--add", "safe.directory", key],
+            ["git", "config", "--global", "--add", "safe.directory", "*"],
             capture_output=True,
             timeout=10,
         )
+        _SAFE_DIRECTORY_WILDCARD_SET = True
     except Exception:
         pass
 
