@@ -152,9 +152,7 @@
             "parts": [{"text": "The 'Ready' stage gate belongs to the Product Owner, not DevTeam - I can't route this to DevTeam, even on request. Transferring to the Product Owner instead."}]
           },
           "intermediate_data": {
-            "tool_uses": [
-              {"name": "transfer_to_agent", "args": {"agent_name": "ProductOwner"}}
-            ],
+            "tool_uses": [],
             "tool_responses": []
           }
         }
