@@ -156,6 +156,59 @@ class TestBudgetAPI(unittest.TestCase):
 
     @patch("requests.post")
     @patch("os.environ.get")
+    def test_create_litellm_virtual_key_recreates_on_stale_alias_from_a_prior_session(self, mock_env_get, mock_post):
+        """
+        Acceptance Criteria: a brand-new ADK session starts with an empty
+        state.litellm_keys (never persisted to the repo), but LiteLLM's own
+        key store is a separate, durable DB that still has the previous
+        session's key under this role's deterministic alias
+        (f"key-{agent_name.lower()}") - so /key/generate 400s with "already
+        exists" the moment the setup wizard re-runs. This must delete the
+        stale alias and retry generation rather than just failing and
+        leaving the role with no usable key for the rest of the session.
+        """
+        def side_effect(key, default=None):
+            env = {
+                "LITELLM_MASTER_KEY": "test-master-key",
+                "LITELLM_PROXY_API_BASE": "http://litellm:4000"
+            }
+            return env.get(key, default)
+        mock_env_get.side_effect = side_effect
+
+        mock_info = MagicMock()
+        mock_info.status_code = 200
+        mock_info.json.return_value = [{"spend": 0.0}]  # budget already exists -> update path
+
+        mock_update = MagicMock()
+        mock_update.status_code = 200
+
+        mock_gen_conflict = MagicMock()
+        mock_gen_conflict.status_code = 400
+        mock_gen_conflict.text = "{\"error\":{\"message\":\"Key with alias 'key-productowner' already exists.\"}}"
+
+        mock_delete = MagicMock()
+        mock_delete.status_code = 200
+
+        mock_gen_retry = MagicMock()
+        mock_gen_retry.status_code = 200
+        mock_gen_retry.json.return_value = {"key": "sk-fresh-key"}
+
+        mock_post.side_effect = [mock_info, mock_update, mock_gen_conflict, mock_delete, mock_gen_retry]
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        res = create_litellm_virtual_key("ProductOwner", tool_context=tool_context)
+
+        self.assertEqual(res["status"], "ok")
+        self.assertEqual(res["key"], "sk-fresh-key")
+        delete_call = mock_post.call_args_list[3]
+        self.assertEqual(delete_call[0][0], "http://litellm:4000/key/delete")
+        self.assertEqual(delete_call[1]["json"], {"key_aliases": ["key-productowner"]})
+        self.assertEqual(tool_context.state["litellm_keys"]["ProductOwner"], "sk-fresh-key")
+
+    @patch("requests.post")
+    @patch("os.environ.get")
     def test_create_litellm_virtual_key_falls_back_to_deprecated_sprint_usd_budget(self, mock_env_get, mock_post):
         """
         Acceptance Criteria (GH issue #81): with no budget set in state,

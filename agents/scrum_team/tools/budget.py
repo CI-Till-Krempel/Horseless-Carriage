@@ -244,6 +244,28 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
     
     try:
         resp = requests.post(url, headers=headers, json=data, timeout=10)
+        if resp.status_code == 400 and "already exists" in resp.text.lower():
+            # A brand-new ADK session starts with an empty state.litellm_keys
+            # (never persisted to the repo - see init_scrum_state), but this
+            # role's key_alias is deterministic (f"key-{agent_name.lower()}")
+            # and LiteLLM's own key store is a separate, durable Postgres DB
+            # that survives a session restart untouched. A real test-drive
+            # hit exactly this: re-running the setup wizard in a fresh
+            # session tried to (re)provision every role's key and got a hard
+            # 400 from /key/generate for each one that already existed from
+            # the prior session, leaving that role with no usable key for
+            # the rest of the new session (see check_cost_budget_callback's
+            # "NO BUDGET-CAPPED KEY" guard - every one of its calls is
+            # blocked). LiteLLM never returns a previously-issued key's raw
+            # secret again (by design), so the only way to actually recover
+            # is to delete the stale alias and mint a fresh one.
+            requests.post(
+                f"{proxy_base}/key/delete",
+                headers=headers,
+                json={"key_aliases": [data["key_alias"]]},
+                timeout=10,
+            )
+            resp = requests.post(url, headers=headers, json=data, timeout=10)
         if resp.status_code != 200:
             return {"status": "error", "message": f"Failed to generate LiteLLM key: {resp.status_code} {resp.text}"}
         resp.raise_for_status()
