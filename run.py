@@ -9,6 +9,12 @@ This script will:
 2. Build and run the agent container with session management and logging.
 3. Wait for the dashboards to come up and open them in your default browser.
 
+Fully non-interactive: it never prompts. The one prompt this flow used to
+ask here (stop + recreate a leftover running stack before starting a fresh
+one) now lives in setup_all.py's offer_to_start, asked only in developer
+mode, before it hands off to this script - see lib_docker
+.maybe_stop_existing_stack.
+
 Usage:
   python3 run.py                 Web mode (default): ADK web frontend, foreground.
   python3 run.py cli [query...]  Interactive CLI session instead of the web UI.
@@ -182,14 +188,6 @@ def _main(argv: list = None) -> None:
         result = subprocess.run(cmd, env=proc_env)
         sys.exit(result.returncode)
     else:
-        # A leftover stack from an earlier run (or from switching between
-        # docker-compose.yaml and docker-compose.local.yaml, which share
-        # the same default project name and several service names) can
-        # make `docker compose up` fail outright with no obvious cause -
-        # offer a controlled reset before that happens (GH discussion on
-        # local Ollama setups).
-        lib_docker.maybe_stop_existing_stack(full_compose_args)
-
         thread = threading.Thread(target=open_dashboards, args=(mode,), daemon=True)
         thread.start()
 

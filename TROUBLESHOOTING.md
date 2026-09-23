@@ -59,10 +59,11 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
 - **`docker compose up` fails, or the agent comes up pointed at the wrong provider** — an existing
   Horseless Carriage stack (from switching between `docker-compose.yaml` and
   `docker-compose.local.yaml`, which share service names, or a container left over from an
-  interrupted run) can conflict with a fresh `up`. `run.py` / `rebuild_images.py` detect a
-  already-running stack and offer to stop + recreate it before proceeding
-  (`lib_docker.maybe_stop_existing_stack`) — accept that prompt, or run
-  `docker compose down` (add your active `-f` file(s)) yourself first.
+  interrupted run) can conflict with a fresh `up`. `setup_all.py` (developer mode only) and
+  `setup_llm.py`'s Local/Ollama live test detect an already-running stack and offer to stop +
+  recreate it before proceeding (`lib_docker.maybe_stop_existing_stack`) — accept that prompt, or
+  run `docker compose down` (add your active `-f` file(s)) yourself first. `run.py` itself never
+  prompts for this.
 - **Agent container using the wrong `litellm.yaml` / no matching API key found** — a Local/Ollama
   setup only ever writes `config/model-templates/litellm.local-ollama.yaml`, not the root
   `litellm.yaml` that `docker-compose.yaml` mounts. Make sure you're bringing the stack up with

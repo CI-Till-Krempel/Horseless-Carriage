@@ -186,7 +186,6 @@ class TestMainDoctorGatekeeper:
         monkeypatch.setattr(run.os, "chdir", lambda _path: None)
         monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
         monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
-        monkeypatch.setattr(run.lib_docker, "maybe_stop_existing_stack", lambda *_a: None)
         monkeypatch.setattr(run.threading, "Thread", _FakeThread)
 
     def test_exits_before_docker_compose_when_doctor_reports_errors(self, monkeypatch):
@@ -237,7 +236,6 @@ class TestMainKeyboardInterrupt:
         monkeypatch.setattr(run.os, "chdir", lambda _path: None)
         monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
         monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
-        monkeypatch.setattr(run.lib_docker, "maybe_stop_existing_stack", lambda *_a: None)
         monkeypatch.setattr(run.threading, "Thread", _FakeThread)
         monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
         monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
@@ -294,7 +292,6 @@ class TestMainDeveloperMode:
         monkeypatch.setattr(run.os, "chdir", lambda _path: None)
         monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
         monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
-        monkeypatch.setattr(run.lib_docker, "maybe_stop_existing_stack", lambda *_a: None)
         monkeypatch.setattr(run.threading, "Thread", _FakeThread)
         monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
         monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
