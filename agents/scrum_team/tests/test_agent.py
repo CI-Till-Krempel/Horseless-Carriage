@@ -1792,8 +1792,12 @@ class TestEnsureStateInitializedCallback(unittest.TestCase):
         mock_context.agent_name = "ScrumOrchestrator"
         mock_context.state = ScrumState().model_dump()
 
-        with patch.object(agent_module, "init_scrum_state") as mock_init:
-            ensure_state_initialized_callback(mock_context, MagicMock())
+        # No LiteLLM proxy configured here - this test is scoped to
+        # init_scrum_state() only; key provisioning is covered separately
+        # below (TestEnsureStateInitializedCallbackProvisionsKeys).
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "", "LITELLM_PROXY_API_BASE": ""}):
+            with patch.object(agent_module, "init_scrum_state") as mock_init:
+                ensure_state_initialized_callback(mock_context, MagicMock())
 
         mock_init.assert_called_once_with(tool_context=mock_context)
         self.assertTrue(mock_context.state["_state_auto_initialized"])
@@ -1830,13 +1834,92 @@ class TestEnsureStateInitializedCallback(unittest.TestCase):
         mock_context.agent_name = "ScrumOrchestrator"
         mock_context.state = ScrumState().model_dump()
 
-        with patch.object(agent_module, "init_scrum_state", side_effect=RuntimeError("boom")):
-            ensure_state_initialized_callback(mock_context, MagicMock())  # must not raise
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "", "LITELLM_PROXY_API_BASE": ""}):
+            with patch.object(agent_module, "init_scrum_state", side_effect=RuntimeError("boom")):
+                ensure_state_initialized_callback(mock_context, MagicMock())  # must not raise
 
         self.assertTrue(mock_context.state["_state_auto_initialized"])
 
     def test_registered_first_in_root_agent_before_model_callbacks(self):
         self.assertEqual(root_agent.before_model_callback[0], ensure_state_initialized_callback)
+
+
+class TestEnsureStateInitializedCallbackProvisionsKeys(unittest.TestCase):
+    """
+    Acceptance Criteria: a real test-drive run showed litellm_keys can never
+    be "reloaded" from a prior session the way the rest of state can - it's
+    deliberately session-only (a real secret LiteLLM never returns again
+    once issued), so every new session starts with an empty map regardless
+    of whether the target repo already has an established sprint. Relying
+    on the Orchestrator's own SETUP WIZARD judgment call to notice and fix
+    this isn't reliable (it skipped the step entirely on a narrowly-scoped
+    "please re-init the state" request in that run). This callback must
+    mechanically guarantee every specialist has a key before any of them
+    ever gets a turn, the same way it already guarantees init_scrum_state()
+    ran.
+    """
+
+    def _context(self, existing_keys=None):
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        state = ScrumState().model_dump()
+        if existing_keys:
+            state["litellm_keys"] = dict(existing_keys)
+        mock_context.state = state
+        return mock_context
+
+    def test_provisions_a_key_for_every_specialist_missing_one(self):
+        mock_context = self._context()
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "test-master-key", "LITELLM_PROXY_API_BASE": "http://litellm:4000"}):
+            with patch.object(agent_module, "init_scrum_state"):
+                with patch.object(agent_module, "create_litellm_virtual_key", return_value={"status": "ok", "key": "sk-x"}) as mock_create:
+                    ensure_state_initialized_callback(mock_context, MagicMock())
+
+        provisioned = {call.args[0] for call in mock_create.call_args_list}
+        self.assertEqual(provisioned, set(agent_module.SPECIALIST_AGENT_NAMES))
+        self.assertNotIn("ScrumOrchestrator", provisioned)
+        for call in mock_create.call_args_list:
+            self.assertEqual(call.kwargs.get("tool_context"), mock_context)
+
+    def test_skips_specialists_that_already_have_a_key(self):
+        mock_context = self._context(existing_keys={"ProductOwner": "sk-already-have-one"})
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "test-master-key", "LITELLM_PROXY_API_BASE": "http://litellm:4000"}):
+            with patch.object(agent_module, "init_scrum_state"):
+                with patch.object(agent_module, "create_litellm_virtual_key", return_value={"status": "ok", "key": "sk-x"}) as mock_create:
+                    ensure_state_initialized_callback(mock_context, MagicMock())
+
+        provisioned = {call.args[0] for call in mock_create.call_args_list}
+        self.assertNotIn("ProductOwner", provisioned)
+        self.assertEqual(provisioned, set(agent_module.SPECIALIST_AGENT_NAMES) - {"ProductOwner"})
+
+    def test_skips_provisioning_entirely_without_a_configured_proxy(self):
+        mock_context = self._context()
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "", "LITELLM_PROXY_API_BASE": ""}):
+            with patch.object(agent_module, "init_scrum_state"):
+                with patch.object(agent_module, "create_litellm_virtual_key") as mock_create:
+                    ensure_state_initialized_callback(mock_context, MagicMock())
+
+        mock_create.assert_not_called()
+
+    def test_a_failed_or_erroring_provision_is_non_fatal_for_the_rest(self):
+        mock_context = self._context()
+
+        def side_effect(agent_name, tool_context=None, **kwargs):
+            if agent_name == "DevTeam":
+                raise RuntimeError("proxy unreachable")
+            return {"status": "error", "message": "boom"} if agent_name == "QA" else {"status": "ok", "key": "sk-x"}
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "test-master-key", "LITELLM_PROXY_API_BASE": "http://litellm:4000"}):
+            with patch.object(agent_module, "init_scrum_state"):
+                with patch.object(agent_module, "create_litellm_virtual_key", side_effect=side_effect) as mock_create:
+                    ensure_state_initialized_callback(mock_context, MagicMock())  # must not raise
+
+        provisioned = {call.args[0] for call in mock_create.call_args_list}
+        self.assertEqual(provisioned, set(agent_module.SPECIALIST_AGENT_NAMES))
+        self.assertTrue(mock_context.state["_state_auto_initialized"])
 
 
 def _mock_context_with_model(agent_name, agent_key=None, additional_args=None):

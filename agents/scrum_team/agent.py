@@ -646,6 +646,9 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
     )
 
 
+SPECIALIST_AGENT_NAMES = ("ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect", "QualityGuardian")
+
+
 def ensure_state_initialized_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
     BeforeModelCallback: mechanically calls init_scrum_state() once per
@@ -667,9 +670,26 @@ def ensure_state_initialized_callback(callback_context: CallbackContext, llm_req
     or literal-zero SPRINT_USD_BUDGET can no longer silently kill the
     session before the user ever sees a reply.
 
+    Also mechanically provisions any missing specialist's LiteLLM virtual
+    key, for the same reason: litellm_keys is deliberately session-only
+    (never written to .hc/state.json - it's a real secret, and LiteLLM never
+    returns a key's plaintext again once issued, so there's nothing to
+    "reload" even if it were persisted there), so every new session starts
+    with an empty map regardless of whether the target repo already has an
+    established sprint. A real test-drive run showed the Orchestrator's own
+    SETUP WIZARD step for this is judgment-dependent - it skipped LITELLM
+    IDENTITIES entirely on a narrowly-scoped "please re-init the state"
+    request, leaving a specialist with no key and no tool of its own to fix
+    it (create_litellm_virtual_key is Orchestrator-only). Doing it here
+    instead means every session guarantees this before any specialist ever
+    gets a turn, the same way it already guarantees init_scrum_state() ran.
+    check_cost_budget_callback keeps its own on-demand auto-provision too,
+    as a thin fallback for the rare case one role's call below fails.
+
     Deliberately does not pass secrets anywhere new - init_scrum_state()
-    already only reads from os.environ / the state repo, the same as if
-    the model had called it itself; this just guarantees it actually runs.
+    and create_litellm_virtual_key already only read from os.environ / the
+    state repo / the LiteLLM proxy, the same as if the model had called
+    them itself; this just guarantees they actually run.
     """
     if callback_context.agent_name != "ScrumOrchestrator":
         return
@@ -679,6 +699,28 @@ def ensure_state_initialized_callback(callback_context: CallbackContext, llm_req
         init_scrum_state(tool_context=callback_context)
     except Exception as e:
         logger.warning(f"ensure_state_initialized_callback: init_scrum_state() failed (non-fatal): {e}")
+
+    master_key = os.environ.get("LITELLM_MASTER_KEY")
+    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE")
+    if master_key and proxy_base:
+        existing_keys = callback_context.state.get("litellm_keys", {}) or {}
+        for agent_name in SPECIALIST_AGENT_NAMES:
+            if existing_keys.get(agent_name):
+                continue
+            try:
+                result = create_litellm_virtual_key(agent_name, tool_context=callback_context)
+                if result.get("status") != "ok":
+                    logger.warning(
+                        f"ensure_state_initialized_callback: could not provision a LiteLLM key for "
+                        f"{agent_name} (non-fatal - check_cost_budget_callback will retry on demand): "
+                        f"{result.get('message')}"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"ensure_state_initialized_callback: create_litellm_virtual_key({agent_name!r}) "
+                    f"failed (non-fatal): {e}"
+                )
+
     callback_context.state["_state_auto_initialized"] = True
 
 
