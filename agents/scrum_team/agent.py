@@ -347,9 +347,11 @@ from .tools.budget import (
     optimize_process_for_budget,
 )
 # Not agent-callable tools (no LlmAgent lists them) - used only by
-# _sync_and_commit_roadmap_on_exhaustion below, the mechanical last-gasp
-# roadmap sync triggered when the sprint budget runs out mid-turn.
+# _sync_and_commit_roadmap_on_exhaustion/_ensure_sprint_report_on_final_halt_
+# once below, the mechanical last-gasp actions triggered when the sprint
+# budget runs out mid-turn.
 from .tools.requirements import sync_all_active_stories_to_roadmap
+from .tools.budget import render_fallback_sprint_report
 from .tools.base import _configured_repo_root, _run, _redact_secrets, _develop_branch_name
 from .state import ScrumState, Budgets, TokenUsage
 
@@ -537,6 +539,86 @@ def _sync_and_commit_roadmap_on_exhaustion(callback_context: CallbackContext) ->
         logging.getLogger(__name__).warning(f"Roadmap sync on budget exhaustion failed (non-fatal): {e}")
 
 
+def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> None:
+    """
+    Mechanical, non-agent last-gasp action, sibling to
+    _sync_and_commit_roadmap_on_exhaustion above - guarantees a sprint
+    report is committed to develop even if the budget (including its
+    SPRINT CLOSE SEQUENCE grace allowance - see closeout_grace_percent)
+    runs out before Product Owner ever gets a turn to call
+    create_sprint_report, or gets a turn to call it but not a further one
+    to commit/push its output. create_sprint_report only ever writes its
+    report file locally (see that function's own commit/push notes), and
+    nothing in the normal GitFlow release flow commits it either -
+    create_release_pr just opens the develop -> main PR from whatever's
+    already on origin/develop. A real incident: a release PR went out
+    with no sprint report attached at all because the sprint ran out of
+    budget before anything ever pushed one.
+
+    Deliberately narrow, by construction rather than by trusting caller
+    discipline: render_fallback_sprint_report (tools/budget.py) takes no
+    LLM-authored input at all - there is no free-form path/content
+    argument anywhere in this path a compromised or confused role could
+    use to redirect it - and the `git add` below is scoped to
+    specs/reports/ only, never "-A". Even if everything else in this
+    callback chain were somehow compromised, this action alone could not
+    be used to write or commit anything but a sprint report.
+
+    Called only from _budget_halt_response, and only for a
+    SPRINT_CLOSEOUT_GRACE_ROLES agent whose own grace allowance is *also*
+    exhausted (the one case that function doesn't redirect to
+    ProductOwner for another attempt) - not on the very first halt any
+    role hits, which may just hand off to a still-has-grace ProductOwner
+    who goes on to author the real report. Firing this any earlier would
+    risk committing this degraded stand-in and then never updating it once
+    - and if - the real one succeeds moments later during grace.
+
+    Best-effort, same as its sibling: any failure here must not prevent
+    the caller from still returning its own canned budget-exceeded
+    response.
+    """
+    try:
+        repo_root = str(_configured_repo_root(callback_context))
+        develop = _develop_branch_name(callback_context)
+        branch = develop
+        fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=callback_context)
+        checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=callback_context)
+        if fetch.get("status") != "ok" or checkout.get("status") != "ok":
+            branch_result = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, tool_context=callback_context)
+            current_branch = (branch_result.get("stdout") or "").strip()
+            branch = current_branch if current_branch and current_branch != "HEAD" else None
+
+        render_fallback_sprint_report(callback_context)
+
+        if branch:
+            add_res = _run(["git", "add", "--", "specs/reports"], cwd=repo_root, tool_context=callback_context)
+            if add_res.get("status") == "ok":
+                _git_push_impl(
+                    branch=branch,
+                    commit_message="chore: ensure sprint report - sprint budget exhausted",
+                    add_all=False,
+                    allow_protected=True,
+                    tool_context=callback_context,
+                )
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Sprint report safety net on budget exhaustion failed (non-fatal): {e}")
+
+
+def _ensure_sprint_report_on_final_halt_once(callback_context: CallbackContext) -> None:
+    """
+    Guards _ensure_sprint_report_on_final_halt so it runs exactly once per
+    sprint - the same "once" pattern as _sync_roadmap_on_exhaustion_once
+    right below, using its own flag (sprint_report_safety_net_fired) since
+    this fires later/less often than that one (only on the true final
+    halt, not on the very first grace-eligible halt - see this function's
+    own docstring). Cleared by reset_sprint_budget, so a halt in a later
+    sprint is guaranteed a report again too."""
+    if callback_context.state.get("sprint_report_safety_net_fired"):
+        return
+    _ensure_sprint_report_on_final_halt(callback_context)
+    callback_context.state["sprint_report_safety_net_fired"] = True
+
+
 def _sync_roadmap_on_exhaustion_once(callback_context: CallbackContext) -> None:
     """
     Guards _sync_and_commit_roadmap_on_exhaustion so it runs exactly once per
@@ -629,6 +711,9 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
     _notify_critical_halt(callback_context, msg, detail=detail)
     parts = [types.Part(text=msg)]
     if agent_name not in SPRINT_CLOSEOUT_GRACE_ROLES:
+        # Real grace headroom may still be available to ProductOwner (see
+        # docstring above) - NOT yet the final halt, so the sprint report
+        # safety net below deliberately does not fire on this branch.
         parts = [
             types.Part(text=msg + (
                 " Handing off to ProductOwner. While over budget: go straight through the SPRINT "
@@ -641,6 +726,16 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
             )),
             types.Part(function_call=types.FunctionCall(name="transfer_to_agent", args={"agent_name": "ProductOwner"})),
         ]
+    else:
+        # agent_name IS grace-eligible and still reached this "over budget"
+        # branch - meaning its own grace allowance (closeout_grace_percent)
+        # is exhausted too, with nowhere left to redirect. This is the one
+        # unambiguous "no more turns for anyone this sprint" moment - see
+        # _ensure_sprint_report_on_final_halt_once's own docstring for why
+        # firing any earlier (e.g. the non-grace branch above) would risk
+        # committing a degraded fallback report and then never updating it
+        # even if the real one goes on to succeed during grace.
+        _ensure_sprint_report_on_final_halt_once(callback_context)
     return LlmResponse(
         content=types.Content(role="model", parts=parts),
         model_version=llm_request.model or "unknown",
