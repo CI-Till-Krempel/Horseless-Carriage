@@ -861,10 +861,23 @@ def gh_release_create(tag: str, title: str | None = None, notes: str | None = No
 def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any]:
     """
     GitFlow sprint PR: develop -> main (see _develop_branch_name/
-    _default_push_branch). Under GitFlow, sprint work already landed on
-    develop via individually merged feature-branch PRs (start_feature_branch/
-    merge_story_pr) - there's no loose local diff to reconcile/stage here
-    anymore, just the integration PR itself.
+    _default_push_branch). Sprint *code* already landed on develop via
+    individually merged feature-branch PRs (start_feature_branch/
+    merge_story_pr) by this point - but the sprint report and transcript
+    have not: create_sprint_report/_write_conversation_transcript
+    (tools/budget.py) only ever write specs/reports/*.md locally, onto
+    whatever branch the working tree happened to be on at that moment
+    (typically still whatever feature branch DevTeam last worked on -
+    nothing in the normal SPRINT CLOSE SEQUENCE returns to develop
+    first), and nothing else commits them either. A real incident: a
+    sprint that finished entirely within budget still shipped a release
+    PR with no sprint report or transcript in it at all - the budget-
+    exhaustion safety net (_ensure_sprint_report_on_final_halt, agent.py)
+    only covers the "ran out of budget" case, not this one, which is the
+    normal/common path. This lands both on develop first, re-rendered
+    directly from session state (not "carried over" from whatever's
+    sitting in the working tree, which may still belong to an already-
+    merged, unrelated branch) - see the checkout+render+push block below.
     """
     # ISSUE-0001: "Ensure Human Review is done for each increment" had no
     # code backing it - refuse until a fresh approval was recorded via
@@ -896,6 +909,40 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)
     default_branch = _default_push_branch(tool_context)
+
+    # Land the sprint report/transcript on develop before opening the PR -
+    # see this function's own docstring above for why neither is there
+    # yet by default. Skipped only if create_sprint_report was never
+    # called at all this sprint (nothing to land) - a separate,
+    # pre-existing gap this function isn't responsible for.
+    if state.get("sprint_report"):
+        checkout_res = _checkout_develop_or_recover(repo_root, develop, tool_context=tool_context)
+        if checkout_res["status"] != "ok":
+            checkout_err = checkout_res["checkout"]
+            return {
+                "status": "error",
+                "message": (
+                    f"Could not check out '{develop}' to land the sprint report/transcript before "
+                    f"the release PR: {checkout_err.get('stderr') or checkout_err.get('message')}"
+                ),
+            }
+        from .budget import render_fallback_sprint_report, _write_conversation_transcript
+        render_fallback_sprint_report(tool_context=tool_context)
+        _write_conversation_transcript(tool_context=tool_context)
+        land_res = _git_push_impl(
+            branch=develop,
+            commit_message="docs: include sprint report/transcript in release",
+            add_all=True,
+            allow_protected=True,
+            tool_context=tool_context,
+        )
+        if land_res.get("status") != "ok":
+            return {
+                "status": "error",
+                "message": "Failed to land the sprint report/transcript on develop before opening the release PR.",
+                "push": land_res,
+            }
+
     fetch_res = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
 
     # base/head are both already fully-resolved branch names (an eval run

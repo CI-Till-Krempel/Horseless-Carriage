@@ -540,6 +540,102 @@ class TestGitHubTools(unittest.TestCase):
         self.assertFalse(tool_context.state["sprint_report_pending_release"])
 
 
+class TestCreateReleasePrLandsSprintReport(unittest.TestCase):
+    """
+    Acceptance Criteria: a real incident shipped a release PR with no
+    sprint report or transcript in it at all, on a sprint that finished
+    entirely within budget - create_sprint_report/_write_conversation_
+    transcript only ever write specs/reports/*.md locally (see their own
+    docstrings), onto whatever branch the working tree happened to be on,
+    and nothing else committed them. create_release_pr must land both on
+    develop, re-rendered from state, before opening the PR - but only
+    when a sprint report actually exists to land (must not error out or
+    change behavior otherwise).
+    """
+
+    def _tool_context(self, sprint_report=""):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        tool_context.state["sprint_report"] = sprint_report
+        return tool_context
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._git_push_impl")
+    @patch("agents.scrum_team.tools.budget._write_conversation_transcript")
+    @patch("agents.scrum_team.tools.budget.render_fallback_sprint_report")
+    @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
+    def test_lands_report_and_transcript_before_opening_the_pr(
+        self, mock_checkout, mock_render, mock_transcript, mock_push, mock_run, mock_gh_pr_create,
+    ):
+        mock_checkout.return_value = {"status": "ok", "checkout": {"status": "ok"}, "fetch": {"status": "ok"}, "auto_integrated": None}
+        mock_push.return_value = {"status": "ok"}
+        tool_context = self._tool_context(sprint_report="real report content")
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_checkout.assert_called_once()
+        mock_render.assert_called_once_with(tool_context=tool_context)
+        mock_transcript.assert_called_once_with(tool_context=tool_context)
+        mock_push.assert_called_once_with(
+            branch="develop", commit_message=unittest.mock.ANY, add_all=True,
+            allow_protected=True, tool_context=tool_context,
+        )
+        mock_gh_pr_create.assert_called_once()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
+    def test_skips_landing_when_no_sprint_report_exists_yet(self, mock_checkout, mock_run, mock_gh_pr_create):
+        """No create_sprint_report call happened at all this sprint (a
+        separate, pre-existing gap this function isn't responsible for) -
+        must behave exactly as before this fix, not error out."""
+        tool_context = self._tool_context(sprint_report="")
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_checkout.assert_not_called()
+        mock_gh_pr_create.assert_called_once()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
+    def test_a_checkout_failure_blocks_the_pr_instead_of_opening_it_without_the_report(
+        self, mock_checkout, mock_gh_pr_create,
+    ):
+        mock_checkout.return_value = {
+            "status": "error",
+            "checkout": {"status": "error", "stderr": "local changes would be overwritten"},
+            "fetch": {"status": "ok"}, "auto_integrated": {"status": "ok", "integrated": False},
+        }
+        tool_context = self._tool_context(sprint_report="real report content")
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("develop", result["message"])
+        mock_gh_pr_create.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    @patch("agents.scrum_team.tools.github._git_push_impl")
+    @patch("agents.scrum_team.tools.budget._write_conversation_transcript")
+    @patch("agents.scrum_team.tools.budget.render_fallback_sprint_report")
+    @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
+    def test_a_push_failure_blocks_the_pr_instead_of_opening_it_without_the_report(
+        self, mock_checkout, mock_render, mock_transcript, mock_push, mock_gh_pr_create,
+    ):
+        mock_checkout.return_value = {"status": "ok", "checkout": {"status": "ok"}, "fetch": {"status": "ok"}, "auto_integrated": None}
+        mock_push.return_value = {"status": "error", "message": "network error"}
+        tool_context = self._tool_context(sprint_report="real report content")
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_gh_pr_create.assert_not_called()
+
+
 class TestStartFeatureBranch(unittest.TestCase):
     """
     Acceptance Criteria (GitFlow): start_feature_branch checks out+pulls
