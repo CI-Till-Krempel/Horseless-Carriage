@@ -703,14 +703,28 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     master_key = os.environ.get("LITELLM_MASTER_KEY")
     proxy_base = os.environ.get("LITELLM_PROXY_API_BASE")
     if master_key and proxy_base and agent_name != "ScrumOrchestrator" and not state.litellm_keys.get(agent_name):
-        msg = (
-            f"🚫 [NO BUDGET-CAPPED KEY] Agent '{agent_name}' has no LiteLLM virtual key yet. "
-            f"Refusing to run on an unscoped fallback key - call create_litellm_virtual_key('{agent_name}', ...) first."
-        )
-        return LlmResponse(
-            content=types.Content(role="model", parts=[types.Part(text=msg)]),
-            model_version=llm_request.model or "unknown"
-        )
+        # Mechanically provision the missing key ourselves rather than just
+        # refusing and telling the Orchestrator to do it - a real test-drive
+        # run showed the Orchestrator's own SETUP WIZARD step for this is
+        # judgment-dependent (it skipped LITELLM IDENTITIES entirely on a
+        # narrowly-scoped "please re-init the state" request, having no
+        # tool-visible signal that any role's key was actually missing), so
+        # a specialist could be left permanently stuck here with no tool of
+        # its own to fix it (create_litellm_virtual_key is Orchestrator-only)
+        # and no guarantee the Orchestrator will ever be asked again. Same
+        # philosophy as ensure_state_initialized_callback above: a mechanical
+        # guarantee beats relying on the model to remember every time.
+        key_result = create_litellm_virtual_key(agent_name, tool_context=callback_context)
+        if key_result.get("status") != "ok":
+            msg = (
+                f"🚫 [NO BUDGET-CAPPED KEY] Agent '{agent_name}' has no LiteLLM virtual key, and creating "
+                f"one automatically failed: {key_result.get('message', 'unknown error')}. Ask the "
+                f"Orchestrator to call create_litellm_virtual_key('{agent_name}', ...) directly."
+            )
+            return LlmResponse(
+                content=types.Content(role="model", parts=[types.Part(text=msg)]),
+                model_version=llm_request.model or "unknown"
+            )
 
     # 1. Check Token Budget (Local Guardrail)
     token_limit = state.budgets.total

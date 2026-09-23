@@ -75,13 +75,51 @@ class TestAgent(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(mock_context.state["token_usage"]["total"], 100)
 
-    def test_check_cost_budget_callback_blocks_agent_without_virtual_key(self):
+    def test_check_cost_budget_callback_auto_provisions_missing_virtual_key(self):
         """
-        Acceptance Criteria (budget audit ahead of v0.1.0):
-        - In proxy mode, a sub-agent with no LiteLLM virtual key is blocked
-          rather than silently falling back to an unscoped key whose spend
-          the USD check below can't see (see inject_litellm_key_callback's
-          fallback to LITELLM_PROXY_API_KEY).
+        Acceptance Criteria: a real test-drive run showed the Orchestrator's
+        own setup-wizard judgment call for creating specialist keys is not
+        reliable - it skipped that step entirely on a narrowly-scoped
+        request, leaving DevTeam permanently stuck (create_litellm_virtual_key
+        is Orchestrator-only, so DevTeam has no tool of its own to recover).
+        This guard must provision the missing key itself rather than just
+        refusing and hoping the Orchestrator is asked again.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total_usd = 10.0
+        mock_context.state = state.model_dump()  # litellm_keys is empty
+
+        mock_llm_request = MagicMock()
+        mock_llm_request.model = "test-model"
+
+        def fake_create_key(agent_name, tool_context=None, **kwargs):
+            tool_context.state["litellm_keys"] = {**tool_context.state.get("litellm_keys", {}), agent_name: "sk-auto-provisioned"}
+            return {"status": "ok", "key": "sk-auto-provisioned"}
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "test-master-key", "LITELLM_PROXY_API_BASE": "http://litellm:4000"}):
+            with patch("agents.scrum_team.agent.create_litellm_virtual_key", side_effect=fake_create_key) as mock_create_key:
+                with patch("requests.post") as mock_post:
+                    mock_response = MagicMock()
+                    mock_response.status_code = 200
+                    mock_response.json.return_value = [{"spend": 0.0}]
+                    mock_post.return_value = mock_response
+
+                    result = check_cost_budget_callback(mock_context, mock_llm_request)
+
+        mock_create_key.assert_called_once_with("DevTeam", tool_context=mock_context)
+        self.assertIsNone(result)
+        self.assertEqual(mock_context.state["litellm_keys"]["DevTeam"], "sk-auto-provisioned")
+
+    def test_check_cost_budget_callback_blocks_agent_when_auto_provisioning_fails(self):
+        """
+        Acceptance Criteria (budget audit ahead of v0.1.0): if auto-
+        provisioning a missing key itself fails (e.g. LiteLLM proxy
+        unreachable), the agent is still blocked rather than silently
+        falling back to an unscoped key whose spend the USD check below
+        can't see (see inject_litellm_key_callback's fallback to
+        LITELLM_PROXY_API_KEY).
         """
         mock_context = MagicMock()
         mock_context.agent_name = "DevTeam"
@@ -92,12 +130,17 @@ class TestAgent(unittest.TestCase):
         mock_llm_request = MagicMock()
         mock_llm_request.model = "test-model"
         with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "test-master-key", "LITELLM_PROXY_API_BASE": "http://litellm:4000"}):
-            with patch("requests.post") as mock_post:
-                result = check_cost_budget_callback(mock_context, mock_llm_request)
+            with patch(
+                "agents.scrum_team.agent.create_litellm_virtual_key",
+                return_value={"status": "error", "message": "Budget API error: proxy unreachable"},
+            ):
+                with patch("requests.post") as mock_post:
+                    result = check_cost_budget_callback(mock_context, mock_llm_request)
 
         self.assertIsNotNone(result)
         self.assertIn("NO BUDGET-CAPPED KEY", result.content.parts[0].text)
-        # Blocked before any remote spend check is even attempted.
+        self.assertIn("proxy unreachable", result.content.parts[0].text)
+        # The USD spend check further below is never reached either way.
         mock_post.assert_not_called()
 
     def test_check_cost_budget_callback_exempts_orchestrator_bootstrap(self):
