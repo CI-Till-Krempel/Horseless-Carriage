@@ -294,8 +294,61 @@ def _redact_cmd(cmd: list[str]) -> list[str]:
 _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS = 120
 
 
+def _looks_like_stale_github_app_token(stdout: str, stderr: str) -> bool:
+    """
+    True if a git/gh command's output is GitHub rejecting the credential
+    itself (not some unrelated 401, e.g. a genuinely wrong repo URL) -
+    "Bad credentials" is GitHub's own exact API error string (both `gh` and
+    a raw REST call surface it verbatim), and "Authentication failed"/
+    "could not read Username" are git's own HTTPS-credential-rejection
+    wording. Deliberately string-matched rather than exit-code-matched -
+    both tools exit 1 for a wide range of unrelated failures too.
+    """
+    combined = f"{stdout}\n{stderr}".lower()
+    return (
+        "bad credentials" in combined
+        or "authentication failed" in combined
+        or "could not read username" in combined
+        or "terminal prompts disabled" in combined
+    )
+
+
+def _refresh_github_app_token(tool_context) -> bool:
+    """
+    Re-mints a fresh GitHub App installation access token and stores it in
+    session state, for `_run` to retry a git/gh call that just failed with
+    a stale/expired one. GitHub hard-caps installation tokens at 60 minutes
+    (not configurable, not something raising a limit anywhere fixes) - a
+    real incident: a sprint running longer than that saw every subsequent
+    `git push`/`gh` call fail with "Bad credentials", because
+    configure_github_app (see init_scrum_state) only ever mints a token
+    once per session and nothing ever refreshed it.
+
+    Uses GITHUB_APP_ID/GITHUB_APP_PRIVATE_KEY/GITHUB_APP_INSTALLATION_ID
+    from the environment - the same source init_scrum_state's own first
+    mint uses - never anything from session.state (the private key is
+    deliberately never persisted there - see tools/scrum.py's
+    REPO_STATE_KEYS note on secrets). Returns False, doing nothing, if this
+    session was never on GitHub App auth in the first place (a plain
+    GITHUB_TOKEN personal access token doesn't expire this way and has
+    nothing to refresh) or those env vars aren't set - the caller must
+    still surface the original failure in that case.
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return False
+    app_id = os.environ.get("GITHUB_APP_ID")
+    private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
+    installation_id = os.environ.get("GITHUB_APP_INSTALLATION_ID")
+    if not (app_id and private_key and installation_id):
+        return False
+    from .github import configure_github_app  # deferred: github.py imports _run from this module
+    result = configure_github_app(app_id, private_key, installation_id, tool_context=tool_context)
+    return result.get("status") == "ok"
+
+
 def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
-         timeout: float = _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS, env_overrides: dict | None = None) -> Dict[str, Any]:
+         timeout: float = _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS, env_overrides: dict | None = None,
+         _retry_on_auth_failure: bool = True) -> Dict[str, Any]:
     """
     Run a shell command non-interactively and capture output.
     Injects GH_TOKEN if present in session.state.
@@ -305,14 +358,28 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
     would otherwise block waiting for input that can never arrive here. A
     timeout (default _DEFAULT_SUBPROCESS_TIMEOUT_SECONDS) bounds every other
     hang (a network stall on `git push`, `gh pr checks --watch`, etc.) -
-    see GH issue #113.
+    see GH issue #113. GIT_TERMINAL_PROMPT=0 below is belt-and-suspenders
+    with DEVNULL specifically for git's own HTTPS credential helper, which a
+    real incident showed can still stall for the full timeout on a stale
+    token rather than failing immediately.
+
+    A stale GitHub App installation token (_looks_like_stale_github_app_token)
+    is retried exactly once, transparently, after re-minting a fresh one
+    (_refresh_github_app_token) - see that function's docstring. `cmd` is
+    the pristine, pre-auth-injection argument the caller passed; the retry
+    re-enters this function from scratch with `_retry_on_auth_failure=False`
+    so a second consecutive failure (refresh itself failed, or the App's
+    permissions were actually revoked rather than just expired) surfaces
+    normally instead of looping.
 
     env_overrides: applied last, after the GH_TOKEN/git-identity injection
     below - see _execute_test_suite_coverage (tools/quality.py, ISSUE-0047)
     for why PYTHONPATH specifically needs this.
     """
+    original_cmd = cmd
     env = os.environ.copy()
     if cmd and cmd[0] == "git":
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")
         # Unconditional, even with no token below: a repo_url can be
         # git@github.com:... (see .env.example's GITHUB_REPO_URL) before any
         # token has ever been seeded into session state (e.g. the very first
@@ -373,6 +440,15 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
             timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
+        if (
+            p.returncode != 0
+            and _retry_on_auth_failure
+            and original_cmd
+            and original_cmd[0] in ("git", "gh")
+            and _looks_like_stale_github_app_token(p.stdout, p.stderr)
+            and _refresh_github_app_token(tool_context)
+        ):
+            return _run(original_cmd, cwd, tool_context, timeout, env_overrides, _retry_on_auth_failure=False)
         return {
             "status": "ok" if p.returncode == 0 else "error",
             "returncode": p.returncode,
