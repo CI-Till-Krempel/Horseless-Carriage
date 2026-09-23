@@ -877,7 +877,10 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     normal/common path. This lands both on develop first, re-rendered
     directly from session state (not "carried over" from whatever's
     sitting in the working tree, which may still belong to an already-
-    merged, unrelated branch) - see the checkout+render+push block below.
+    merged, unrelated branch), together with any other dangling specs/
+    write from this sprint (a final update_roadmap/upsert_story/upsert_issue/
+    generate_workflow_diagram call, via integrate_open_changes) - see the
+    checkout+render+integrate+push block below.
     """
     # ISSUE-0001: "Ensure Human Review is done for each increment" had no
     # code backing it - refuse until a fresh approval was recorded via
@@ -929,10 +932,19 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         from .budget import render_fallback_sprint_report, _write_conversation_transcript
         render_fallback_sprint_report(tool_context=tool_context)
         _write_conversation_transcript(tool_context=tool_context)
+        # integrate_open_changes rather than add_all=True: scoped to
+        # specs/ and .hc/ only (see its own docstring) - by this point in
+        # the sprint any *code* change should already be merged in via a
+        # feature-branch PR, so the only things legitimately still
+        # dangling are planning-doc writes (the report/transcript above,
+        # plus whatever else update_roadmap/upsert_story/upsert_issue/
+        # generate_workflow_diagram left uncommitted this sprint) - never
+        # a stray build artifact or leftover file swept in by "-A".
+        integrate_open_changes(tool_context=tool_context)
         land_res = _git_push_impl(
             branch=develop,
             commit_message="docs: include sprint report/transcript in release",
-            add_all=True,
+            add_all=False,
             allow_protected=True,
             tool_context=tool_context,
         )
