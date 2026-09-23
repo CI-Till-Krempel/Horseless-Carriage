@@ -59,12 +59,13 @@ class TestAgent(unittest.TestCase):
 
         # Test check_cost_budget_callback
         mock_llm_request = MagicMock()
-        # Mock requests.post to avoid actual API call and master key issues
-        with patch("requests.post") as mock_post:
+        # Mock requests.get (/key/info, one call per specialist key) to
+        # avoid actual API calls and master key issues.
+        with patch("requests.get") as mock_get:
             mock_response = MagicMock()
             mock_response.status_code = 200
-            mock_response.json.return_value = [{"spend": 0.0}]
-            mock_post.return_value = mock_response
+            mock_response.json.return_value = {"info": {"spend": 0.0}}
+            mock_get.return_value = mock_response
 
             result = check_cost_budget_callback(mock_context, mock_llm_request)
             self.assertIsNone(result)
@@ -101,11 +102,11 @@ class TestAgent(unittest.TestCase):
 
         with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "test-master-key", "LITELLM_PROXY_API_BASE": "http://litellm:4000"}):
             with patch("agents.scrum_team.agent.create_litellm_virtual_key", side_effect=fake_create_key) as mock_create_key:
-                with patch("requests.post") as mock_post:
+                with patch("requests.get") as mock_get:
                     mock_response = MagicMock()
                     mock_response.status_code = 200
-                    mock_response.json.return_value = [{"spend": 0.0}]
-                    mock_post.return_value = mock_response
+                    mock_response.json.return_value = {"info": {"spend": 0.0}}
+                    mock_get.return_value = mock_response
 
                     result = check_cost_budget_callback(mock_context, mock_llm_request)
 
@@ -135,14 +136,14 @@ class TestAgent(unittest.TestCase):
                 "agents.scrum_team.agent.create_litellm_virtual_key",
                 return_value={"status": "error", "message": "Budget API error: proxy unreachable"},
             ):
-                with patch("requests.post") as mock_post:
+                with patch("requests.get") as mock_get:
                     result = check_cost_budget_callback(mock_context, mock_llm_request)
 
         self.assertIsNotNone(result)
         self.assertIn("NO BUDGET-CAPPED KEY", result.content.parts[0].text)
         self.assertIn("proxy unreachable", result.content.parts[0].text)
         # The USD spend check further below is never reached either way.
-        mock_post.assert_not_called()
+        mock_get.assert_not_called()
 
     def test_check_cost_budget_callback_exempts_orchestrator_bootstrap(self):
         """
@@ -210,11 +211,11 @@ class TestAgent(unittest.TestCase):
             "LITELLM_PROXY_API_BASE": "http://litellm:4000",
             "SPRINT_USD_BUDGET": "1.00",
         }, clear=True):
-            with patch("requests.post") as mock_post:
+            with patch("requests.get") as mock_get:
                 mock_response = MagicMock()
                 mock_response.status_code = 200
-                mock_response.json.return_value = [{"spend": 2.00}]  # over the deprecated var's 1.00 limit
-                mock_post.return_value = mock_response
+                mock_response.json.return_value = {"info": {"spend": 2.00}}  # over the deprecated var's 1.00 limit
+                mock_get.return_value = mock_response
 
                 result = check_cost_budget_callback(mock_context, mock_llm_request)
 
@@ -239,15 +240,95 @@ class TestAgent(unittest.TestCase):
             "TOTAL_USD_BUDGET": "5.00",
             "SPRINT_USD_BUDGET": "1.00",
         }, clear=True):
-            with patch("requests.post") as mock_post:
+            with patch("requests.get") as mock_get:
                 mock_response = MagicMock()
                 mock_response.status_code = 200
-                mock_response.json.return_value = [{"spend": 2.00}]  # under TOTAL_USD_BUDGET, over the old name
-                mock_post.return_value = mock_response
+                mock_response.json.return_value = {"info": {"spend": 2.00}}  # under TOTAL_USD_BUDGET, over the old name
+                mock_get.return_value = mock_response
 
                 result = check_cost_budget_callback(mock_context, mock_llm_request)
 
         self.assertIsNone(result)
+
+    def test_usd_spend_sums_every_specialist_key_not_a_shared_budget_object(self):
+        """
+        Acceptance Criteria: a real incident showed sprint reports always
+        printing $0.00 actual spend while the LiteLLM dashboard showed real,
+        nonzero numbers for the same sprint - the "scrum-sprint-budget"
+        Budget object every key is assigned only ever holds the *policy*
+        (max_budget/budget_duration); LiteLLM tracks real spend per-key, not
+        on that shared object. current_usd_spend must be the sum of every
+        specialist's own /key/info spend, not a single /budget/info lookup.
+        """
+        mock_context = MagicMock()
+        mock_context.agent_name = "ProductOwner"
+        state = ScrumState()
+        state.budgets.total = 1000000
+        state.budgets.total_usd = 10.0
+        state.litellm_keys["ProductOwner"] = "sk-po-key"
+        state.litellm_keys["DevTeam"] = "sk-dev-key"
+        state.litellm_keys["ScrumMaster"] = "sk-sm-key"
+        mock_context.state = state.model_dump()
+
+        spends_by_key = {"sk-po-key": 1.5, "sk-dev-key": 2.25, "sk-sm-key": 0.75}
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            resp = MagicMock()
+            resp.json.return_value = {"info": {"spend": spends_by_key[params["key"]]}}
+            return resp
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
+            with patch("requests.get", side_effect=fake_get):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNone(result)  # 4.50 total, under the $10 budget
+        self.assertEqual(mock_context.state["budgets"]["current_usd_spend"], 4.50)
+
+    def test_usd_spend_tolerates_one_key_lookup_failing(self):
+        """One specialist's key lookup failing (revoked, transient error)
+        must not discard the real spend data successfully fetched for the
+        others - a best-effort partial sum beats treating the whole check
+        as unusable."""
+        mock_context = MagicMock()
+        mock_context.agent_name = "ProductOwner"
+        state = ScrumState()
+        state.budgets.total = 1000000
+        state.budgets.total_usd = 10.0
+        state.litellm_keys["ProductOwner"] = "sk-po-key"
+        state.litellm_keys["DevTeam"] = "sk-dev-key"
+        mock_context.state = state.model_dump()
+
+        def fake_get(url, headers=None, params=None, timeout=None):
+            if params["key"] == "sk-dev-key":
+                raise requests.RequestException("key not found")
+            resp = MagicMock()
+            resp.json.return_value = {"info": {"spend": 3.0}}
+            return resp
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
+            with patch("requests.get", side_effect=fake_get):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNone(result)
+        self.assertEqual(mock_context.state["budgets"]["current_usd_spend"], 3.0)
+
+    def test_usd_spend_check_is_skipped_with_no_specialist_keys_yet(self):
+        """No keys provisioned yet (e.g. the Orchestrator's own bootstrap
+        turn) - nothing to sum, and no gh/proxy round-trip attempted for a
+        question that can only ever be "$0 so far"."""
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        state = ScrumState()
+        state.budgets.total_usd = 10.0
+        mock_context.state = state.model_dump()
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
+            with patch("requests.get") as mock_get:
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+
+        self.assertIsNone(result)
+        mock_get.assert_not_called()
+        self.assertEqual(mock_context.state["budgets"]["current_usd_spend"], 0.0)
 
     def test_check_cost_budget_callback_skips_usd_check_for_local_provider(self):
         """
@@ -1472,8 +1553,8 @@ class TestCriticalHaltNotifications(unittest.TestCase):
         mock_context.state = state.model_dump()
 
         with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
-            with patch("requests.post") as mock_post:
-                mock_post.return_value.json.return_value = [{"spend": 6.0}]
+            with patch("requests.get") as mock_get:
+                mock_get.return_value.json.return_value = {"info": {"spend": 6.0}}
                 with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
 
@@ -1493,7 +1574,7 @@ class TestCriticalHaltNotifications(unittest.TestCase):
         mock_context.state = state.model_dump()
 
         with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
-            with patch("requests.post", side_effect=requests.RequestException("boom")):
+            with patch("requests.get", side_effect=requests.RequestException("boom")):
                 with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
 
@@ -1588,7 +1669,13 @@ class TestSprintCloseoutGrace(unittest.TestCase):
         for agent_name in ("ScrumMaster", "ProductOwner", "QualityGuardian", "ScrumOrchestrator"):
             with self.subTest(agent_name=agent_name):
                 mock_context = self._context(agent_name, 100, 104)
-                with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "5"}):
+                # clear=True: this test is scoped to the TOKEN grace logic -
+                # without it, an ambient LITELLM_MASTER_KEY/
+                # LITELLM_PROXY_API_BASE from the host's own dev environment
+                # leaks through, reaching the (unmocked) real USD check below
+                # and failing on a fake test key that doesn't actually exist
+                # on whatever real LiteLLM proxy happens to be running.
+                with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "5"}, clear=True):
                     with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
                         result = check_cost_budget_callback(mock_context, MagicMock(model=None))
                 self.assertIsNone(result, f"{agent_name} should still get a real call within grace")
@@ -1647,9 +1734,9 @@ class TestSprintCloseoutGrace(unittest.TestCase):
         mock_context.state["budgets"]["total_usd"] = 10.0
 
         with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
-            with patch("requests.post") as mock_post:
+            with patch("requests.get") as mock_get:
                 # 10.4 is over the $10 ceiling but under the 5% grace ceiling ($10.50).
-                mock_post.return_value.json.return_value = [{"spend": 10.4}]
+                mock_get.return_value.json.return_value = {"info": {"spend": 10.4}}
                 with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
 
@@ -1660,8 +1747,8 @@ class TestSprintCloseoutGrace(unittest.TestCase):
         mock_context.state["budgets"]["total_usd"] = 10.0
 
         with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
-            with patch("requests.post") as mock_post:
-                mock_post.return_value.json.return_value = [{"spend": 10.4}]
+            with patch("requests.get") as mock_get:
+                mock_get.return_value.json.return_value = {"info": {"spend": 10.4}}
                 with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
 
