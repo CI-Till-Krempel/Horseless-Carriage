@@ -1018,6 +1018,20 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
         content = header + "## Test Approach\n" + test_approach + "\n"
     try:
         story_path.parent.mkdir(parents=True, exist_ok=True)
+        # filename is derived from (item_id, title) above - if this item's
+        # title changed since it was last written, that recomputes to a
+        # different filename and orphans the old one on disk under its stale
+        # title, forever showing up as a dangling untracked/modified file in
+        # git status (a real incident: a loop-recovery re-upsert renamed
+        # US-0001's title, leaving the original "US-0001-<old-title>.md"
+        # sitting uncommitted next to the new file, which was still there
+        # blocking `git checkout -B develop origin/develop` - see
+        # integrate_open_changes in tools/github.py - sessions later). Remove
+        # every other file already claiming this same ID before writing the
+        # new one, so at most one file per ID ever exists.
+        for sibling in story_path.parent.glob(f"{item_id}-*.md"):
+            if sibling != story_path:
+                sibling.unlink()
         story_path.write_text(content, encoding="utf-8")
         _record_touched_file(str(story_path.relative_to(repo_root)), tool_context)
         return {"status": "ok", "path": str(story_path)}

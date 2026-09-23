@@ -35,6 +35,107 @@ def story_spec_pr_merged(story_id: str, tool_context=None) -> bool:
     return data.get("state") == "MERGED"
 
 
+# Paths the scrum tools themselves write to outside of an explicit git_push
+# call - upsert_story/upsert_epic/upsert_issue/update_roadmap/upsert_prd/
+# upsert_srs/upsert_adr write under specs/, save_state_to_repo writes
+# .hc/state.json. Deliberately NOT "-A"/the whole working tree: this repo is
+# also where DevTeam's own uncommitted source-code edits live between
+# start_feature_branch calls, and an automatic recovery step has no business
+# sweeping those into an unrelated "planning docs" commit.
+_OPEN_CHANGES_PATHS = ["specs", ".hc"]
+
+
+def integrate_open_changes(tool_context=None) -> Dict[str, Any]:
+    """
+    Commits any uncommitted writes under specs/ and .hc/state.json to the
+    current branch, scoped to just those paths.
+
+    upsert_story/upsert_epic/upsert_issue/update_roadmap and friends only
+    ever write files to disk - by design, see save_state_to_repo's own
+    docstring ("purely local safety net") - none of them commit. Every
+    story/roadmap edit sits as a dangling uncommitted change in the shared
+    working tree until whatever tool happens to run the first
+    `git add` + commit. A real incident: after a session got interrupted
+    (token exhaustion) mid sprint-planning and was resumed, `git checkout -B
+    develop origin/develop` - the first step of every create_story_spec_pr/
+    create_sprint_backlog_pr/start_feature_branch call - kept failing with
+    "local changes would be overwritten", because that planning output was
+    still sitting there uncommitted. Nothing could recover on its own since
+    committing it was gated behind a checkout that could never succeed
+    without first committing it. This is the fix, and it's also what
+    create_story_spec_pr/create_sprint_backlog_pr/start_feature_branch now
+    call automatically (see _checkout_develop_or_recover below) the moment
+    that exact failure happens, instead of just giving up - call it directly
+    only when recovering a stuck session by hand (e.g. right after
+    re-running init_scrum_state to rebuild state from the specs/ already
+    persisted in the repo).
+    """
+    repo_root_path = _configured_repo_root(tool_context)
+    repo_root = str(repo_root_path)
+    # A pathspec git add can't match at all (e.g. .hc/ before any
+    # save_state_to_repo call has ever run yet) hard-fails the whole
+    # command ("did not match any files") rather than just skipping it the
+    # way git status does - only pass pathspecs that currently exist.
+    existing_paths = [p for p in _OPEN_CHANGES_PATHS if (repo_root_path / p).exists()]
+    if not existing_paths:
+        return {"status": "ok", "integrated": False, "message": "No open planning-doc changes under specs/ or .hc/ to integrate."}
+
+    status = _run(["git", "status", "--porcelain", "--"] + existing_paths, cwd=repo_root, tool_context=tool_context)
+    if status.get("status") != "ok":
+        return {"status": "error", "message": "Could not read git status.", "git_status": status}
+    if not status.get("stdout"):
+        return {"status": "ok", "integrated": False, "message": "No open planning-doc changes under specs/ or .hc/ to integrate."}
+
+    add_res = _run(["git", "add", "--"] + existing_paths, cwd=repo_root, tool_context=tool_context)
+    if add_res.get("status") != "ok":
+        return {"status": "error", "message": "Failed to stage open planning-doc changes.", "add": add_res}
+
+    staged = _run(["git", "diff", "--cached", "--name-only"], cwd=repo_root, tool_context=tool_context)
+    files = [line for line in staged.get("stdout", "").splitlines() if line.strip()]
+    if not files:
+        return {"status": "ok", "integrated": False, "message": "No open planning-doc changes under specs/ or .hc/ to integrate."}
+
+    commit = _run(
+        ["git", "commit", "-m", "chore: integrate open scrum planning-doc changes"],
+        cwd=repo_root, tool_context=tool_context,
+    )
+    if commit.get("status") != "ok":
+        return {"status": "error", "message": "Failed to commit open planning-doc changes.", "files": files, "commit": commit}
+    return {"status": "ok", "integrated": True, "files": files, "commit": commit}
+
+
+def _checkout_develop_or_recover(repo_root: str, develop: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Shared `git fetch` + `git checkout -B <develop> origin/<develop>` used by
+    create_story_spec_pr/create_sprint_backlog_pr/start_feature_branch before
+    branching off develop. On the specific "local changes would be
+    overwritten" failure, self-heals by calling integrate_open_changes()
+    (committing dangling specs/.hc writes out of the way) and retrying the
+    checkout once, rather than leaving the session stuck the way a real
+    incident did (see integrate_open_changes' docstring) - any other
+    checkout failure (network, auth, ...) is returned as-is, unretried.
+
+    Returns {"status", "fetch", "checkout", "auto_integrated"} - callers
+    should treat a non-"ok" "checkout" the same as before this helper
+    existed; "auto_integrated" (the integrate_open_changes() result, or None
+    if recovery was never attempted) is extra context worth surfacing to the
+    caller's own error message when present.
+    """
+    fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
+    checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    auto_integrated = None
+    if checkout.get("status") == "error" and "would be overwritten" in (checkout.get("stderr") or "").lower():
+        auto_integrated = integrate_open_changes(tool_context)
+        if auto_integrated.get("integrated"):
+            checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    return {
+        "status": checkout.get("status"),
+        "fetch": fetch,
+        "checkout": checkout,
+        "auto_integrated": auto_integrated,
+    }
+
+
 def _ensure_remote_branch_exists(repo_root: str, branch: str, tool_context=None) -> Dict[str, Any]:
     """
     Creates+pushes `branch` from the current local HEAD if it doesn't
@@ -334,13 +435,14 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
     develop = _develop_branch_name(tool_context)
     branch = f"feature/{story_id}-{_slugify(slug)}"
 
-    fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
-    checkout_develop = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    recovery = _checkout_develop_or_recover(repo_root, develop, tool_context=tool_context)
+    checkout_develop = recovery["checkout"]
     if checkout_develop.get("status") == "error":
         return {
             "status": "error",
             "message": f"Could not check out '{develop}': {checkout_develop.get('stderr') or checkout_develop.get('message')}",
-            "fetch": fetch,
+            "fetch": recovery["fetch"],
+            "auto_integrated": recovery["auto_integrated"],
         }
 
     checkout_feature = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
@@ -462,13 +564,14 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
     push_res = None
     pr_res = None
     if not already_open:
-        fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
-        checkout_develop = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+        recovery = _checkout_develop_or_recover(repo_root, develop, tool_context=tool_context)
+        checkout_develop = recovery["checkout"]
         if checkout_develop.get("status") == "error":
             return {
                 "status": "error",
                 "message": f"Could not check out '{develop}': {checkout_develop.get('stderr') or checkout_develop.get('message')}",
-                "fetch": fetch,
+                "fetch": recovery["fetch"],
+                "auto_integrated": recovery["auto_integrated"],
             }
 
         checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
@@ -595,13 +698,14 @@ def create_story_spec_pr(title_or_id: str, tool_context=None) -> Dict[str, Any]:
     develop = _develop_branch_name(tool_context)
     branch = f"story-spec/{story_id}"
 
-    fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
-    checkout_develop = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    recovery = _checkout_develop_or_recover(repo_root, develop, tool_context=tool_context)
+    checkout_develop = recovery["checkout"]
     if checkout_develop.get("status") == "error":
         return {
             "status": "error",
             "message": f"Could not check out '{develop}': {checkout_develop.get('stderr') or checkout_develop.get('message')}",
-            "fetch": fetch,
+            "fetch": recovery["fetch"],
+            "auto_integrated": recovery["auto_integrated"],
         }
     checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
     if checkout_branch.get("status") == "error":

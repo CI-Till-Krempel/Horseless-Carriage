@@ -75,7 +75,13 @@ REPO_STATE_KEYS = [
 
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     """
-    Initialize all Scrum artifacts in session.state if missing.
+    Initialize all Scrum artifacts in session.state if missing, then rebuild
+    them from whatever specs/ already has on disk (epics, stories, issues,
+    PRD vision/goals, architecture vision) - independent of whether
+    .hc/state.json itself was ever committed. The returned "doc_sync" summary
+    (story/epic/issue count, vision/goals/architecture booleans) is the
+    trustworthy record of what got picked up - re-reading every doc by hand
+    afterward "to check it's synced" is redundant and just burns budget.
     """
     from .github import configure_github_app
     from .requirements import sync_stories_from_markdown
@@ -218,16 +224,31 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     if env_github_token and not s.get("github_token"):
         s["github_token"] = env_github_token
 
-    # 3. Load stories and requirements from Markdown
+    # 3. Load stories and requirements from Markdown - the rebuild-from-repo
+    # step: whatever's already under specs/ (epics, stories, issues, the
+    # PRD's vision/goals, the architecture vision doc) becomes this
+    # session's state, independent of whether .hc/state.json itself was
+    # ever committed. Surfaced in the return value below (rather than left
+    # implicit) so a caller - the Orchestrator deciding whether re-init
+    # after an interruption actually picked the backlog back up - can trust
+    # this ran instead of re-reading every doc by hand to double-check (a
+    # real incident spent much of a session's token budget doing exactly
+    # that after a re-init, right before the budget ran out - see
+    # ISSUE-0002 in a state repo's specs/requirements/).
+    doc_sync = {"stories_synced": 0, "vision_synced": False, "goals_synced": 0, "architecture_synced": False}
     try:
         from .requirements import (
             sync_stories_from_markdown,
             sync_requirements_from_markdown,
             sync_architecture_vision_from_markdown,
         )
-        _ = sync_stories_from_markdown(tool_context)
-        _ = sync_requirements_from_markdown(tool_context)
-        _ = sync_architecture_vision_from_markdown(tool_context)
+        stories_result = sync_stories_from_markdown(tool_context)
+        requirements_result = sync_requirements_from_markdown(tool_context)
+        architecture_result = sync_architecture_vision_from_markdown(tool_context)
+        doc_sync["stories_synced"] = stories_result.get("synced", 0)
+        doc_sync["vision_synced"] = bool(requirements_result.get("vision_updated"))
+        doc_sync["goals_synced"] = requirements_result.get("goals_updated", 0)
+        doc_sync["architecture_synced"] = bool(architecture_result.get("architecture_vision_updated"))
     except Exception:
         pass
 
@@ -252,7 +273,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
         except Exception:
             pass
 
-    return {"status": "ok", "initialized": True, "state_json_corrupted": state_json_corrupted}
+    return {"status": "ok", "initialized": True, "state_json_corrupted": state_json_corrupted, "doc_sync": doc_sync}
 
 def _write_state_atomically(state_path: Path, snapshot: dict) -> None:
     """Write-to-temp-file + os.replace (atomic on POSIX and Windows) rather
