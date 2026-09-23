@@ -35,6 +35,48 @@ def story_spec_pr_merged(story_id: str, tool_context=None) -> bool:
     return data.get("state") == "MERGED"
 
 
+def release_pr_still_open(tool_context=None) -> bool:
+    """
+    True if a release PR (develop -> main, or their eval-run-resolved
+    equivalents) is currently open and unmerged - the evidence start_sprint
+    (tools/scrum.py) requires before planning the next increment. False on
+    any lookup failure or genuinely no open PR, never raises - mirrors
+    story_spec_pr_merged's own fail-safe shape.
+
+    create_release_pr never merges anything itself (see its own docstring)
+    - merging main is always an out-of-band human/external action, at every
+    interaction level - and it clears sprint_report_pending_release the
+    instant the PR is *opened*, not merged. A real incident: a new sprint
+    got planned while the previous one's release PR was still sitting open,
+    because every existing gate (new_sprint_item_blocked) only checks that
+    flag plus whether stories reached Accepted - both already true the
+    moment the PR opens, well before anyone merges it.
+
+    Checks for a currently-OPEN PR rather than walking ancestry
+    (`git merge-base --is-ancestor origin/develop origin/main`) deliberately -
+    a squash or rebase merge (GitHub's other two strategies, either of
+    which a human reviewer might actually use) rewrites history, so
+    develop's tip is never an ancestor of main's afterward; only a real
+    merge commit preserves that link. "Is there an open PR right now" has
+    no such blind spot regardless of which merge strategy gets used, and
+    needs no separate git-vs-gh reconciliation.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    develop = _develop_branch_name(tool_context)
+    default_branch = _default_push_branch(tool_context)
+    result = _run(
+        ["gh", "pr", "list", "--base", default_branch, "--head", develop, "--state", "open", "--json", "number"],
+        cwd=repo_root, tool_context=tool_context,
+    )
+    if result.get("status") != "ok":
+        return False
+    try:
+        data = json.loads(result.get("stdout", "") or "[]")
+    except Exception:
+        return False
+    return bool(data)
+
+
 # Paths the scrum tools themselves write to outside of an explicit git_push
 # call - upsert_story/upsert_epic/upsert_issue/update_roadmap/upsert_prd/
 # upsert_srs/upsert_adr write under specs/, save_state_to_repo writes

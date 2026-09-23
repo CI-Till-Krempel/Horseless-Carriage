@@ -667,6 +667,15 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
       state: starting a new sprint goal is exactly the kind of "new sprint
       work" that gate exists to catch, and doing it while the previous
       sprint's release is still hanging open leaves that stuck permanently.
+    - Refuses to start while the previous sprint's release PR (develop ->
+      main) is still open and unmerged (`release_pr_still_open`, tools/
+      github.py) - a real incident planned an entire new sprint while the
+      last one's release PR sat open the whole time. Distinct from the
+      gate above: new_sprint_item_blocked only checks
+      sprint_report_pending_release, which create_release_pr already
+      clears the instant it *opens* the PR, not once it's actually merged
+      - so that gate alone stops firing well before the real close-out is
+      done.
     - Refuses to start a SECOND (or later) sprint unless reset_sprint_budget
       has been called since the previous one started (see GH issue #110) -
       previously this was "MANDATORY" only in SM_PROMPT's text, with no code
@@ -689,6 +698,25 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
     block_msg = new_sprint_item_blocked(s)
     if block_msg:
         return {"status": "error", "message": block_msg}
+    if s.get("sprint_goal"):
+        # Only meaningful once there's been a previous sprint (sprint_goal
+        # unset means this is the very first one, with no release PR that
+        # could possibly still be open) - same "not the first sprint" guard
+        # the budget-reset check right below already uses, so a brand new
+        # repo doesn't pay a gh round-trip for a question that can only
+        # ever be "no" there.
+        from .github import release_pr_still_open
+        if release_pr_still_open(tool_context):
+            return {
+                "status": "error",
+                "message": (
+                    "Cannot start a new sprint - the previous sprint's release PR (develop -> "
+                    "main) is still open and hasn't been merged yet. create_release_pr only ever "
+                    "opens that PR, never merges it - merging is always a separate, out-of-band "
+                    "step. Get it merged (or explicitly closed) before planning the next "
+                    "increment's work - see ORCHESTRATOR_PROMPT SPRINT CLOSE SEQUENCE."
+                ),
+            }
     if s.get("sprint_goal") and not s.get("budget_reset_since_last_sprint_start", True):
         return {
             "status": "error",

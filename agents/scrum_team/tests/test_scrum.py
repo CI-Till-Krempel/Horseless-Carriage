@@ -443,7 +443,52 @@ class TestScrumTools(unittest.TestCase):
         tool_context.state["sprint_report_pending_release"] = False
         result = start_sprint("Ship the next increment", tool_context=tool_context)
         self.assertEqual(result["status"], "ok")
-        self.assertEqual(tool_context.state["sprint_goal"], "Ship the next increment")
+
+    @patch("agents.scrum_team.tools.github.release_pr_still_open")
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    def test_start_sprint_rejects_when_previous_release_pr_still_open(self, mock_md, mock_pr_open):
+        """
+        Acceptance Criteria: a real incident planned an entire new sprint
+        while the previous one's release PR (develop -> main) was still
+        open and unmerged. create_release_pr clears
+        sprint_report_pending_release the instant it *opens* that PR, not
+        once it's merged - so new_sprint_item_blocked alone (which only
+        checks that flag) is not sufficient; start_sprint must separately
+        check the PR's actual merge state via release_pr_still_open.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        # Simulate a previous sprint having already started successfully -
+        # release_pr_still_open only applies once sprint_goal is set (see
+        # start_sprint's own "not the first sprint" guard).
+        mock_pr_open.return_value = False
+        start_sprint("Ship the first increment", tool_context=tool_context)
+        reset_sprint_budget(tool_context=tool_context)
+
+        mock_pr_open.return_value = True
+        result = start_sprint("Ship the second increment", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("release PR", result["message"])
+        self.assertIn("develop", result["message"])
+        self.assertEqual(tool_context.state["sprint_goal"], "Ship the first increment")
+
+        mock_pr_open.return_value = False
+        result = start_sprint("Ship the second increment", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+
+    def test_start_sprint_does_not_check_release_pr_for_the_very_first_sprint(self):
+        """No previous sprint means no release PR could possibly exist yet -
+        must not even attempt the gh lookup (see release_pr_still_open's own
+        cost - a real gh round-trip)."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.github.release_pr_still_open") as mock_pr_open:
+            result = start_sprint("Ship the very first increment", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_pr_open.assert_not_called()
 
     def test_first_sprint_needs_no_budget_reset(self):
         """
