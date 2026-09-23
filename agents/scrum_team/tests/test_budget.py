@@ -12,6 +12,7 @@ from agents.scrum_team.tools.budget import (
     recommend_sprint_budget,
     optimize_process_for_budget,
     create_sprint_report,
+    render_fallback_sprint_report,
     _write_conversation_transcript,
     _file_retro_items_as_issues,
 )
@@ -678,6 +679,60 @@ class TestWriteConversationTranscript(unittest.TestCase):
         self.assertEqual(result["entries"], 0)
         written_content = mock_write_file.call_args_list[0].args[1]
         self.assertIn("No transcript recorded yet", written_content)
+
+
+class TestRenderFallbackSprintReport(unittest.TestCase):
+    """
+    Acceptance Criteria: render_fallback_sprint_report is the deterministic,
+    non-LLM stand-in _ensure_sprint_report_on_final_halt_once (agent.py)
+    calls when the sprint budget runs out before Product Owner ever
+    successfully calls the real create_sprint_report - it must render
+    something real from state alone (no summary/accomplishments text to
+    author), and it must never clobber an already-real report.
+    """
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_renders_from_state_when_no_report_exists_yet(self, mock_write_file, mock_next_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Do the thing", "type": "User Story",
+             "stages_completed": ["Draft", "Ready", "Implemented"]},
+            {"id": "EP-0001", "title": "An epic", "type": "Epic"},
+        ]
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open"}]
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("Automatically Generated Fallback Report", result["report"])
+        self.assertIn("US-0001", result["report"])
+        self.assertNotIn("EP-0001", result["report"], "epics are not stories - must not appear in Story Status")
+        self.assertIn("improve X", result["report"])
+        self.assertEqual(tool_context.state["sprint_report"], result["report"])
+        self.assertTrue(tool_context.state["sprint_report_pending_release"])
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/SPRINT-REPORT-001.md", written_paths)
+        self.assertIn("specs/reports/SPRINT-REPORT-LATEST.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-002.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reuses_a_real_report_instead_of_overwriting_it(self, mock_write_file, mock_next_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        real_report = "# Sprint Review Report\n\nEverything shipped, authored for real by Product Owner.\n"
+        tool_context.state["sprint_report"] = real_report
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertEqual(result["report"], real_report)
+        self.assertNotIn("Automatically Generated Fallback Report", result["report"])
+        # Re-written to disk (in case the real one was never committed), but
+        # the pending-release bookkeeping is create_sprint_report's own job,
+        # not re-triggered here for content that already existed.
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/SPRINT-REPORT-LATEST.md", written_paths)
 
 
 class TestFileRetroItemsAsIssues(unittest.TestCase):
