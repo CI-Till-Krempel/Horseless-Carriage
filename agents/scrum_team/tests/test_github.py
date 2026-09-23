@@ -21,6 +21,7 @@ from agents.scrum_team.tools.github import (
     merge_story_pr,
     integrate_open_changes,
     _checkout_develop_or_recover,
+    release_pr_still_open,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -713,6 +714,52 @@ class TestStartFeatureBranch(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("develop", result["message"])
+
+
+class TestReleasePrStillOpen(unittest.TestCase):
+    """
+    Acceptance Criteria: a real incident planned an entire new sprint while
+    the previous one's release PR (develop -> main) was still sitting open
+    and unmerged - create_release_pr never merges anything itself, only
+    opens the PR. release_pr_still_open is the mechanical check start_sprint
+    (tools/scrum.py) uses to refuse that. Must never raise - a lookup
+    failure (gh unreachable, no PR ever opened) means "nothing found",
+    treated the same as genuinely no open PR.
+    """
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_true_when_an_open_pr_exists(self, mock_run):
+        mock_run.return_value = {"status": "ok", "stdout": '[{"number": 42}]'}
+        self.assertTrue(release_pr_still_open(tool_context=MagicMock()))
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args[:3], ["gh", "pr", "list"])
+        self.assertIn("--state", args)
+        self.assertEqual(args[args.index("--state") + 1], "open")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_false_when_no_open_pr_exists(self, mock_run):
+        mock_run.return_value = {"status": "ok", "stdout": "[]"}
+        self.assertFalse(release_pr_still_open(tool_context=MagicMock()))
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_false_on_gh_lookup_failure(self, mock_run):
+        mock_run.return_value = {"status": "error", "stderr": "gh: not authenticated"}
+        self.assertFalse(release_pr_still_open(tool_context=MagicMock()))
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_false_on_malformed_json(self, mock_run):
+        mock_run.return_value = {"status": "ok", "stdout": "not json"}
+        self.assertFalse(release_pr_still_open(tool_context=MagicMock()))
+
+    @patch("agents.scrum_team.tools.github._develop_branch_name", return_value="develop")
+    @patch("agents.scrum_team.tools.github._default_push_branch", return_value="main")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_checks_the_configured_develop_and_main_branches(self, mock_run, mock_default, mock_develop):
+        mock_run.return_value = {"status": "ok", "stdout": "[]"}
+        release_pr_still_open(tool_context=MagicMock())
+        args = mock_run.call_args.args[0]
+        self.assertEqual(args[args.index("--base") + 1], "main")
+        self.assertEqual(args[args.index("--head") + 1], "develop")
 
 
 class TestIntegrateOpenChanges(unittest.TestCase):
