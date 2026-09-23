@@ -263,6 +263,134 @@ class TestRunTimeoutAndStdin(unittest.TestCase):
 
         self.assertEqual(mock_subprocess_run.call_args.kwargs["env"]["GIT_SSH_COMMAND"], "ssh -i /custom/key")
 
+    def test_git_terminal_prompt_disabled_by_default(self):
+        """A real incident: git rejecting a stale credential over HTTPS
+        stalled for the entire timeout instead of failing immediately, even
+        with stdin closed - GIT_TERMINAL_PROMPT=0 is git's own explicit
+        opt-out of every terminal credential prompt, belt-and-suspenders
+        with DEVNULL."""
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                _run(["git", "push"])
+
+        self.assertEqual(mock_subprocess_run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
+
+    def test_git_terminal_prompt_respects_an_explicit_override(self):
+        with patch.dict("os.environ", {"GIT_TERMINAL_PROMPT": "1"}, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                _run(["git", "push"])
+
+        self.assertEqual(mock_subprocess_run.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"], "1")
+
+
+class TestRunRetriesOnStaleGitHubAppToken(unittest.TestCase):
+    """
+    Acceptance Criteria: a GitHub App installation token is only valid for
+    60 minutes (GitHub's own hard limit) - a real incident saw every git
+    push/gh call fail with "Bad credentials" for the rest of a long sprint,
+    because configure_github_app only ever mints a token once per session
+    and nothing ever refreshed it. _run must transparently re-mint and
+    retry exactly once on that specific failure, and must never do so for
+    an unrelated failure or when there's no GitHub App to refresh from.
+    """
+
+    def _tool_context(self):
+        tc = MagicMock()
+        tc.state = {"github_token": "stale-token"}
+        return tc
+
+    @patch("agents.scrum_team.tools.github.configure_github_app")
+    def test_retries_once_after_refreshing_a_stale_token(self, mock_configure):
+        mock_configure.return_value = {"status": "ok"}
+        with patch.dict("os.environ", {
+            "GITHUB_APP_ID": "1", "GITHUB_APP_PRIVATE_KEY": "key", "GITHUB_APP_INSTALLATION_ID": "2",
+        }, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.side_effect = [
+                    MagicMock(returncode=1, stdout="", stderr='{"message":"Bad credentials"}'),
+                    MagicMock(returncode=0, stdout="pushed", stderr=""),
+                ]
+                result = _run(["git", "push", "origin", "develop"], tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["stdout"], "pushed")
+        mock_configure.assert_called_once_with("1", "key", "2", tool_context=unittest.mock.ANY)
+        self.assertEqual(mock_subprocess_run.call_count, 2)
+
+    @patch("agents.scrum_team.tools.github.configure_github_app")
+    def test_does_not_retry_when_not_using_github_app_auth(self, mock_configure):
+        """No GITHUB_APP_* env vars set (e.g. a plain GITHUB_TOKEN personal
+        access token) - nothing to refresh, must not retry or loop."""
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=1, stdout="", stderr="Bad credentials")
+                result = _run(["git", "push"], tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "error")
+        mock_configure.assert_not_called()
+        self.assertEqual(mock_subprocess_run.call_count, 1)
+
+    @patch("agents.scrum_team.tools.github.configure_github_app")
+    def test_does_not_retry_an_unrelated_failure(self, mock_configure):
+        with patch.dict("os.environ", {
+            "GITHUB_APP_ID": "1", "GITHUB_APP_PRIVATE_KEY": "key", "GITHUB_APP_INSTALLATION_ID": "2",
+        }, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=1, stdout="", stderr="fatal: bad revision 'develop'")
+                result = _run(["git", "checkout", "develop"], tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "error")
+        mock_configure.assert_not_called()
+        self.assertEqual(mock_subprocess_run.call_count, 1)
+
+    @patch("agents.scrum_team.tools.github.configure_github_app")
+    def test_does_not_loop_forever_if_the_refreshed_token_still_fails(self, mock_configure):
+        """The App's permissions were actually revoked, not just expired -
+        refresh "succeeds" (mints a token) but the retried call fails the
+        exact same way. Must surface that failure, not retry indefinitely."""
+        mock_configure.return_value = {"status": "ok"}
+        with patch.dict("os.environ", {
+            "GITHUB_APP_ID": "1", "GITHUB_APP_PRIVATE_KEY": "key", "GITHUB_APP_INSTALLATION_ID": "2",
+        }, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=1, stdout="", stderr="Bad credentials")
+                result = _run(["git", "push"], tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(mock_configure.call_count, 1)
+        self.assertEqual(mock_subprocess_run.call_count, 2)
+
+    @patch("agents.scrum_team.tools.github.configure_github_app")
+    def test_does_not_retry_when_refresh_itself_fails(self, mock_configure):
+        mock_configure.return_value = {"status": "error", "message": "invalid private key"}
+        with patch.dict("os.environ", {
+            "GITHUB_APP_ID": "1", "GITHUB_APP_PRIVATE_KEY": "key", "GITHUB_APP_INSTALLATION_ID": "2",
+        }, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.return_value = MagicMock(returncode=1, stdout="", stderr="Bad credentials")
+                result = _run(["git", "push"], tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(mock_subprocess_run.call_count, 1)
+
+    @patch("agents.scrum_team.tools.github.configure_github_app")
+    def test_gh_commands_are_retried_too_not_just_git(self, mock_configure):
+        mock_configure.return_value = {"status": "ok"}
+        with patch.dict("os.environ", {
+            "GITHUB_APP_ID": "1", "GITHUB_APP_PRIVATE_KEY": "key", "GITHUB_APP_INSTALLATION_ID": "2",
+        }, clear=True):
+            with patch("subprocess.run") as mock_subprocess_run:
+                mock_subprocess_run.side_effect = [
+                    MagicMock(returncode=1, stdout="", stderr="gh: Bad credentials (HTTP 401)"),
+                    MagicMock(returncode=0, stdout="ok", stderr=""),
+                ]
+                result = _run(["gh", "pr", "create", "--title", "x"], tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(mock_subprocess_run.call_count, 2)
+
 
 class TestEnsureGitSafeDirectory(unittest.TestCase):
     """
