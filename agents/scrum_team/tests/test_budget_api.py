@@ -6,9 +6,9 @@ from agents.scrum_team.tools.budget import create_litellm_virtual_key
 from agents.scrum_team.state import ScrumState
 
 class TestBudgetAPI(unittest.TestCase):
-    @patch("requests.post")
+    @patch("requests.get")
     @patch("os.environ.get")
-    def test_check_cost_budget_callback_success(self, mock_env_get, mock_post):
+    def test_check_cost_budget_callback_success(self, mock_env_get, mock_get):
         # Mock environment
         def side_effect(key, default=None):
             env = {
@@ -18,11 +18,13 @@ class TestBudgetAPI(unittest.TestCase):
             return env.get(key, default)
         mock_env_get.side_effect = side_effect
 
-        # Mock successful POST response for budget info
+        # Mock successful GET response for this specialist's own /key/info -
+        # spend is tracked per-key, not on the shared "scrum-sprint-budget"
+        # policy object (see check_cost_budget_callback's own docstring).
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = [{"spend": 5.0}]
-        mock_post.return_value = mock_response
+        mock_response.json.return_value = {"info": {"spend": 5.0}}
+        mock_get.return_value = mock_response
 
         # Setup context
         mock_context = MagicMock()
@@ -31,6 +33,7 @@ class TestBudgetAPI(unittest.TestCase):
         mock_context.agent_name = "ScrumOrchestrator"
         mock_context.state = ScrumState().model_dump()
         mock_context.state["budgets"]["total_usd"] = 10.0
+        mock_context.state["litellm_keys"]["ScrumOrchestrator"] = "sk-orchestrator-key"
         mock_llm_request = MagicMock()
         mock_llm_request.model = "test-model"
 
@@ -39,14 +42,14 @@ class TestBudgetAPI(unittest.TestCase):
 
         # Verify
         self.assertIsNone(result)
-        mock_post.assert_called_once()
-        args, kwargs = mock_post.call_args
-        self.assertEqual(args[0], "http://litellm:4000/budget/info")
-        self.assertEqual(kwargs["json"], {"budgets": ["scrum-sprint-budget"]})
+        mock_get.assert_called_once()
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "http://litellm:4000/key/info")
+        self.assertEqual(kwargs["params"], {"key": "sk-orchestrator-key"})
 
-    @patch("requests.post")
+    @patch("requests.get")
     @patch("os.environ.get")
-    def test_check_cost_budget_callback_persists_current_spend(self, mock_env_get, mock_post):
+    def test_check_cost_budget_callback_persists_current_spend(self, mock_env_get, mock_get):
         """
         Acceptance Criteria (GH issue #111): the live spend value fetched
         from the LiteLLM proxy must be persisted to state.budgets, not just
@@ -64,13 +67,14 @@ class TestBudgetAPI(unittest.TestCase):
 
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = [{"spend": 5.0}]
-        mock_post.return_value = mock_response
+        mock_response.json.return_value = {"info": {"spend": 5.0}}
+        mock_get.return_value = mock_response
 
         mock_context = MagicMock()
         mock_context.agent_name = "ScrumOrchestrator"
         mock_context.state = ScrumState().model_dump()
         mock_context.state["budgets"]["total_usd"] = 10.0
+        mock_context.state["litellm_keys"]["ScrumOrchestrator"] = "sk-orchestrator-key"
         mock_llm_request = MagicMock()
         mock_llm_request.model = "test-model"
 
@@ -79,9 +83,9 @@ class TestBudgetAPI(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(mock_context.state["budgets"]["current_usd_spend"], 5.0)
 
-    @patch("requests.post")
+    @patch("requests.get")
     @patch("os.environ.get")
-    def test_check_cost_budget_callback_exceeded(self, mock_env_get, mock_post):
+    def test_check_cost_budget_callback_exceeded(self, mock_env_get, mock_get):
         # Mock environment
         def side_effect(key, default=None):
             env = {
@@ -91,17 +95,18 @@ class TestBudgetAPI(unittest.TestCase):
             return env.get(key, default)
         mock_env_get.side_effect = side_effect
 
-        # Mock successful POST response with spend exceeding budget
+        # Mock successful GET response with spend exceeding budget
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = [{"spend": 15.0}]
-        mock_post.return_value = mock_response
+        mock_response.json.return_value = {"info": {"spend": 15.0}}
+        mock_get.return_value = mock_response
 
         # Setup context
         mock_context = MagicMock()
         mock_context.agent_name = "ScrumOrchestrator"
         mock_context.state = ScrumState().model_dump()
         mock_context.state["budgets"]["total_usd"] = 10.0
+        mock_context.state["litellm_keys"]["ScrumOrchestrator"] = "sk-orchestrator-key"
         mock_llm_request = MagicMock()
         mock_llm_request.model = "test-model"
 

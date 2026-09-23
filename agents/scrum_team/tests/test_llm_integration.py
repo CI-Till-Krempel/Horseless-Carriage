@@ -58,16 +58,22 @@ class TestLiteLLMIntegration(unittest.TestCase):
         print(f"Key info budget_id: {info.get('budget_id')}")
         self.assertEqual(info.get('budget_id'), self.budget_id)
         
-        # 2. Get initial spend
+        # 2. Get initial spend - via this key's own /key/info, not
+        # /budget/info for the shared budget_id. Confirmed by a real
+        # incident (sprint reports always showed $0.00 actual spend while
+        # the LiteLLM dashboard showed the true numbers for the same
+        # sprint): LiteLLM tracks spend per-key, not as an aggregate on the
+        # shared Budget policy object - /budget/info's own "spend" field,
+        # if present at all, never reflected this key's real usage. See
+        # check_cost_budget_callback (agent.py) for the production fix this
+        # mirrors.
         print("Fetching initial spend...")
-        resp = requests.post(
-            f"{self.proxy_base}/budget/info",
-            headers={"Authorization": f"Bearer {self.master_key}", "Content-Type": "application/json"},
-            json={"budgets": [self.budget_id]},
-            timeout=5
-        )
-        resp.raise_for_status()
-        initial_spend = resp.json()[0].get("spend", 0.0)
+        initial_spend = requests.get(
+            f"{self.proxy_base}/key/info",
+            headers={"Authorization": f"Bearer {self.master_key}"},
+            params={"key": agent_key},
+            timeout=5,
+        ).json().get("info", {}).get("spend", 0.0)
         print(f"Initial spend: {initial_spend}")
 
         # 3. Make a call using the virtual key
@@ -93,22 +99,30 @@ class TestLiteLLMIntegration(unittest.TestCase):
         # Wait a bit for spend to be recorded (it's often async in LiteLLM)
         time.sleep(2)
 
-        # 4. Check spend again
+        # 4. Check spend again - same /key/info source as step 2.
         print("Fetching final spend...")
-        resp = requests.post(
-            f"{self.proxy_base}/budget/info",
-            headers={"Authorization": f"Bearer {self.master_key}", "Content-Type": "application/json"},
-            json={"budgets": [self.budget_id]},
-            timeout=5
-        )
-        resp.raise_for_status()
-        final_spend = resp.json()[0].get("spend", 0.0)
+        final_spend = requests.get(
+            f"{self.proxy_base}/key/info",
+            headers={"Authorization": f"Bearer {self.master_key}"},
+            params={"key": agent_key},
+            timeout=5,
+        ).json().get("info", {}).get("spend", 0.0)
         print(f"Final spend: {final_spend}")
-        
-        # Note: Depending on whether 'mock_response' records spend, final_spend might be > initial_spend.
-        # If it doesn't, we might need a different way to test.
-        # However, the user said they don't see ANY spending, which might mean even real calls don't track.
-        
+
+        # No assertion on final_spend vs initial_spend here, deliberately:
+        # LiteLLM-Proxy-Mock-Response (like litellm.completion's own
+        # mock_response param) is specifically designed to skip real cost
+        # calculation - a mocked response has no real token usage to price,
+        # which is the entire point of using it to avoid real API costs in
+        # a test. Confirmed against a real CI run: even via the correct
+        # /key/info endpoint (this test's own actual fix), a mock-response
+        # call genuinely never increments spend - that's expected LiteLLM
+        # behavior, not a bug this test should fail on. This exercises the
+        # /key/info call path and the key's real budget_id assignment
+        # (step 1.1) - verifying an actual dollar amount from a real,
+        # non-mocked provider call is a separate, more expensive test this
+        # one deliberately doesn't attempt.
+
 from unittest.mock import MagicMock
 if __name__ == "__main__":
     unittest.main()

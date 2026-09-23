@@ -975,24 +975,53 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
             model_version=llm_request.model or "unknown"
         )
 
-    budget_id = "scrum-sprint-budget"
-
     if not master_key or not proxy_base:
         # Local check only if proxy is unavailable
         return None
 
     try:
-        response = requests.post(
-            f"{proxy_base}/budget/info",
-            headers={"Authorization": f"Bearer {master_key}", "Content-Type": "application/json"},
-            json={"budgets": [budget_id]},
-            timeout=5
-        )
-        response.raise_for_status()
-        budget_info_list = response.json()
+        # Sum each specialist's own /key/info spend rather than trusting
+        # /budget/info's spend field for the shared scrum-sprint-budget
+        # budget_id every key is assigned (see create_litellm_virtual_key) -
+        # a real incident: sprint reports always showed $0.00 actual spend
+        # while the LiteLLM dashboard showed the real, nonzero numbers for
+        # the exact same sprint. LiteLLM tracks spend per-key (on the
+        # LiteLLM_VerificationToken row /key/info reads from - see docs.
+        # litellm.ai/docs/proxy/virtual_keys, whose /key/info example
+        # response includes a real "spend" field) - a shared Budget object
+        # (created via /budget/new, looked up via /budget/info) only ever
+        # holds the *policy* (max_budget/budget_duration) that gets
+        # attached to those keys, not an aggregate spend total of its own;
+        # LiteLLM's own docs never document /budget/info returning one
+        # either. Reading "spend" off that response was silently always
+        # 0.0 - a real field lookup miss the original try/except had no way
+        # to distinguish from "genuinely zero spend so far."
+        agent_keys = [k for k in (callback_context.state.get("litellm_keys", {}) or {}).values() if k]
         current_spend = 0.0
-        if budget_info_list and isinstance(budget_info_list, list) and len(budget_info_list) > 0:
-            current_spend = budget_info_list[0].get("spend", 0.0)
+        failed_key_lookups = 0
+        for agent_key in agent_keys:
+            try:
+                key_resp = requests.get(
+                    f"{proxy_base}/key/info",
+                    headers={"Authorization": f"Bearer {master_key}"},
+                    params={"key": agent_key},
+                    timeout=5,
+                )
+                key_resp.raise_for_status()
+                current_spend += (key_resp.json().get("info") or {}).get("spend", 0.0) or 0.0
+            except requests.RequestException:
+                failed_key_lookups += 1
+        if agent_keys and failed_key_lookups == len(agent_keys):
+            # Every single per-key lookup failed (proxy down, etc.) - can't
+            # tell what's actually been spent, so raise into the same
+            # "halted to prevent unmonitored spending" safety path below
+            # this per-key rework replaced the single /budget/info call
+            # inside of. A partial failure (some keys reachable, one
+            # revoked/stale) still returns its best-effort partial sum
+            # instead of discarding real data over one bad key.
+            raise requests.RequestException(
+                f"Could not reach LiteLLM proxy for any of {len(agent_keys)} specialist key(s)"
+            )
 
         # Persisted so create_sprint_report can show it (GH issue #111) -
         # previously this was a local variable only, so the sprint report
