@@ -129,7 +129,17 @@ class TestOfferToStart:
     upfront by main() (step 0), not re-asked here - offer_to_start only
     asks start?/cli?/daemon?, then folds the already-decided dev value
     into argv.
+
+    Acceptance Criteria (moved from run.py, which must stay
+    non-interactive - see its own docstring): offer_to_start is now also
+    the one place that offers to stop + recreate a leftover running stack
+    (lib_docker.maybe_stop_existing_stack), and only when dev mode is on
+    and cli mode wasn't chosen (`docker compose run`, cli's own launch
+    command, doesn't collide with a running stack the way `up` does).
     """
+
+    def _stub_compose_args(self, monkeypatch):
+        monkeypatch.setattr(setup_all.run, "compose_file_args", lambda _root: ["-f", "docker-compose.local.yaml"])
 
     def test_declining_does_not_call_run_main(self, monkeypatch):
         monkeypatch.setattr("builtins.input", lambda _p: "n")
@@ -165,6 +175,8 @@ class TestOfferToStart:
     def test_dev_true_is_folded_into_argv_even_with_defaults(self, monkeypatch):
         answers = iter(["y", "", ""])  # start? / cli? / daemon?
         monkeypatch.setattr("builtins.input", lambda _p: next(answers))
+        self._stub_compose_args(monkeypatch)
+        monkeypatch.setattr(setup_all.lib_docker, "maybe_stop_existing_stack", lambda *_a: None)
 
         captured = {}
         monkeypatch.setattr(setup_all.run, "main", lambda argv: captured.setdefault("argv", argv))
@@ -172,6 +184,41 @@ class TestOfferToStart:
         setup_all.offer_to_start(dev=True)
 
         assert captured["argv"] == ["web", "dev"]
+
+    def test_dev_mode_web_offers_to_stop_existing_stack(self, monkeypatch):
+        answers = iter(["y", "", ""])  # start? / cli? / daemon?
+        monkeypatch.setattr("builtins.input", lambda _p: next(answers))
+        self._stub_compose_args(monkeypatch)
+        monkeypatch.setattr(setup_all.run, "main", lambda _argv: None)
+
+        calls = []
+        monkeypatch.setattr(setup_all.lib_docker, "maybe_stop_existing_stack", lambda compose_args: calls.append(compose_args))
+
+        setup_all.offer_to_start(dev=True)
+
+        assert calls == [["-f", "docker-compose.local.yaml", "-p", "horseless-carriage-dev"]]
+
+    def test_dev_mode_cli_does_not_offer_to_stop_existing_stack(self, monkeypatch):
+        answers = iter(["y", "y", ""])  # start? / cli? / daemon?
+        monkeypatch.setattr("builtins.input", lambda _p: next(answers))
+        monkeypatch.setattr(setup_all.run, "main", lambda _argv: None)
+
+        def fail_if_called(*_a):
+            raise AssertionError("cli mode's `docker compose run` doesn't collide with a running stack")
+        monkeypatch.setattr(setup_all.lib_docker, "maybe_stop_existing_stack", fail_if_called)
+
+        setup_all.offer_to_start(dev=True)
+
+    def test_non_dev_mode_does_not_offer_to_stop_existing_stack(self, monkeypatch):
+        answers = iter(["y", "", ""])  # start? / cli? / daemon?
+        monkeypatch.setattr("builtins.input", lambda _p: next(answers))
+        monkeypatch.setattr(setup_all.run, "main", lambda _argv: None)
+
+        def fail_if_called(*_a):
+            raise AssertionError("only developer mode should offer to stop the existing stack")
+        monkeypatch.setattr(setup_all.lib_docker, "maybe_stop_existing_stack", fail_if_called)
+
+        setup_all.offer_to_start(dev=False)
 
 
 class TestMain:

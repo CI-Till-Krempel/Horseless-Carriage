@@ -35,7 +35,12 @@ Steps:
                            to fix, and loops (fix -> retry) until there are
                            no more ERROR-level items, before proceeding.
   5. Offers to start the agent now via run.py, in whichever mode you want -
-     developer mode itself was already decided in step 0.
+     developer mode itself was already decided in step 0. In developer
+     mode, also offers to stop + recreate a leftover running stack first
+     (run.py itself never prompts - see its own docstring) - moved here
+     rather than asked unconditionally, since a fresh dev-mode rebuild is
+     the case most likely to collide with a stack still running under the
+     old images.
 
 Usage:
   python3 setup_all.py        Interactive, guided walkthrough of all of the above.
@@ -49,6 +54,7 @@ from pathlib import Path
 import banner
 import check_state_repo
 import doctor
+import lib_docker
 import run
 import setup_llm
 import setup_project
@@ -136,6 +142,21 @@ def offer_to_start(dev: bool) -> None:
         argv.append("daemon")
     if dev:
         argv.append("dev")
+
+    # A leftover stack from an earlier run (or from switching between
+    # docker-compose.yaml and docker-compose.local.yaml, which share the
+    # same default project name and several service names) can make
+    # `docker compose up` fail outright with no obvious cause - offer a
+    # controlled reset before that happens (GH discussion on local Ollama
+    # setups). run.py itself stays non-interactive - see its own docstring -
+    # so this lives here instead, and only in developer mode: that's the
+    # case that just rebuilt images and is most likely to collide with a
+    # stack still running under the old ones. `cli` mode is exempt too, same
+    # as it always was: `docker compose run` starts a one-off container, not
+    # an `up` that could conflict with one already running.
+    if dev and mode != "cli":
+        full_compose_args = run.compose_file_args(Path(".")) + lib_docker.compose_project_args("dev")
+        lib_docker.maybe_stop_existing_stack(full_compose_args)
 
     print(f"--- Handing off to: python3 run.py {' '.join(argv)} ---")
     run.main(argv)  # run.py owns the process from here, including sys.exit
