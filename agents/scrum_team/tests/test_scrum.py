@@ -46,6 +46,35 @@ class TestScrumTools(unittest.TestCase):
             # Release process: hc_version reflects the version actually running.
             self.assertEqual(tool_context.state["hc_version"], _hc_version())
 
+    def test_init_scrum_state_surfaces_doc_sync_summary(self):
+        """
+        Acceptance Criteria: init_scrum_state's rebuild-from-repo step
+        (sync_stories_from_markdown et al) is the trustworthy record of
+        what's already on disk - its "doc_sync" counts must reflect the
+        real specs/ directory, so a caller (the Orchestrator deciding
+        whether a re-init after an interruption actually picked the
+        backlog back up) can trust the summary instead of re-reading every
+        doc by hand to double-check (a real incident burned a session's
+        token budget doing exactly that).
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            stories_dir = repo_root / "specs" / "stories"
+            stories_dir.mkdir(parents=True)
+            (stories_dir / "US-0001-Sample.md").write_text(
+                "# User Story\n\n- Story ID: US-0001\n- Title: Sample\n- Status: Ready\n"
+            )
+            with patch("agents.scrum_team.tools.scrum._configured_repo_root", return_value=repo_root), \
+                 patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=repo_root):
+                tool_context = MagicMock()
+                tool_context.state = {}
+                result = init_scrum_state(tool_context=tool_context)
+
+        self.assertEqual(result["doc_sync"]["stories_synced"], 1)
+        self.assertEqual(len(tool_context.state["product_backlog"]), 1)
+        self.assertEqual(tool_context.state["product_backlog"][0]["id"], "US-0001")
+
     def test_init_scrum_state_overwrites_stale_persisted_hc_version(self):
         """
         Acceptance Criteria (release process, see RELEASE.md): hc_version

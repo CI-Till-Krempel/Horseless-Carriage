@@ -892,6 +892,63 @@ class TestDenyReviewSurfacesInStoryMarkdown(unittest.TestCase):
                 self.assertIn("Which identity provider should this integrate with", content)
 
 
+class TestUpdateStoryMarkdownRemovesOrphanedFile(unittest.TestCase):
+    """
+    Acceptance Criteria: the filename _update_story_markdown writes to is
+    derived from (id, title) - if an item's title changes across calls with
+    the same id, the recomputed filename differs and the OLD file must not
+    be left behind. A real incident: a loop-recovery re-upsert renamed
+    US-0001's title from a fabricated placeholder to its real content,
+    orphaning "US-0001-Add-login-flow.md" next to the new file - a dangling
+    untracked file that then blocked `git checkout -B develop
+    origin/develop` in every subsequent create_*_pr call (see
+    integrate_open_changes/_checkout_develop_or_recover in tools/github.py).
+    """
+
+    def test_renaming_a_story_removes_the_stale_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                first = _update_story_markdown(
+                    {"id": "US-0001", "title": "Add login flow", "type": "User Story", "status": "Draft"},
+                    tool_context=MagicMock(state={}),
+                )
+                self.assertEqual(first["status"], "ok")
+                first_path = Path(first["path"])
+                self.assertTrue(first_path.exists())
+
+                second = _update_story_markdown(
+                    {"id": "US-0001", "title": "Control Server Node Registration & Heartbeat API",
+                     "type": "User Story", "status": "Draft"},
+                    tool_context=MagicMock(state={}),
+                )
+                self.assertEqual(second["status"], "ok")
+                second_path = Path(second["path"])
+                self.assertNotEqual(first_path, second_path)
+
+                self.assertFalse(first_path.exists(), "stale file under the old title must be removed")
+                self.assertTrue(second_path.exists())
+                siblings = list((Path(tmp) / "specs" / "stories").glob("US-0001-*.md"))
+                self.assertEqual(siblings, [second_path])
+
+    def test_unrelated_ids_in_the_same_directory_are_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                _update_story_markdown(
+                    {"id": "US-0002", "title": "Some other story", "type": "User Story", "status": "Draft"},
+                    tool_context=MagicMock(state={}),
+                )
+                _update_story_markdown(
+                    {"id": "US-0001", "title": "First title", "type": "User Story", "status": "Draft"},
+                    tool_context=MagicMock(state={}),
+                )
+                _update_story_markdown(
+                    {"id": "US-0001", "title": "Renamed title", "type": "User Story", "status": "Draft"},
+                    tool_context=MagicMock(state={}),
+                )
+                remaining = sorted(p.name for p in (Path(tmp) / "specs" / "stories").glob("*.md"))
+                self.assertEqual(remaining, ["US-0001-Renamed-title.md", "US-0002-Some-other-story.md"])
+
+
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestRaiseStoryBlocker(unittest.TestCase):

@@ -19,6 +19,8 @@ from agents.scrum_team.tools.github import (
     create_sprint_backlog_pr,
     mark_pr_ready_for_review,
     merge_story_pr,
+    integrate_open_changes,
+    _checkout_develop_or_recover,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -605,6 +607,118 @@ class TestStartFeatureBranch(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("develop", result["message"])
+
+
+class TestIntegrateOpenChanges(unittest.TestCase):
+    """
+    Acceptance Criteria: integrate_open_changes commits dangling writes
+    scoped to specs/ and .hc/ only (never a caller's own unrelated
+    uncommitted work), and no-ops cleanly when there's nothing to do.
+    """
+
+    @patch("agents.scrum_team.tools.github._configured_repo_root")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_no_open_changes_is_a_clean_noop(self, mock_run, mock_root):
+        mock_root.return_value = MagicMock(__truediv__=lambda self, other: MagicMock(exists=lambda: True))
+        mock_run.return_value = {"status": "ok", "stdout": ""}
+        result = integrate_open_changes(tool_context=MagicMock())
+        self.assertEqual(result, {"status": "ok", "integrated": False,
+                                   "message": "No open planning-doc changes under specs/ or .hc/ to integrate."})
+
+    @patch("agents.scrum_team.tools.github._configured_repo_root")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_commits_only_specs_and_hc(self, mock_run, mock_root):
+        mock_root.return_value = MagicMock(__truediv__=lambda self, other: MagicMock(exists=lambda: True))
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M specs/ROADMAP.md"},  # git status --porcelain
+            {"status": "ok"},  # git add
+            {"status": "ok", "stdout": "specs/ROADMAP.md"},  # git diff --cached --name-only
+            {"status": "ok"},  # git commit
+        ]
+        result = integrate_open_changes(tool_context=MagicMock())
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["integrated"])
+        self.assertEqual(result["files"], ["specs/ROADMAP.md"])
+        add_call = mock_run.call_args_list[1]
+        self.assertEqual(add_call.args[0], ["git", "add", "--", "specs", ".hc"])
+
+    @patch("agents.scrum_team.tools.github._configured_repo_root")
+    def test_skips_a_pathspec_that_does_not_exist_yet(self, mock_root):
+        # .hc/ doesn't exist before the first save_state_to_repo call ever
+        # ran - `git add -- specs .hc` would hard-fail on that pathspec
+        # ("did not match any files") if passed unconditionally.
+        existing = {"specs"}
+        mock_root.return_value = MagicMock(__truediv__=lambda self, other: MagicMock(exists=lambda: other in existing))
+        with patch("agents.scrum_team.tools.github._run") as mock_run:
+            mock_run.side_effect = [
+                {"status": "ok", "stdout": " M specs/ROADMAP.md"},
+                {"status": "ok"},
+                {"status": "ok", "stdout": "specs/ROADMAP.md"},
+                {"status": "ok"},
+            ]
+            integrate_open_changes(tool_context=MagicMock())
+            status_call = mock_run.call_args_list[0]
+            self.assertNotIn(".hc", status_call.args[0])
+
+
+class TestCheckoutDevelopOrRecover(unittest.TestCase):
+    """
+    Acceptance Criteria: the shared checkout-develop helper used by
+    create_story_spec_pr/create_sprint_backlog_pr/start_feature_branch
+    self-heals a "local changes would be overwritten" failure by
+    integrating dangling specs/.hc writes and retrying once, but leaves any
+    other checkout failure (bad branch, network, auth) untouched.
+    """
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_self_heals_local_changes_would_be_overwritten(self, mock_run, mock_integrate):
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch
+            {"status": "error", "stderr": "error: Your local changes to the following files would be overwritten by checkout"},
+            {"status": "ok"},  # retried checkout
+        ]
+        mock_integrate.return_value = {"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]}
+
+        result = _checkout_develop_or_recover("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result["status"], "ok")
+        mock_integrate.assert_called_once()
+        self.assertEqual(result["auto_integrated"]["integrated"], True)
+        self.assertEqual(mock_run.call_count, 3)
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_does_not_retry_an_unrelated_checkout_failure(self, mock_run, mock_integrate):
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch
+            {"status": "error", "stderr": "fatal: couldn't find remote ref develop"},
+        ]
+
+        result = _checkout_develop_or_recover("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result["status"], "error")
+        self.assertIsNone(result["auto_integrated"])
+        mock_integrate.assert_not_called()
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gives_up_if_integration_finds_nothing_to_integrate(self, mock_run, mock_integrate):
+        # Not every "would be overwritten" is dangling specs/.hc writes (could
+        # be an untracked file elsewhere in the shared checkout) - if
+        # integrate_open_changes had nothing to do, retrying would just fail
+        # identically, so don't bother.
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch
+            {"status": "error", "stderr": "would be overwritten by checkout"},
+        ]
+        mock_integrate.return_value = {"status": "ok", "integrated": False, "message": "nothing to integrate"}
+
+        result = _checkout_develop_or_recover("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(mock_run.call_count, 2)
 
 
 # A single Ready (not yet Accepted), non-Epic story - enough to satisfy
