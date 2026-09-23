@@ -26,6 +26,7 @@ from agents.scrum_team.agent import (
     ensure_state_initialized_callback,
     inject_litellm_key_callback,
     _sync_and_commit_roadmap_on_exhaustion,
+    _ensure_sprint_report_on_final_halt,
 )
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.base import _project_root
@@ -1772,6 +1773,78 @@ class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):
             tool_context = call.kwargs.get("tool_context")
             resolved = str(agent_module._configured_repo_root(tool_context))
             self.assertNotEqual(resolved, real_project_root, "must never resolve to this checkout for the push either")
+
+
+class TestEnsureSprintReportOnFinalHalt(unittest.TestCase):
+    """
+    Acceptance Criteria: a real incident found specs/ROADMAP.md, several
+    new specs/requirements/ISSUE-*.md (filed by Scrum Master's retro),
+    specs/workflow.puml (generate_workflow_diagram), and a story file edit
+    all still dangling uncommitted after a sprint hit its budget-exhaustion
+    grace ceiling - an earlier version of this safety net only committed
+    specs/reports/ (the sprint report itself), missing everything else the
+    grace period's own SPRINT CLOSE SEQUENCE work produced. Must sweep in
+    all of it (via integrate_open_changes, scoped to specs/+.hc/ - see that
+    function's own docstring for why that's still narrow, not "-A") and
+    push, not just the report.
+    """
+
+    def _context(self):
+        mock_context = MagicMock()
+        mock_context.state = ScrumState().model_dump()
+        return mock_context
+
+    def test_integrates_and_pushes_after_rendering_the_report(self):
+        mock_context = self._context()
+        with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
+             patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
+             patch("agents.scrum_team.agent._run", return_value={"status": "ok", "stdout": "", "stderr": ""}), \
+             patch("agents.scrum_team.agent.render_fallback_sprint_report") as mock_render, \
+             patch("agents.scrum_team.agent.integrate_open_changes") as mock_integrate, \
+             patch("agents.scrum_team.agent._git_push_impl") as mock_push:
+            _ensure_sprint_report_on_final_halt(mock_context)
+
+        mock_render.assert_called_once_with(mock_context)
+        mock_integrate.assert_called_once_with(tool_context=mock_context)
+        mock_push.assert_called_once_with(
+            branch="develop",
+            commit_message="chore: ensure sprint artifacts are committed - sprint budget exhausted",
+            add_all=False,
+            allow_protected=True,
+            tool_context=mock_context,
+        )
+
+    def test_falls_back_to_current_branch_if_develop_checkout_fails(self):
+        mock_context = self._context()
+
+        def fake_run(cmd, cwd=None, tool_context=None):
+            if cmd[:2] == ["git", "fetch"] or cmd[:2] == ["git", "checkout"]:
+                return {"status": "error", "stderr": "no network"}
+            if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+                return {"status": "ok", "stdout": "feature/US-001-todo\n"}
+            return {"status": "ok", "stdout": "", "stderr": ""}
+
+        with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
+             patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
+             patch("agents.scrum_team.agent._run", side_effect=fake_run), \
+             patch("agents.scrum_team.agent.render_fallback_sprint_report"), \
+             patch("agents.scrum_team.agent.integrate_open_changes") as mock_integrate, \
+             patch("agents.scrum_team.agent._git_push_impl") as mock_push:
+            _ensure_sprint_report_on_final_halt(mock_context)
+
+        mock_integrate.assert_called_once_with(tool_context=mock_context)
+        mock_push.assert_called_once_with(
+            branch="feature/US-001-todo",
+            commit_message="chore: ensure sprint artifacts are committed - sprint budget exhausted",
+            add_all=False,
+            allow_protected=True,
+            tool_context=mock_context,
+        )
+
+    def test_never_raises_even_if_everything_fails(self):
+        mock_context = self._context()
+        with patch("agents.scrum_team.agent._configured_repo_root", side_effect=Exception("boom")):
+            _ensure_sprint_report_on_final_halt(mock_context)  # must not raise
 
 
 class TestEnsureStateInitializedCallback(unittest.TestCase):

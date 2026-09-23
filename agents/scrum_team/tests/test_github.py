@@ -563,13 +563,15 @@ class TestCreateReleasePrLandsSprintReport(unittest.TestCase):
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch("agents.scrum_team.tools.github._git_push_impl")
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
     @patch("agents.scrum_team.tools.budget._write_conversation_transcript")
     @patch("agents.scrum_team.tools.budget.render_fallback_sprint_report")
     @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
     def test_lands_report_and_transcript_before_opening_the_pr(
-        self, mock_checkout, mock_render, mock_transcript, mock_push, mock_run, mock_gh_pr_create,
+        self, mock_checkout, mock_render, mock_transcript, mock_integrate, mock_push, mock_run, mock_gh_pr_create,
     ):
         mock_checkout.return_value = {"status": "ok", "checkout": {"status": "ok"}, "fetch": {"status": "ok"}, "auto_integrated": None}
+        mock_integrate.return_value = {"status": "ok", "integrated": True}
         mock_push.return_value = {"status": "ok"}
         tool_context = self._tool_context(sprint_report="real report content")
 
@@ -579,8 +581,14 @@ class TestCreateReleasePrLandsSprintReport(unittest.TestCase):
         mock_checkout.assert_called_once()
         mock_render.assert_called_once_with(tool_context=tool_context)
         mock_transcript.assert_called_once_with(tool_context=tool_context)
+        # integrate_open_changes (scoped to specs/.hc/, see its own
+        # docstring) - not add_all=True - sweeps in anything else this
+        # sprint's grace-period work left dangling (a final update_roadmap/
+        # upsert_issue/generate_workflow_diagram call), never a stray
+        # unrelated file.
+        mock_integrate.assert_called_once_with(tool_context=tool_context)
         mock_push.assert_called_once_with(
-            branch="develop", commit_message=unittest.mock.ANY, add_all=True,
+            branch="develop", commit_message=unittest.mock.ANY, add_all=False,
             allow_protected=True, tool_context=tool_context,
         )
         mock_gh_pr_create.assert_called_once()
@@ -620,13 +628,15 @@ class TestCreateReleasePrLandsSprintReport(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.github.gh_pr_create")
     @patch("agents.scrum_team.tools.github._git_push_impl")
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
     @patch("agents.scrum_team.tools.budget._write_conversation_transcript")
     @patch("agents.scrum_team.tools.budget.render_fallback_sprint_report")
     @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
     def test_a_push_failure_blocks_the_pr_instead_of_opening_it_without_the_report(
-        self, mock_checkout, mock_render, mock_transcript, mock_push, mock_gh_pr_create,
+        self, mock_checkout, mock_render, mock_transcript, mock_integrate, mock_push, mock_gh_pr_create,
     ):
         mock_checkout.return_value = {"status": "ok", "checkout": {"status": "ok"}, "fetch": {"status": "ok"}, "auto_integrated": None}
+        mock_integrate.return_value = {"status": "ok", "integrated": True}
         mock_push.return_value = {"status": "error", "message": "network error"}
         tool_context = self._tool_context(sprint_report="real report content")
 

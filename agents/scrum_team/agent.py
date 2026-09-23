@@ -331,7 +331,7 @@ from .tools import (
 # genuinely needs to push straight to a protected branch on the sprint
 # budget running out. See git_push's own docstring for why allow_protected
 # is deliberately not a parameter any agent-facing tool call can set.
-from .tools.github import _git_push_impl
+from .tools.github import _git_push_impl, integrate_open_changes
 from .tools.quality import (
     calculate_kpis,
     update_sprint_report as update_sprint_report_with_kpis,
@@ -555,14 +555,22 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
     with no sprint report attached at all because the sprint ran out of
     budget before anything ever pushed one.
 
-    Deliberately narrow, by construction rather than by trusting caller
-    discipline: render_fallback_sprint_report (tools/budget.py) takes no
-    LLM-authored input at all - there is no free-form path/content
-    argument anywhere in this path a compromised or confused role could
-    use to redirect it - and the `git add` below is scoped to
-    specs/reports/ only, never "-A". Even if everything else in this
-    callback chain were somehow compromised, this action alone could not
-    be used to write or commit anything but a sprint report.
+    Also lands everything else the grace period itself produced, via
+    integrate_open_changes (tools/github.py) - not just the report. A
+    second real incident: by the time THIS safety net fires (only after
+    the grace-eligible role's own grace allowance is *also* exhausted -
+    see below), the grace period's own SPRINT CLOSE SEQUENCE work
+    (Scrum Master's retro filing new ISSUE-*.md, generate_workflow_diagram's
+    specs/workflow.puml, a final update_roadmap/upsert_story) had already
+    produced MORE dangling specs/ writes than just the report/transcript -
+    an earlier version of this function, scoped only to specs/reports/,
+    still left all of that stranded uncommitted. integrate_open_changes is
+    itself scoped to specs/ and .hc/ only (see its own docstring) - never
+    "-A", so this still could not be used to commit anything outside
+    those two directories even if everything else in this callback chain
+    were somehow compromised; it's broader than "just the report" only in
+    the sense that the rest of the sprint's planning-doc output is the
+    same class of artifact, not a wider blast radius.
 
     Called only from _budget_halt_response, and only for a
     SPRINT_CLOSEOUT_GRACE_ROLES agent whose own grace allowance is *also*
@@ -591,15 +599,14 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
         render_fallback_sprint_report(callback_context)
 
         if branch:
-            add_res = _run(["git", "add", "--", "specs/reports"], cwd=repo_root, tool_context=callback_context)
-            if add_res.get("status") == "ok":
-                _git_push_impl(
-                    branch=branch,
-                    commit_message="chore: ensure sprint report - sprint budget exhausted",
-                    add_all=False,
-                    allow_protected=True,
-                    tool_context=callback_context,
-                )
+            integrate_open_changes(tool_context=callback_context)
+            _git_push_impl(
+                branch=branch,
+                commit_message="chore: ensure sprint artifacts are committed - sprint budget exhausted",
+                add_all=False,
+                allow_protected=True,
+                tool_context=callback_context,
+            )
     except Exception as e:
         logging.getLogger(__name__).warning(f"Sprint report safety net on budget exhaustion failed (non-fatal): {e}")
 
