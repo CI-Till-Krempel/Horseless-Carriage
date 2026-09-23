@@ -1916,6 +1916,49 @@ class TestEnsureStateInitializedCallback(unittest.TestCase):
     def test_registered_first_in_root_agent_before_model_callbacks(self):
         self.assertEqual(root_agent.before_model_callback[0], ensure_state_initialized_callback)
 
+    def test_resyncs_budgets_from_env_even_once_already_flagged(self):
+        """
+        Acceptance Criteria: a real incident halted a sprint at a token
+        limit of 100 with usage already at 12,178, even though .env's
+        SPRINT_TOKEN_BUDGET was a real 6,000,000 the whole time and
+        total_usd read back as an impossible 0.0 (init_scrum_state's own
+        guardrail always floors it at $10 - so init_scrum_state() itself
+        could never have produced that value). Root cause: the env resync
+        used to live only inside init_scrum_state(), which this callback
+        skips entirely once _state_auto_initialized is set - a flag that
+        persists for an ADK session's whole lifetime (the sqlite session
+        DB survives container restarts), so a long-lived reused session ID
+        could carry a stale budgets.total forward indefinitely, past any
+        later .env fix and container recreation. The budget resync must
+        run every turn, regardless of that flag.
+        """
+        state = ScrumState().model_dump()
+        state["_state_auto_initialized"] = True
+        state["budgets"] = {"total": 100, "total_usd": 0.0}
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = state
+
+        with patch.dict("os.environ", {"SPRINT_TOKEN_BUDGET": "6000000", "TOTAL_USD_BUDGET": "20"}, clear=True):
+            with patch.object(agent_module, "init_scrum_state") as mock_init:
+                ensure_state_initialized_callback(mock_context, MagicMock())
+
+        mock_init.assert_not_called()  # the once-per-session gate is otherwise untouched
+        self.assertEqual(mock_context.state["budgets"]["total"], 6000000)
+        self.assertEqual(mock_context.state["budgets"]["total_usd"], 20.0)
+
+    def test_budget_resync_failure_does_not_raise_or_block_init_scrum_state(self):
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumOrchestrator"
+        mock_context.state = ScrumState().model_dump()
+
+        with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "", "LITELLM_PROXY_API_BASE": ""}):
+            with patch.object(agent_module, "sync_budgets_from_env", side_effect=RuntimeError("boom")):
+                with patch.object(agent_module, "init_scrum_state") as mock_init:
+                    ensure_state_initialized_callback(mock_context, MagicMock())  # must not raise
+
+        mock_init.assert_called_once_with(tool_context=mock_context)
+
 
 class TestEnsureStateInitializedCallbackProvisionsKeys(unittest.TestCase):
     """
