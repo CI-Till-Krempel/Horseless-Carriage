@@ -552,13 +552,22 @@ def _sync_roadmap_on_exhaustion_once(callback_context: CallbackContext) -> None:
     callback_context.state["budget_exhaustion_synced"] = True
 
 
-def _notify_critical_halt(callback_context: CallbackContext, msg: str) -> None:
+def _notify_critical_halt(callback_context: CallbackContext, msg: str, detail: str = "") -> None:
     """Records + notifies a blocking interaction (GH issue #53) for a
     budget-halt event below - these are exactly the "critical tool error"
     case an unsupervised run needs pushed to a human, not just left as a
     chat message in a session nobody may be watching. Best-effort: a
     notification failure must never turn an already-critical halt into an
     unhandled exception on top.
+
+    `detail` is what ConsoleNotifier prints on the line right after `msg`
+    (see tools/notifications.py) - a real test-drive run showed the
+    console-facing halt banner stated only WHAT happened ("Sprint token
+    limit reached"), never what a human watching should actually DO about
+    it, leaving them to go read source to figure out a fix. Callers pass a
+    short, concrete remediation line here; it's optional (defaults to "")
+    so callers with nothing human-actionable to add aren't forced to
+    invent one.
 
     Guarded to fire once per sprint (GH issue #112), the same "once" pattern
     as the sibling _sync_roadmap_on_exhaustion_once right above - without
@@ -572,13 +581,13 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str) -> None:
         return
     from .tools.notifications import record_blocking_interaction
     try:
-        record_blocking_interaction("critical_error", msg, tool_context=callback_context)
+        record_blocking_interaction("critical_error", msg, detail=detail, tool_context=callback_context)
     except Exception:
         pass
     callback_context.state["critical_halt_notified"] = True
 
 
-def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmRequest, msg: str, agent_name: str) -> LlmResponse:
+def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmRequest, msg: str, agent_name: str, detail: str = "") -> LlmResponse:
     """
     Builds the LlmResponse for check_cost_budget_callback's two "budget
     actually exceeded" branches (token and USD). A non-grace role
@@ -616,7 +625,7 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
     attempt anything else, to cut those wrong guesses off at the source
     rather than just paying for them out of a bigger grace budget.
     """
-    _notify_critical_halt(callback_context, msg)
+    _notify_critical_halt(callback_context, msg, detail=detail)
     parts = [types.Part(text=msg)]
     if agent_name not in SPRINT_CLOSEOUT_GRACE_ROLES:
         parts = [
@@ -731,7 +740,13 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                 f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
                 f"Current usage: {token_usage:,}. Agent execution halted."
             )
-            return _budget_halt_response(callback_context, llm_request, msg, agent_name)
+            detail = (
+                "To resume immediately: raise SPRINT_TOKEN_BUDGET in .env and restart the agent "
+                "container. To let this sprint close out as-is: no action needed - the team has a "
+                "small grace allowance left to finish the sprint report and release PR; check "
+                "list_blocking_interactions() or this log for confirmation once it does."
+            )
+            return _budget_halt_response(callback_context, llm_request, msg, agent_name, detail=detail)
 
     # 2. Check USD Budget (Remote Guardrail via LiteLLM Proxy)
     if os.environ.get("LLM_LOCAL_PROVIDER") == "true":
@@ -766,7 +781,8 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     if budget_limit <= 0:
         # If still 0, something is wrong with configuration
         msg = "❌ [CONFIGURATION ERROR] No USD budget limit set for the sprint. Agent execution halted for safety."
-        _notify_critical_halt(callback_context, msg)
+        detail = "Set TOTAL_USD_BUDGET (a positive dollar amount) in .env, then restart the agent container."
+        _notify_critical_halt(callback_context, msg, detail=detail)
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -811,11 +827,21 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                     f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
                     f"Current spend: ${current_spend:.2f}. Agent execution halted."
                 )
-                return _budget_halt_response(callback_context, llm_request, msg, agent_name)
+                detail = (
+                    "To resume immediately: raise TOTAL_USD_BUDGET in .env and restart the agent "
+                    "container, or raise the 'scrum-sprint-budget' budget in the LiteLLM dashboard "
+                    "(http://localhost:4000/ui). The team has a small grace allowance left to close "
+                    "the sprint out on its own first."
+                )
+                return _budget_halt_response(callback_context, llm_request, msg, agent_name, detail=detail)
     except requests.RequestException as e:
         _sync_roadmap_on_exhaustion_once(callback_context)
         msg = f"❌ [BUDGET ERROR] Could not verify budget status with LiteLLM proxy: {e}. Agent execution halted to prevent unmonitored spending."
-        _notify_critical_halt(callback_context, msg)
+        detail = (
+            "Check the litellm container is up and reachable (`docker compose ps`, "
+            "`docker compose logs litellm`), then restart the agent container once it's healthy."
+        )
+        _notify_critical_halt(callback_context, msg, detail=detail)
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text=msg)]),
             model_version=llm_request.model or "unknown"
@@ -1253,6 +1279,9 @@ def _track_orchestrator_stall(callback_context: CallbackContext, llm_response: L
             pass
 
 
+NARRATION_LOG_MAX_LEN = 240
+
+
 def history_management_after_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
     """
     AfterModelCallback: Appends every agent's turn to the shared multi-agent
@@ -1261,6 +1290,15 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
     Also tracks whether the Orchestrator is stalling (see
     _track_orchestrator_stall) before extracting its final text, so a
     mechanical warning banner (if one was just added) is captured too.
+
+    Also prints that same text to the console (truncated - see
+    NARRATION_LOG_MAX_LEN) as a one-line narration: it's the only place the
+    model's own natural-language reasoning (as opposed to a raw
+    tool_name(args) line - see log_tool_invocation_callback) ever reaches
+    `docker compose logs agent`/a foreground terminal. Without this, a real
+    session showed only mechanical tool calls with no indication of what the
+    team thought it was doing or why - the model's own commentary was
+    captured into the transcript log file (below) but never surfaced live.
     """
     if not llm_response.content:
         return None
@@ -1282,6 +1320,17 @@ def history_management_after_callback(callback_context: CallbackContext, llm_res
     # from there, sprint reports, the per-run transcript log, and the
     # target repo's state.json).
     recorded_text = _redact_secrets(text)
+
+    narration = recorded_text.strip()
+    if narration:
+        short_narration = narration[:NARRATION_LOG_MAX_LEN] + ("..." if len(narration) > NARRATION_LOG_MAX_LEN else "")
+        if os.getenv("AGENT_MODE", "web") == "cli":
+            try:
+                print(tui.speech_bubble(agent_name, short_narration), file=sys.stderr)
+            except Exception:
+                pass
+        else:
+            print(f"\U0001f4ac [{agent_name}] {short_narration}", file=sys.stderr)
 
     # GH issue #127: durable raw record of this turn, independent of
     # state.transcript's size cap below and of state.json entirely (this

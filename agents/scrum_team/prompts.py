@@ -943,3 +943,28 @@ YOU DO NOT
 
 Use tools: calculate_kpis, update_sprint_report, upsert_issue.
 """
+
+# Appended to every role's own prompt below (not just written once and
+# forgotten) - a human watching `docker compose logs agent` otherwise only
+# ever sees raw tool_name(args) lines (see log_tool_invocation_callback,
+# agent.py) with no indication of *why* a call is happening, since a
+# tool-calling turn's own text is frequently empty. One short narration
+# sentence per turn is cheap and gives that human a live, plain-language
+# account of what the team is doing - it must stay ONE line so it doesn't
+# turn into a second transcript.
+NARRATION_INSTRUCTION = """
+
+NARRATION (all roles): before calling a tool (or a batch of tools in the same turn), say in ONE
+short, plain sentence what you're about to do and why - e.g. "Reading the PRD to ground the
+backlog." or "Filing the two stories QA flagged as untested." A human is watching this run live
+via the console; that sentence is the only thing telling them what's happening. Keep it to a
+single line - never a paragraph, never a restatement of your full reasoning.
+"""
+
+ORCHESTRATOR_PROMPT += NARRATION_INSTRUCTION
+PO_PROMPT += NARRATION_INSTRUCTION
+SM_PROMPT += NARRATION_INSTRUCTION
+DEV_PROMPT += NARRATION_INSTRUCTION
+QA_PROMPT += NARRATION_INSTRUCTION
+ARCH_PROMPT += NARRATION_INSTRUCTION
+QUALITY_GUARDIAN_PROMPT += NARRATION_INSTRUCTION
