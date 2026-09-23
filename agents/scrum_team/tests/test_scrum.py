@@ -14,6 +14,7 @@ from agents.scrum_team.tools.scrum import (
     record_human_approval,
     start_sprint,
     save_state_to_repo,
+    sync_budgets_from_env,
 )
 from agents.scrum_team.tools.requirements import (
     upsert_story,
@@ -508,6 +509,57 @@ class TestScrumTools(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("reset_sprint_budget", result["message"])
+
+
+class TestSyncBudgetsFromEnv(unittest.TestCase):
+    """
+    Acceptance Criteria: extracted out of init_scrum_state so
+    ensure_state_initialized_callback (agent.py) can call it unconditionally
+    on every turn, not just gated behind the once-per-session
+    _state_auto_initialized flag - see that callback's own docstring for
+    the real incident this fixes (a sprint halted at a token limit of 100
+    while .env's SPRINT_TOKEN_BUDGET was a real 6,000,000 the whole time).
+    Must behave identically to the inline logic it replaced.
+    """
+
+    def test_reads_both_env_vars_and_applies_them(self):
+        with patch.dict("os.environ", {"SPRINT_TOKEN_BUDGET": "6000000", "TOTAL_USD_BUDGET": "20"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {}
+            sync_budgets_from_env(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["budgets"]["total"], 6000000)
+        self.assertEqual(tool_context.state["budgets"]["total_usd"], 20.0)
+
+    def test_overwrites_a_stale_total_already_in_state(self):
+        """The exact real-incident shape: state already carries a stale,
+        impossibly-low budget (e.g. inherited from a long-lived reused ADK
+        session) - the env var must win, not the stale carried-over value."""
+        with patch.dict("os.environ", {"SPRINT_TOKEN_BUDGET": "6000000", "TOTAL_USD_BUDGET": "20"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {"budgets": {"total": 100, "total_usd": 0.0}}
+            sync_budgets_from_env(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["budgets"]["total"], 6000000)
+        self.assertEqual(tool_context.state["budgets"]["total_usd"], 20.0)
+
+    def test_hard_guardrail_floors_total_usd_even_with_no_env_var_set(self):
+        with patch.dict("os.environ", {}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {}
+            sync_budgets_from_env(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["budgets"]["total"], 1000000)
+        self.assertEqual(tool_context.state["budgets"]["total_usd"], 10.0)
+
+    def test_never_floors_a_genuinely_positive_configured_value(self):
+        with patch.dict("os.environ", {"SPRINT_TOKEN_BUDGET": "50000", "TOTAL_USD_BUDGET": "1.5"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {}
+            sync_budgets_from_env(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["budgets"]["total"], 50000)
+        self.assertEqual(tool_context.state["budgets"]["total_usd"], 1.5)
 
 
 class TestInitScrumStateCorruptionSurfacing(unittest.TestCase):

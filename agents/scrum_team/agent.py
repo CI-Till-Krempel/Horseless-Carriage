@@ -352,6 +352,7 @@ from .tools.budget import (
 # budget runs out mid-turn.
 from .tools.requirements import sync_all_active_stories_to_roadmap
 from .tools.budget import render_fallback_sprint_report
+from .tools.scrum import sync_budgets_from_env
 from .tools.base import _configured_repo_root, _run, _redact_secrets, _develop_branch_name
 from .state import ScrumState, Budgets, TokenUsage
 
@@ -793,7 +794,34 @@ def ensure_state_initialized_callback(callback_context: CallbackContext, llm_req
     and create_litellm_virtual_key already only read from os.environ / the
     state repo / the LiteLLM proxy, the same as if the model had called
     them itself; this just guarantees they actually run.
+
+    sync_budgets_from_env (tools/scrum.py) runs unconditionally below,
+    before either the agent_name or _state_auto_initialized gate - a real
+    incident showed why: check_cost_budget_callback halted a sprint at a
+    token limit of 100 with .env's SPRINT_TOKEN_BUDGET a real 6,000,000 the
+    whole time. Root cause: this env resync used to only happen inside
+    init_scrum_state() itself, gated behind _state_auto_initialized below -
+    a flag that, once set, persists for the rest of that ADK session's
+    lifetime (the bind-mounted sqlite session DB survives container
+    restarts). A session ID reused across many `python3 run.py` runs (the
+    default, "my-sprint") can carry that flag - and whatever budgets.total/
+    total_usd happened to be in memory the one time it fired - forward
+    indefinitely, even after .env changes and container recreation.
+    sync_budgets_from_env is cheap and side-effect-free (env reads + a
+    guardrail, no I/O) - safe to run on literally every ScrumOrchestrator
+    turn instead of just the first one in a session. This callback (like
+    the rest of this function) is only ever registered on root_agent, so
+    it never fires for a specialist agent's own turn directly - but since
+    every new conversational turn starts with the Orchestrator before any
+    transfer_to_agent hands off within it, and session.state is the same
+    shared dict a specialist's later turns read from, resyncing here is
+    enough to keep every agent's budget check current.
     """
+    try:
+        sync_budgets_from_env(tool_context=callback_context)
+    except Exception as e:
+        logger.warning(f"ensure_state_initialized_callback: sync_budgets_from_env() failed (non-fatal): {e}")
+
     if callback_context.agent_name != "ScrumOrchestrator":
         return
     if callback_context.state.get("_state_auto_initialized"):

@@ -73,6 +73,61 @@ REPO_STATE_KEYS = [
 # checkout of the state repo) stays, since it serves a distinct functional
 # purpose, not just a debug record.
 
+def sync_budgets_from_env(tool_context=None) -> Dict[str, Any]:
+    """
+    Refreshes state.budgets.total/total_usd from the current
+    SPRINT_TOKEN_BUDGET/TOTAL_USD_BUDGET (or deprecated SPRINT_USD_BUDGET)
+    environment variables, then applies the HARD GUARDRAIL - never leave
+    either at 0/negative, defaulting to 1M tokens / $10 instead. Cheap and
+    side-effect-free beyond that (no I/O, no repo access) - safe to call on
+    every turn, not just once.
+
+    A real incident: check_cost_budget_callback halted a sprint at a token
+    limit of 100 (usage already past it) even though .env's
+    SPRINT_TOKEN_BUDGET was a real 6,000,000 the whole time, and total_usd
+    read back as exactly 0.0 - impossible if this guardrail had ever run
+    for that state, since it unconditionally floors total_usd at $10. Root
+    cause: this logic used to live inline in init_scrum_state, itself only
+    ever called by ensure_state_initialized_callback (agent.py) gated
+    behind a `_state_auto_initialized` flag that - once set - persists for
+    the rest of that ADK session's lifetime (backed by the bind-mounted
+    sqlite session DB, independent of container restarts). A session ID
+    that gets reused across many `python3 run.py` runs (the default,
+    "my-sprint") can carry that flag - and whatever budgets.total/total_usd
+    were in memory the one time it fired - forward indefinitely, even
+    after .env changes and even after the container is recreated with a
+    corrected SPRINT_TOKEN_BUDGET. Called unconditionally from
+    ensure_state_initialized_callback now, every turn, for every agent -
+    not just once, not just for ScrumOrchestrator - specifically so a
+    long-lived session's budget ceiling can never go this stale again.
+    """
+    s = tool_context.state
+    budgets = s.get("budgets", {}) or {}
+    env_token_budget = os.environ.get("SPRINT_TOKEN_BUDGET")
+    if env_token_budget:
+        try:
+            budgets["total"] = int(env_token_budget)
+        except (ValueError, TypeError):
+            pass
+
+    env_usd_budget = get_env_with_deprecated_fallback("TOTAL_USD_BUDGET", "SPRINT_USD_BUDGET")
+    if env_usd_budget:
+        try:
+            budgets["total_usd"] = float(env_usd_budget)
+        except (ValueError, TypeError):
+            pass
+
+    # HARD GUARDRAIL: Never allow 0 budget if not explicitly intended (and even then, discourage it)
+    # Default to sensible values if still 0
+    if budgets.get("total", 0) <= 0:
+        budgets["total"] = 1000000  # Default 1M tokens
+    if budgets.get("total_usd", 0.0) <= 0.0:
+        budgets["total_usd"] = 10.0  # Default $10.00
+
+    s["budgets"] = budgets
+    return {"status": "ok", "budgets": budgets}
+
+
 def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     """
     Initialize all Scrum artifacts in session.state if missing, then rebuild
@@ -168,30 +223,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     # 2. Load/Override from environment variables
     # (Environment variables take precedence over persisted state for configuration)
     
-    # Budgets
-    budgets = s.get("budgets", {}) or {}
-    env_token_budget = os.environ.get("SPRINT_TOKEN_BUDGET")
-    if env_token_budget:
-        try:
-            budgets["total"] = int(env_token_budget)
-        except (ValueError, TypeError):
-            pass
-    
-    env_usd_budget = get_env_with_deprecated_fallback("TOTAL_USD_BUDGET", "SPRINT_USD_BUDGET")
-    if env_usd_budget:
-        try:
-            budgets["total_usd"] = float(env_usd_budget)
-        except (ValueError, TypeError):
-            pass
-    
-    # HARD GUARDRAIL: Never allow 0 budget if not explicitly intended (and even then, discourage it)
-    # Default to sensible values if still 0
-    if budgets.get("total", 0) <= 0:
-        budgets["total"] = 1000000  # Default 1M tokens
-    if budgets.get("total_usd", 0.0) <= 0.0:
-        budgets["total_usd"] = 10.0 # Default $10.00
-        
-    s["budgets"] = budgets
+    sync_budgets_from_env(tool_context)
 
     # Repo
     env_repo_url = os.environ.get("GITHUB_REPO_URL")
