@@ -787,6 +787,49 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     if s.get("overclaim_rejection_counts"):
         s["overclaim_rejection_counts"] = {}
 
+    # GH issue #246: QA_PROMPT's STORY WORKFLOW makes check_build() ->
+    # gh_pr_review/gh_pr_comment -> advance_story_stage(..., "Tested") ->
+    # merge_story_pr() mandatory, but across every real eval run past Sprint
+    # 1, QA reliably did the first two and then just transferred back to
+    # DevTeam without ever calling advance_story_stage - "MANDATORY" in the
+    # prompt text alone never actually stopped the sprint from closing
+    # without it. Since advance_story_stage enforces strict stage ordering
+    # (STORY_STAGES), no story could then ever reach Accepted, and Velocity
+    # flatlined to 0 in every subsequent sprint. Mirrors retro_baseline/
+    # kpi_baseline exactly: only fires when there's real evidence QA
+    # actually reviewed a *passing* build this interval - last_check_build
+    # (set by check_build(), the same signal advance_story_stage's own
+    # Tested gate checks) shows passing, and pr_review_calls["QA"] has grown
+    # past qa_review_baseline (a fresh gh_pr_review/gh_pr_comment from QA
+    # since the last successful Tested transition - the exact same
+    # freshness signal advance_story_stage's Tested gate itself already
+    # requires before it will let a story become Tested at all). A sprint
+    # where the build is still genuinely broken, or QA hasn't reviewed
+    # anything yet, is never blocked by this - there's nothing to gate on
+    # yet, so it can't stall forever waiting on work that isn't ready.
+    last_build = s.get("last_check_build") or {}
+    pr_calls = s.get("pr_review_calls", {}) or {}
+    qa_reviewed_since_last_tested = pr_calls.get("QA", 0) > s.get("qa_review_baseline", 0)
+    tested_count = sum(
+        1 for item in product_backlog
+        if item.get("type") != "Epic"
+        and "Tested" in _story_stages_completed(
+            item, next((x for x in sprint_backlog if x.get("id") == item.get("id")), {})
+        )
+    )
+    if last_build.get("passing") and qa_reviewed_since_last_tested and tested_count <= s.get("qa_tested_baseline", 0):
+        return {
+            "status": "error",
+            "message": (
+                "Cannot close the sprint report: check_build() last passed and QA has left a PR "
+                "review since the last story reached Tested, but no story has actually been "
+                "advanced to Tested. Transfer to QA to call "
+                "advance_story_stage(title_or_id, \"Tested\") - then merge_story_pr() - for the "
+                "reviewed story before the sprint can close (see QA_PROMPT's STORY WORKFLOW). "
+                "This is mandatory, not optional."
+            ),
+        }
+
     # GH issue #164: convert this sprint's retro/impediment findings into
     # real backlog work before rendering the report below, so the report
     # can actually say what each item was filed as instead of the finding
@@ -1014,6 +1057,12 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # passing forever on the same old entries.
     s["retro_baseline"] = process_signals
     s["kpi_baseline"] = s.get("kpi_update_count", 0)
+    # GH issue #246: same snapshot pattern as retro_baseline/kpi_baseline
+    # right above - freezes the count that satisfied this sprint's QA
+    # "Tested" gate (if it fired at all) so next sprint's gate demands a
+    # genuinely fresh Tested transition again, not just the same story that
+    # already satisfied it once before.
+    s["qa_tested_baseline"] = tested_count
 
     # ISSUE-0001: closing this sprint's report "uses up" its human
     # pre-implementation approval - the next sprint's stories can't reach

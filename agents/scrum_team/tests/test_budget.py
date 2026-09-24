@@ -545,6 +545,146 @@ class TestBudgetTools(unittest.TestCase):
         second = create_sprint_report("summary 2", ["accomplishment 2"], tool_context=tool_context)
         self.assertEqual(second["status"], "error")
 
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_when_build_checked_but_no_story_tested(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (GH issue #246): create_sprint_report must
+        refuse to close the sprint if check_build() last passed and QA has
+        left a fresh PR review since the last story reached Tested, but no
+        story has actually been advanced to Tested - mirrors the retro/kpi
+        gates above. Across every real eval run past Sprint 1, QA's
+        check_build() -> gh_pr_comment() -> transfer_to_agent() pattern
+        never once included the mandatory advance_story_stage(..., "Tested")
+        call, so no story could ever reach Accepted and Velocity flatlined.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        tool_context.state["pr_review_calls"] = {"QA": 1}
+        # qa_review_baseline stays at its default of 0, so pr_review_calls
+        # shows a fresh QA review call - and qa_tested_baseline stays 0 with
+        # no story anywhere near Tested.
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Tested", result["message"])
+        self.assertIn("QA", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_succeeds_when_qa_advanced_a_story_to_tested(self, mock_write_file, mock_getenv):
+        """A story that genuinely reached Tested this interval must satisfy
+        the GH issue #246 gate - the normal, correct QA hand-off."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        tool_context.state["pr_review_calls"] = {"QA": 1}
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Create List", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested"]},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["qa_tested_baseline"], 1)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_not_blocked_when_no_build_checked(self, mock_write_file, mock_getenv):
+        """No check_build() call has happened at all (last_check_build is
+        still its default None) - nothing to gate on, so the sprint report
+        must not be blocked waiting on work that was never started."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        # last_check_build and pr_review_calls both stay at their defaults.
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_not_blocked_when_build_is_broken(self, mock_write_file, mock_getenv):
+        """A sprint where QA correctly determines the build is broken (and
+        so no story is ready to test yet) must not be blocked forever -
+        only a *passing* build with no Tested story is evidence of a
+        skipped hand-off."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["last_check_build"] = {"checked": "requirements.txt", "passing": False}
+        tool_context.state["pr_review_calls"] = {"QA": 1}
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_not_blocked_when_qa_has_not_reviewed_yet(self, mock_write_file, mock_getenv):
+        """A passing check_build() with no QA PR review at all yet (e.g. QA
+        hasn't been transferred to this sprint) is not evidence of a skipped
+        hand-off either - there's no reviewed PR to have advanced."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        # pr_review_calls stays at its default empty dict - qa_review_count
+        # (0) is not greater than qa_review_baseline (0).
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_requires_a_fresh_tested_story_each_sprint(self, mock_write_file, mock_getenv):
+        """Same "stale entry from a prior sprint must not satisfy this
+        sprint's requirement forever after" property as
+        test_create_sprint_report_requires_new_signal_each_sprint, for the
+        GH issue #246 QA "Tested" gate specifically."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "sprint 1 retro", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        tool_context.state["pr_review_calls"] = {"QA": 1}
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Create List", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested"]},
+        ]
+
+        first = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+        self.assertEqual(first["status"], "ok")
+        self.assertEqual(tool_context.state["qa_tested_baseline"], 1)
+
+        # Sprint 2: retro/kpi satisfied fresh, QA reviews again and the
+        # build still passes, but no NEW story reaches Tested - US-0001 is
+        # the same story that already satisfied sprint 1's report.
+        tool_context.state["retro_actions"].append({"action": "sprint 2 retro", "owner": "SM", "status": "open"})
+        tool_context.state["kpi_update_count"] = 2
+        tool_context.state["pr_review_calls"] = {"QA": 2}
+
+        second = create_sprint_report("summary 2", ["accomplishment 2"], tool_context=tool_context)
+        self.assertEqual(second["status"], "error")
+        self.assertIn("Tested", second["message"])
+
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_states_active_interaction_level(self, mock_write_file):
         """
