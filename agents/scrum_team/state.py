@@ -50,6 +50,7 @@ class ScrumState(BaseModel):
     pr_review_calls: Dict[str, int] = Field(default_factory=dict)
     architect_review_baseline: int = 0
     qa_review_baseline: int = 0
+    qa_tested_baseline: int = 0
     sprint_report_pending_release: bool = False
     blocking_interactions: List[Dict[str, Any]] = Field(default_factory=list)
     orchestrator_stall_count: int = 0
