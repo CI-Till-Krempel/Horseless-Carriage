@@ -42,6 +42,7 @@ import requests
 from agents.scrum_team.scripts._eval_git_utils import get_github_token, run_git, eval_repo_slug
 from agents.scrum_team.helpers import get_env_with_deprecated_fallback
 from agents.scrum_team.tools.base import _hc_version
+from agents.scrum_team.tools.budget import sprint_budget_reset_state_delta
 
 DEFAULT_EVAL_REPO_URL = "git@github.com:CI-Till-Krempel/horseless-carriage-eval-todo-app.git"
 EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH", "QUALITY"]
@@ -413,18 +414,27 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
 
         text = message_text if attempt == 0 else _CONTINUE_NUDGE
         message = types.Content(role="user", parts=[types.Part(text=text)])
-        # token_usage resets here too, at the first attempt of THIS sprint -
-        # SPRINT_TOKEN_BUDGET/EVAL_SPRINT_TOKEN_BUDGET is a per-sprint
-        # allowance, not cumulative for the whole run (see
-        # check_cost_budget_callback in agent.py); without this, one
-        # expensive sprint silently starves every later sprint of further
-        # LLM calls. Harness-side equivalent of the reset_sprint_budget
-        # tool Scrum Master calls in interactive/real usage.
+        # token_usage (and its sibling guard flags) reset here too, at the
+        # first attempt of THIS sprint - SPRINT_TOKEN_BUDGET/
+        # EVAL_SPRINT_TOKEN_BUDGET is a per-sprint allowance, not cumulative
+        # for the whole run (see check_cost_budget_callback in agent.py);
+        # without this, one expensive sprint silently starves every later
+        # sprint of further LLM calls. Harness-side equivalent of the
+        # reset_sprint_budget tool Scrum Master calls in interactive/real
+        # usage - sprint_budget_reset_state_delta (budget.py, ISSUE-0049) is
+        # the actual shared key list, so this can't independently drift out
+        # of sync with reset_sprint_budget's own copy again (which is
+        # exactly what happened in 0.1.0-run33: this dict used to hand-copy
+        # only token_usage/budget_exhaustion_synced and was missing
+        # critical_halt_notified/sprint_report_safety_net_fired, so a sprint
+        # that ended via the final-halt safety net left
+        # sprint_report_safety_net_fired=True stuck into the next sprint,
+        # which then silently produced no sprint report - not even a
+        # fallback one - on its own final halt).
         state_delta = (
             {
+                **sprint_budget_reset_state_delta(),
                 "sprint_report": "",
-                "token_usage": {"total": 0, "agents": {}},
-                "budget_exhaustion_synced": False,
                 # GH issue #124: sprint_report_kpis is never cleared by the
                 # product code itself either (same as sprint_report above) -
                 # without this reset, a sprint where QualityGuardian doesn't

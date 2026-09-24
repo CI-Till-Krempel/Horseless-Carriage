@@ -8,6 +8,7 @@ import asyncio
 import time
 
 from agents.scrum_team.scripts.run_eval import _run_one_sprint, _sprint_should_abort_run
+from agents.scrum_team.tools.budget import sprint_budget_reset_state_delta
 
 
 class _FakeSession:
@@ -35,6 +36,21 @@ class _OtherValueErrorRunner:
         yield  # pragma: no cover
 
 
+class _RecordingRunner:
+    """Records every state_delta it's called with, then ends the turn
+    immediately (no sprint report) so _run_one_sprint keeps nudging until
+    max_nudges - only attempt 0's state_delta (the one under test) is ever
+    non-None."""
+
+    def __init__(self):
+        self.state_deltas = []
+
+    async def run_async(self, user_id, session_id, new_message, state_delta):
+        self.state_deltas.append(state_delta)
+        return
+        yield  # pragma: no cover - never reached; keeps this an async generator
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -59,6 +75,32 @@ def test_run_one_sprint_reraises_unrelated_value_error():
         assert "some unrelated bug" in str(e)
     else:
         raise AssertionError("expected the unrelated ValueError to propagate, not be swallowed")
+
+
+def test_run_one_sprint_reset_state_delta_matches_shared_sprint_budget_reset():
+    """
+    ISSUE-0049 / 0.1.0-run33: this harness-side reset used to be an
+    independent, hand-copied subset of reset_sprint_budget's own key list
+    (agents/scrum_team/tools/budget.py) and had drifted - missing
+    critical_halt_notified/sprint_report_safety_net_fired - so a sprint that
+    ended via the final-halt safety net left the NEXT sprint's own safety
+    net silently disarmed. Assert the harness's state_delta is a superset
+    of the shared reset dict (plus its own extra sprint_report/
+    sprint_report_kpis keys), so the two can never independently drift
+    apart again.
+    """
+    runner = _RecordingRunner()
+    _run(_run_one_sprint(
+        runner, _FakeSessionService(), "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+    ))
+
+    assert len(runner.state_deltas) == 1
+    state_delta = runner.state_deltas[0]
+    for key, value in sprint_budget_reset_state_delta().items():
+        assert state_delta[key] == value, f"{key!r} missing/mismatched in harness state_delta"
+    assert state_delta["sprint_report"] == ""
+    assert state_delta["sprint_report_kpis"] == {}
 
 
 def test_sprint_should_not_abort_when_no_critical_halt_occurred():
