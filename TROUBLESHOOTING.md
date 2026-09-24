@@ -63,7 +63,9 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   `setup_llm.py`'s Local/Ollama live test detect an already-running stack and offer to stop +
   recreate it before proceeding (`lib_docker.maybe_stop_existing_stack`) — accept that prompt, or
   run `docker compose down` (add your active `-f` file(s)) yourself first. `run.py` itself never
-  prompts for this.
+  prompts for this (it stays fully non-interactive, including when run directly or via `setup_all.py`
+  outside developer mode) — if `docker compose up` fails there, it prints a one-line pointer back to
+  this section instead, but you'll still need to run `docker compose down` yourself.
 - **Agent container using the wrong `litellm.yaml` / no matching API key found** — a Local/Ollama
   setup only ever writes `config/model-templates/litellm.local-ollama.yaml`, not the root
   `litellm.yaml` that `docker-compose.yaml` mounts. Make sure you're bringing the stack up with

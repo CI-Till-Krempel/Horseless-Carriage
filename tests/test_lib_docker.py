@@ -164,3 +164,38 @@ class TestMaybeStopExistingStack:
         lib_docker.maybe_stop_existing_stack([])
 
         assert "did not complete cleanly" in capsys.readouterr().out
+
+
+class TestPrintStackConflictHint:
+    """GH issue #232: run.py has no interactive stop-prompt (it stays
+    non-interactive on purpose), so this is the non-interactive fallback
+    printed after a `docker compose up` failure - never prompts."""
+
+    def test_never_prompts(self, monkeypatch):
+        monkeypatch.setattr(lib_docker, "compose_running_services", lambda project_args: ["db"])
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("print_stack_conflict_hint must never prompt")
+        monkeypatch.setattr("builtins.input", fail_if_called)
+
+        lib_docker.print_stack_conflict_hint(["-p", "horseless-carriage-dev"])
+
+    def test_detected_stack_is_named_in_the_hint(self, monkeypatch, capsys):
+        monkeypatch.setattr(lib_docker, "compose_running_services", lambda project_args: ["db", "litellm"])
+
+        lib_docker.print_stack_conflict_hint(["-p", "horseless-carriage-dev"])
+
+        out = capsys.readouterr().out
+        assert "already running" in out
+        assert "db" in out and "litellm" in out
+        assert "docker compose -p horseless-carriage-dev down" in out
+        assert "TROUBLESHOOTING.md" in out
+
+    def test_still_prints_a_hint_when_nothing_is_detected(self, monkeypatch, capsys):
+        monkeypatch.setattr(lib_docker, "compose_running_services", lambda project_args: [])
+
+        lib_docker.print_stack_conflict_hint(["-p", "horseless-carriage-dev"])
+
+        out = capsys.readouterr().out
+        assert "docker compose -p horseless-carriage-dev down" in out
+        assert "TROUBLESHOOTING.md" in out
