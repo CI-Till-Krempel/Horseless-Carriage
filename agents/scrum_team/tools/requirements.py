@@ -334,9 +334,55 @@ def _resolve_story_ref(s: str) -> str:
     return match.group(1) if match else s
 
 
+def _existing_story_ids_for_version(lines: List[str], version_heading_re: "re.Pattern") -> List[str]:
+    """
+    Returns the story IDs already rendered (see _render_story_block) under
+    version_heading_re's Stories block, in document order.
+
+    GH issue #249: update_roadmap used to fully replace a version's Stories
+    block with whatever `stories` list a caller passed, silently dropping
+    any story already listed for that version but omitted from the new
+    call - the automated per-story pipeline (_sync_roadmap_for_story,
+    sync_all_active_stories_to_roadmap) always recomputes the complete peer
+    list first, so it never hit this, but nothing stopped an agent (e.g.
+    ProductOwner at sprint close) from calling update_roadmap directly with
+    a partial `stories` list. update_roadmap now unions the incoming list
+    with whatever this returns instead of replacing it outright.
+    """
+    ids: List[str] = []
+    in_section = False
+    in_stories = False
+    story_line_re = re.compile(r"^- \[([^\]]+)\]")
+    for line in lines:
+        if version_heading_re.match(line):
+            in_section = True
+            in_stories = False
+            continue
+        if in_section and (line.startswith("###") or line.startswith("---")):
+            break
+        if not in_section:
+            continue
+        if line.startswith("Stories"):
+            in_stories = True
+            continue
+        if in_stories:
+            m = story_line_re.match(line)
+            if m:
+                ids.append(m.group(1))
+    return ids
+
+
 def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = None, tool_context=None) -> Dict[str, Any]:
     """
     Requirements Management: Update the product roadmap (specs/ROADMAP.md) for a specific version.
+
+    `stories`, if given, is UNIONED with whatever story IDs are already
+    listed for `version` (matched by ID, via _resolve_story_ref) rather than
+    replacing that version's Stories block outright - see GH issue #249.
+    There is no removal path here: this tool has no way to intentionally
+    drop a story from a version's list short of moving it to a different
+    version (which _strip_story_block_from_other_versions already handles
+    by removing it from every other version's section).
     """
     from .scrum import save_state_to_repo
     from .docs import seed_repository
@@ -378,6 +424,17 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
     # either the bare "### v0.1" this function's own insertion writes, or
     # the template's "### v0.1 — MVP (...)" form - never "### v0.1 <word>".
     version_heading_re = re.compile(rf"^###\s+{re.escape(version)}(\s*$|\s+—)")
+
+    # GH issue #249: union the incoming `stories` with whatever's already
+    # listed for this version instead of replacing the block outright - see
+    # _existing_story_ids_for_version and the module-level comment above.
+    if stories:
+        resolved_new_keys = {_resolve_story_ref(s) for s in stories}
+        missing_existing = [
+            sid for sid in _existing_story_ids_for_version(lines, version_heading_re)
+            if sid not in resolved_new_keys
+        ]
+        stories = list(stories) + missing_existing
 
     i = 0
     while i < len(lines):
