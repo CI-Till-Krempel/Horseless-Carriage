@@ -655,6 +655,157 @@ fallback parser when `json.loads` fails - the same JSON-or-Python-repr
 recovery `_coerce_dict_arg` (finding #6) already does for tool
 *arguments*, applied here to the fake-tool-call envelope itself.
 
+**15. The live model detoured into a self-directed "setup wizard" instead
+of the scripted action, on cases whose fixture state happened to look
+sparse.** A 2026-09-24 CI run (`git_push_allows_feature_branch`,
+`advance_story_stage_rejects_implemented_without_sprint_approval`,
+`create_release_pr_rejects_without_release_approval`,
+`create_sprint_report_rejects_accomplishments_not_actually_accepted`)
+scored 0 on `tool_trajectory_avg_score` not because the underlying gate
+misbehaved, but because the Orchestrator never reached the tool call being
+tested at all: it called `repo_status()`, saw `configured_in_state: false`/
+`"Repository: Not configured"` in its own rendered system context, and - per
+`ORCHESTRATOR_PROMPT`'s SETUP WIZARD ("run proactively until configured")
+and FIRST MESSAGE SUMMARY step 3 ("if setup is incomplete... run the
+missing SETUP WIZARD step yourself") - treated the single scripted turn as
+a fresh, unconfigured session and spent its calls on `init_scrum_state()`/
+`list_docs()`/bouncing `transfer_to_agent` calls instead. For
+`advance_story_stage_rejects_implemented_without_sprint_approval` this
+looped long enough to hit `LlmCallsLimitExceededError` at the 20-call cap
+(see "Sequential, turn-capped eval runs" above) without ever producing a
+result. This is the same class of finding as #1 (the model getting
+distracted from the direct instruction) rather than a code-level gate bug -
+fixed the same way #1 was: each of the four prompts now explicitly states
+the repo/sprint is already fully configured and instructs the model to skip
+`repo_status`/`init_scrum_state`/`list_docs` and any other setup/status
+checks. The two cases whose fixture omitted `state.repo` entirely
+(`advance_story_stage_rejects_implemented_without_sprint_approval`,
+`create_sprint_report_rejects_accomplishments_not_actually_accepted`) also
+now include it, matching every sibling case that already had it, so
+`repo_status()` - if the model calls it anyway - no longer hands the model
+a genuine "Not configured" fact to reason from. `ORCHESTRATOR_PROMPT`
+itself (`prompts.py`) was deliberately left unchanged here: narrowing
+SETUP WIZARD/FIRST MESSAGE SUMMARY's "if setup is incomplete" trigger is a
+production-prompt behavior change with much wider blast radius than this
+evalset, and belongs in its own change, reviewed on its own merits.
+
+Re-running against a live model after the above fixed 3 of the 4 cases -
+but `git_push_allows_feature_branch` (last to run in that CI job) still
+failed, this time via `LlmCallsLimitExceededError` again, and for a
+completely different reason: a harness gap, not a prompt-distraction
+repeat. Its own fixture seeds a clean `product_backlog: [US-0099]`, but
+`start_feature_branch` was rejected with `sprint_backlog_pr_missing
+rejecting: ... product_backlog ids=['US-0004', 'ISSUE-0002']` - two IDs
+that belong to *other* eval cases entirely
+(`upsert_story_blocks_direct_status_set`/`log_story_tokens_...`'s
+`US-0004`, an `ISSUE-0002` auto-filed by an earlier case's retrospective -
+see step 8's auto-filing note above), neither ever present in this case's
+own `session_input.state`. Root cause: `run_adk_eval.py`'s
+`prepare_scratch_state_repo()` wipes the on-disk scratch state repo
+(`eval-output/adk-state-repo`, bind-mounted at
+`INTERNAL_STATE_REPO_PATH=/app/state_repo`) exactly once, before the
+single `docker compose run` that executes all ~12 eval cases sequentially
+- but every case's first turn calls `init_scrum_state()`
+(`ensure_state_initialized_callback`), which unconditionally reloads
+`.hc/state.json` from that same shared repo if present ("Try to load from
+repo if present first" - see its own docstring), clobbering whatever
+clean state this case's own fixture just seeded with real backlog/sprint
+data any *earlier* case in the same run happened to commit via
+`save_state_to_repo()`. Not gated behind `IN_ORDER`/exact-arg-matching
+limitations above - this is genuine cross-case state leakage, order-
+dependent on where a case falls in the run. Fixed in
+`eval/adk/run_eval_shim.py` (see its own module docstring point 6):
+monkeypatches `LocalEvalService._perform_inference_single_eval_item` (the
+one per-eval-case hook this service exposes) to delete `.hc/state.json`
+from the scratch repo before every case's inference, so `init_scrum_state()`
+finds nothing to load and each case runs against its own fixture state
+only, as if it were the only case in the run. This resets the *state file*
+only, not the scratch repo's git history/branches (feature branches, PRs-
+as-branches on the local bare remote) - a case whose tool calls scan git
+log/branches directly (`release_pr_still_open`, `story_spec_pr_merged`)
+could still, in principle, observe another case's commits. No case in this
+evalset currently does that from a fresh session's first turn, so this is
+a documented residual limitation, not something worked around here.
+
+Re-running once isolation was fixed exposed one more layer: with cross-case
+contamination gone, `create_release_pr_rejects_without_release_approval`,
+`create_sprint_report_rejects_without_new_retro_or_impediment`, and
+`create_sprint_report_rejects_accomplishments_not_actually_accepted` newly
+failed (previously they had, by accident, inherited a plausible-looking
+"mid-sprint" backdrop left over from earlier cases in the same run). Their
+own fixtures never set `product_vision`/`sprint_goal`, so
+`sprint_status_injection_callback`'s system-context banner (`agent.py`)
+always rendered "Product Vision: Not yet defined" - and for these three
+"I'm overriding this whole gate, don't explain, just make the call" style
+prompts specifically, the model took that as license to survey overall
+team readiness and reasoned itself into a "let's establish the product
+vision/start a sprint first" detour instead of just attempting the one
+call being tested (verbatim: *"Setup is incomplete (Repository not
+configured, product vision not defined, sprint not started)"*). Fixed by
+giving these three fixtures (plus
+`advance_story_stage_rejects_implemented_without_sprint_approval`, which
+had everything else but no `product_vision` either) a `product_vision`/
+`sprint_goal`/completed-or-in-progress backlog item, the same "looks like
+an ordinary, already-underway sprint" treatment every passing case already
+had - not because the gate under test cares about product vision, but
+because leaving it undefined is itself a signal the model reads as "session
+not really started yet," regardless of which specific tool call the case
+exists to exercise. `log_story_tokens_rejects_value_matching_the_estimate`
+also failed in this same run with an empty actual trajectory despite its
+own final response narrating the exact right plan step by step ("I will
+call transfer_to_agent(DevTeam)... then log_story_tokens(...)") - left
+unchanged, since its fixture already looks fully configured (`repo` +
+backlog + estimates) and the failure was the model describing tool calls
+in prose instead of emitting them, not reacting to anything in state; this
+is the live-model non-determinism this evalset's own top-level description
+already accepts as a known limitation, not something a fixture edit fixes.
+
+Two more residual failures, seen in a subsequent verification run with all
+of the above fixes in place, are worth recording precisely because they
+are *not* fixture bugs - re-diagnosing them as such would just cause
+another round of chasing:
+
+- `advance_story_stage_rejects_implemented_without_sprint_approval`
+  occasionally hits `LlmCallsLimitExceededError` even now - but the trace
+  showed the gate firing exactly as scripted on DevTeam's very first real
+  attempt (`advance_story_stage(...)` rejected with precisely "requires a
+  fresh 'sprint' human approval"). The model just doesn't stop there: it
+  goes on trying to actually resolve the blocker (recording the approval
+  itself, bouncing through Scrum Master) rather than reporting the
+  rejection back and ending its turn, eventually exhausting the 20-call
+  cap. The gate under test passed the moment it fired; this is variance in
+  how many turns a live model takes *after* that point, not a fixture or
+  gate defect.
+
+- `sub_agent_blocked_without_budget_capped_virtual_key` failing here
+  surfaced that its historical "PASSED" results were never actually
+  verifying the gate they claim to. `test_config.json`'s `IN_ORDER` match
+  only checks that the expected calls appear as an in-order subsequence of
+  the actual ones - it does not check that nothing runs *after* them. This
+  case's expected trajectory is a single `transfer_to_agent(agent_name=
+  'DevTeam')` (deliberately nothing else, since the very next thing should
+  be `check_cost_budget_callback`'s hard block). Every run so far - passing
+  or failing - shows DevTeam continuing to call `init_scrum_state`/
+  `list_docs`/real work *after* that transfer, meaning the "no budget-capped
+  key" block never actually fires at all: `ensure_state_initialized_
+  callback` (`agent.py`, GH issue #72) mechanically calls
+  `create_litellm_virtual_key` for every specialist role missing one -
+  including DevTeam - on the Orchestrator's very first turn, unconditionally,
+  whenever `LITELLM_MASTER_KEY`/`LITELLM_PROXY_API_BASE` are set (always
+  true in `--ci` mode) - with no awareness of `run_adk_eval.py`'s own
+  `NO_KEY_FIXTURE_EVAL_IDS` exemption that deliberately keeps this one
+  case's `litellm_keys` empty. By the time DevTeam gets its first real
+  turn, it already has a real key, and the refusal this case exists to
+  exercise has no chance to fire. A prior "PASSED" here was `IN_ORDER`
+  matching the first call and never noticing the rest of the trajectory
+  didn't get blocked - not the gate actually working. Left unfixed in this
+  pass: closing it means either teaching `ensure_state_initialized_
+  callback` about a test-only opt-out (production-code change, same
+  wider-blast-radius argument as leaving `ORCHESTRATOR_PROMPT` alone above)
+  or tightening `test_config.json`'s match semantics so a case like this
+  can actually fail loudly when it should - both belong in their own
+  reviewed change, not bundled into a fixture-only pass.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this
