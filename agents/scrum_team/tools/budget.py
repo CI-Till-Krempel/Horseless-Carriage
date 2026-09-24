@@ -413,15 +413,37 @@ def _write_conversation_transcript(tool_context=None) -> Dict[str, Any]:
     Replaces what used to be a raw, unbounded JSON blob written straight
     into the target repo's git-committed .hc/state.json - state.transcript
     itself is now in-memory-only session state, used just to render this
-    file and the sprint report's excerpt. A per-run raw log additionally
-    exists at /app/sessions/transcript-<session-id>.log (see
-    transcript_logger in agent.py) independent of this markdown file.
+    file and the sprint report's excerpt. state.transcript is also a
+    rolling window over the whole run (see _trim_transcript in agent.py),
+    so this file is not guaranteed to be a complete per-sprint archive; a
+    per-run raw log additionally exists at
+    /app/sessions/transcript-<session-id>.log (see transcript_logger in
+    agent.py) with the full untruncated history, and this file now points
+    to it explicitly (GH issue #250) so a reviewer doesn't mistake a
+    numbered TRANSCRIPT-NNN.md for the complete record.
     """
     from .docs import write_file
     s = tool_context.state
     transcript = s.get("transcript", []) or []
 
-    lines = ["# Conversation Transcript\n"]
+    # GH issue #250: state.transcript held here is a rolling window over the
+    # *entire run* (see _trim_transcript/TRANSCRIPT_MAX_ENTRIES in agent.py),
+    # capped so a long-running session can't blow the token budget just by
+    # holding/replaying an ever-growing transcript - it is NOT necessarily
+    # this sprint's complete history, and earlier sprints' entries can fall
+    # off the front entirely. The only complete, untruncated record is the
+    # per-run session log (transcript_logger in agent.py), which lives
+    # outside this git-tracked repo. Point reviewers at it explicitly so a
+    # numbered TRANSCRIPT-NNN.md is never mistaken for a full per-sprint
+    # archive.
+    session_log_path = os.path.join("/app/sessions", f"transcript-{os.getenv('SESSION_ID', 'default')}.log")
+    lines = [
+        "# Conversation Transcript\n",
+        f"\n_This file may only hold a rolling window of the most recent transcript "
+        f"entries across the whole run (see TRANSCRIPT_MAX_ENTRIES), not necessarily "
+        f"this sprint's complete history. For the full, untruncated per-run record, "
+        f"see the session log: `{session_log_path}`._\n",
+    ]
     if not transcript:
         lines.append("\nNo transcript recorded yet for this sprint.\n")
     else:
