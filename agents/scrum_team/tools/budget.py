@@ -59,6 +59,41 @@ def log_token_usage(agent_name: str, tokens: int, tool_context=None) -> Dict[str
     save_state_to_repo(tool_context)
     return {"status": "ok", "usage": usage}
 
+def sprint_budget_reset_state_delta() -> Dict[str, Any]:
+    """
+    Single source of truth for exactly which state keys must be cleared at
+    the start of a new sprint, and to what. Two callers need this identical
+    set: this module's own reset_sprint_budget (the agent-invoked tool used
+    in interactive/real usage) and run_eval.py's _run_one_sprint (the eval
+    harness's own unattended equivalent, since there's no Scrum Master
+    around to call reset_sprint_budget for it).
+
+    ISSUE-0049 / 0.1.0-run33: those two used to be independent, hand-copied
+    key lists. run_eval.py's copy predated critical_halt_notified and
+    sprint_report_safety_net_fired being added here and was never
+    backported, so a sprint that ended via the final-halt safety net (see
+    _ensure_sprint_report_on_final_halt_once, agent.py) left
+    sprint_report_safety_net_fired=True stuck for the rest of the run - the
+    very next sprint's own final halt then silently no-opped on that guard
+    and produced NO sprint report at all (not even the fallback one),
+    exactly the failure EVAL-REPORT.md flagged as run33's worst problem.
+    Both callers importing this one function instead of maintaining their
+    own copy means they can't drift apart like that again.
+
+    Returns a fresh dict (with fresh nested dicts) on every call so a
+    caller mutating its own copy - or writing each key into its own
+    per-sprint state_delta alongside a few keys of its own - never risks
+    aliasing another caller's copy.
+    """
+    return {
+        "token_usage": {"total": 0, "agents": {}},
+        "budget_exhaustion_synced": False,
+        "budget_reset_since_last_sprint_start": True,
+        "critical_halt_notified": False,
+        "sprint_report_safety_net_fired": False,
+    }
+
+
 def reset_sprint_budget(tool_context=None) -> Dict[str, Any]:
     """
     Resets the LOGICAL token budget for a new sprint. SPRINT_TOKEN_BUDGET is
@@ -88,14 +123,15 @@ def reset_sprint_budget(tool_context=None) -> Dict[str, Any]:
     requires this to have happened since the previous sprint started (except
     for the very first sprint, which has no previous sprint's usage to
     clear), instead of relying on SM_PROMPT's "MANDATORY" text alone.
+
+    See sprint_budget_reset_state_delta (ISSUE-0049) for the actual list of
+    keys/values this clears - shared with run_eval.py's harness-side
+    equivalent so the two can't drift apart again.
     """
     from .scrum import save_state_to_repo
     s = tool_context.state
-    s["token_usage"] = {"total": 0, "agents": {}}
-    s["budget_exhaustion_synced"] = False
-    s["budget_reset_since_last_sprint_start"] = True
-    s["critical_halt_notified"] = False
-    s["sprint_report_safety_net_fired"] = False
+    for key, value in sprint_budget_reset_state_delta().items():
+        s[key] = value
     save_state_to_repo(tool_context)
     return {"status": "ok", "token_usage": s["token_usage"]}
 

@@ -13,6 +13,8 @@ from agents.scrum_team.tools.budget import (
     optimize_process_for_budget,
     create_sprint_report,
     render_fallback_sprint_report,
+    reset_sprint_budget,
+    sprint_budget_reset_state_delta,
     _write_conversation_transcript,
     _file_retro_items_as_issues,
 )
@@ -51,6 +53,38 @@ class TestBudgetTools(unittest.TestCase):
         log_token_usage(agent_name="ProductOwner", tokens=100, tool_context=tool_context)
         self.assertEqual(tool_context.state["token_usage"]["agents"]["ProductOwner"], 100)
         self.assertEqual(tool_context.state["token_usage"]["total"], 100)
+
+    def test_reset_sprint_budget_clears_every_grace_and_safety_net_guard(self):
+        """
+        ISSUE-0049 / 0.1.0-run33: a prior sprint's halt can leave
+        critical_halt_notified/sprint_report_safety_net_fired stuck True -
+        reset_sprint_budget must clear all of them, not just token_usage,
+        or the NEXT sprint's own final halt silently produces no report.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["token_usage"] = {"total": 6032161, "agents": {"DevTeam": 1604179}}
+        tool_context.state["budget_exhaustion_synced"] = True
+        tool_context.state["budget_reset_since_last_sprint_start"] = False
+        tool_context.state["critical_halt_notified"] = True
+        tool_context.state["sprint_report_safety_net_fired"] = True
+
+        reset_sprint_budget(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["token_usage"], {"total": 0, "agents": {}})
+        self.assertFalse(tool_context.state["budget_exhaustion_synced"])
+        self.assertTrue(tool_context.state["budget_reset_since_last_sprint_start"])
+        self.assertFalse(tool_context.state["critical_halt_notified"])
+        self.assertFalse(tool_context.state["sprint_report_safety_net_fired"])
+
+    def test_sprint_budget_reset_state_delta_returns_independent_copies(self):
+        """Two calls must not share the same nested dict - a caller
+        mutating its own copy (e.g. merging in extra keys) must never leak
+        into another caller's."""
+        first = sprint_budget_reset_state_delta()
+        first["token_usage"]["agents"]["DevTeam"] = 999
+        second = sprint_budget_reset_state_delta()
+        self.assertEqual(second["token_usage"]["agents"], {})
 
     def test_calculate_cost_breakdown(self):
         """
