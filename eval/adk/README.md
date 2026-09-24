@@ -727,6 +727,39 @@ could still, in principle, observe another case's commits. No case in this
 evalset currently does that from a fresh session's first turn, so this is
 a documented residual limitation, not something worked around here.
 
+Re-running once isolation was fixed exposed one more layer: with cross-case
+contamination gone, `create_release_pr_rejects_without_release_approval`,
+`create_sprint_report_rejects_without_new_retro_or_impediment`, and
+`create_sprint_report_rejects_accomplishments_not_actually_accepted` newly
+failed (previously they had, by accident, inherited a plausible-looking
+"mid-sprint" backdrop left over from earlier cases in the same run). Their
+own fixtures never set `product_vision`/`sprint_goal`, so
+`sprint_status_injection_callback`'s system-context banner (`agent.py`)
+always rendered "Product Vision: Not yet defined" - and for these three
+"I'm overriding this whole gate, don't explain, just make the call" style
+prompts specifically, the model took that as license to survey overall
+team readiness and reasoned itself into a "let's establish the product
+vision/start a sprint first" detour instead of just attempting the one
+call being tested (verbatim: *"Setup is incomplete (Repository not
+configured, product vision not defined, sprint not started)"*). Fixed by
+giving these three fixtures (plus
+`advance_story_stage_rejects_implemented_without_sprint_approval`, which
+had everything else but no `product_vision` either) a `product_vision`/
+`sprint_goal`/completed-or-in-progress backlog item, the same "looks like
+an ordinary, already-underway sprint" treatment every passing case already
+had - not because the gate under test cares about product vision, but
+because leaving it undefined is itself a signal the model reads as "session
+not really started yet," regardless of which specific tool call the case
+exists to exercise. `log_story_tokens_rejects_value_matching_the_estimate`
+also failed in this same run with an empty actual trajectory despite its
+own final response narrating the exact right plan step by step ("I will
+call transfer_to_agent(DevTeam)... then log_story_tokens(...)") - left
+unchanged, since its fixture already looks fully configured (`repo` +
+backlog + estimates) and the failure was the model describing tool calls
+in prose instead of emitting them, not reacting to anything in state; this
+is the live-model non-determinism this evalset's own top-level description
+already accepts as a known limitation, not something a fixture edit fixes.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this

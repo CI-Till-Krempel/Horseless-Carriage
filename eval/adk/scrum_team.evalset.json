@@ -197,6 +197,8 @@
         "user_id": "product-human",
         "state": {
           "repo": {"url": "git@github.com:example/example-state-repo.git", "local_path": "/tmp/state-repo", "default_branch": "main", "develop_branch": "develop"},
+          "product_vision": "A lightweight team task-tracking web app with login, task management, and reporting.",
+          "sprint_goal": "Deliver core login functionality this sprint.",
           "product_backlog": [
             {"id": "US-0003", "title": "Add login form", "type": "User Story", "stages_completed": ["Draft", "Ready"]}
           ],
@@ -271,6 +273,16 @@
         "user_id": "product-human",
         "state": {
           "repo": {"url": "git@github.com:example/example-state-repo.git", "local_path": "/tmp/state-repo", "default_branch": "main", "develop_branch": "develop"},
+          "product_vision": "A lightweight team task-tracking web app with login, task management, and reporting.",
+          "sprint_goal": "Deliver core login functionality this sprint.",
+          "sprint_number": 1,
+          "sprint_backlog_pr_sprint": 1,
+          "product_backlog": [
+            {"id": "US-0003", "title": "Add login form", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}
+          ],
+          "sprint_backlog": [
+            {"id": "US-0003", "title": "Add login form", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}
+          ],
           "human_approvals": [],
           "release_approval_baseline": 0,
           "litellm_keys": {"ProductOwner": "eval-fixture-key-po"}
@@ -337,6 +349,17 @@
         "app_name": "scrum_team",
         "user_id": "product-human",
         "state": {
+          "repo": {"url": "git@github.com:example/example-state-repo.git", "local_path": "/tmp/state-repo", "default_branch": "main", "develop_branch": "develop"},
+          "product_vision": "A lightweight team task-tracking web app with login, task management, and reporting.",
+          "sprint_goal": "Deliver core login functionality this sprint.",
+          "sprint_number": 1,
+          "sprint_backlog_pr_sprint": 1,
+          "product_backlog": [
+            {"id": "US-0007", "title": "Add password reset email", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}
+          ],
+          "sprint_backlog": [
+            {"id": "US-0007", "title": "Add password reset email", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}
+          ],
           "retro_actions": [],
           "impediment_log": [],
           "retro_baseline": 0,
@@ -410,12 +433,19 @@
         "user_id": "product-human",
         "state": {
           "repo": {"url": "git@github.com:example/example-state-repo.git", "local_path": "/tmp/state-repo", "default_branch": "main", "develop_branch": "develop"},
+          "product_vision": "A lightweight team task-tracking web app with login, task management, and reporting.",
+          "sprint_goal": "Deliver core task-list functionality this sprint.",
+          "sprint_number": 1,
+          "sprint_backlog_pr_sprint": 1,
           "retro_actions": [{"action": "Sprint 1 retro: keep planning sessions shorter", "owner": "ScrumMaster", "status": "open"}],
           "impediment_log": [],
           "retro_baseline": 0,
           "kpi_update_count": 1,
           "kpi_baseline": 0,
           "product_backlog": [
+            {"id": "US-0002", "title": "Add Task to List", "type": "User Story", "stages_completed": ["Draft", "Ready"]}
+          ],
+          "sprint_backlog": [
             {"id": "US-0002", "title": "Add Task to List", "type": "User Story", "stages_completed": ["Draft", "Ready"]}
           ],
           "litellm_keys": {"ProductOwner": "eval-fixture-key-po"}
