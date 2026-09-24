@@ -760,6 +760,31 @@ in prose instead of emitting them, not reacting to anything in state; this
 is the live-model non-determinism this evalset's own top-level description
 already accepts as a known limitation, not something a fixture edit fixes.
 
+**Tooling for this.** A 2026-09-24 `adk-eval` CI run failed on exactly this
+kind of variance again
+(`create_sprint_report_rejects_accomplishments_not_actually_accepted` -
+same case, same root cause: the model conflated this gate with the
+sibling `..._without_new_retro_or_impediment` case's rule and never
+actually called `create_sprint_report`), and diagnosing it required
+manually re-deriving "have we seen this case flake before?" from this very
+section. `run_adk_eval.py` now has three small things to make that faster:
+(1) `KNOWN_FLAKY_EVAL_IDS` names the specific cases documented on this page
+as occasionally-flaky, and `print_known_flaky_retry_annotation` - called
+automatically whenever the main run fails - re-runs just those cases and
+prints their result as an annotation, **without changing the run's own
+exit code** (a known-flaky case failing still fails CI; this only tells a
+human "we've seen this exact variance before" faster than re-reading this
+page); (2) `--only <eval_id>[,<eval_id>...]` restricts a run to specific
+case(s) (via `adk eval`'s own `evalset.json:id1,id2` suffix), for iterating
+on one failing/flaky case without paying for the full ~10-case run and
+Docker stack bring-up every time; (3) `run_eval_shim.py`'s
+`pretty_print_eval_result` patch now *drops* the wide
+`tabulate(..., tablefmt="grid")` results table instead of printing it
+alongside the compact diff - that table wrapped a single failed case's
+~10-row result into over 100 near-unreadable lines once rendered through a
+CI runner's own non-TTY log, which is exactly what made finding the one
+useful line in that 2026-09-24 run's log take several minutes.
+
 Two more residual failures, seen in a subsequent verification run with all
 of the above fixes in place, are worth recording precisely because they
 are *not* fixture bugs - re-diagnosing them as such would just cause
