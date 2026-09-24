@@ -573,6 +573,20 @@ class TestBuildExperimentalIssueUrl:
         assert secret not in url
         assert urllib.parse.quote(secret) not in url
 
+    def test_survives_platform_platform_raising(self, monkeypatch):
+        """platform.platform() shells out to `uname -p` and can raise
+        AttributeError on some CI/container hosts (observed: check_output
+        returning None instead of a string) - the banner must degrade
+        gracefully, not crash the whole run."""
+        def _raise(*args, **kwargs):
+            raise AttributeError("'NoneType' object has no attribute 'strip'")
+        monkeypatch.setattr(run.platform, "platform", _raise)
+
+        url = run.build_experimental_issue_url(["Daemon mode"], "Product", "gemini", "gemini/gemini-1.5-pro")
+
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        assert "OS:" in query["body"][0]
+
 
 class TestPrintExperimentalWarning:
     """

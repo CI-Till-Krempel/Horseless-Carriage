@@ -23,7 +23,9 @@ stand alone - see lib_docker.print_stack_conflict_hint (GH issue #232).
 Usage:
   python3 run.py                 Web mode (default): ADK web frontend, foreground.
   python3 run.py cli [query...]  Interactive CLI session instead of the web UI.
+                                  [EXPERIMENTAL - not yet thoroughly tested]
   python3 run.py daemon          Add to either of the above to run detached.
+                                  [EXPERIMENTAL - not yet thoroughly tested]
   python3 run.py dev             Add to either of the above for developer mode:
                                   rebuilds agent/ollama images fresh before
                                   starting (see rebuild_images.py) and runs
@@ -116,6 +118,20 @@ def detect_experimental_features(repo_root: Path, mode: str, daemon: bool) -> li
     return features
 
 
+def _safe_os_description() -> str:
+    """platform.platform() shells out to `uname -p` for the processor field
+    and can raise (e.g. AttributeError on some CI/container hosts where the
+    subprocess call succeeds but returns no usable output) - never let an OS
+    description failure crash the run."""
+    try:
+        return platform.platform()
+    except Exception:
+        try:
+            return f"{platform.system()} {platform.release()}".strip()
+        except Exception:
+            return "unknown"
+
+
 def build_experimental_issue_url(features: list, interaction_level: str, provider: str, model_name: str) -> str:
     """GitHub's "new issue" URL, prefilled via its documented ?title=&body=
     query params (GH issue #263) with only non-secret, redacted config: OS,
@@ -129,7 +145,7 @@ def build_experimental_issue_url(features: list, interaction_level: str, provide
         "",
         "",
         "**Configuration (auto-filled, non-secret):**",
-        f"- OS: {platform.platform()}",
+        f"- OS: {_safe_os_description()}",
         f"- Horseless Carriage version: {banner.version()}",
         f"- Interaction Level: {interaction_level}",
         f"- Experimental feature(s) active: {', '.join(features)}",

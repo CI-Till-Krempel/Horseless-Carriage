@@ -137,6 +137,8 @@ python run.py
 
 ## Running fully local (no commercial LLM)
 
+**⚠️ Experimental — not yet thoroughly tested.**
+
 To run the whole team against a self-hosted [Ollama](https://ollama.com) model instead of Gemini/OpenAI/Anthropic — no provider API keys, no external network calls once the model is pulled:
 
 ```bash
@@ -259,9 +261,12 @@ full breakdown. Four levels:
 | Level | The human's role |
 |---|---|
 | `Product` (default) | Product Owner stand-in: task-level priorities, developer questions. |
-| `Stakeholder` | Business stakeholder: business needs, release order, feature approval, review feedback. |
-| `CEO` | Approves only the sprint budget; reads the sprint report as a management summary. |
-| `EVAL` | No human at all - fixed-length automated evaluation runs (see [Evaluation](EVALUATION.md)). |
+| `Stakeholder` ⚠️ *Experimental* | Business stakeholder: business needs, release order, feature approval, review feedback. |
+| `CEO` ⚠️ *Experimental* | Approves only the sprint budget; reads the sprint report as a management summary. |
+| `EVAL` ⚠️ *Experimental* | No human at all - fixed-length automated evaluation runs (see [Evaluation](EVALUATION.md)). |
+
+**⚠️ Experimental — every level other than `Product` (the default) is not yet thoroughly
+tested.**
 
 This isn't just documentation - it changes which `record_human_approval` gate is mechanically
 required before the team may implement stories (`advance_story_stage(..., "Implemented")`) or

@@ -38,7 +38,7 @@ Exactly one of these is "active" at a time, selected by which
 | Google Gemini | `GOOGLE_API_KEY` | `litellm.yaml` (copy of `litellm.cloud-gemini.yaml`) | Yes |
 | Anthropic Claude | `ANTHROPIC_API_KEY` | `litellm.yaml` (copy of `litellm.cloud-anthropic.yaml`) | Yes |
 | OpenAI | `OPENAI_API_KEY` | `litellm.yaml` (copy of `litellm.cloud-openai.yaml`) | Yes |
-| Local / Ollama | none | `config/model-templates/litellm.local-ollama.yaml` | No — `LLM_LOCAL_PROVIDER=true` skips the USD check entirely (self-hosted inference has no real per-token price) |
+| Local / Ollama ⚠️ *Experimental* | none | `config/model-templates/litellm.local-ollama.yaml` | No — `LLM_LOCAL_PROVIDER=true` skips the USD check entirely (self-hosted inference has no real per-token price) |
 
 **Inert-but-harmless combination**: switching providers leaves the *other*
 providers' API keys sitting unused in `.env` — not an error, just dead
@@ -76,6 +76,9 @@ runs CPU-only — `doctor.py` scrapes the `ollama` container's own startup
 logs and warns loudly if it reports `library=cpu` despite the flag being on.
 
 ## Human interaction level × everything else
+
+**⚠️ Experimental — every level other than `Product` (the default) is not yet thoroughly
+tested.**
 
 `INTERACTION_LEVEL` (`Product` / `Stakeholder` / `CEO` / `EVAL`,
 case-insensitive; unset or unrecognized falls back to the most restrictive,

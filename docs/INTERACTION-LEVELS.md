@@ -16,14 +16,16 @@ Valid values (case-insensitive): `Product`, `Stakeholder`, `CEO`, `EVAL`. An uns
 value falls back to `Product` - the most-supervised level - rather than silently disabling every
 human-approval gate on a typo.
 
+**⚠️ Experimental — every level other than `Product` (the default) is not yet thoroughly tested.**
+
 ## The four levels
 
 | Level | The human's role | What they decide |
 |---|---|---|
 | **Product** | Stands in for the Product Owner day-to-day. | Product decisions, answers developer clarifying questions, sets priorities. |
-| **Stakeholder** | A business stakeholder, not embedded in day-to-day PO work. | Business needs, release order, approves new features, gives sprint-review feedback. |
-| **CEO** | Budget holder only. | Approves the sprint's token/USD budget; otherwise reads the sprint report as a management summary. |
-| **EVAL** | None - fully unattended. | Nothing; a fixed number of sprints run without any human review at all (see `agents/scrum_team/scripts/run_eval.py`). |
+| **Stakeholder** ⚠️ *Experimental* | A business stakeholder, not embedded in day-to-day PO work. | Business needs, release order, approves new features, gives sprint-review feedback. |
+| **CEO** ⚠️ *Experimental* | Budget holder only. | Approves the sprint's token/USD budget; otherwise reads the sprint report as a management summary. |
+| **EVAL** ⚠️ *Experimental* | None - fully unattended. | Nothing; a fixed number of sprints run without any human review at all (see `agents/scrum_team/scripts/run_eval.py`). |
 
 ## What's actually mechanically enforced
 

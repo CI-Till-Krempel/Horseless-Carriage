@@ -61,8 +61,9 @@ What makes this practical rather than a runaway-cost demo:
   scenario, so regressions in team behavior are caught mechanically instead of
   anecdotally; see [Evaluation](docs/EVALUATION.md).
 - **Bring your own model** — Google Gemini, Anthropic Claude, OpenAI, or a
-  fully local/offline setup via Ollama, picked interactively from each
-  provider's *current* model list; see [Setup](docs/SETUP.md).
+  fully local/offline setup via Ollama (**⚠️ Experimental — not yet
+  thoroughly tested**), picked interactively from each provider's *current*
+  model list; see [Setup](docs/SETUP.md).
 
 Who this is for: a solo founder or small team with more product ideas than
 engineering bandwidth, anyone evaluating how well a given model handles a real
@@ -102,10 +103,10 @@ including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 
 | Topic | What's there |
 |---|---|
-| [Setup](docs/SETUP.md) | Guided LLM/project setup, Windows-specific instructions, running fully local (no commercial LLM), human interaction levels |
+| [Setup](docs/SETUP.md) | Guided LLM/project setup, Windows-specific instructions, running fully local (no commercial LLM, ⚠️ experimental), human interaction levels (non-`Product` levels ⚠️ experimental) |
 | [Configuration Reference](docs/CONFIGURATION.md) | Every `.env` config item, and how they combine (provider × GPU/host-mode × interaction level × budget) |
 | [State Repository](docs/STATE-REPOSITORY.md) | What the "source of truth" directory is, its structure, and the health-check script |
-| [Running the Agent](docs/RUNNING.md) | `run.py` modes, logging & session management, diagnostics (`doctor.py`) |
+| [Running the Agent](docs/RUNNING.md) | `run.py` modes (Terminal UI and daemon mode ⚠️ experimental), logging & session management, diagnostics (`doctor.py`) |
 | [Testing](docs/TESTING.md) | The host-script test suite, the agent test suite, manual QA test plans |
 | [Architecture](docs/ARCHITECTURE.md) | How the team is structured, the architecture diagram, the "enforce in code" design principle, the story-workflow pipeline |
 | [Development Workflow](docs/DEVELOPMENT-WORKFLOW.md) | End-to-end flowchart: sprint lifecycle, per-story stage pipeline, every tool/gate/owner, and the knobs that customize it |
@@ -132,7 +133,7 @@ including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 - `litellm.yaml` — model aliases used by the agents (e.g., `scrum-po`, `scrum-dev`, etc.), currently wired to Google Gemini.
 - `config/model-templates/` — the same role→model mapping as standalone, swappable templates: `litellm.cloud-gemini.yaml` (a reference copy of the active `litellm.yaml`), `litellm.cloud-anthropic.yaml` (every role on Anthropic Claude), `litellm.cloud-openai.yaml` (every role on OpenAI), and `litellm.local-ollama.yaml` (every role served by one self-hosted Ollama model, no commercial API). Swap providers by copying the desired template over `litellm.yaml` (or repointing `docker-compose.yaml`'s `litellm` volume mount) - the role→alias names (`scrum-po`, `scrum-dev`, etc.) are identical across all of them, so no agent code changes are needed.
 - `docker-compose.yaml` — runs a local LiteLLM proxy on port `4000` using `litellm.yaml` (the cloud/Gemini setup).
-- `docker-compose.local.yaml` / `ollama.Dockerfile` / `ollama-entrypoint.sh` — a fully local alternative stack that adds a self-hosted Ollama container and points LiteLLM at `litellm.local-ollama.yaml` instead; no commercial LLM keys required. Run with `docker compose -f docker-compose.local.yaml up`.
+- `docker-compose.local.yaml` / `ollama.Dockerfile` / `ollama-entrypoint.sh` — a fully local alternative stack that adds a self-hosted Ollama container and points LiteLLM at `litellm.local-ollama.yaml` instead; no commercial LLM keys required. Run with `docker compose -f docker-compose.local.yaml up`. **⚠️ Experimental — not yet thoroughly tested.**
 - `.env.example` — environment variables for provider keys + LiteLLM proxy configuration.
 - `.env.local.example` — the same, for the fully local Ollama stack (no provider keys needed).
 - `requirements.txt` — Python dependencies.
