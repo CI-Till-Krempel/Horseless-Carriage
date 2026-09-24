@@ -19,13 +19,15 @@ This script will:
 | Command | Behavior |
 |---|---|
 | `python3 run.py` | **Default.** ADK web frontend, foreground, at `http://localhost:8000`. |
-| `python3 run.py cli [query...]` | Interactive CLI session in your terminal instead of the web UI. |
-| `python3 run.py daemon` | Add to either of the above to run detached (`python3 run.py daemon` or `python3 run.py cli daemon`). |
+| `python3 run.py cli [query...]` | Interactive CLI session in your terminal instead of the web UI (Terminal UI). **⚠️ Experimental — not yet thoroughly tested.** |
+| `python3 run.py daemon` | Add to either of the above to run detached (`python3 run.py daemon` or `python3 run.py cli daemon`). **⚠️ Experimental — not yet thoroughly tested.** |
 | `python3 run.py dev` | Add to any of the above for **developer mode**: rebuilds the `agent`/`ollama` images fresh before starting (see `rebuild_images.py`) and runs with verbose (`debug`) logging for that invocation, without needing that persisted to `.env`. |
 
 The LiteLLM admin dashboard (`http://localhost:4000/ui`) is opened automatically in every mode.
 
 ## Running in Daemon Mode
+
+**⚠️ Experimental — not yet thoroughly tested.**
 
 To run the agent in the background:
 

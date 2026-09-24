@@ -23,7 +23,9 @@ stand alone - see lib_docker.print_stack_conflict_hint (GH issue #232).
 Usage:
   python3 run.py                 Web mode (default): ADK web frontend, foreground.
   python3 run.py cli [query...]  Interactive CLI session instead of the web UI.
+                                  [EXPERIMENTAL - not yet thoroughly tested]
   python3 run.py daemon          Add to either of the above to run detached.
+                                  [EXPERIMENTAL - not yet thoroughly tested]
   python3 run.py dev             Add to either of the above for developer mode:
                                   rebuilds agent/ollama images fresh before
                                   starting (see rebuild_images.py) and runs
