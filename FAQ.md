@@ -75,7 +75,7 @@ protected-branch guard blocks any direct push to `main` or `develop`, forcing ch
 Pull Request merge instead. **⚠️ Experimental — not yet thoroughly tested:** the Terminal UI
 (`python3 run.py cli`), daemon mode (`python3 run.py daemon`), the Local/Ollama provider, and every
 `INTERACTION_LEVEL` other than the default `Product`. See
-[ANNOUNCEMENT-v0.1.0.md](ANNOUNCEMENT-v0.1.0.md)'s "Known Issues" for the current list.
+[ANNOUNCEMENT-v0.1.0.md](spec-templates/announcements/ANNOUNCEMENT-v0.1.0.md)'s "Known Issues" for the current list.
 
 **Where do I report a bug or ask for help?**
 [Open a GitHub issue](https://github.com/CI-Till-Krempel/Horseless-Carriage/issues) for bugs and

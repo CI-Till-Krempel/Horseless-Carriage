@@ -17,7 +17,7 @@ Legend
 
 ## Release plan (versions → stories)
 
-### v0.1 — Trust & Integrity Fixes (target: 2026-08)
+### v0.1 — Trust & Integrity Fixes (Released: `v0.1.0`, 2026-09-24)
 Goals
 - Stop the sprint pipeline from silently fabricating or dropping sprint-end artifacts.
 - Capture the full multi-agent conversation, not just the Orchestrator's turns.
