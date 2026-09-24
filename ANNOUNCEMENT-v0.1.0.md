@@ -59,8 +59,10 @@ repo today, with trustworthy sprint reports instead of placeholder numbers.
   security audit has been performed (see `SECURITY.md` for the basic review that
   has been done).
 - GitFlow branching (`develop`, `release/*`, `hotfix/*`) is documented in `RELEASE.md`
-  but not yet in effect — this release ships directly from `main`; the branch model
-  switch happens right after this tag.
+  and already implemented and mechanically enforced: `start_feature_branch` opens each
+  story on its own `feature/*` branch with a draft PR back into `develop`, and the
+  `git_push` tool's protected-branch guard blocks any direct push to `main` or `develop`,
+  requiring changes to land via a Pull Request merge instead.
 
 ## Links
 - [README.md](README.md) — what's in this repo and how it works.

@@ -65,9 +65,12 @@ Local/Ollama) via your own LiteLLM proxy instance, which runs in your own Docker
 **What's NOT ready yet in this release?**
 Changelog generation, customer-facing announcement drafting, and end-user product-doc tooling are
 planned for v0.2 (see [specs/ROADMAP.md](specs/ROADMAP.md)). This is an early release: no automated
-secret-scanning in CI yet, no formal security audit performed, and GitFlow branching
-(`develop`/`release/*`/`hotfix/*`) is documented but not yet in effect. See
-[ANNOUNCEMENT-v0.1.0.md](ANNOUNCEMENT-v0.1.0.md)'s "Known Issues" for the current list.
+secret-scanning in CI yet and no formal security audit performed. GitFlow branching
+(`develop`/`release/*`/`hotfix/*`) is already implemented and mechanically enforced: feature
+branches flow `feature/* -> develop -> release/* -> main`, and the `git_push` tool's
+protected-branch guard blocks any direct push to `main` or `develop`, forcing changes through a
+Pull Request merge instead. See [ANNOUNCEMENT-v0.1.0.md](ANNOUNCEMENT-v0.1.0.md)'s "Known Issues"
+for the current list.
 
 **Where do I report a bug or ask for help?**
 [Open a GitHub issue](https://github.com/CI-Till-Krempel/Horseless-Carriage/issues) for bugs and
