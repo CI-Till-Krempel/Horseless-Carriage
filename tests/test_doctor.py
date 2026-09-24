@@ -290,6 +290,32 @@ class TestWarningsDoNotBlock:
         assert "gh CLI is not authenticated" in capsys.readouterr().out
         assert code == 0
 
+    def test_gh_auth_check_skipped_when_github_app_fully_configured(self, valid_repo, monkeypatch, capsys):
+        """GH issue #243: PREFLIGHT.md says `gh auth status` only matters
+        for the Personal Account auth method and should be skipped for a
+        GitHub App setup - doctor.py shouldn't warn about it (even if gh
+        itself is missing or unauthenticated) once the GitHub App trio is
+        fully configured."""
+        _patch_which(monkeypatch, docker=True, **{"docker-compose": True})
+
+        def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["gh", "auth"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+        _patch_proxy_unreachable(monkeypatch)
+
+        env = valid_repo / ".env"
+        text = env.read_text().replace('GITHUB_TOKEN="dummy"\n', "")
+        text += 'GITHUB_APP_ID="1"\nGITHUB_APP_PRIVATE_KEY="key"\nGITHUB_APP_INSTALLATION_ID="2"\n'
+        env.write_text(text)
+
+        code = doctor.run(valid_repo)
+        out = capsys.readouterr().out
+        assert "gh CLI is not authenticated" not in out
+        assert "'gh' command not found" not in out
+        assert code == 0
+
 
 class TestLlmConfigurationSection:
     def test_active_provider_detected_and_placeholder_key_warns(self, valid_repo, monkeypatch, capsys):

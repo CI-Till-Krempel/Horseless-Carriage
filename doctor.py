@@ -176,7 +176,7 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
 
     if env.get("GITHUB_TOKEN"):
         print("GitHub Authentication: Using Personal Access Token.")
-    elif env.get("GITHUB_APP_ID") and env.get("GITHUB_APP_PRIVATE_KEY") and env.get("GITHUB_APP_INSTALLATION_ID"):
+    elif lib_github.github_app_fully_configured(env):
         print("GitHub Authentication: Using GitHub App.")
     else:
         warn("No GitHub authentication method fully configured in .env.")
@@ -225,8 +225,15 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
         print("NOTE: 'sessions' directory not found. Creating it...")
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
-    # 5. Check gh CLI authentication (still useful for local development and setup)
-    if shutil.which("gh") is None:
+    # 5. Check gh CLI authentication (still useful for local development and
+    # setup) - but only when GitHub App auth isn't fully configured. Per
+    # PREFLIGHT.md, `gh auth status` is only relevant to the Personal
+    # Account auth method; a user who deliberately set up a GitHub App and
+    # never ran `gh auth login` shouldn't get a spurious warning that
+    # contradicts the checklist (GH issue #243).
+    if lib_github.github_app_fully_configured(env):
+        print("NOTE: Skipping 'gh auth status' check - GitHub App auth is fully configured.")
+    elif shutil.which("gh") is None:
         warn("'gh' command not found. This may be needed for initial GitHub setup.")
     else:
         try:

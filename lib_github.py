@@ -31,6 +31,17 @@ def parse_owner_repo(url: str) -> Optional[Tuple[str, str]]:
     return m.group(1), m.group(2)
 
 
+def github_app_fully_configured(env: dict) -> bool:
+    """True iff all three GitHub App env vars (GITHUB_APP_ID,
+    GITHUB_APP_PRIVATE_KEY, GITHUB_APP_INSTALLATION_ID) are set - the same
+    "fully configured" test resolve_token() uses to decide whether to
+    attempt minting an installation token. Shared so callers that only
+    care about *which* auth method is configured (e.g. doctor.py deciding
+    whether the `gh auth status` check even applies - GH issue #243) don't
+    reinvent this trio check."""
+    return bool(env.get("GITHUB_APP_ID") and env.get("GITHUB_APP_PRIVATE_KEY") and env.get("GITHUB_APP_INSTALLATION_ID"))
+
+
 def resolve_token(env: dict) -> Tuple[Optional[str], str]:
     """Returns (token, source) - source is "token", "app", or "" (nothing
     configured). token is None if a GitHub App trio is configured but a
@@ -41,10 +52,10 @@ def resolve_token(env: dict) -> Tuple[Optional[str], str]:
     if env.get("GITHUB_TOKEN"):
         return env["GITHUB_TOKEN"], "token"
 
-    app_id = env.get("GITHUB_APP_ID")
-    private_key = env.get("GITHUB_APP_PRIVATE_KEY")
-    installation_id = env.get("GITHUB_APP_INSTALLATION_ID")
-    if app_id and private_key and installation_id:
+    if github_app_fully_configured(env):
+        app_id = env["GITHUB_APP_ID"]
+        private_key = env["GITHUB_APP_PRIVATE_KEY"]
+        installation_id = env["GITHUB_APP_INSTALLATION_ID"]
         try:
             import auth_github
             return auth_github.mint_installation_token(app_id, private_key, installation_id), "app"
