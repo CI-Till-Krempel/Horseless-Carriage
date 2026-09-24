@@ -23,6 +23,42 @@ def _base_story(stages_completed):
     }
 
 
+def _tool_context_two_stories(agent_name, first_stages, second_stages):
+    """Like _tool_context, but seeds two product_backlog/sprint_backlog
+    stories (US-0001, US-0002) with independent stages_completed - used to
+    test record_acceptance_check's already-Accepted guard (GH issue #247),
+    which needs a second, still-pending story to name."""
+    tc = MagicMock()
+    tc.state = ScrumState().model_dump()
+
+    def _stages(stages):
+        stages = list(stages)
+        if "Draft" not in stages:
+            stages = ["Draft"] + stages
+        return stages
+
+    first = {
+        "id": "US-0001",
+        "title": "First story",
+        "user_story": "As a user, I want X, so that Y.",
+        "acceptance_criteria": ["Given X, when Y, then Z"],
+        "stages_completed": _stages(first_stages),
+    }
+    second = {
+        "id": "US-0002",
+        "title": "Second story",
+        "user_story": "As a user, I want A, so that B.",
+        "acceptance_criteria": ["Given A, when B, then C"],
+        "stages_completed": _stages(second_stages),
+    }
+    tc.state["product_backlog"] = [first, second]
+    tc.state["sprint_backlog"] = [dict(first), dict(second)]
+    tc.agent_name = agent_name
+    tc.state["sprint_number"] = 1
+    tc.state["sprint_backlog_pr_sprint"] = 1
+    return tc
+
+
 def _tool_context(agent_name, stages_completed):
     """`stages_completed` gets "Draft" prepended automatically unless it's
     already there (GH issue #94: Draft is now a real, ordered STORY_STAGES
@@ -653,6 +689,48 @@ class TestRecordAcceptanceCheck(unittest.TestCase):
         tc = _tool_context("ProductOwner", [])
         result = record_acceptance_check("US-9999", "note", tool_context=tc)
         self.assertEqual(result["status"], "error")
+
+    def test_rejects_already_accepted_story_and_names_the_pending_one(self, mock_save):
+        """GH issue #247: DevTeam/ProductOwner repeatedly re-targeted an
+        already-Accepted story (often the first one ever accepted) instead
+        of the one actually awaiting acceptance. This must be rejected, not
+        silently accepted as a no-op re-check, and the message must name
+        the correct story (US-0002, currently at Tested)."""
+        tc = _tool_context_two_stories(
+            "ProductOwner",
+            first_stages=["Ready", "Implemented", "Reviewed", "Tested", "Accepted"],
+            second_stages=["Ready", "Implemented", "Reviewed", "Tested"],
+        )
+        result = record_acceptance_check("US-0001", "note", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0002", result["message"])
+        self.assertIn("already Accepted", result["message"])
+        # Must not have incremented anything as a side effect of the
+        # misdirected call.
+        self.assertIsNone(tc.state["product_backlog"][0].get("acceptance_check_count"))
+
+    def test_succeeds_for_the_story_actually_at_tested(self, mock_save):
+        """The companion, correctly-targeted call (US-0002, at Tested) must
+        still succeed normally, even while another story (US-0001) is
+        already Accepted."""
+        tc = _tool_context_two_stories(
+            "ProductOwner",
+            first_stages=["Ready", "Implemented", "Reviewed", "Tested", "Accepted"],
+            second_stages=["Ready", "Implemented", "Reviewed", "Tested"],
+        )
+        result = record_acceptance_check("US-0002", "Verified all AC met.", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][1]["acceptance_check_count"], 1)
+        self.assertEqual(tc.state["sprint_backlog"][1]["acceptance_check_count"], 1)
+
+    def test_rejects_already_accepted_story_when_none_pending(self, mock_save):
+        """If no story is currently at Tested, the rejection message must
+        say so plainly instead of naming a nonexistent story."""
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"])
+        result = record_acceptance_check("US-0001", "note", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("already Accepted", result["message"])
+        self.assertIn("no other story", result["message"])
 
 
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
