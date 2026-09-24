@@ -1,4 +1,7 @@
+import os
 import threading
+import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -350,3 +353,166 @@ class TestMainDeveloperMode:
         with pytest.raises(SystemExit):
             run.main()
         assert "LOG_LEVEL" not in captured["env"]
+
+
+def _write_cloud_config(tmp_path, model="gemini/gemini-1.5-pro"):
+    (tmp_path / "litellm.yaml").write_text(
+        f"model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: {model}\n"
+    )
+
+
+def _write_local_config(tmp_path, model="ollama/llama3.1:8b"):
+    """Writes the Local/Ollama config file with a newer mtime than any cloud
+    config also written in the same test, so lib_llm_test.llm_active_config_path
+    (mtime-based) reliably picks it - mirrors TestComposeFileArgs's setup."""
+    local_yaml = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+    local_yaml.parent.mkdir(parents=True, exist_ok=True)
+    local_yaml.write_text(f"model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: {model}\n")
+    future = time.time() + 10
+    os.utime(local_yaml, (future, future))
+
+
+class TestDetectExperimentalFeatures:
+    """
+    Acceptance Criteria (GH issue #263): run.py must be able to tell, from
+    the launch mode and .env/litellm-config, which of the four experimental
+    features flagged by GH issue #251 (Terminal UI, daemon mode, Local
+    AI/Ollama, a non-"Product" Interaction Level) apply to this run.
+    """
+
+    def test_no_experimental_features_by_default(self, tmp_path):
+        _write_cloud_config(tmp_path)
+        assert run.detect_experimental_features(tmp_path, "web", False) == []
+
+    def test_cli_mode_is_experimental(self, tmp_path):
+        _write_cloud_config(tmp_path)
+        features = run.detect_experimental_features(tmp_path, "cli", False)
+        assert any("Terminal UI" in f for f in features)
+
+    def test_daemon_mode_is_experimental(self, tmp_path):
+        _write_cloud_config(tmp_path)
+        features = run.detect_experimental_features(tmp_path, "web", True)
+        assert any("Daemon mode" in f for f in features)
+
+    def test_local_ollama_is_experimental(self, tmp_path):
+        _write_local_config(tmp_path)
+        features = run.detect_experimental_features(tmp_path, "web", False)
+        assert any("Local AI" in f or "Ollama" in f for f in features)
+
+    def test_cloud_provider_is_not_experimental(self, tmp_path):
+        _write_cloud_config(tmp_path)
+        features = run.detect_experimental_features(tmp_path, "web", False)
+        assert not any("Ollama" in f for f in features)
+
+    def test_non_product_interaction_level_is_experimental(self, tmp_path):
+        _write_cloud_config(tmp_path)
+        (tmp_path / ".env").write_text("INTERACTION_LEVEL='CEO'\n")
+        features = run.detect_experimental_features(tmp_path, "web", False)
+        assert any("CEO" in f for f in features)
+
+    def test_product_interaction_level_is_not_experimental(self, tmp_path):
+        _write_cloud_config(tmp_path)
+        (tmp_path / ".env").write_text("INTERACTION_LEVEL='Product'\n")
+        assert run.detect_experimental_features(tmp_path, "web", False) == []
+
+    def test_missing_interaction_level_defaults_to_product_and_is_not_experimental(self, tmp_path):
+        _write_cloud_config(tmp_path)
+        assert run.detect_experimental_features(tmp_path, "web", False) == []
+
+    def test_multiple_experimental_features_combine(self, tmp_path):
+        _write_local_config(tmp_path)
+        (tmp_path / ".env").write_text("OLLAMA_MODEL='llama3.1:8b'\nINTERACTION_LEVEL='Stakeholder'\n")
+        features = run.detect_experimental_features(tmp_path, "cli", True)
+        assert len(features) == 4
+
+
+class TestBuildExperimentalIssueUrl:
+    """
+    Acceptance Criteria (GH issue #263): the warning banner's link must be a
+    well-formed, properly URL-encoded GitHub "new issue" URL, prefilled via
+    ?title=&body= with non-secret redacted config only (OS, VERSION,
+    Interaction Level, active experimental features, provider/model name) -
+    never an API key, token, or other secret-shaped .env value.
+    """
+
+    def test_url_targets_the_new_issue_page(self):
+        url = run.build_experimental_issue_url(["Daemon mode"], "Product", "gemini", "gemini/gemini-1.5-pro")
+        assert url.startswith(
+            "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new?"
+        )
+
+    def test_url_is_well_formed_and_parseable(self):
+        url = run.build_experimental_issue_url(
+            ["Daemon mode (`run.py daemon`)", "Interaction Level: CEO (non-Product)"],
+            "CEO", "gemini", "gemini/gemini-1.5-pro",
+        )
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        assert "title" in query and "body" in query
+        body = query["body"][0]
+        assert "CEO" in body
+        assert "Daemon mode" in body
+        assert "gemini" in body
+
+    def test_url_includes_os_and_version(self):
+        url = run.build_experimental_issue_url(["Daemon mode"], "Product", "gemini", "gemini/gemini-1.5-pro")
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        body = query["body"][0]
+        assert "OS:" in body
+        assert run.banner.version() in body
+
+    def test_url_excludes_secret_shaped_values(self, tmp_path):
+        """Builds a fake .env with a fake API key, runs the real detection
+        path against it, and asserts the resulting banner/URL never contains
+        the secret - only the specific, known-safe fields (OS, version,
+        Interaction Level, feature list, provider/model name) are ever
+        read into the banner, so no full-.env dump can leak a key."""
+        _write_cloud_config(tmp_path)
+        secret = "sk-super-secret-key-should-never-leak-12345"
+        (tmp_path / ".env").write_text(f"INTERACTION_LEVEL='CEO'\nGOOGLE_API_KEY='{secret}'\n")
+
+        features = run.detect_experimental_features(tmp_path, "daemon", True)
+        url = run.build_experimental_issue_url(features, "CEO", "gemini", "gemini/gemini-1.5-pro")
+
+        assert secret not in url
+        assert urllib.parse.quote(secret) not in url
+
+
+class TestPrintExperimentalWarning:
+    """
+    Acceptance Criteria (GH issue #263): run.py must print a startup
+    warning banner when the active configuration uses one or more
+    experimental features (GH issue #251), and stay silent otherwise - a
+    doc marker alone doesn't reach a user who's already past onboarding.
+    """
+
+    def test_prints_banner_for_daemon_plus_non_product_interaction_level(self, tmp_path, capsys):
+        _write_cloud_config(tmp_path)
+        (tmp_path / ".env").write_text("INTERACTION_LEVEL='CEO'\n")
+
+        run.print_experimental_warning(tmp_path, "web", True)
+
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert "Daemon mode" in out
+        assert "CEO" in out
+        assert "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new" in out
+
+    def test_silent_when_no_experimental_features_active(self, tmp_path, capsys):
+        _write_cloud_config(tmp_path)
+
+        run.print_experimental_warning(tmp_path, "web", False)
+
+        assert capsys.readouterr().out == ""
+
+    def test_banner_excludes_secret_shaped_env_values(self, tmp_path, capsys):
+        _write_local_config(tmp_path)
+        secret = "sk-super-secret-key-should-never-leak-67890"
+        (tmp_path / ".env").write_text(f"OLLAMA_MODEL='llama3.1:8b'\nOPENAI_API_KEY='{secret}'\n")
+
+        run.print_experimental_warning(tmp_path, "cli", False)
+
+        out = capsys.readouterr().out
+        assert "WARNING" in out
+        assert secret not in out
+        assert urllib.parse.quote(secret) not in out

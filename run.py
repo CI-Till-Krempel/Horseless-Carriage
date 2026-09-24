@@ -26,12 +26,15 @@ Usage:
 """
 
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -39,10 +42,16 @@ from pathlib import Path
 import banner
 import doctor
 import lib_docker
+import lib_env
+import lib_llm_test
 import rebuild_images
 
 LITELLM_DASHBOARD_URL = "http://localhost:4000/ui"
 ADK_WEB_URL = "http://localhost:8000"
+
+# GH issue #263: link used to prefill a "report an experimental-feature
+# issue" URL from the startup warning banner below.
+GITHUB_NEW_ISSUE_URL = "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new"
 
 
 def parse_args(argv):
@@ -62,6 +71,96 @@ def parse_args(argv):
         else:
             extra.append(arg)
     return mode, daemon, dev, extra
+
+
+def _active_model_name(active_config_path: Path, active_provider: str, env: dict) -> str:
+    """Best-effort, non-secret "which model" summary for the warning banner
+    below: the OLLAMA_MODEL tag for a Local/Ollama setup (never a key), or
+    the `model:` value (e.g. "anthropic/claude-sonnet-5") from whichever
+    litellm-config file lib_llm_test.llm_active_config_path() picked for a
+    cloud provider. Falls back to just the provider name if the file is
+    missing or unreadable - never touches API keys/tokens."""
+    if active_provider == "local":
+        return env.get("OLLAMA_MODEL") or "llama3.1:8b (default)"
+    if not active_config_path.is_file():
+        return active_provider
+    text = active_config_path.read_text(encoding="utf-8")
+    m = re.search(r"^\s*model:\s*(\S+)", text, re.MULTILINE)
+    return m.group(1) if m else active_provider
+
+
+def detect_experimental_features(repo_root: Path, mode: str, daemon: bool) -> list:
+    """Which of the four experimental features from GH issue #251 (Terminal
+    UI, daemon mode, Local AI/Ollama, a non-"Product" Interaction Level)
+    apply to this run's configuration. Empty list if none do."""
+    repo_root = Path(repo_root)
+    env = lib_env.load_env_file(repo_root / ".env")
+    active_config_path = lib_llm_test.llm_active_config_path(repo_root)
+    active_provider = lib_llm_test.llm_active_provider(active_config_path)
+
+    features = []
+    if mode == "cli":
+        features.append("Terminal UI (`run.py cli`)")
+    if daemon:
+        features.append("Daemon mode (`run.py daemon`)")
+    if active_provider == "local":
+        features.append("Local AI / Ollama")
+    interaction_level = env.get("INTERACTION_LEVEL") or "Product"
+    if interaction_level != "Product":
+        features.append(f"Interaction Level: {interaction_level} (non-Product)")
+    return features
+
+
+def build_experimental_issue_url(features: list, interaction_level: str, provider: str, model_name: str) -> str:
+    """GitHub's "new issue" URL, prefilled via its documented ?title=&body=
+    query params (GH issue #263) with only non-secret, redacted config: OS,
+    this tool's VERSION, the Interaction Level, which experimental
+    feature(s) are active, and the provider/model *name* - never an API
+    key, token, or any other secret-shaped .env value (those are never read
+    here in the first place)."""
+    title = "Experimental feature: report an issue"
+    body = "\n".join([
+        "<!-- Describe the problem you ran into below. -->",
+        "",
+        "",
+        "**Configuration (auto-filled, non-secret):**",
+        f"- OS: {platform.platform()}",
+        f"- Horseless Carriage version: {banner.version()}",
+        f"- Interaction Level: {interaction_level}",
+        f"- Experimental feature(s) active: {', '.join(features)}",
+        f"- Provider / model: {provider} / {model_name}",
+    ])
+    query = urllib.parse.urlencode({"title": title, "body": body})
+    return f"{GITHUB_NEW_ISSUE_URL}?{query}"
+
+
+def print_experimental_warning(repo_root: Path, mode: str, daemon: bool) -> None:
+    """Prints a short startup warning banner (GH issue #263) if this run's
+    configuration uses one or more of the experimental features flagged by
+    GH issue #251 - a doc marker alone doesn't reach a user who's already
+    past onboarding. Silent (no-op) if none apply."""
+    repo_root = Path(repo_root)
+    features = detect_experimental_features(repo_root, mode, daemon)
+    if not features:
+        return
+
+    env = lib_env.load_env_file(repo_root / ".env")
+    active_config_path = lib_llm_test.llm_active_config_path(repo_root)
+    active_provider = lib_llm_test.llm_active_provider(active_config_path)
+    interaction_level = env.get("INTERACTION_LEVEL") or "Product"
+    model_name = _active_model_name(active_config_path, active_provider, env)
+    issue_url = build_experimental_issue_url(features, interaction_level, active_provider, model_name)
+
+    print("=" * 56)
+    print("WARNING: this run uses experimental feature(s), not yet")
+    print("thoroughly tested:")
+    for feature in features:
+        print(f"  - {feature}")
+    print("Hit a problem? Please report it (link pre-filled with your")
+    print("non-secret config - OS, version, interaction level, model):")
+    print(f"  {issue_url}")
+    print("=" * 56)
+    print()
 
 
 def wait_for_http(url: str, tries: int = 30) -> bool:
@@ -136,6 +235,7 @@ def _main(argv: list = None) -> None:
     os.chdir(Path(__file__).resolve().parent)
     banner.print_banner()
     mode, daemon, dev, extra_args = parse_args(sys.argv[1:] if argv is None else argv)
+    print_experimental_warning(Path("."), mode, daemon)
 
     if shutil.which("docker") is None:
         print("ERROR: 'docker' command not found. Please install Docker.")
