@@ -115,6 +115,29 @@ this shim).
    see eval/adk/README.md's own finding on this for the residual limitation
    that leaves.
 
+7. Line-buffered stdout, so `adk eval`'s own result output stays
+   interleaved with each case's live transcript in the order they actually
+   happened. A real CI run showed every case's transcript banner
+   (agent.py's "=== New session - prompt: ... ===", tool-call prints - all
+   to sys.stderr, which Python leaves unbuffered/line-buffered by default)
+   appearing live and in order, while `adk eval`'s own per-case results
+   (click.echo'd "Eval Id: ...", "Overall Eval Status: ...", metric lines,
+   the compact tool-call diff from point 5 above - all written through
+   click.echo to stdout) showed up late and out of sequence relative to
+   those transcripts, reading as if the results belonged to different
+   cases than the transcript directly above them. Root cause: stdout isn't
+   a TTY once GitHub Actions (or any non-interactive capture) redirects
+   it, so Python fully block-buffers this process's stdout instead of
+   line-buffering it - click.echo() calls only actually flush once that
+   buffer fills or the process exits, long after the stderr transcript
+   lines that were logically adjacent to them. This is the exact same bug
+   run_adk_eval.py's own module docstring already documents and fixes for
+   *that* host-side wrapper process; it was never applied to *this*
+   script, which is the actual process running `adk eval` inside the
+   container. Forcing line buffering here makes every click.echo land in
+   the log at the moment it's actually called, correctly interleaved with
+   the stderr transcript output around it.
+
 Invoked by run_adk_eval.py's adk_eval_command() in place of the bare `adk`
 executable - same arguments (eval, AGENT_MODULE_PATH, EVAL_SET_PATH,
 --config_file_path, --print_detailed_results), so this is a drop-in
@@ -125,6 +148,9 @@ import os
 import re
 import sys
 from pathlib import Path
+
+# See module docstring point 7.
+sys.stdout.reconfigure(line_buffering=True)
 
 import click
 from google.adk.agents.run_config import RunConfig
