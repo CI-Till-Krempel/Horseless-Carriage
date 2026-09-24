@@ -990,7 +990,15 @@ def main(dev: bool = False) -> None:
     print("  2) Anthropic Claude (cloud, commercial API key)")
     print("  3) OpenAI           (cloud, commercial API key)")
     print("  4) Local / Ollama   (fully local, no commercial API, no keys)")
-    choice = input("Choice [1-4]: ").strip()
+    # GH issue #233: an invalid choice here (including empty/whitespace
+    # input) used to kill the entire wizard (die()) instead of reprompting -
+    # retry instead, matching the rest of the wizard's style (see the
+    # GH issue #117 fix above for the same pattern).
+    while True:
+        choice = input("Choice [1-4]: ").strip()
+        if choice in ("1", "2", "3", "4"):
+            break
+        warn("Invalid choice, please enter 1-4.")
 
     if choice == "1":
         run_cloud_provider("gemini", "GOOGLE_API_KEY", fetch_gemini_models, "Google Gemini")
@@ -1000,8 +1008,6 @@ def main(dev: bool = False) -> None:
         run_cloud_provider("openai", "OPENAI_API_KEY", fetch_openai_models, "OpenAI")
     elif choice == "4":
         run_local_provider(dev=dev)
-    else:
-        die(f"Invalid choice: {choice}")
 
 
 if __name__ == "__main__":
