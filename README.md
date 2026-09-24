@@ -58,6 +58,7 @@ Or run each step yourself, if you'd rather control the pace (`setup_all.py` just
 
 ```bash
 python3 setup_llm.py       # pick a provider/model, configure the state repo, set budgets
+python3 check_state_repo.py # verify the state repo is in the shape the tools expect
 python3 setup_project.py   # Docker/GitHub CLI checks, bring up the containers
 python3 doctor.py          # validate everything before you run a real sprint - see below
 python3 run.py             # start the team (add "dev" for developer mode - see below)
