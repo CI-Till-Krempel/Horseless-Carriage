@@ -46,13 +46,19 @@ to `REPO_STATE_KEYS`.
   which are also git-ignored. Don't set `LOG_LEVEL=debug` in a shared/CI
   environment if you're not sure what upstream libraries (LiteLLM, ADK) include in
   their debug output.
-- **Conversation content is not scanned for secrets.** If a user pastes a real
-  credential into a prompt, it can end up in `ScrumState.messages` (persisted to
-  the state repo, `REPO_STATE_KEYS`) or `ScrumState.transcript` (in-memory only,
-  but rendered into `specs/reports/TRANSCRIPT-LATEST.md` and the per-run log at
+- **Conversation content is scanned for known secret shapes, not a general
+  scanner.** `_redact_secrets()` (`agents/scrum_team/tools/base.py`) is applied
+  before text is persisted into `ScrumState.messages` (state repo,
+  `REPO_STATE_KEYS`) or `ScrumState.transcript` (in-memory only, but rendered
+  into `specs/reports/TRANSCRIPT-LATEST.md` and the per-run log at
   `sessions/transcript-<session-id>.log` - GH issue #127: `transcript` itself is
-  no longer written into `.hc/state.json`). Don't paste real secrets into agent
-  conversations — use `.env` for all credentials the agents need.
+  no longer written into `.hc/state.json`) — see `agent.py`'s calls to
+  `_redact_secrets`. It masks GitHub tokens (classic and fine-grained PATs),
+  OpenAI/LiteLLM-style `sk-...` keys, and Bearer/Basic auth headers (GH issue
+  #128). This is shape-based pattern matching, not a comprehensive secret
+  scanner — a credential in an unusual format won't be caught. Don't paste real
+  secrets into agent conversations — use `.env` for all credentials the agents
+  need.
 - **The target/state repo itself may be a real git repo that gets pushed to
   GitHub.** Treat anything written under `REPO_STATE_KEYS` as eventually public
   within your team/org, even if the repo is private.
