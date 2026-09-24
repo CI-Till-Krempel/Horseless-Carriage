@@ -64,16 +64,29 @@ this shim).
    case) is untouched.
 
 5. A compact expected-vs-actual tool-call diff for every failed case,
-   alongside (not instead of) `adk eval`'s own tabulate table. That table
-   wraps each invocation's args/call-IDs across 15-20 lines, interleaving
-   fragments from different tool calls into adjacent cells - genuinely
-   hard to eyeball whether a failure is a real trajectory mismatch or
-   something else entirely (GH issue #196; this is exactly what made
-   diagnosing #191, #192 and #194 slower than it needed to be). This
-   patches `pretty_print_eval_result` (cli_eval.py) to print one line per
-   side per invocation, straight from the same `FunctionCall` objects the
-   table is built from - no parsing of already-rendered text, and no
-   change to the table itself.
+   *instead of* `adk eval`'s own tabulate table. That table wraps each
+   invocation's args/call-IDs across 15-20 lines, interleaving fragments
+   from different tool calls into adjacent cells - genuinely hard to
+   eyeball whether a failure is a real trajectory mismatch or something
+   else entirely (GH issue #196; this is exactly what made diagnosing
+   #191, #192 and #194 slower than it needed to be). Once printed through
+   a real CI runner's own log (non-TTY, no fixed terminal width to wrap
+   against - a real adk-eval workflow run's log showed this firsthand),
+   that same table wrapped a single failed case's ~10-row result into over
+   100 near-unreadable lines, burying the one line that actually mattered.
+   This patches `pretty_print_eval_result`
+   (cli_eval.py) two ways: (a) it prints one line per side per invocation,
+   straight from the same `FunctionCall` objects the table is built from -
+   no parsing of already-rendered text; (b) it wraps `click.echo` for the
+   duration of the *original* pretty_print_eval_result call and drops the
+   one echo carrying the rendered table (identified by its
+   `tabulate(..., tablefmt="grid")` leading `+---` border, not by call
+   order - so this can't accidentally swallow a different, unrelated echo
+   call if `pretty_print_eval_result` is ever restructured), restoring
+   `click.echo` immediately afterward. Every other line
+   pretty_print_eval_result prints (Eval Set Id/Eval Id/Overall Eval
+   Status/Metric lines) is untouched - those are already one clean line
+   each and never suffered this problem.
 
 6. Reset the scratch state repo's `.hc/state.json` between eval cases, not
    just once before the whole run. run_adk_eval.py's
@@ -191,13 +204,32 @@ def _print_compact_tool_call_diff(eval_result) -> None:
         click.echo(f"  invocation {i}: actual:   {actual_calls}")
 
 
+_original_click_echo = click.echo
+
+
+def _drop_wide_results_table_echo(message=None, *args, **kwargs):
+    """click.echo replacement installed only for the duration of the
+    original pretty_print_eval_result() call below - drops the one echo
+    call carrying its rendered `tabulate(..., tablefmt="grid")` table
+    (identified by that format's own leading `+---` border line, not by
+    call order) and passes every other message through unchanged. See
+    module docstring point 5."""
+    if isinstance(message, str) and message.lstrip().startswith("+---"):
+        return None
+    return _original_click_echo(message, *args, **kwargs)
+
+
 def _patch_pretty_print_eval_result() -> None:
     import google.adk.cli.cli_eval as cli_eval_module
 
     original = cli_eval_module.pretty_print_eval_result
 
     def patched(eval_result):
-        original(eval_result)
+        click.echo = _drop_wide_results_table_echo
+        try:
+            original(eval_result)
+        finally:
+            click.echo = _original_click_echo
         if eval_result.final_eval_status != EvalStatus.PASSED:
             _print_compact_tool_call_diff(eval_result)
 

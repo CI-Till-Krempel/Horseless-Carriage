@@ -225,7 +225,7 @@ class TestCompactToolCallDiff(unittest.TestCase):
 
         self.assertNotIn("Compact tool-call diff", out.getvalue())
 
-    def test_diff_is_printed_alongside_the_original_table_for_a_failed_case(self):
+    def test_diff_is_printed_alongside_the_header_lines_for_a_failed_case(self):
         expected_invocation = _make_invocation([genai_types.FunctionCall(name="git_push", args={"branch": "develop"})])
         actual_invocation = _make_invocation(
             [genai_types.FunctionCall(name="transfer_to_agent", args={"agent_name": "DevTeam"})]
@@ -237,13 +237,78 @@ class TestCompactToolCallDiff(unittest.TestCase):
             cli_eval_module.pretty_print_eval_result(eval_result)
         output = out.getvalue()
 
-        # The original table output is untouched.
+        # The header/status lines are untouched - only the wide grid table
+        # (see TestSuppressWideResultsTable) is dropped.
         self.assertIn("Eval Id: git_push_refuses_protected_develop", output)
         # The new compact diff is present and actually readable on one line
         # per side, unlike the wrapped table.
         self.assertIn("Compact tool-call diff", output)
         self.assertIn("expected: [\"git_push(branch='develop')\"]", output)
         self.assertIn("actual:   [\"transfer_to_agent(agent_name='DevTeam')\"]", output)
+
+
+class TestSuppressWideResultsTable(unittest.TestCase):
+    """
+    Acceptance Criteria: `tabulate(..., tablefmt="grid")`'s wide results
+    table wraps every multi-word cell across 15-20 further log lines once
+    printed through a CI runner's own block-buffered, non-TTY stdout (no
+    fixed terminal width to wrap against) - a real adk-eval workflow run's
+    log showed a single failed case's ~10-row result turn into over 100
+    near-unreadable lines this way. _print_compact_tool_call_diff (see
+    TestCompactToolCallDiff) already covers the same expected-vs-actual
+    detail in a format that survives that wrapping, so the wide table must
+    be dropped entirely - while every other line pretty_print_eval_result
+    prints (Eval Set Id/Eval Id/Overall Eval Status/Metric lines) stays
+    exactly as adk's own pretty-printer renders it.
+    """
+
+    def test_wide_table_is_dropped_for_a_failed_case(self):
+        expected_invocation = _make_invocation([genai_types.FunctionCall(name="git_push", args={"branch": "develop"})])
+        actual_invocation = _make_invocation(
+            [genai_types.FunctionCall(name="transfer_to_agent", args={"agent_name": "DevTeam"})]
+        )
+        eval_result = _make_eval_case_result(EvalStatus.FAILED, actual_invocation, expected_invocation)
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli_eval_module.pretty_print_eval_result(eval_result)
+        output = out.getvalue()
+
+        self.assertNotIn("+---", output)  # tabulate's grid-format table border
+        self.assertIn("Eval Id: git_push_refuses_protected_develop", output)
+        self.assertIn("Overall Eval Status: FAILED", output)
+
+    def test_wide_table_is_dropped_for_a_passed_case_too(self):
+        """pretty_print_eval_result prints the table unconditionally
+        (regardless of pass/fail) - the suppression must apply there too,
+        not just alongside the compact diff (which only fires on failure)."""
+        invocation = _make_invocation([genai_types.FunctionCall(name="git_push", args={"branch": "develop"})])
+        eval_result = _make_eval_case_result(EvalStatus.PASSED, invocation, invocation)
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli_eval_module.pretty_print_eval_result(eval_result)
+
+        self.assertNotIn("+---", out.getvalue())
+
+    def test_click_echo_is_restored_afterward(self):
+        original_echo = click.echo
+        invocation = _make_invocation([genai_types.FunctionCall(name="git_push", args={"branch": "develop"})])
+        eval_result = _make_eval_case_result(EvalStatus.PASSED, invocation, invocation)
+
+        with redirect_stdout(io.StringIO()):
+            cli_eval_module.pretty_print_eval_result(eval_result)
+
+        self.assertIs(click.echo, original_echo)
+
+    def test_click_echo_is_restored_even_if_the_original_raises(self):
+        original_echo = click.echo
+
+        broken_result = object()  # not a real EvalCaseResult - original() will raise
+        with redirect_stdout(io.StringIO()), self.assertRaises(Exception):
+            cli_eval_module.pretty_print_eval_result(broken_result)
+
+        self.assertIs(click.echo, original_echo)
 
 
 if __name__ == "__main__":

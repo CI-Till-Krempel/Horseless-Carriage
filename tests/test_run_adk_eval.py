@@ -51,6 +51,31 @@ class TestParseArgs:
     def test_env_file_flag(self):
         assert run_adk_eval.parse_args(["--env-file", ".env.adk-eval"]).env_file == ".env.adk-eval"
 
+    def test_only_flag_defaults_to_none(self):
+        assert run_adk_eval.parse_args([]).only is None
+
+    def test_only_flag_captures_raw_value(self):
+        assert run_adk_eval.parse_args(["--only", "case_a,case_b"]).only == "case_a,case_b"
+
+
+class TestParseOnlyEvalIds:
+    def test_none_when_raw_is_none_or_empty(self):
+        assert run_adk_eval.parse_only_eval_ids(None) is None
+        assert run_adk_eval.parse_only_eval_ids("") is None
+
+    def test_single_id(self):
+        assert run_adk_eval.parse_only_eval_ids("case_a") == ["case_a"]
+
+    def test_splits_and_trims_multiple_ids(self):
+        assert run_adk_eval.parse_only_eval_ids("case_a, case_b ,case_c") == ["case_a", "case_b", "case_c"]
+
+    def test_drops_empty_segments(self):
+        """A stray trailing/leading comma shouldn't produce an empty eval_id."""
+        assert run_adk_eval.parse_only_eval_ids("case_a,,case_b,") == ["case_a", "case_b"]
+
+    def test_all_empty_segments_returns_none(self):
+        assert run_adk_eval.parse_only_eval_ids(",,") is None
+
 
 class TestResolveHostOllama:
     """
@@ -122,6 +147,123 @@ class TestAdkEvalCommand:
 
     def test_includes_detailed_results_flag(self):
         assert "--print_detailed_results" in run_adk_eval.adk_eval_command()
+
+    def test_no_eval_ids_runs_the_full_generated_eval_set_unsuffixed(self):
+        """Default/no --only: the exact same command shape as before eval_ids
+        existed - no `:id1,id2` suffix on the eval-set-file argument."""
+        cmd = run_adk_eval.adk_eval_command(None)
+        assert "eval/adk/scrum_team.evalset.generated.json" in cmd
+        assert not any(":" in arg for arg in cmd if arg.startswith("eval/adk/scrum_team"))
+
+    def test_eval_ids_appends_adk_evals_own_suffix_syntax(self):
+        """`adk eval` natively supports `<path>:<id1>,<id2>` to restrict a run
+        to specific eval_id(s) - this just has to build that suffix."""
+        cmd = run_adk_eval.adk_eval_command(["case_a", "case_b"])
+        assert "eval/adk/scrum_team.evalset.generated.json:case_a,case_b" in cmd
+        assert "eval/adk/scrum_team.evalset.generated.json" not in cmd  # only the suffixed form is present
+
+    def test_single_eval_id(self):
+        cmd = run_adk_eval.adk_eval_command(["case_a"])
+        assert "eval/adk/scrum_team.evalset.generated.json:case_a" in cmd
+
+
+class TestParseEvalCaseStatuses:
+    """
+    Acceptance Criteria: `adk eval --print_detailed_results`'s own console
+    output prints "Eval Id: <id>" immediately followed by "Overall Eval
+    Status: PASSED|FAILED" for every case (see the real, installed
+    cli_eval.pretty_print_eval_result) - print_known_flaky_retry_annotation
+    needs to read that back out of a captured supplementary retry run's
+    stdout, with no machine-readable result format `adk eval` actually
+    provides.
+    """
+
+    def test_single_passed_case(self):
+        output = "Eval Set Id: x\nEval Id: case_a\nOverall Eval Status: PASSED\n"
+        assert run_adk_eval.parse_eval_case_statuses(output) == {"case_a": "PASSED"}
+
+    def test_single_failed_case(self):
+        output = "Eval Set Id: x\nEval Id: case_a\nOverall Eval Status: FAILED\n"
+        assert run_adk_eval.parse_eval_case_statuses(output) == {"case_a": "FAILED"}
+
+    def test_multiple_cases(self):
+        output = (
+            "Eval Id: case_a\nOverall Eval Status: PASSED\n"
+            "some other noise\n"
+            "Eval Id: case_b\nOverall Eval Status: FAILED\n"
+        )
+        assert run_adk_eval.parse_eval_case_statuses(output) == {"case_a": "PASSED", "case_b": "FAILED"}
+
+    def test_empty_output_returns_empty_dict(self):
+        assert run_adk_eval.parse_eval_case_statuses("") == {}
+
+    def test_eval_id_without_a_following_status_line_is_ignored(self):
+        output = "Eval Id: case_a\nsomething else entirely, no status line\n"
+        assert run_adk_eval.parse_eval_case_statuses(output) == {}
+
+
+class TestKnownFlakyRetryAnnotation:
+    """
+    Acceptance Criteria: annotate-only - print_known_flaky_retry_annotation
+    runs a supplementary retry of KNOWN_FLAKY_EVAL_IDS and prints how each
+    one scored, but must never influence the caller's own exit code (main()
+    never reads this function's return value or the subprocess result it
+    captures for anything but printing).
+    """
+
+    def test_reruns_only_the_known_flaky_eval_ids(self, monkeypatch, capsys):
+        captured_cmd = {}
+
+        class FakeResult:
+            stdout = "\n".join(
+                f"Eval Id: {eval_id}\nOverall Eval Status: PASSED" for eval_id in sorted(run_adk_eval.KNOWN_FLAKY_EVAL_IDS)
+            )
+
+        def fake_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            assert kwargs.get("capture_output") is True
+            return FakeResult()
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
+
+        run_adk_eval.print_known_flaky_retry_annotation(["-p", "horseless-carriage-eval"], ".env", {}, False)
+
+        eval_arg = next(a for a in captured_cmd["cmd"] if a.startswith("eval/adk/scrum_team.evalset.generated.json:"))
+        rerun_ids = set(eval_arg.split(":", 1)[1].split(","))
+        assert rerun_ids == run_adk_eval.KNOWN_FLAKY_EVAL_IDS
+
+        out = capsys.readouterr().out
+        for eval_id in run_adk_eval.KNOWN_FLAKY_EVAL_IDS:
+            assert f"{eval_id}: PASSED" in out
+
+    def test_reports_unknown_when_a_case_is_missing_from_retry_output(self, monkeypatch, capsys):
+        class FakeResult:
+            stdout = ""  # e.g. the retry itself crashed before printing anything
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", lambda cmd, **kwargs: FakeResult())
+
+        run_adk_eval.print_known_flaky_retry_annotation([], ".env", {}, False)
+
+        out = capsys.readouterr().out
+        assert "UNKNOWN" in out
+
+    def test_debug_flag_forces_debug_log_level_on_the_retry_too(self, monkeypatch):
+        captured_cmd = {}
+
+        class FakeResult:
+            stdout = ""
+
+        def fake_run(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            return FakeResult()
+
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
+
+        run_adk_eval.print_known_flaky_retry_annotation([], ".env", {}, True)
+
+        cmd = captured_cmd["cmd"]
+        assert "-e" in cmd
+        assert cmd[cmd.index("-e") + 1] == "LOG_LEVEL=debug"
 
 
 class TestComposeSetup:
@@ -712,6 +854,11 @@ class TestMain:
         class FakeResult:
             def __init__(self, code):
                 self.returncode = code
+                # print_known_flaky_retry_annotation's capture_output=True
+                # call reads .stdout - empty is fine for tests that don't
+                # care about its parsed content, just that the call happens.
+                self.stdout = ""
+                self.stderr = ""
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
@@ -1103,15 +1250,18 @@ class TestMain:
     def test_eval_failure_exit_code_propagates_after_teardown(self, tmp_path, monkeypatch):
         """Acceptance Criteria: teardown must never swallow the eval's own
         pass/fail signal - a CI job needs main() to still exit non-zero when
-        the eval set itself reports failures, even though a `down` call runs
-        afterward and succeeds."""
+        the eval set itself reports failures, even though a `down` call (and,
+        since the eval failed, the known-flaky-cases retry annotation - see
+        TestKnownFlakyRetryAnnotation) runs afterward and succeeds."""
         self._isolate(tmp_path, monkeypatch)
         (tmp_path / ".env").write_text("")
         monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
         monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
 
         calls = []
-        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls, returncodes=[0, 1, 0]))
+        # up, run (fails), the flaky-retry annotation's own supplementary
+        # run, down - see main()'s call to print_known_flaky_retry_annotation.
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls, returncodes=[0, 1, 0, 0]))
 
         try:
             run_adk_eval.main()
@@ -1120,5 +1270,44 @@ class TestMain:
         else:
             raise AssertionError("expected SystemExit")
 
-        assert len(calls) == 3
-        assert "down" in calls[2]
+        assert len(calls) == 4
+        assert "down" in calls[3]
+
+    def test_no_flaky_retry_annotation_when_the_eval_passes(self, tmp_path, monkeypatch):
+        """The supplementary retry pass must only run when the main eval run
+        itself failed - it would be pure wasted cost/time on every green run
+        otherwise."""
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
+
+        calls = []
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls, returncodes=[0, 0, 0]))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 0
+
+        assert len(calls) == 3  # up, run, down - no supplementary retry call
+
+    def test_no_flaky_retry_annotation_for_an_explicit_only_run(self, tmp_path, monkeypatch):
+        """A developer who already asked for one specific case via --only
+        doesn't need a second supplementary run of a different, fixed set of
+        cases they didn't ask about."""
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py", "--only", "some_eval_id"])
+
+        calls = []
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls, returncodes=[0, 1, 0]))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit as e:
+            assert e.code == 1
+
+        assert len(calls) == 3  # up, run, down - no supplementary retry call
+        assert any("some_eval_id" in arg for arg in calls[1])

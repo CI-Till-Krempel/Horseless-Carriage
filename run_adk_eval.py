@@ -62,11 +62,16 @@ Usage:
                                                 in your env file too if you actually need the exact model payload.
   python3 run_adk_eval.py --env-file .env.foo  Use a different env file for docker compose.
   python3 run_adk_eval.py --dry-run            Print the commands that would run, without running them.
+  python3 run_adk_eval.py --only ID1,ID2       Run only these eval_id(s) (comma-separated) instead of the full
+                                                set - `adk eval`'s own `evalset.json:id1,id2` suffix syntax, so
+                                                iterating on one failing/flaky case doesn't pay for the full
+                                                ~10-case run and Docker stack bring-up every time.
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -119,6 +124,22 @@ _SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Arch
 # empty/absent litellm_keys rather than getting a real key like every other
 # case, or the one thing they're testing would never trigger.
 NO_KEY_FIXTURE_EVAL_IDS = {"sub_agent_blocked_without_budget_capped_virtual_key"}
+
+# eval_id(s) eval/adk/README.md's own diagnosis history ("Re-running once
+# isolation was fixed exposed one more layer" / the two "residual failures"
+# noted afterward) documents as occasionally failing under a live model for
+# reasons that are genuine model-behavior variance, not a fixture or gate
+# defect - re-diagnosed there each time rather than assumed. A run that
+# fails one of these is NOT automatically waved through (this is
+# annotate-only, see print_known_flaky_retry_annotation - the run's exit
+# code is untouched); it exists so a human staring at a fresh CI failure
+# doesn't have to re-derive "have we seen this exact case flake before?" by
+# hand every time, before deciding whether to actually dig in.
+KNOWN_FLAKY_EVAL_IDS = {
+    "create_sprint_report_rejects_accomplishments_not_actually_accepted",
+    "log_story_tokens_rejects_value_matching_the_estimate",
+    "advance_story_stage_rejects_implemented_without_sprint_approval",
+}
 
 LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"
 # Generous for ~10 short, single-turn scripted conversations - real spend
@@ -202,7 +223,28 @@ def parse_args(argv: list) -> argparse.Namespace:
             "too noisy to leave on by default for every run (off unless passed)."
         ),
     )
+    parser.add_argument(
+        "--only", default=None,
+        help=(
+            "Comma-separated eval_id(s) to run instead of the full eval set (e.g. "
+            "--only create_sprint_report_rejects_accomplishments_not_actually_accepted) - see "
+            "parse_only_eval_ids/adk_eval_command. Useful for iterating on one failing or "
+            "flaky case without paying for the full ~10-case run and Docker stack bring-up "
+            "on every attempt."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def parse_only_eval_ids(raw: str) -> list:
+    """--only's raw comma-separated string -> a list of eval_id strings, or
+    None if raw is falsy (run the full eval set, unchanged - adk_eval_command's
+    own default). Trims whitespace and drops empty segments (e.g. a stray
+    trailing comma), same tolerance as a hand-typed CLI arg deserves."""
+    if not raw:
+        return None
+    ids = [part.strip() for part in raw.split(",") if part.strip()]
+    return ids or None
 
 
 def resolve_host_ollama(args: argparse.Namespace, platform: str = None) -> bool:
@@ -252,7 +294,7 @@ def hc_version_and_commit() -> tuple:
     return version, commit
 
 
-def adk_eval_command() -> list:
+def adk_eval_command(eval_ids: list = None) -> list:
     """The `adk eval` invocation run inside the container - see
     eval/adk/README.md's "Deviation: a loader shim was required" for why
     AGENT_MODULE_PATH is the eval/adk/agent/scrum_team shim rather than
@@ -271,12 +313,89 @@ def adk_eval_command() -> list:
 
     Runs against GENERATED_EVAL_SET_PATH, not the checked-in EVAL_SET_PATH
     template directly - see provision_and_generate_eval_set, which writes it
-    before this command ever executes."""
+    before this command ever executes.
+
+    eval_ids, if given, restricts the run to just those eval_id(s) - `adk
+    eval` itself already supports this via a `<path>:<id1>,<id2>` suffix on
+    the eval-set-file argument (see `adk eval --help`), so this only needs
+    to build that suffix; None (the default) runs every case in the file,
+    unchanged from before this parameter existed. See parse_only_eval_ids
+    for --only's CLI-facing counterpart, and
+    print_known_flaky_retry_annotation for the other caller (a
+    KNOWN_FLAKY_EVAL_IDS-scoped supplementary retry)."""
+    eval_set_arg = GENERATED_EVAL_SET_PATH
+    if eval_ids:
+        eval_set_arg = f"{eval_set_arg}:{','.join(eval_ids)}"
     return [
-        "python3", EVAL_RUNNER_SHIM_PATH, "eval", AGENT_MODULE_PATH, GENERATED_EVAL_SET_PATH,
+        "python3", EVAL_RUNNER_SHIM_PATH, "eval", AGENT_MODULE_PATH, eval_set_arg,
         "--config_file_path", EVAL_CONFIG_PATH,
         "--print_detailed_results",
     ]
+
+
+_EVAL_ID_LINE = re.compile(r"^Eval Id: (.+)$")
+_EVAL_STATUS_LINE = re.compile(r"^Overall Eval Status: (PASSED|FAILED)$")
+
+
+def parse_eval_case_statuses(output: str) -> dict:
+    """{eval_id: "PASSED"|"FAILED"}, read from `adk eval
+    --print_detailed_results`'s own per-case console output - each case
+    prints "Eval Id: <id>" immediately followed by "Overall Eval Status:
+    PASSED"/"FAILED" (see the real, installed cli_eval.pretty_print_eval_result).
+    Not a machine-readable result format `adk eval` actually provides -
+    just the one pair of lines every case's block always starts with,
+    matched line by line rather than depending on anything about what comes
+    between them. Only used to interpret
+    print_known_flaky_retry_annotation's own supplementary retry output."""
+    statuses = {}
+    pending_id = None
+    for line in output.splitlines():
+        line = line.strip()
+        id_match = _EVAL_ID_LINE.match(line)
+        if id_match:
+            pending_id = id_match.group(1).strip()
+            continue
+        status_match = _EVAL_STATUS_LINE.match(line)
+        if status_match and pending_id:
+            statuses[pending_id] = status_match.group(1)
+            pending_id = None
+    return statuses
+
+
+def print_known_flaky_retry_annotation(compose_args: list, env_file: str, run_env: dict, debug: bool) -> None:
+    """Called only when the main eval run just failed (see main()). Re-runs
+    KNOWN_FLAKY_EVAL_IDS alone (via adk_eval_command's eval_ids param - the
+    same mechanism --only uses) and prints how each one scored on this
+    supplementary attempt - annotate-only: this never changes the run's own
+    exit code, it exists purely so whoever is looking at a fresh CI failure
+    can immediately tell "this is the same live-model variance we've seen
+    before on this case" apart from "this looks new," without re-deriving
+    that by hand from eval/adk/README.md's diagnosis history every time.
+
+    Deliberately does not try to correlate this retry against exactly which
+    case(s) failed in the main run - main() doesn't capture that run's
+    output (see its own docstring note on why), and re-running the full set
+    just to get a same-shape failure list would cost as much as the run
+    that just failed. Running the small, fixed KNOWN_FLAKY_EVAL_IDS set
+    unconditionally is cheap (at most a few cases) and still answers the
+    useful question either way: if the case that just failed is in this
+    set, its retry result here is directly informative; if it isn't, seeing
+    every known-flaky case PASS here is itself a (weaker but still useful)
+    signal that the failure is something new, not the usual suspects."""
+    retry_cmd = ["docker", "compose", *compose_args, "--env-file", env_file, "run", "--rm"]
+    if debug:
+        retry_cmd += ["-e", "LOG_LEVEL=debug"]
+    retry_cmd += ["--entrypoint", "", "agent", *adk_eval_command(sorted(KNOWN_FLAKY_EVAL_IDS))]
+
+    print(f"--- This run failed - re-running {len(KNOWN_FLAKY_EVAL_IDS)} documented-flaky eval case(s) alone, "
+          "to help tell known live-model variance apart from a new regression (see KNOWN_FLAKY_EVAL_IDS) ---")
+    result = subprocess.run(retry_cmd, env=run_env, capture_output=True, text=True)
+    statuses = parse_eval_case_statuses(result.stdout)
+    print("Known-flaky eval case(s) - supplementary retry result (does NOT change this run's own exit code):")
+    for eval_id in sorted(KNOWN_FLAKY_EVAL_IDS):
+        print(f"  {eval_id}: {statuses.get(eval_id, 'UNKNOWN (not found in retry output)')}")
+    print("See eval/adk/README.md's diagnosis history for these eval_id(s) - search "
+          "\"live-model non-determinism\" - for why they're expected to be occasionally flaky.")
 
 
 def _read_env_file_value(env_file: str, key: str) -> str:
@@ -621,7 +740,7 @@ def main() -> None:
     # distinct from the dev stack's (run.py) and the test suite's
     # (run_tests.py) - see lib_docker.compose_project_args.
     compose_args, extra_env = compose_setup(args.ci, host_ollama)
-    adk_cmd = adk_eval_command()
+    adk_cmd = adk_eval_command(parse_only_eval_ids(args.only))
     # Always this run's own scratch repo (see prepare_scratch_state_repo),
     # never whatever STATE_REPO_PATH this developer's own .env happens to
     # have configured for their real day-to-day dev work.
@@ -695,6 +814,12 @@ def main() -> None:
             print(f"--- Running ADK eval set: {GENERATED_EVAL_SET_PATH} ---")
             result = subprocess.run(run_cmd, env=run_env)
             exit_code = result.returncode
+            if exit_code != 0 and not args.only:
+                # Skipped for an explicit --only run (args.only set) - a
+                # developer who already asked for one specific case doesn't
+                # need a second supplementary run telling them about a
+                # different, fixed set of cases they didn't ask about.
+                print_known_flaky_retry_annotation(compose_args, args.env_file, run_env, args.debug)
     finally:
         # The stack was previously left running indefinitely after every
         # run (`restart: unless-stopped`, no teardown anywhere) - always
