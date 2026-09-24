@@ -99,7 +99,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install host-script test dependencies
-        run: pip install pytest pyyaml
+        run: pip install pytest pyyaml PyJWT requests
       - name: Run tests
         run: python3 run_tests.py
       - name: Publish GitHub Release
