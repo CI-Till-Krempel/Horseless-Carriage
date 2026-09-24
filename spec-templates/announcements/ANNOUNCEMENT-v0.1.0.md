@@ -2,8 +2,8 @@
 
 - Release: v0.1.0
 - Audience: customers
-- Status: Draft
-- Last Updated: 2026-07-21
+- Status: Published
+- Last Updated: 2026-09-24
 
 ## Pitch
 Horseless Carriage gives an LLM a simulated Scrum team — Product Owner, Scrum Master,
