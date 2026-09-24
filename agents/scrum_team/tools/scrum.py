@@ -56,6 +56,7 @@ REPO_STATE_KEYS = [
     "sprint_report_pending_release",
     "blocking_interactions",
     "budget_reset_since_last_sprint_start",
+    "overclaim_rejection_counts",
 ]
 # Deliberately excluded from the above: github_token, github_app,
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
@@ -169,6 +170,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("retro_baseline", 0)
     s.setdefault("kpi_update_count", 0)
     s.setdefault("kpi_baseline", 0)
+    s.setdefault("overclaim_rejection_counts", {})
     s.setdefault("backlog_scope_complete", False)
     s.setdefault("human_approvals", [])
     s.setdefault("sprint_approval_baseline", 0)
