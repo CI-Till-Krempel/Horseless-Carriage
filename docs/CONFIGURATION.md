@@ -96,11 +96,41 @@ removes every human approval gate for that `.env`.
 | `TOTAL_USD_BUDGET` (canonical) / `SPRINT_USD_BUDGET` (deprecated fallback) | Whole engagement, never resets | Cloud providers only — a no-op for Local/Ollama |
 | `EVAL_SPRINT_TOKEN_BUDGET` / `EVAL_USD_BUDGET_PER_SPRINT` (+ deprecated `EVAL_SPRINT_USD_BUDGET`) | Eval-harness-only, separate from a real engagement's budget | Only when `run_eval.py` runs |
 | `PROCESS_OVERHEAD_PERCENTAGE` | Applies to both budgets | Always |
+| `SPRINT_CLOSEOUT_GRACE_PERCENT` | Extra allowance on top of `SPRINT_TOKEN_BUDGET`/the USD budget | Always — but only spendable by ScrumMaster/ProductOwner/QualityGuardian/ScrumOrchestrator, and only after the main budget trips |
 
 `setup_llm.py`'s local-provider flow (`is_local=True`) skips the
 `TOTAL_USD_BUDGET` question entirely rather than asking something that can
 never be enforced — it still writes a harmless default so `.env` stays
 consistent if the same file is later reconfigured for a cloud provider.
+
+`SPRINT_CLOSEOUT_GRACE_PERCENT` (default `20.0`, i.e. 20%) is how much EXTRA
+token/USD budget — as a percentage of the main sprint ceiling —
+ScrumMaster/ProductOwner/QualityGuardian/ScrumOrchestrator may still spend,
+combined, after the main budget is exhausted, specifically to finish the
+SPRINT CLOSE SEQUENCE (retro → `create_sprint_report` → KPIs →
+`create_release_pr`) for real rather than skipping it entirely (see
+`agents/scrum_team/helpers.py:closeout_grace_percent`, ISSUE-0046).
+DevTeam/QA/Architect get none of this grace — their work stays frozen at
+exhaustion; only closing the sprint out still gets turns.
+
+## Sprint-shape axis
+
+| Var | Default | Controls |
+|---|---|---|
+| `TARGET_STORIES_PER_SPRINT` | `3` | How many stories a sprint is assumed to get through — a deliberately simple, round-number assumption, not a measured velocity |
+| `READY_BACKLOG_SPRINTS_TARGET` | `2` | How many sprints' worth of Ready work the backlog should hold before Dev Team may start implementing |
+
+These two multiply together (`agents/scrum_team/helpers.py:target_stories_per_sprint`
+/ `ready_backlog_sprints_target`) into the Ready-backlog sufficiency target
+that `ready_backlog_shortfall` checks — `create_sprint_backlog_pr`
+(`agents/scrum_team/tools/github.py`) mechanically refuses to publish a
+Sprint Backlog PR while the Ready backlog (non-Epic, non-BLOCKED stories at
+Ready-or-further, not yet Accepted) is short of `TARGET_STORIES_PER_SPRINT
+x READY_BACKLOG_SPRINTS_TARGET` stories, naming the shortfall in its error
+message and in agent prompts guiding requirements-engineering loops. A team
+can instead call `declare_backlog_scope_complete(justification)` as an
+honest escape hatch if the product's real remaining scope is genuinely
+smaller than this target (ISSUE-0046).
 
 ## GitHub auth axis
 
