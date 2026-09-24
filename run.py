@@ -91,6 +91,12 @@ def open_dashboards(mode: str) -> None:
     if wait_for_http("http://localhost:4000/health/readiness"):
         print(f"--- LiteLLM dashboard ready: {LITELLM_DASHBOARD_URL} ---")
         open_url(LITELLM_DASHBOARD_URL)
+        # GH issue #235: litellm depends_on ollama, so by the time litellm's
+        # own health check passes, a dockerized ollama container (if this is
+        # a GPU/local-Ollama setup) has had a real chance to log whether it
+        # actually landed on the GPU or silently fell back to CPU - surface
+        # that now instead of requiring a separate `python3 doctor.py` run.
+        doctor.print_ollama_gpu_confirmation(Path("."))
     else:
         print(f"WARNING: LiteLLM dashboard did not become ready in time. Open manually: {LITELLM_DASHBOARD_URL}")
 

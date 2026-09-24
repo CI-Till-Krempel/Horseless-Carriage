@@ -78,6 +78,35 @@ class TestComposeFileArgs:
     def test_no_config_at_all_defaults_to_default_compose_file(self, tmp_path):
         assert run.compose_file_args(tmp_path) == []
 
+
+class TestOpenDashboardsGpuConfirmation:
+    """Acceptance Criteria (GH issue #235): once the LiteLLM dashboard is
+    confirmed reachable (which - since litellm depends_on ollama - means a
+    dockerized/host Ollama has had a real chance to report its status),
+    run.py must proactively surface doctor.py's GPU/host-Ollama
+    confirmation itself, rather than requiring a separate `python3
+    doctor.py` run to ever see it."""
+
+    def test_calls_gpu_confirmation_when_litellm_dashboard_ready(self, monkeypatch):
+        monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
+        monkeypatch.setattr(run, "open_url", lambda *a, **k: None)
+        calls = []
+        monkeypatch.setattr(run.doctor, "print_ollama_gpu_confirmation", lambda repo_root: calls.append(repo_root))
+
+        run.open_dashboards("cli")
+
+        assert len(calls) == 1
+
+    def test_skips_gpu_confirmation_when_litellm_dashboard_not_ready(self, monkeypatch):
+        monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: False)
+        monkeypatch.setattr(run, "open_url", lambda *a, **k: None)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("GPU confirmation should not run if the LiteLLM dashboard never came up")
+        monkeypatch.setattr(run.doctor, "print_ollama_gpu_confirmation", fail_if_called)
+
+        run.open_dashboards("cli")
+
     def test_local_setup_with_gpu_enabled_adds_gpu_compose_file(self, tmp_path):
         """OLLAMA_GPU_ENABLED=true (set by setup_llm.py's GPU prompt) must
         merge in docker-compose.gpu.yaml automatically - the user shouldn't

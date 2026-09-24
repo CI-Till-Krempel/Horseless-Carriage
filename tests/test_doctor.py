@@ -664,3 +664,114 @@ class TestHostOllamaModeCheck:
         monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", fail_if_called)
 
         doctor.check(repo, skip_llm_probe=True)
+
+
+class TestPrintOllamaGpuConfirmation:
+    """Acceptance Criteria (GH issue #235): a caller like run.py that just
+    brought the local/Ollama stack up (rather than running the whole
+    check() punch list) can call this standalone helper to get the same
+    one-line GPU/host-Ollama confirmation, proactively, right after
+    startup - not only when a user happens to separately run
+    `python3 doctor.py`."""
+
+    def _local_gpu_repo(self, valid_repo):
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_GPU_ENABLED="true"\n')
+        (valid_repo / "config" / "model-templates").mkdir(parents=True, exist_ok=True)
+        (valid_repo / "config" / "model-templates" / "litellm.local-ollama.yaml").write_text(
+            "model_list:\n"
+            "  - model_name: scrum-po\n"
+            "    litellm_params:\n"
+            "      model: ollama/llama3.1:8b\n"
+            "      api_base: http://ollama:11434\n"
+        )
+        return valid_repo
+
+    def _local_host_mode_repo(self, valid_repo):
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_HOST_MODE="true"\n')
+        (valid_repo / "config" / "model-templates").mkdir(parents=True, exist_ok=True)
+        (valid_repo / "config" / "model-templates" / "litellm.local-ollama.yaml").write_text(
+            "model_list:\n"
+            "  - model_name: scrum-po\n"
+            "    litellm_params:\n"
+            "      model: ollama/llama3.1:8b\n"
+            "      api_base: http://host.docker.internal:11434\n"
+        )
+        return valid_repo
+
+    def test_silent_for_cloud_provider(self, valid_repo, capsys):
+        """valid_repo defaults to a cloud (Gemini) provider - no local/GPU
+        Ollama setup at all, so this must print nothing."""
+        doctor.print_ollama_gpu_confirmation(valid_repo)
+        assert capsys.readouterr().out == ""
+
+    def test_confirms_gpu_when_working(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: ["ollama"])
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", lambda compose_args: "cuda")
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+        assert "GPU acceleration active" in capsys.readouterr().out
+
+    def test_warns_when_fallen_back_to_cpu(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: ["ollama"])
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", lambda compose_args: "cpu")
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+        out = capsys.readouterr().out
+        assert "running on CPU" in out
+        assert "docker compose" in out and "logs ollama" in out
+
+    def test_silent_when_status_not_yet_determinable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: ["ollama"])
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", lambda compose_args: None)
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+        assert capsys.readouterr().out == ""
+
+    def test_silent_when_ollama_container_not_running(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_gpu_repo(valid_repo)
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", lambda compose_args: [])
+
+        def fail_if_called(compose_args):
+            raise AssertionError("ollama_gpu_status should not run when the ollama container isn't up yet")
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+        assert capsys.readouterr().out == ""
+
+    def test_confirms_host_ollama_when_reachable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_host_mode_repo(valid_repo)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda: True)
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+        assert "GPU acceleration active" in capsys.readouterr().out
+
+    def test_warns_when_host_ollama_unreachable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_host_mode_repo(valid_repo)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda: False)
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+        assert "not reachable at http://localhost:11434" in capsys.readouterr().out
+
+    def test_host_mode_never_runs_container_gpu_check(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_host_mode_repo(valid_repo)
+        env = repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_GPU_ENABLED="true"\n')
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda: True)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("the dockerized-ollama GPU check should not run in host mode")
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", fail_if_called)
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.print_ollama_gpu_confirmation(repo)

@@ -18,7 +18,12 @@ This script will:
    - a driver/WSL2 misconfiguration otherwise fails silently. If
    OLLAMA_HOST_MODE=true instead (GH issue #93: Ollama running natively on
    the host, e.g. for macOS GPU/Metal support), checks host reachability
-   directly instead (see lib_docker.host_ollama_reachable).
+   directly instead (see lib_docker.host_ollama_reachable). See also
+   print_ollama_gpu_confirmation() below (GH issue #235): a standalone
+   version of this same check that run.py calls right after the stack it
+   actually started comes up, so a GPU/host-Ollama fallback is surfaced
+   proactively even on a plain `python3 run.py` (which gates on check()
+   with skip_llm_probe=True, before any container exists to check).
 
 Every problem found is collected into a punch list of ActionableItems (see
 check()) instead of stopping at the first one - a user fixing configuration
@@ -321,6 +326,51 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
         print("Setup looks good. You can now run the agent with: python3 run.py")
 
     return result
+
+
+def print_ollama_gpu_confirmation(repo_root: Path) -> None:
+    """Standalone, informational-only companion to check()'s section 6 GPU/
+    host-Ollama confirmation (GH issue #235) - for a caller like run.py that
+    wants just this one live check right after the local/Ollama stack has
+    actually come up, without re-running check()'s whole punch list (which
+    would reprint every other item, and re-pay the .env/GitHub/LLM-proxy
+    checks all over again).
+
+    Mirrors check()'s own detection logic exactly, but prints nothing at all
+    (rather than a warning) if a local/GPU Ollama setup isn't actually in
+    use, or if the GPU/host-Ollama status can't be determined yet (ollama
+    still starting up, hasn't logged its "inference compute" line yet) -
+    this is meant to be called once, right after startup, not polled, so a
+    false negative here shouldn't read as a real problem. Never raises,
+    never gates anything - see lib_docker.ollama_gpu_status's own
+    best-effort contract."""
+    repo_root = Path(repo_root)
+    env = lib_env.load_env_file(repo_root / ".env")
+    active_provider = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(repo_root))
+    if active_provider != "local":
+        return
+
+    if env.get("OLLAMA_HOST_MODE") == "true":
+        if lib_docker.host_ollama_reachable():
+            print("✓ GPU acceleration active (host Ollama reachable at http://localhost:11434).")
+        else:
+            print("⚠ Host Ollama (GH issue #93 host mode) is not reachable at http://localhost:11434 - "
+                  "run `ollama serve` on this machine, then re-check with: python3 doctor.py")
+        return
+
+    if env.get("OLLAMA_GPU_ENABLED") != "true":
+        return
+
+    compose_args = lib_docker.compose_file_args(repo_root) + lib_docker.compose_project_args("dev")
+    if "ollama" not in lib_docker.compose_running_services(compose_args):
+        return
+    gpu_status = lib_docker.ollama_gpu_status(compose_args)
+    if gpu_status == "cpu":
+        print("⚠ GPU requested but Ollama is running on CPU - see: docker compose "
+              + " ".join(compose_args) + " logs ollama")
+    elif gpu_status == "cuda":
+        print("✓ GPU acceleration active (Ollama reports library=cuda).")
+    # else: not determinable yet (best-effort) - stay silent rather than guess.
 
 
 def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
