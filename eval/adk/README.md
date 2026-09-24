@@ -760,6 +760,52 @@ in prose instead of emitting them, not reacting to anything in state; this
 is the live-model non-determinism this evalset's own top-level description
 already accepts as a known limitation, not something a fixture edit fixes.
 
+Two more residual failures, seen in a subsequent verification run with all
+of the above fixes in place, are worth recording precisely because they
+are *not* fixture bugs - re-diagnosing them as such would just cause
+another round of chasing:
+
+- `advance_story_stage_rejects_implemented_without_sprint_approval`
+  occasionally hits `LlmCallsLimitExceededError` even now - but the trace
+  showed the gate firing exactly as scripted on DevTeam's very first real
+  attempt (`advance_story_stage(...)` rejected with precisely "requires a
+  fresh 'sprint' human approval"). The model just doesn't stop there: it
+  goes on trying to actually resolve the blocker (recording the approval
+  itself, bouncing through Scrum Master) rather than reporting the
+  rejection back and ending its turn, eventually exhausting the 20-call
+  cap. The gate under test passed the moment it fired; this is variance in
+  how many turns a live model takes *after* that point, not a fixture or
+  gate defect.
+
+- `sub_agent_blocked_without_budget_capped_virtual_key` failing here
+  surfaced that its historical "PASSED" results were never actually
+  verifying the gate they claim to. `test_config.json`'s `IN_ORDER` match
+  only checks that the expected calls appear as an in-order subsequence of
+  the actual ones - it does not check that nothing runs *after* them. This
+  case's expected trajectory is a single `transfer_to_agent(agent_name=
+  'DevTeam')` (deliberately nothing else, since the very next thing should
+  be `check_cost_budget_callback`'s hard block). Every run so far - passing
+  or failing - shows DevTeam continuing to call `init_scrum_state`/
+  `list_docs`/real work *after* that transfer, meaning the "no budget-capped
+  key" block never actually fires at all: `ensure_state_initialized_
+  callback` (`agent.py`, GH issue #72) mechanically calls
+  `create_litellm_virtual_key` for every specialist role missing one -
+  including DevTeam - on the Orchestrator's very first turn, unconditionally,
+  whenever `LITELLM_MASTER_KEY`/`LITELLM_PROXY_API_BASE` are set (always
+  true in `--ci` mode) - with no awareness of `run_adk_eval.py`'s own
+  `NO_KEY_FIXTURE_EVAL_IDS` exemption that deliberately keeps this one
+  case's `litellm_keys` empty. By the time DevTeam gets its first real
+  turn, it already has a real key, and the refusal this case exists to
+  exercise has no chance to fire. A prior "PASSED" here was `IN_ORDER`
+  matching the first call and never noticing the rest of the trajectory
+  didn't get blocked - not the gate actually working. Left unfixed in this
+  pass: closing it means either teaching `ensure_state_initialized_
+  callback` about a test-only opt-out (production-code change, same
+  wider-blast-radius argument as leaving `ORCHESTRATOR_PROMPT` alone above)
+  or tightening `test_config.json`'s match semantics so a case like this
+  can actually fail loudly when it should - both belong in their own
+  reviewed change, not bundled into a fixture-only pass.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this
