@@ -13,7 +13,12 @@ Fully non-interactive: it never prompts. The one prompt this flow used to
 ask here (stop + recreate a leftover running stack before starting a fresh
 one) now lives in setup_all.py's offer_to_start, asked only in developer
 mode, before it hands off to this script - see lib_docker
-.maybe_stop_existing_stack.
+.maybe_stop_existing_stack. Every other entry point (this script run
+directly, and setup_all.py outside developer mode - both fully supported)
+reaches `docker compose up` below with no such prompt beforehand; if it
+fails, this script prints a non-interactive hint pointing at the likely
+cause and TROUBLESHOOTING.md instead of just leaving Docker's raw error to
+stand alone - see lib_docker.print_stack_conflict_hint (GH issue #232).
 
 Usage:
   python3 run.py                 Web mode (default): ADK web frontend, foreground.
@@ -194,6 +199,13 @@ def _main(argv: list = None) -> None:
         if daemon:
             result = subprocess.run(["docker", "compose", *full_compose_args, "up", "-d", "--build", "agent"], env=proc_env)
             if result.returncode != 0:
+                # GH issue #232: neither this direct `run.py` entry point nor
+                # non-dev setup_all.py (which hands off here) offers the
+                # interactive leftover-stack prompt that developer-mode
+                # setup_all.py does before `up` - print a non-interactive
+                # pointer at the likely cause instead of just the raw
+                # Docker error.
+                lib_docker.print_stack_conflict_hint(lib_docker.compose_project_args("dev"))
                 sys.exit(result.returncode)
             thread.join()
             print("Agent container started in daemon mode.")
@@ -202,6 +214,11 @@ def _main(argv: list = None) -> None:
         else:
             print("Running ADK web frontend in foreground. Press Ctrl+C to stop.")
             result = subprocess.run(["docker", "compose", *full_compose_args, "up", "--build", "agent"], env=proc_env)
+            if result.returncode not in (0, 130):
+                # 130 (SIGINT) is the normal Ctrl+C stop this section's own
+                # message invites - not a conflict. See the daemon branch
+                # above and GH issue #232 for the non-zero case.
+                lib_docker.print_stack_conflict_hint(lib_docker.compose_project_args("dev"))
             sys.exit(result.returncode)
 
 

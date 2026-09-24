@@ -222,6 +222,73 @@ class TestMainDoctorGatekeeper:
         assert captured["cmd"][:2] == ["docker", "compose"]
 
 
+class TestDockerComposeUpFailureHint:
+    """GH issue #232: `python3 run.py` run directly (and non-dev
+    setup_all.py, which hands off to run.main()) has no interactive
+    leftover-stack prompt before `docker compose up` - unlike developer-
+    mode setup_all.py. On a failed `up`, this module must print a non-
+    interactive hint (via lib_docker.print_stack_conflict_hint) instead of
+    silently surfacing just Docker's raw exit code."""
+
+    def _common_mocks(self, monkeypatch):
+        monkeypatch.setattr(run.os, "chdir", lambda _path: None)
+        monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
+        monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
+        monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
+
+    def test_foreground_up_failure_prints_hint(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+        monkeypatch.setattr(run.subprocess, "run", lambda cmd, **k: run.subprocess.CompletedProcess(cmd, 1))
+        hint_calls = []
+        monkeypatch.setattr(run.lib_docker, "print_stack_conflict_hint", lambda project_args: hint_calls.append(project_args))
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 1
+        assert hint_calls == [["-p", "horseless-carriage-dev"]]
+
+    def test_foreground_ctrl_c_exit_code_does_not_print_hint(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+        monkeypatch.setattr(run.subprocess, "run", lambda cmd, **k: run.subprocess.CompletedProcess(cmd, 130))
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("a normal Ctrl+C exit (130) must not be reported as a stack conflict")
+        monkeypatch.setattr(run.lib_docker, "print_stack_conflict_hint", fail_if_called)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 130
+
+    def test_successful_foreground_up_does_not_print_hint(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+        monkeypatch.setattr(run.subprocess, "run", lambda cmd, **k: run.subprocess.CompletedProcess(cmd, 0))
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("a successful 'up' must not print a conflict hint")
+        monkeypatch.setattr(run.lib_docker, "print_stack_conflict_hint", fail_if_called)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 0
+
+    def test_daemon_up_failure_prints_hint(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py", "daemon"])
+        monkeypatch.setattr(run.subprocess, "run", lambda cmd, **k: run.subprocess.CompletedProcess(cmd, 1))
+        hint_calls = []
+        monkeypatch.setattr(run.lib_docker, "print_stack_conflict_hint", lambda project_args: hint_calls.append(project_args))
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code == 1
+        assert hint_calls == [["-p", "horseless-carriage-dev"]]
+
+
 class TestMainKeyboardInterrupt:
     """
     Acceptance Criteria (GH issue #74): Ctrl+C during the foreground

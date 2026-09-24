@@ -167,3 +167,41 @@ def maybe_stop_existing_stack(compose_args: list) -> None:
             print("WARNING: 'docker compose down' did not complete cleanly - proceeding anyway.")
     except Exception as e:
         print(f"WARNING: 'docker compose down' did not complete cleanly ({e}) - proceeding anyway.")
+
+
+def print_stack_conflict_hint(project_args: list) -> None:
+    """GH issue #232: called after a `docker compose up` failure to print a
+    non-interactive pointer at the likely cause, instead of just leaving
+    Docker's raw error to stand alone. `maybe_stop_existing_stack` above
+    offers an interactive stop+recreate prompt *before* `up` runs, but only
+    developer-mode `setup_all.py` calls it - `python3 run.py` run directly,
+    and `setup_all.py` outside developer mode (both fully supported entry
+    points), reach `docker compose up` with no such check first. run.py's
+    contract is to stay fully non-interactive (see its own docstring), so
+    this never prompts - it only prints guidance and lets the caller exit
+    with the original failure's return code.
+
+    project_args should scope by project name only (e.g.
+    compose_project_args("dev")), not also by the -f file args that picked
+    a specific stack: the whole point is to catch containers left running
+    under the same project name by a *different* set of compose files
+    (e.g. from switching between docker-compose.yaml and
+    docker-compose.local.yaml, which share a default project name and
+    several service names) - `ps` scoped to one file set's services can
+    miss those."""
+    running = compose_running_services(project_args)
+    print()
+    print("--- 'docker compose up' failed ---")
+    if running:
+        print(
+            "An existing Horseless Carriage stack looks like it's already running "
+            f"({', '.join(sorted(set(running)))}), which can conflict with the one just started"
+        )
+        print("(e.g. from switching between the local/Ollama and cloud setups, which share a Compose")
+        print("project name and several service names, or a container left over from an interrupted run).")
+    else:
+        print("This can happen when a leftover/conflicting Horseless Carriage stack is still running")
+        print("(e.g. from switching between the local/Ollama and cloud setups, or a container left over")
+        print("from an earlier interrupted run) - even if none was detected just now.")
+    print(f"Try: docker compose {' '.join(project_args)} down")
+    print("See TROUBLESHOOTING.md, section 2 'Docker / container problems', for details.")
