@@ -655,6 +655,40 @@ fallback parser when `json.loads` fails - the same JSON-or-Python-repr
 recovery `_coerce_dict_arg` (finding #6) already does for tool
 *arguments*, applied here to the fake-tool-call envelope itself.
 
+**15. The live model detoured into a self-directed "setup wizard" instead
+of the scripted action, on cases whose fixture state happened to look
+sparse.** A 2026-09-24 CI run (`git_push_allows_feature_branch`,
+`advance_story_stage_rejects_implemented_without_sprint_approval`,
+`create_release_pr_rejects_without_release_approval`,
+`create_sprint_report_rejects_accomplishments_not_actually_accepted`)
+scored 0 on `tool_trajectory_avg_score` not because the underlying gate
+misbehaved, but because the Orchestrator never reached the tool call being
+tested at all: it called `repo_status()`, saw `configured_in_state: false`/
+`"Repository: Not configured"` in its own rendered system context, and - per
+`ORCHESTRATOR_PROMPT`'s SETUP WIZARD ("run proactively until configured")
+and FIRST MESSAGE SUMMARY step 3 ("if setup is incomplete... run the
+missing SETUP WIZARD step yourself") - treated the single scripted turn as
+a fresh, unconfigured session and spent its calls on `init_scrum_state()`/
+`list_docs()`/bouncing `transfer_to_agent` calls instead. For
+`advance_story_stage_rejects_implemented_without_sprint_approval` this
+looped long enough to hit `LlmCallsLimitExceededError` at the 20-call cap
+(see "Sequential, turn-capped eval runs" above) without ever producing a
+result. This is the same class of finding as #1 (the model getting
+distracted from the direct instruction) rather than a code-level gate bug -
+fixed the same way #1 was: each of the four prompts now explicitly states
+the repo/sprint is already fully configured and instructs the model to skip
+`repo_status`/`init_scrum_state`/`list_docs` and any other setup/status
+checks. The two cases whose fixture omitted `state.repo` entirely
+(`advance_story_stage_rejects_implemented_without_sprint_approval`,
+`create_sprint_report_rejects_accomplishments_not_actually_accepted`) also
+now include it, matching every sibling case that already had it, so
+`repo_status()` - if the model calls it anyway - no longer hands the model
+a genuine "Not configured" fact to reason from. `ORCHESTRATOR_PROMPT`
+itself (`prompts.py`) was deliberately left unchanged here: narrowing
+SETUP WIZARD/FIRST MESSAGE SUMMARY's "if setup is incomplete" trigger is a
+production-prompt behavior change with much wider blast radius than this
+evalset, and belongs in its own change, reviewed on its own merits.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this
