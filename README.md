@@ -10,6 +10,27 @@
 
 A multi-agent Scrum team at your disposal—implemented as a small set of role-focused agents (PO, SM, Dev, QA, Architect) orchestrated by a root "ScrumOrchestrator".
 
+## ⚠️ Early prototype — please read before you run it
+
+This is an early-stage, experimental project, not a polished product. A few
+things to keep in mind:
+
+- **It costs real money.** The agents call commercial LLM APIs, and a
+  misconfigured or long-running sprint can rack up a significant bill fast.
+  We've built in hard spend/token caps (see [Budget Management](docs/BUDGET.md))
+  to stop runaway usage, but *you* are responsible for setting sane limits and
+  keeping an eye on your own provider billing dashboard — we take no
+  responsibility for unexpected LLM costs.
+- **It produces no warranty.** The code, specs, and PRs the agents generate
+  are AI output — treat them the same way you'd treat any other AI-written
+  code: review before you merge, test before you trust. We take no
+  responsibility for the correctness, quality, or fitness-for-purpose of
+  anything the team produces.
+- **Things may break or change.** Expect rough edges, and expect behavior to
+  evolve release over release as we keep iterating.
+
+None of this should stop you from trying it out — just go in with eyes open.
+
 ## What is this, and why would I use it?
 
 Most ways of using an LLM to help build software still put you in the loop for
