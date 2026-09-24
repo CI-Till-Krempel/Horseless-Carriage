@@ -56,7 +56,7 @@ state or a PR) - the exact path is named on the node itself.
 
 ```mermaid
 flowchart TD
-    A["🧑‍🏫 ScrumMaster\n🔧🔄 start_sprint(goal)\n❌ refuses blank goal / unfinished prior close"]:::sm --> B["🧑‍💼 ProductOwner\nplans backlog to Ready — see diagram 2\n❌ can't proceed until Ready backlog holds\n≥ TARGET_STORIES_PER_SPRINT × READY_BACKLOG_SPRINTS_TARGET stories"]:::po
+    A["🧑‍🏫 ScrumMaster\n🔧🔄 start_sprint(goal)\n❌ refuses blank goal / unfinished prior close /\nprevious sprint's release PR still open-and-unmerged"]:::sm --> B["🧑‍💼 ProductOwner\nplans backlog to Ready — see diagram 2\n❌ can't proceed until Ready backlog holds\n≥ TARGET_STORIES_PER_SPRINT × READY_BACKLOG_SPRINTS_TARGET stories"]:::po
     B --> C["🧑‍💼 ProductOwner\n🔧 create_sprint_backlog_pr\nSprint Backlog PR into develop, BEFORE any story starts\n🟥👤 merge withheld until sprint/budget approval recorded, where required"]:::po
     C --> D["Each story runs the Stage Pipeline\n(diagram 2) — one at a time, priority order\n❌ start_feature_branch/Implemented refuse until this PR has merged"]:::multi
     D --> E{{"All stories as far\nas this sprint allows?"}}:::loop
