@@ -1511,5 +1511,96 @@ class TestUpdateRoadmapCrossVersionDedup(unittest.TestCase):
                 self.assertIn("[US-0002]", content[content.index("### v1.0.0"):content.index("### v1.1.0")])
 
 
+class TestUpdateRoadmapUnionsStories(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #249): update_roadmap must UNION the
+    `stories` list a caller passes with whatever's already listed for that
+    version, not wholesale-replace the block - a real eval run had
+    ProductOwner call update_roadmap directly with a partial `stories` list
+    at every sprint close, silently dropping previously-listed stories
+    (US-0002 vanished from "v1.0.0" once a later sprint-close call omitted
+    it).
+    """
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo")
+    def test_second_call_with_disjoint_stories_keeps_both(self, mock_save):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                tc = MagicMock()
+                tc.state = {
+                    "product_backlog": [
+                        {"id": "US-0001", "title": "Create To-Do List", "type": "User Story", "stages_completed": ["Draft", "Ready"]},
+                        {"id": "US-0002", "title": "View All Lists", "type": "User Story", "stages_completed": ["Draft"]},
+                    ],
+                    "sprint_backlog": [],
+                }
+
+                first = update_roadmap("v1.0.0", goals=["Ship MVP"], stories=["US-0001"], tool_context=tc)
+                self.assertEqual(first["status"], "ok")
+
+                second = update_roadmap("v1.0.0", goals=["Ship MVP + views"], stories=["US-0002"], tool_context=tc)
+                self.assertEqual(second["status"], "ok")
+
+                content = (Path(tmp) / "specs" / "ROADMAP.md").read_text(encoding="utf-8")
+                v1_section = content.split("### v1.0.0")[1]
+                self.assertIn("[US-0001]", v1_section)
+                self.assertIn("[US-0002]", v1_section)
+                # Not duplicated by either call.
+                self.assertEqual(content.count("[US-0001]"), 1)
+                self.assertEqual(content.count("[US-0002]"), 1)
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo")
+    def test_third_call_repeating_a_story_id_does_not_duplicate_it(self, mock_save):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                tc = MagicMock()
+                tc.state = {
+                    "product_backlog": [
+                        {"id": "US-0001", "title": "Create To-Do List", "type": "User Story", "stages_completed": ["Draft"]},
+                        {"id": "US-0002", "title": "View All Lists", "type": "User Story", "stages_completed": ["Draft"]},
+                        {"id": "US-0003", "title": "Add Task To List", "type": "User Story", "stages_completed": []},
+                    ],
+                    "sprint_backlog": [],
+                }
+
+                update_roadmap("v1.0.0", stories=["US-0001"], tool_context=tc)
+                update_roadmap("v1.0.0", stories=["US-0002"], tool_context=tc)
+                # US-0002 reappears alongside a brand-new US-0003 - it must
+                # not be duplicated just because it's already listed.
+                result = update_roadmap("v1.0.0", stories=["US-0002", "US-0003"], tool_context=tc)
+                self.assertEqual(result["status"], "ok")
+
+                content = (Path(tmp) / "specs" / "ROADMAP.md").read_text(encoding="utf-8")
+                v1_section = content.split("### v1.0.0")[1]
+                for story_id in ("US-0001", "US-0002", "US-0003"):
+                    self.assertIn(f"[{story_id}]", v1_section)
+                    self.assertEqual(content.count(f"[{story_id}]"), 1)
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo")
+    def test_moving_a_story_to_a_new_version_still_removes_it_from_the_old_one(self, mock_save):
+        """The union semantics above must not defeat GH issue #212's fix:
+        a story that moves to a new version (by being passed to a later
+        update_roadmap call for that new version) is still stripped from
+        whichever version held it before, rather than lingering there
+        forever via the union."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                tc = MagicMock()
+                tc.state = {
+                    "product_backlog": [
+                        {"id": "US-0001", "title": "Create To-Do List", "type": "User Story", "stages_completed": []},
+                    ],
+                    "sprint_backlog": [],
+                }
+
+                update_roadmap("v1.0.0", stories=["US-0001"], tool_context=tc)
+                result = update_roadmap("v1.1.0", stories=["US-0001"], tool_context=tc)
+                self.assertEqual(result["status"], "ok")
+
+                content = (Path(tmp) / "specs" / "ROADMAP.md").read_text(encoding="utf-8")
+                self.assertEqual(content.count("[US-0001]"), 1)
+                self.assertIn("[US-0001]", content.split("### v1.1.0")[1])
+
+
 if __name__ == "__main__":
     unittest.main()
