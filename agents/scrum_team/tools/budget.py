@@ -696,18 +696,74 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         sprint_item = next((x for x in sprint_backlog if x.get("id") == story_id), {})
         if "Accepted" not in _story_stages_completed(item, sprint_item):
             overclaimed.append(story_id)
+
+    # GH issue #248: the check above only matches a literal story-ID
+    # substring, so an agent can dodge it just by rewording the same claim
+    # without ever typing the ID - real eval transcripts showed
+    # create_sprint_report retried 5x/4x/2x per sprint with only the free
+    # text reworded between attempts. A regex can't reliably detect
+    # "describes the same undelivered work without the ID" (that's fuzzy
+    # phrasing detection), so instead: track rejections per story ID and,
+    # once a story has been rejected repeatedly, make the message
+    # unmistakable that rewording will never satisfy this gate - only the
+    # story actually reaching Accepted will. Still a hard rejection either
+    # way; this doesn't weaken the guard, just stops the silent-retry loop.
+    overclaim_counts = dict(s.get("overclaim_rejection_counts", {}) or {})
+    # Drop any stale counters for stories that have since reached Accepted
+    # (whether or not they're part of this call's claim) - the underlying
+    # blocker is resolved, so a future overclaim on the same ID should
+    # start counting fresh rather than carrying forward a stale count.
+    for story_id in list(overclaim_counts.keys()):
+        item = next((x for x in product_backlog if x.get("id") == story_id), None)
+        if item is None:
+            continue
+        sprint_item = next((x for x in sprint_backlog if x.get("id") == story_id), {})
+        if "Accepted" in _story_stages_completed(item, sprint_item):
+            del overclaim_counts[story_id]
+
     if overclaimed:
-        claim_subject = "it has" if len(overclaimed) == 1 else "they have"
-        return {
-            "status": "error",
-            "message": (
+        OVERCLAIM_RETRY_CAP = 3
+        for story_id in overclaimed:
+            overclaim_counts[story_id] = overclaim_counts.get(story_id, 0) + 1
+        s["overclaim_rejection_counts"] = overclaim_counts
+
+        escalated = [sid for sid in overclaimed if overclaim_counts.get(sid, 0) >= OVERCLAIM_RETRY_CAP]
+        if escalated:
+            counts_str = ", ".join(
+                f"{sid} (rejected {overclaim_counts[sid]}x)" for sid in sorted(escalated)
+            )
+            story_subject = "story" if len(escalated) == 1 else "stories"
+            message = (
+                f"Cannot close the sprint report: this sprint report has been rejected "
+                f"{max(overclaim_counts[sid] for sid in escalated)} times for referencing "
+                f"{', '.join(sorted(escalated))} as delivered before "
+                f"{'it' if len(escalated) == 1 else 'they'} reached Accepted. Rewording the "
+                f"summary will not fix this - the underlying {story_subject} must actually "
+                "reach Accepted stage first (via advance_story_stage). Stop retrying with "
+                f"different phrasing and go fix the actual blocker. Rejected story IDs: {counts_str}."
+            )
+        else:
+            claim_subject = "it has" if len(overclaimed) == 1 else "they have"
+            message = (
                 "Cannot close the sprint report: summary/accomplishments mention "
                 f"{', '.join(sorted(overclaimed))} as delivered, but {claim_subject} not "
                 "reached Accepted yet. Only claim a story as delivered once "
                 "advance_story_stage has actually marked it Accepted - state what was "
-                "really finished this sprint instead."
-            ),
+                "really finished this sprint instead. Rejected story IDs: "
+                f"{', '.join(sorted(overclaimed))}."
+            )
+        return {
+            "status": "error",
+            "message": message,
         }
+
+    # Overclaim check passed - clear all rejection counters (this report is
+    # closing successfully, and any Accepted-story counters were already
+    # dropped above) so a future overclaim starts counting fresh rather
+    # than carrying forward a stale count from a long-since-resolved
+    # rejection.
+    if s.get("overclaim_rejection_counts"):
+        s["overclaim_rejection_counts"] = {}
 
     # GH issue #164: convert this sprint's retro/impediment findings into
     # real backlog work before rendering the report below, so the report

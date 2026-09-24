@@ -359,6 +359,79 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_escalates_message_after_repeated_overclaim_rejections(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (GH issue #248): the GH issue #210 overclaim
+        guard is a literal story-ID substring match, so an agent can dodge
+        it by rewording summary/accomplishments without changing the
+        underlying (still-undelivered) claim - real eval transcripts show
+        exactly this retry-via-rewording pattern, 5/4/2 attempts per
+        sprint. After repeated rejections for the same story, the error
+        message must make explicit that rewording will not help and name
+        the rejected story ID(s), rather than allowing indefinite silent
+        retries with the same generic message.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        first = create_sprint_report("Sprint 2 successful delivery", ["Delivered US-0002"], tool_context=tool_context)
+        second = create_sprint_report("Sprint 2 focused on core work", ["Delivered US-0002"], tool_context=tool_context)
+        third = create_sprint_report("Sprint 2 completed by the team", ["Delivered US-0002"], tool_context=tool_context)
+
+        self.assertEqual(first["status"], "error")
+        self.assertNotIn("Rewording", first["message"])
+        self.assertEqual(second["status"], "error")
+        self.assertNotIn("Rewording", second["message"])
+        self.assertEqual(third["status"], "error")
+        self.assertIn("US-0002", third["message"])
+        self.assertIn("Rewording", third["message"])
+        self.assertIn("Accepted", third["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_resets_overclaim_counter_after_success(self, mock_write_file, mock_getenv):
+        """Once a report actually succeeds, a later overclaim on the same
+        story ID (e.g. next sprint) must start counting from zero again -
+        not inherit a stale count left over from a prior, already-resolved
+        rejection streak."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        create_sprint_report("Sprint 2 attempt one", ["Delivered US-0002"], tool_context=tool_context)
+        create_sprint_report("Sprint 2 attempt two", ["Delivered US-0002"], tool_context=tool_context)
+
+        # Succeed without mentioning the undelivered story at all.
+        ok = create_sprint_report(
+            "Sprint 2 wrap-up, no deliveries this cycle", ["Team focused on infrastructure work"],
+            tool_context=tool_context,
+        )
+        self.assertEqual(ok["status"], "ok")
+        self.assertEqual(tool_context.state.get("overclaim_rejection_counts"), {})
+
+        # Fresh retro/kpi signal is required again after a successful report.
+        tool_context.state["retro_actions"].append({"action": "test2", "owner": "SM", "status": "open"})
+        tool_context.state["kpi_update_count"] += 1
+
+        again = create_sprint_report("Sprint 3 summary", ["Delivered US-0002"], tool_context=tool_context)
+
+        self.assertEqual(again["status"], "error")
+        self.assertNotIn("Rewording", again["message"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_rejects_without_fresh_kpi_update(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (ISSUE-0046): create_sprint_report must refuse to

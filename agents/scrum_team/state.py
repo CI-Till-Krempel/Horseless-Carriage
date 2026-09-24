@@ -53,3 +53,4 @@ class ScrumState(BaseModel):
     sprint_report_pending_release: bool = False
     blocking_interactions: List[Dict[str, Any]] = Field(default_factory=list)
     orchestrator_stall_count: int = 0
+    overclaim_rejection_counts: Dict[str, int] = Field(default_factory=dict)
