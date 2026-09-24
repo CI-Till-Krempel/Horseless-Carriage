@@ -199,6 +199,8 @@ def _main(argv: list = None) -> None:
             print("Agent container started in daemon mode.")
             logs_cmd = " ".join(["docker", "compose", *full_compose_args, "logs", "-f", "agent"])
             print(f"To view logs, run: {logs_cmd}")
+            print("Note: if you reconfigure the provider after this, the -f flags above may be "
+                  "stale - run `docker compose ps` to find the running stack.")
         else:
             print("Running ADK web frontend in foreground. Press Ctrl+C to stop.")
             result = subprocess.run(["docker", "compose", *full_compose_args, "up", "--build", "agent"], env=proc_env)
