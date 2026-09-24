@@ -689,6 +689,44 @@ SETUP WIZARD/FIRST MESSAGE SUMMARY's "if setup is incomplete" trigger is a
 production-prompt behavior change with much wider blast radius than this
 evalset, and belongs in its own change, reviewed on its own merits.
 
+Re-running against a live model after the above fixed 3 of the 4 cases -
+but `git_push_allows_feature_branch` (last to run in that CI job) still
+failed, this time via `LlmCallsLimitExceededError` again, and for a
+completely different reason: a harness gap, not a prompt-distraction
+repeat. Its own fixture seeds a clean `product_backlog: [US-0099]`, but
+`start_feature_branch` was rejected with `sprint_backlog_pr_missing
+rejecting: ... product_backlog ids=['US-0004', 'ISSUE-0002']` - two IDs
+that belong to *other* eval cases entirely
+(`upsert_story_blocks_direct_status_set`/`log_story_tokens_...`'s
+`US-0004`, an `ISSUE-0002` auto-filed by an earlier case's retrospective -
+see step 8's auto-filing note above), neither ever present in this case's
+own `session_input.state`. Root cause: `run_adk_eval.py`'s
+`prepare_scratch_state_repo()` wipes the on-disk scratch state repo
+(`eval-output/adk-state-repo`, bind-mounted at
+`INTERNAL_STATE_REPO_PATH=/app/state_repo`) exactly once, before the
+single `docker compose run` that executes all ~12 eval cases sequentially
+- but every case's first turn calls `init_scrum_state()`
+(`ensure_state_initialized_callback`), which unconditionally reloads
+`.hc/state.json` from that same shared repo if present ("Try to load from
+repo if present first" - see its own docstring), clobbering whatever
+clean state this case's own fixture just seeded with real backlog/sprint
+data any *earlier* case in the same run happened to commit via
+`save_state_to_repo()`. Not gated behind `IN_ORDER`/exact-arg-matching
+limitations above - this is genuine cross-case state leakage, order-
+dependent on where a case falls in the run. Fixed in
+`eval/adk/run_eval_shim.py` (see its own module docstring point 6):
+monkeypatches `LocalEvalService._perform_inference_single_eval_item` (the
+one per-eval-case hook this service exposes) to delete `.hc/state.json`
+from the scratch repo before every case's inference, so `init_scrum_state()`
+finds nothing to load and each case runs against its own fixture state
+only, as if it were the only case in the run. This resets the *state file*
+only, not the scratch repo's git history/branches (feature branches, PRs-
+as-branches on the local bare remote) - a case whose tool calls scan git
+log/branches directly (`release_pr_still_open`, `story_spec_pr_merged`)
+could still, in principle, observe another case's commits. No case in this
+evalset currently does that from a fresh session's first turn, so this is
+a documented residual limitation, not something worked around here.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this

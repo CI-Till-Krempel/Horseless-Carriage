@@ -75,6 +75,33 @@ this shim).
    table is built from - no parsing of already-rendered text, and no
    change to the table itself.
 
+6. Reset the scratch state repo's `.hc/state.json` between eval cases, not
+   just once before the whole run. run_adk_eval.py's
+   prepare_scratch_state_repo() wipes eval-output/adk-state-repo (bind-
+   mounted at INTERNAL_STATE_REPO_PATH=/app/state_repo) exactly once,
+   before this single `docker compose run` invocation - but all ~12 eval
+   cases run sequentially inside that one invocation (point 1 above), and
+   every one of them calls init_scrum_state() on its very first turn
+   (agent.py's ensure_state_initialized_callback), which - see its own
+   docstring's step 1, "Try to load from repo if present first" -
+   unconditionally overwrites whatever product_backlog/sprint_number/etc.
+   this case's own session_input.state fixture just seeded with whatever
+   an EARLIER case in the same run already committed to that same on-disk
+   .hc/state.json via save_state_to_repo(). A 2026-09-24 run showed exactly
+   this: git_push_allows_feature_branch's fixture seeds a clean
+   `product_backlog: [US-0099]`, but start_feature_branch failed with
+   "sprint_backlog_pr_missing rejecting: ... product_backlog
+   ids=['US-0004', 'ISSUE-0002']" - both IDs left over from unrelated
+   earlier cases in the same run, not anything this case's own fixture ever
+   set. Deleting `.hc/state.json` before each case's inference (patching
+   LocalEvalService._perform_inference_single_eval_item, the one natural
+   per-case hook this service exposes) means init_scrum_state() finds
+   nothing to load and falls through to the fixture-seeded session state
+   untouched, the same as if this were the only case in the run. This only
+   resets the *state file*, not the scratch repo's git history/branches -
+   see eval/adk/README.md's own finding on this for the residual limitation
+   that leaves.
+
 Invoked by run_adk_eval.py's adk_eval_command() in place of the bare `adk`
 executable - same arguments (eval, AGENT_MODULE_PATH, EVAL_SET_PATH,
 --config_file_path, --print_detailed_results), so this is a drop-in
@@ -84,6 +111,7 @@ import logging
 import os
 import re
 import sys
+from pathlib import Path
 
 import click
 from google.adk.agents.run_config import RunConfig
@@ -177,6 +205,35 @@ def _patch_pretty_print_eval_result() -> None:
 
 
 _patch_pretty_print_eval_result()
+
+
+def _reset_scratch_state_file() -> None:
+    """Deletes the scratch state repo's .hc/state.json, if present - see
+    module docstring point 6. INTERNAL_STATE_REPO_PATH (the Docker mount
+    point) takes priority over STATE_REPO_PATH, matching
+    _configured_repo_root's own precedence (agents/scrum_team/tools/base.py)
+    so this always targets the exact same file init_scrum_state() would
+    otherwise load. A missing file (the very first eval case; a case
+    whose fixture never causes a commit) is not an error."""
+    repo_root = os.environ.get("INTERNAL_STATE_REPO_PATH") or os.environ.get("STATE_REPO_PATH")
+    if not repo_root:
+        return
+    (Path(repo_root) / ".hc" / "state.json").unlink(missing_ok=True)
+
+
+def _patch_reset_state_between_eval_cases() -> None:
+    from google.adk.evaluation.local_eval_service import LocalEvalService
+
+    original = LocalEvalService._perform_inference_single_eval_item
+
+    async def patched(self, *args, **kwargs):
+        _reset_scratch_state_file()
+        return await original(self, *args, **kwargs)
+
+    LocalEvalService._perform_inference_single_eval_item = patched
+
+
+_patch_reset_state_between_eval_cases()
 
 from google.adk.cli import main  # noqa: E402  (must import after patching above)
 
