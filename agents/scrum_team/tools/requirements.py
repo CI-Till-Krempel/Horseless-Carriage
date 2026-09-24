@@ -1101,6 +1101,30 @@ def _current_story_in_progress(product_backlog: List[Dict[str, Any]]):
     return None
 
 
+def _story_pending_acceptance(product_backlog: List[Dict[str, Any]]):
+    """
+    The highest-priority non-Epic, non-BLOCKED story that has completed
+    Tested but not yet Accepted - i.e. the one actually awaiting a Product
+    Owner acceptance check right now. product_backlog order is priority
+    order (see _preceding_story above).
+
+    Used by record_acceptance_check (GH issue #247) to name the correct
+    story when a call targets one that's already Accepted, instead of
+    silently letting a misdirected re-check burn a turn while the story
+    that actually needs it (often the one just implemented) never gets
+    checked at all.
+    """
+    for item in product_backlog:
+        if item.get("type", "User Story") == "Epic":
+            continue
+        if item.get("blocked"):
+            continue
+        stages = item.get("stages_completed") or []
+        if "Tested" in stages and "Accepted" not in stages:
+            return item
+    return None
+
+
 def _sync_roadmap_for_story(story_id: str, tool_context) -> Dict[str, Any]:
     """
     Re-renders the roadmap's Stories block for story_id's version (falling
@@ -1679,6 +1703,16 @@ def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None)
     grow past a snapshot taken at deny time. A boolean would already read
     "True" going into a re-check, indistinguishable from never having been
     reset.
+
+    Refuses a call targeting a story that's already Accepted (GH issue
+    #247): a real eval run showed DevTeam/ProductOwner repeatedly
+    hand-off/re-check an already-Accepted story (often the FIRST story ever
+    accepted) instead of the one actually just implemented, silently
+    wasting a turn as a no-op re-check while the real pending story never
+    gets checked. Rather than a silent success, this now rejects the call
+    and names whichever story is actually awaiting acceptance (see
+    _story_pending_acceptance) - the highest-priority story that has
+    completed Tested but not yet Accepted.
     """
     from .scrum import save_state_to_repo
 
@@ -1692,6 +1726,25 @@ def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None)
 
     sprint_item = sprint_backlog[sprint_idx] if sprint_idx is not None else {}
     product_item = product_backlog[product_idx] if product_idx is not None else {}
+
+    story_id_for_message = product_item.get("id") or sprint_item.get("id") or title_or_id
+    if "Accepted" in set(_story_stages_completed(product_item, sprint_item)):
+        pending = _story_pending_acceptance(product_backlog)
+        if pending is not None:
+            pending_id = pending.get("id") or pending.get("title")
+            pending_title = pending.get("title") or pending_id
+            message = (
+                f"Story {story_id_for_message} is already Accepted - did you mean to accept "
+                f"{pending_id} ('{pending_title}'), which is currently at Tested and awaiting "
+                "acceptance?"
+            )
+        else:
+            message = (
+                f"Story {story_id_for_message} is already Accepted, and no other story is "
+                "currently at Tested awaiting acceptance."
+            )
+        return {"status": "error", "message": message}
+
     prior_count = product_item.get("acceptance_check_count") or sprint_item.get("acceptance_check_count") or 0
     new_count = prior_count + 1
     update = {"acceptance_check_count": new_count, "acceptance_check_note": note.strip()}
