@@ -680,6 +680,34 @@ class TestWriteConversationTranscript(unittest.TestCase):
         written_content = mock_write_file.call_args_list[0].args[1]
         self.assertIn("No transcript recorded yet", written_content)
 
+    @patch.dict("os.environ", {"SESSION_ID": "run32"})
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_references_full_untruncated_session_log_path(self, mock_write_file):
+        """
+        Acceptance Criteria (GH issue #250): state.transcript is a rolling
+        window over the whole run (TRANSCRIPT_MAX_ENTRIES in agent.py), so a
+        numbered TRANSCRIPT-NNN.md is not guaranteed to hold a sprint's
+        complete history. The rendered file must point a reviewer at the
+        untruncated per-run session log instead of leaving that to be
+        discovered/assumed.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript"] = [
+            {"agent_name": "DevTeam", "role": "model", "content": "hi"}
+        ]
+
+        _write_conversation_transcript(tool_context)
+
+        written_content = mock_write_file.call_args_list[0].args[1]
+        self.assertIn("/app/sessions/transcript-run32.log", written_content)
+        # The pointer belongs near the top of the file, not buried after
+        # the transcript body.
+        self.assertLess(
+            written_content.index("/app/sessions/transcript-run32.log"),
+            written_content.index("## DevTeam"),
+        )
+
 
 class TestRenderFallbackSprintReport(unittest.TestCase):
     """
