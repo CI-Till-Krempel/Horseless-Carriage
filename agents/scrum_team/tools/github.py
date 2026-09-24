@@ -146,25 +146,148 @@ def integrate_open_changes(tool_context=None) -> Dict[str, Any]:
     return {"status": "ok", "integrated": True, "files": files, "commit": commit}
 
 
+def _preserve_local_only_develop_commits(repo_root: str, develop: str, tool_context=None) -> Dict[str, Any] | None:
+    """
+    ISSUE-0050 / 0.1.0-run33, 0.1.0-run34: _checkout_develop_or_recover's own
+    `git checkout -B <develop> origin/<develop>` (right after this call)
+    unconditionally resets the local branch to match origin - confirmed via a
+    live repro to silently discard any commits that exist locally but were
+    never pushed, including save_state_to_repo's own local-only checkpoint
+    commits (see its docstring: "Never pushes ... a purely local safety
+    net"). Two real eval runs hit exactly this: a story that had genuinely
+    progressed all the way to Accepted in-session (each stage transition its
+    own local-only checkpoint commit) regressed to whatever stage was last
+    actually pushed, the next time ANY of create_story_spec_pr/
+    create_sprint_backlog_pr/start_feature_branch/create_release_pr ran this
+    shared helper (all four do, and do so often - once per story spec, once
+    per sprint backlog, every feature branch, every release attempt) while
+    that story's own progress hadn't yet been folded into an actual push.
+    This then deadlocked the one-story-at-a-time sequential stage gate
+    (advance_story_stage) against a story the team had already, as far as it
+    knew, shipped - burning a sprint's entire token budget on blocked
+    retries.
+
+    Called right after the caller's own `git fetch origin <develop>`, before
+    the destructive reset-checkout. Best-effort, in order:
+    - No local <develop> yet, or it isn't ahead of origin/<develop> (nothing
+      the reset below would actually discard) - no-op.
+    - Local is a clean fast-forward ahead of origin (the common case - nothing
+      else has been pushed to <develop> since this clone last synced) - just
+      push it. The reset-checkout that follows is now a true no-op.
+    - Local and origin have genuinely diverged (e.g. a story-spec PR merged
+      server-side while local also advanced) - merge origin/<develop> into
+      local <develop> first. A clean merge (the common case in practice -
+      different files touched: a story's own state/markdown vs. another
+      story's brand new spec file) still gets pushed, again making the
+      reset-checkout that follows a no-op.
+    - A real, unresolvable merge conflict can't be handled safely here -
+      abort the merge, preserve the pre-merge local tip under a pushed
+      rescue branch (so the commits stay reachable and recoverable instead
+      of silently vanishing the moment the caller's reset-checkout runs),
+      and log a decision_log entry naming it. The caller's original
+      reset-checkout still proceeds after this - a logged, recoverable loss
+      instead of a silent one, since auto-resolving a real content conflict
+      isn't safe to attempt unattended.
+
+    Returns None if there was nothing to preserve (safe to skip - the usual
+    case). Otherwise a dict with "status" ("ok" if local now matches origin,
+    "error" if a rescue branch had to be used instead) and "in_sync" (True
+    once local ahead-of-origin commits are also now on origin, meaning the
+    caller's reset-checkout is provably a no-op).
+    """
+    branch_check = _run(["git", "rev-parse", "--verify", "--quiet", develop], cwd=repo_root, tool_context=tool_context)
+    if branch_check.get("returncode") != 0:
+        return None  # no local <develop> yet - nothing to lose
+
+    ahead = _run(["git", "rev-list", f"origin/{develop}..{develop}"], cwd=repo_root, tool_context=tool_context)
+    if not (ahead.get("stdout") or "").strip():
+        return None  # local has nothing origin doesn't already have
+
+    push = _run(["git", "push", "origin", develop], cwd=repo_root, tool_context=tool_context)
+    if push.get("status") == "ok":
+        return {"status": "ok", "in_sync": True, "action": "pushed_local_ahead"}
+
+    # Not a plain fast-forward - local and origin have diverged. Reconcile
+    # via a merge rather than letting the caller's reset-checkout discard
+    # local's commits outright.
+    pre_merge_tip = (_run(["git", "rev-parse", develop], cwd=repo_root, tool_context=tool_context).get("stdout") or "").strip()
+    _run(["git", "checkout", develop], cwd=repo_root, tool_context=tool_context)
+    merge = _run(["git", "merge", "--no-edit", f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    if merge.get("status") == "ok":
+        push_merged = _run(["git", "push", "origin", develop], cwd=repo_root, tool_context=tool_context)
+        if push_merged.get("status") == "ok":
+            return {"status": "ok", "in_sync": True, "action": "merged_and_pushed"}
+        # Merged locally but couldn't push (race, auth, network, ...) - the
+        # merge commit is still real and still contains everything; leave it
+        # as-is (not in_sync, so the caller keeps its normal reset-checkout,
+        # which will discard this local merge same as before - a real
+        # network/auth problem needs a human regardless).
+        return {"status": "error", "in_sync": False, "action": "merged_but_push_failed"}
+
+    _run(["git", "merge", "--abort"], cwd=repo_root, tool_context=tool_context)
+    rescue_branch = f"rescued-{develop.replace('/', '-')}-{pre_merge_tip[:8] or 'unknown'}"
+    _run(["git", "branch", rescue_branch, pre_merge_tip], cwd=repo_root, tool_context=tool_context)
+    rescue_push = _run(["git", "push", "origin", rescue_branch], cwd=repo_root, tool_context=tool_context)
+    if tool_context is not None and getattr(tool_context, "state", None) is not None:
+        try:
+            s = tool_context.state
+            pushed_note = "pushed" if rescue_push.get("status") == "ok" else "push failed - local only, may not survive"
+            s["decision_log"] = list(s.get("decision_log", [])) + [{
+                "title": f"Local-only {develop} progress could not be auto-reconciled with origin",
+                "decision": (
+                    f"Preserved the pre-reset local tip ({pre_merge_tip[:8] or 'unknown'}) as branch "
+                    f"'{rescue_branch}' ({pushed_note}) before {develop} was reset to origin/{develop}."
+                ),
+                "rationale": (
+                    "ISSUE-0050: a real merge conflict between local-only progress (e.g. a story's "
+                    "own stage-transition state) and origin's own newer commits couldn't be "
+                    "auto-resolved safely - see the rescue branch to recover it by hand."
+                ),
+                "owner": "system",
+            }]
+        except Exception:
+            pass
+    return {"status": "error", "in_sync": False, "action": "rescued", "rescue_branch": rescue_branch}
+
+
 def _checkout_develop_or_recover(repo_root: str, develop: str, tool_context=None) -> Dict[str, Any]:
     """
     Shared `git fetch` + `git checkout -B <develop> origin/<develop>` used by
-    create_story_spec_pr/create_sprint_backlog_pr/start_feature_branch before
-    branching off develop. On the specific "local changes would be
-    overwritten" failure, self-heals by calling integrate_open_changes()
-    (committing dangling specs/.hc writes out of the way) and retrying the
-    checkout once, rather than leaving the session stuck the way a real
-    incident did (see integrate_open_changes' docstring) - any other
-    checkout failure (network, auth, ...) is returned as-is, unretried.
+    create_story_spec_pr/create_sprint_backlog_pr/start_feature_branch/
+    create_release_pr before branching off (or landing onto) develop. On the
+    specific "local changes would be overwritten" failure, self-heals by
+    calling integrate_open_changes() (committing dangling specs/.hc writes
+    out of the way) and retrying the checkout once, rather than leaving the
+    session stuck the way a real incident did (see integrate_open_changes'
+    docstring) - any other checkout failure (network, auth, ...) is returned
+    as-is, unretried.
 
-    Returns {"status", "fetch", "checkout", "auto_integrated"} - callers
-    should treat a non-"ok" "checkout" the same as before this helper
-    existed; "auto_integrated" (the integrate_open_changes() result, or None
-    if recovery was never attempted) is extra context worth surfacing to the
-    caller's own error message when present.
+    Before that reset-checkout - which unconditionally overwrites local
+    <develop> with origin/<develop> - _preserve_local_only_develop_commits
+    (ISSUE-0050) gets a chance to push (or merge-then-push) any commits local
+    has that origin doesn't, so the reset is provably a no-op instead of a
+    silent discard. See that function's own docstring for the real incident
+    this fixes.
+
+    Returns {"status", "fetch", "checkout", "auto_integrated",
+    "preserved_local_commits"} - callers should treat a non-"ok" "checkout"
+    the same as before this helper existed; "auto_integrated" (the
+    integrate_open_changes() result, or None if recovery was never
+    attempted) is extra context worth surfacing to the caller's own error
+    message when present.
     """
     fetch = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
-    checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    preserved = _preserve_local_only_develop_commits(repo_root, develop, tool_context=tool_context)
+    if preserved is not None and preserved.get("in_sync"):
+        # Local <develop> was just pushed (or merged-then-pushed) to exactly
+        # match origin/<develop> - a plain checkout keeps it there. Using
+        # the caller's usual reset-checkout here instead would be harmless
+        # (a no-op, since they now match) but a plain checkout also avoids
+        # any risk of a race between this push and the reset re-reading a
+        # not-yet-visible origin ref.
+        checkout = _run(["git", "checkout", develop], cwd=repo_root, tool_context=tool_context)
+    else:
+        checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
     auto_integrated = None
     if checkout.get("status") == "error" and "would be overwritten" in (checkout.get("stderr") or "").lower():
         auto_integrated = integrate_open_changes(tool_context)
@@ -175,6 +298,7 @@ def _checkout_develop_or_recover(repo_root: str, develop: str, tool_context=None
         "fetch": fetch,
         "checkout": checkout,
         "auto_integrated": auto_integrated,
+        "preserved_local_commits": preserved,
     }
 
 
@@ -393,26 +517,50 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
         r1 = _run(["git", "add", "-A"], cwd=repo_root, tool_context=tool_context)
         if r1.get("status") == "error":
             return r1
-    r2 = _run(["git", "commit", "-m", commit_message], cwd=repo_root, tool_context=tool_context)
-    # Allow empty commit to ensure branch gets pushed
+    # ISSUE-0050 follow-up / 0.1.0-run34: whether there's actually anything
+    # staged to commit is checked via `git diff --cached --quiet` plumbing
+    # (exit 0 = nothing staged, 1 = something staged) BEFORE attempting a
+    # real commit, rather than attempting one and then string-matching
+    # git's human-readable failure text afterward. Git prints two entirely
+    # different messages for "nothing to commit" depending on whether any
+    # untracked files happen to be lying around - "nothing to commit,
+    # working tree clean" with none, "nothing added to commit but untracked
+    # files present" with any - and the old code only ever matched the
+    # first. A real eval run (0.1.0-run34) called this with add_all=False
+    # right after integrate_open_changes (github.py's create_release_pr)
+    # had already committed every real specs/.hc change itself - leaving
+    # nothing staged, but leaving check_build()'s own `.coverage`/
+    # `__pycache__/` test artifacts sitting untracked in the working tree
+    # (this scenario repo has no .gitignore at all) - which is the SECOND
+    # git message, not the first. The old substring check missed it
+    # entirely, `git commit` hard-failed, and create_release_pr reported
+    # this as a real error - every single release PR attempt in that run
+    # failed this way, in every sprint, with no release ever actually
+    # shipping. A plumbing exit-code check catches both cases uniformly and
+    # doesn't depend on git's message wording (which can also vary by
+    # locale) at all.
+    staged_check = _run(["git", "diff", "--cached", "--quiet"], cwd=repo_root, tool_context=tool_context)
+    nothing_staged = staged_check.get("returncode") == 0
+    if nothing_staged:
+        r2 = _run(["git", "commit", "--allow-empty", "-m", commit_message], cwd=repo_root, tool_context=tool_context)
+    else:
+        r2 = _run(["git", "commit", "-m", commit_message], cwd=repo_root, tool_context=tool_context)
     if r2.get("returncode") != 0:
-        # Try creating an empty commit when nothing to commit
-        if "nothing to commit" in (r2.get("stderr") or "") + (r2.get("stdout") or ""):
-            r2 = _run(["git", "commit", "--allow-empty", "-m", commit_message], cwd=repo_root, tool_context=tool_context)
-        # A commit failure for any other reason (or the empty-commit retry
-        # above also failing) must be fatal here, not silently continued
-        # past (see GH issue #115) - previously the final status was derived
-        # only from the push result, so if the remote happened to already be
-        # up to date, `git push` exits 0 ("Everything up-to-date") and
-        # git_push reported "ok" even though the intended commit never
-        # actually happened anywhere, locally or remotely.
-        if r2.get("returncode") != 0:
-            return {
-                "status": "error",
-                "message": f"git commit failed: {r2.get('stderr') or r2.get('stdout') or 'unknown error'}",
-                "branch": branch,
-                "steps": {"checkout": checkout, "add": r1, "commit": r2},
-            }
+        # A commit failure at this point is for some other, real reason
+        # (nothing left to swallow - the "nothing staged" case above always
+        # already retried with --allow-empty) and must be fatal here, not
+        # silently continued past (see GH issue #115) - previously the
+        # final status was derived only from the push result, so if the
+        # remote happened to already be up to date, `git push` exits 0
+        # ("Everything up-to-date") and git_push reported "ok" even though
+        # the intended commit never actually happened anywhere, locally or
+        # remotely.
+        return {
+            "status": "error",
+            "message": f"git commit failed: {r2.get('stderr') or r2.get('stdout') or 'unknown error'}",
+            "branch": branch,
+            "steps": {"checkout": checkout, "add": r1, "commit": r2},
+        }
     r3 = _run(["git", "push", "-u", "origin", branch], cwd=repo_root, tool_context=tool_context)
 
     return {"status": "ok" if r3.get("status") == "ok" else "error", "branch": branch, "steps": {"checkout": checkout, "add": r1, "commit": r2, "push": r3}}

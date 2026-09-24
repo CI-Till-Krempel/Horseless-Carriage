@@ -1,8 +1,8 @@
 # Issue
 
 - Issue ID: ISSUE-0050
-- Title: Cross-Sprint State-Persistence Gap Regressed US-0001 To "Implemented", Deadlocking Sprint 2's One-Story-At-A-Time Gate
-- Status: Ready
+- Title: `_checkout_develop_or_recover`'s Reset-To-Origin Checkout Silently Discarded Local-Only Story Progress
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-09-24
@@ -11,117 +11,116 @@
 Reported (maintainer, reviewing `0.1.0-run33`): Sprint 2 blew its token budget by 20% (6,032,161 /
 5,000,000) and `EVAL-REPORT.md` flagged "strict sequential gating caused total pipeline lockup" and
 "Stories US-0003 and US-0004 were implemented in code and tested, but blocked from advancing through the
-mandatory pipeline stages due to strict sequential stage gating on US-0002" as a top problem. Separately,
-`EVAL-REPORT.md`'s Requirements Quality section flagged story states as "inconsistently updated" versus
-actual code delivery.
+mandatory pipeline stages due to strict sequential stage gating on US-0002" as a top problem. This issue
+was originally filed (Ready, not yet implemented) documenting the effect and proposing fix shapes without a
+confirmed git-level root cause. **A second real run (`0.1.0-run34`) reproduced the identical failure shape**
+(`manifest.json`'s Sprint 3->4 boundary: US-0001 regressed `Accepted` -> `Implemented`, US-0002 regressed
+`Accepted` -> `Ready` with `stages_completed` gone entirely), which is what prompted pinning down the exact
+mechanism below and landing a real fix rather than further proposals.
 
-Investigated directly against the real run (`gh run view 35974931711`, its `manifest.json`/`transcript.md`
-artifacts, and the eval repo's actual git history at `horseless-carriage-eval-todo-app`,
-`eval/0.1.0-run33/develop`/`main`).
+**Root cause, now confirmed via a live git repro (not just artifact archaeology):** `advance_story_stage`
+(`agents/scrum_team/tools/requirements.py`) enforces, by design (see `docs/ARCHITECTURE.md`), that
+development (Implemented onward) happens one story at a time, top to bottom, in `product_backlog` priority
+order - the immediately-preceding story must already be `Accepted`. This rule is not the bug; the state it
+reasons over was.
 
-**Root cause, confirmed via git history + parsed state:** `advance_story_stage`
-(`agents/scrum_team/tools/requirements.py`) enforces, by design (see `docs/ARCHITECTURE.md`, "a story can't
-advance past READY until the story immediately above it has reached ACCEPTED"), that development
-(Implemented onward) happens one story at a time, top to bottom, in `product_backlog` priority order - the
-immediately-preceding story must already be `Accepted`.
+`save_state_to_repo` (`agents/scrum_team/tools/scrum.py`) commits `.hc/state.json` locally on every single
+story-stage transition via `_checkpoint_state_commit` - deliberately local-only ("Never pushes ... this is a
+purely local safety net"). Meanwhile, `_checkout_develop_or_recover` (`agents/scrum_team/tools/github.py`) -
+the shared `git fetch` + `git checkout -B <develop> origin/<develop>` helper used by
+`create_story_spec_pr`/`create_sprint_backlog_pr`/`start_feature_branch`/`create_release_pr`, i.e. called
+very frequently, at least once per story spec, once per sprint backlog, every feature branch, and every
+release attempt - unconditionally resets the local `develop` branch to match `origin/develop`.
+`git checkout -B <branch> <start-point>` is a hard reset when `<branch>` already exists: any commits on the
+current local `develop` that aren't reachable from `origin/develop` become unreachable garbage the instant
+this runs, with no error, no warning surfaced anywhere in the tool's return value - `git` itself only prints
+`Reset branch 'develop'` to stdout, which nothing here ever inspected.
 
-Sprint 1's own final in-session state had US-0001 fully `Accepted` (all six `STORY_STAGES` complete,
-confirmed in `manifest.json`'s sprint-1 `sprint_backlog`). But `.hc/state.json`'s **last commit that ever
-reached the shared remote** (`eval/0.1.0-run33/develop`, commit `1e73d50d`, "chore: update roadmap and
-story stage for US-0001", pushed ~08:29:24, ~1 minute into an ~7-minute run) recorded US-0001 only as far as
-`Implemented`:
-```
-$ gh api "repos/.../contents/specs/stories/US-0001-Create-To-Do-List.md?ref=1e73d50d"
-- Status: Implemented
-```
-No later commit ever updated this file or `.hc/state.json` on the shared branch again - confirmed via
-`gh api .../commits?path=.hc/state.json&sha=eval/0.1.0-run33/develop`, which shows exactly two checkpoint
-commits, both within the same minute, both at the very start of Sprint 1. `save_state_to_repo`
-(`agents/scrum_team/tools/scrum.py`) commits `.hc/state.json` locally on every single story-stage
-transition via `_checkpoint_state_commit` - but that function's own docstring is explicit: "**Never
-pushes** ... this is a purely local safety net." Nothing else in the eval harness's flow reliably pushes
-`.hc/state.json` forward after a story's real progress (Reviewed/Tested/Accepted, sprint-report/release
-activity) - by contrast, real/interactive usage keeps one long-lived local clone across a whole engagement,
-so a purely-local commit is far less likely to matter; the eval harness's own `run_eval.py` additionally
-re-syncs the local clone against the *remote* branch between sprints
-(`_sync_local_clone_to_branch`: `git fetch` + `git checkout` + `git pull --ff-only`), which is exactly the
-kind of operation that can leave locally-committed-but-never-pushed progress stranded or overwritten.
+**Live repro** (`$TMPDIR/git-repro`, a bare "remote" + two local clones - full transcript in this issue's
+git history/PR):
+1. A persistent local clone (standing in for the one the eval harness/a real engagement keeps across a
+   whole run) makes three local-only `save_state_to_repo`-style checkpoint commits on `develop` -
+   `Implemented` -> `Reviewed` -> `Accepted` - none ever pushed.
+2. Meanwhile a *separate* clone simulates `create_story_spec_pr`'s real flow: a story-spec branch, pushed,
+   merged into `develop` **server-side** via `gh pr merge` (this never touches the persistent local clone at
+   all - GitHub does the merge on its own servers).
+3. Now local `develop` and `origin/develop` have genuinely diverged: local has 3 commits origin doesn't;
+   origin has 1 commit (the story-spec merge) local doesn't.
+4. Running `_sync_local_clone_to_branch`'s exact sequence (`fetch` + `checkout` + `pull --ff-only`) against
+   this: the `--ff-only` pull **fails loudly** (exit 128, "Not possible to fast-forward") and - confirmed by
+   inspecting the file afterward - **does not touch `state.json` at all**. This function was a red herring;
+   it fails safe.
+5. Running `_checkout_develop_or_recover`'s actual checkout instead - `git checkout -B develop
+   origin/develop` - against the same diverged clone: `git` prints `Reset branch 'develop'` and
+   **`state.json` instantly reverts from `"v4 (Accepted)"` to `"v1 (init)"`** - the 3 local-only checkpoint
+   commits are gone from any branch tip, unreachable.
 
-At the start of Sprint 2, `init_scrum_state()` re-syncs `product_backlog`/`sprint_backlog` from whatever's
-actually on disk in the (freshly re-synced) local clone (`load_state_from_repo` + `sync_stories_from_markdown`,
-both in `agents/scrum_team/tools/scrum.py` / `requirements.py`) - which, per the above, still only knew
-US-0001 as `Implemented`. `advance_story_stage`'s one-at-a-time gate then correctly (per its own rule) but
-wrongly (per the team's real, already-shipped work) refused to let US-0002 - and everything behind it in
-priority order, including US-0003/US-0004 - advance past `Ready`, since the "immediately-preceding story"
-(US-0001) had, as far as any persisted state on the shared branch could show, never reached `Accepted`.
-DevTeam/Architect/QA had already done real implementation and test work on US-0003/US-0004 before hitting
-this wall (confirmed in `manifest.json`'s sprint-2 backlog: both show real `tasks`/`code_files`/`test_approach`
-content), so the team spent the rest of Sprint 2's budget on blocked retries and cross-agent transfers
-trying to route around a gate that, from its own state's point of view, was correctly refusing an
-out-of-order advance.
-
-This is very likely also implicated in Sprint 3's near-instant re-exhaustion (ISSUE-0049's own transcript
-evidence): several agents' `token_usage.agents` entries moved in ways inconsistent with simple
-accumulation between Sprint 2 and Sprint 3 (two agents' recorded totals *decreased*, which a monotonic
-per-call counter cannot do on its own) - consistent with `init_scrum_state()`'s `load_state_from_repo` step
-reloading a stale, non-final snapshot of shared state at a sprint boundary, the same mechanism responsible
-for the US-0001 regression above. This part is not yet conclusively traced to a single git operation (see
-Notes) and is called out here as a strong lead for the fix's own verification step, not a separately
-re-litigated root cause.
+This is not eval-harness-specific and not sprint-boundary-specific - `_checkout_develop_or_recover` runs
+inside ordinary story/sprint/release tooling used identically in real/interactive engagements. It fires
+constantly relative to how often a story actually reaches `Accepted` without an intervening real push, which
+is why both `0.1.0-run33` and `0.1.0-run34` hit it, at different points in their respective runs.
 
 ## Acceptance Criteria
-- A story's real, persisted stage/status can no longer regress between sprints in an eval run: after a
-  sprint that advanced a story all the way to `Accepted`, the very next sprint's `init_scrum_state()` must
-  observe that story as `Accepted` too - not an earlier stage.
-- Concretely, one (or a documented combination) of:
-  - The eval harness explicitly pushes the local clone's current branch (or at minimum `.hc/state.json`
-    and any touched `specs/` files) before `_sync_local_clone_to_branch` re-syncs against the remote at a
-    sprint boundary, so no local-only progress is ever at risk of being stranded or overwritten; or
-  - `_sync_local_clone_to_branch`'s `git pull --ff-only` fails loudly (surfaced in the manifest/transcript,
-    not just a silently-swallowed non-zero exit) whenever local and remote have diverged, so this failure
-    mode is visible in the run's own artifacts instead of only discoverable via manual git archaeology; or
-  - `save_state_to_repo` (or a harness-only wrapper around it) pushes in the eval harness's specific
-    execution model, where - unlike real/interactive usage - the harness itself is already responsible for
-    the local clone's entire lifecycle and no human is present to notice or push on its own.
-- A regression test (or a documented, deliberately-scripted local repro using `--dev-mode`) demonstrates a
-  story reaching `Accepted` in one sprint, a sprint-boundary re-sync, and `init_scrum_state()` still
-  observing `Accepted` (not a stale earlier stage) at the start of the next sprint.
+- `_checkout_develop_or_recover`'s reset-to-origin checkout never silently discards local-only commits on
+  `develop`.
+- The common case (local strictly ahead of origin, nothing else changed) is a clean push before the
+  checkout, making the checkout a true no-op.
+- The harder case (local and origin have genuinely diverged, as in the live repro above) is reconciled via a
+  merge, then pushed - still a no-op checkout afterward, and still zero data loss, as long as the merge is
+  clean (verified in the repro: a story's own state vs. another story's brand-new spec file never actually
+  conflict on content).
+- The rare case a real merge conflict can't be auto-resolved safely does not regress past the previous
+  (silent) behavior - it is now a **logged, recoverable** loss (a pushed rescue branch + a `decision_log`
+  entry naming it) instead of a silent one, and the original reset-checkout still proceeds so callers aren't
+  newly blocked by an unresolved conflict.
+- Regression tests cover: no local branch yet (no-op), local not ahead (no-op), clean fast-forward (pushed),
+  genuine divergence with a clean merge (merged + pushed), a real conflict (rescued + logged), and a merge
+  that succeeds locally but fails to push (left un-synced, caller's checkout unchanged from before this fix
+  - a real network/auth problem still needs a human either way).
 
 ## Notes
-- The exact git operation that stranded US-0001's later transitions was not pinned down to a single command
-  in this investigation - `_checkpoint_state_commit`'s "never push" design explains the underlying gap
-  unambiguously, but confirming precisely how `_sync_local_clone_to_branch`'s `fetch`/`checkout`/
-  `pull --ff-only` sequence interacts with locally-committed-but-unpushed progress (silently no-ops on
-  local-ahead, refuses loudly on genuine divergence, or something else) needs a live, instrumented local
-  repro (`--dev-mode`, inspecting `git log`/`git status` in the local clone at each sprint boundary) before
-  landing a fix - this issue documents the observed effect and proposes fix shapes, not a verified-to-the-line
-  git diagnosis.
-- The one-story-at-a-time sequential gate itself (`docs/ARCHITECTURE.md`) is a deliberate design choice, not
-  the bug - it is working exactly as written. This issue's fix target is the state it was reasoning over
-  being wrong, not the rule itself. A secondary, more defensive option worth considering separately: give
-  `advance_story_stage` a self-healing check when a story's own commit/PR history (e.g. a merged
-  `story-spec` or release PR referencing it) contradicts its freshly-reloaded `stages_completed` - similar
-  in spirit to the existing `state_json_corrupted` recovery path for a different failure shape - so an
-  unattended run has some chance of noticing and recovering from this class of contradiction without a
-  human in the loop. Not proposed as this issue's Acceptance Criteria since it treats a symptom (a
-  contradiction, once already present) rather than the underlying persistence gap.
-- Two of Sprint 3's agents (`ScrumMaster`, `QualityGuardian`) show *lower* `token_usage.agents` totals than
-  Sprint 2's end, despite neither agent taking a single turn in Sprint 3 (confirmed: all 26 real events in
-  `transcript.md`'s Sprint 3 log are authored by `ProductOwner`) - impossible under simple accumulation, and
-  consistent with `init_scrum_state()` reloading a stale, pre-Sprint-2-end snapshot of `token_usage` from
-  the same stranded/overwritten state described above, not a fresh, correctly-reset `{}`. Flagged as a lead
-  for verifying this issue's fix, not claimed as independently proven.
+- The one-story-at-a-time sequential gate itself is unchanged and correct - it was always reasoning
+  correctly over whatever state it was given; that state is now trustworthy.
+- `_sync_local_clone_to_branch` (`run_eval.py`, eval-harness-only) turned out not to be implicated at all -
+  its `pull --ff-only` fails loudly and leaves the working tree untouched on divergence, confirmed directly.
+  Left as-is.
+- A more defensive, symptom-side option considered and **not** taken: teaching `advance_story_stage` to
+  self-heal when a story's own commit/PR history contradicts its freshly-reloaded `stages_completed`. Not
+  needed once the actual persistence gap is closed at its source - the state it reloads is no longer wrong in
+  the first place.
+- `0.1.0-run34`'s Sprint 3->4 regression additionally coincided with `create_release_pr` failing on every
+  single attempt that run for an unrelated reason (see ISSUE-0051) - every one of those failed attempts still
+  ran `_checkout_develop_or_recover` first, repeatedly re-triggering this exact discard. Fixing ISSUE-0051
+  reduces how often this gets triggered in practice, but this issue's fix is what actually prevents the data
+  loss itself regardless of how often the caller retries.
 
 ## Test Approach
-- A scripted local repro (`--dev-mode`, 2-sprint run against a scratch eval-repo fork) that advances a
-  story to `Accepted` in sprint 1, then asserts sprint 2's `init_scrum_state()` doc_sync/backlog reflects
-  `Accepted`, not an earlier stage.
-- Unit coverage on whichever concrete mechanism the fix lands on (e.g. a harness-side push step, or a
-  loud-failure assertion on `_sync_local_clone_to_branch`'s pull step) mirroring the existing
-  `agents/scrum_team/tests/test_run_eval.py` mocking patterns (`_FakeSession`/`_FakeSessionService`-style
-  fakes, no real git/network calls).
-- Full `agents/scrum_team/tests` suite, no regressions, once a fix lands.
+- `agents/scrum_team/tests/test_github.py::TestPreserveLocalOnlyDevelopCommits` - the six cases listed under
+  Acceptance Criteria, pure `_run` mocking (no real git calls), mirroring this file's existing style.
+- `agents/scrum_team/tests/test_github.py::TestCheckoutDevelopOrRecover` - two new cases confirming the
+  wiring: a plain (non-reset) checkout once preservation confirms `in_sync`, and the original reset-checkout
+  still runs when preservation couldn't sync (rescued case).
+- The three pre-existing `TestCheckoutDevelopOrRecover` cases (self-heal on "would be overwritten", no retry
+  on an unrelated failure, give up if nothing to integrate) updated to patch
+  `_preserve_local_only_develop_commits` as a no-op `None` - they test a different concern, now-orthogonal to
+  this fix.
+- Live repro (see Overview) re-run against the fixed code: local's 3 checkpoint commits and origin's story-
+  spec merge are both present afterward, `state.json` still reads `"v4 (Accepted)"`, working tree clean,
+  `git status` reports "up to date with origin/develop".
+- Full `agents/scrum_team/tests` suite (via `docker compose -p horseless-carriage-test --env-file .env.test
+  run --rm --no-deps --entrypoint "" -e PYTHONPATH=/app agent pytest --cov=agents agents/scrum_team/tests`
+  - `--no-deps` here only because a live dev stack already held the usual `db`/`litellm` ports on this
+  machine; unaffected by that): 643 passed. The one pre-existing failure with `--no-deps`
+  (`test_llm_integration.py::test_key_creation_and_usage`) needs the real `litellm` service and fails purely
+  from its absence, unrelated to this change.
 
 ## Resolution
-Not yet implemented - proposed fix shapes are listed under Acceptance Criteria above, pending a decision
-on which (or which combination) to land, informed by the live local repro called out in Notes.
+- `agents/scrum_team/tools/github.py`: new `_preserve_local_only_develop_commits()` - pushes (or
+  merges-then-pushes) any local `develop` commits origin doesn't have, called from
+  `_checkout_develop_or_recover` right after its `git fetch`, right before the reset-to-origin checkout.
+  `_checkout_develop_or_recover` now uses a plain `git checkout <develop>` (not a reset) once preservation
+  confirms local and origin are in sync, and falls back to the original reset-checkout otherwise (the rare,
+  logged-and-rescued conflict case).
+- `agents/scrum_team/tests/test_github.py`: new `TestPreserveLocalOnlyDevelopCommits` (6 tests), 2 new
+  `TestCheckoutDevelopOrRecover` cases, 3 existing `TestCheckoutDevelopOrRecover` cases updated to patch the
+  new helper as a no-op.

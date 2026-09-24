@@ -21,6 +21,7 @@ from agents.scrum_team.tools.github import (
     merge_story_pr,
     integrate_open_changes,
     _checkout_develop_or_recover,
+    _preserve_local_only_develop_commits,
     release_pr_still_open,
 )
 from agents.scrum_team.state import ScrumState
@@ -348,6 +349,8 @@ class TestGitHubTools(unittest.TestCase):
                 return {"status": "ok", "returncode": 0}
             if cmd[:2] == ["git", "add"]:
                 return {"status": "ok", "returncode": 0}
+            if cmd[:3] == ["git", "diff", "--cached"]:
+                return {"status": "ok", "returncode": 1}  # something is staged (git add -A just ran)
             if cmd[:2] == ["git", "commit"]:
                 return {"status": "error", "returncode": 1, "stderr": "fatal: unable to write new_index file"}
             if cmd[:2] == ["git", "push"]:
@@ -405,6 +408,46 @@ class TestGitHubTools(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         push_calls = [c for c in mock_run.call_args_list if c.args[0][:2] == ["git", "push"]]
         self.assertEqual(push_calls, [])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_git_push_retries_as_empty_commit_when_nothing_staged_despite_untracked_files_present(self, mock_run):
+        """
+        ISSUE-0050 follow-up / 0.1.0-run34: git prints a DIFFERENT message
+        - "nothing added to commit but untracked files present" - instead of
+        "nothing to commit, working tree clean" whenever there are any
+        untracked files sitting around (e.g. .coverage/__pycache__/ left by
+        a test run), even if nothing real is staged. The old code only ever
+        string-matched the first message, so this second one hard-failed a
+        real release every single sprint of a real eval run. A plumbing
+        `git diff --cached --quiet` check (returncode 0 = nothing staged)
+        catches this case too, without depending on git's message wording.
+        """
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["git", "diff", "--cached"]:
+                return {"status": "ok", "returncode": 0}  # nothing staged
+            if cmd[:2] == ["git", "commit"] and "--allow-empty" not in cmd:
+                return {
+                    "status": "error", "returncode": 1,
+                    "stdout": "nothing added to commit but untracked files present (use \"git add\" to track)",
+                }
+            return {"status": "ok", "returncode": 0}
+        mock_run.side_effect = fake_run
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = git_push(branch="feature-branch", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(any("--allow-empty" in c for c in calls))
+        # The plain (non-empty) `git commit` attempt is skipped entirely once
+        # the plumbing check already knows nothing is staged - unlike the old
+        # code, which always tried the real commit first and only fell back
+        # to --allow-empty by parsing its failure text afterward.
+        self.assertFalse(any(cmd[:2] == ["git", "commit"] and "--allow-empty" not in cmd for cmd in calls))
 
     @patch("agents.scrum_team.tools.github._run")
     def test_gh_pr_review_records_pr_review_call(self, mock_run):
@@ -817,15 +860,20 @@ class TestIntegrateOpenChanges(unittest.TestCase):
 class TestCheckoutDevelopOrRecover(unittest.TestCase):
     """
     Acceptance Criteria: the shared checkout-develop helper used by
-    create_story_spec_pr/create_sprint_backlog_pr/start_feature_branch
-    self-heals a "local changes would be overwritten" failure by
-    integrating dangling specs/.hc writes and retrying once, but leaves any
-    other checkout failure (bad branch, network, auth) untouched.
+    create_story_spec_pr/create_sprint_backlog_pr/start_feature_branch/
+    create_release_pr self-heals a "local changes would be overwritten"
+    failure by integrating dangling specs/.hc writes and retrying once, but
+    leaves any other checkout failure (bad branch, network, auth) untouched.
+
+    _preserve_local_only_develop_commits (ISSUE-0050) is patched to a no-op
+    None in these - they're about the self-heal/retry behavior, covered by
+    its own TestPreserveLocalOnlyDevelopCommits below.
     """
 
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits", return_value=None)
     @patch("agents.scrum_team.tools.github.integrate_open_changes")
     @patch("agents.scrum_team.tools.github._run")
-    def test_self_heals_local_changes_would_be_overwritten(self, mock_run, mock_integrate):
+    def test_self_heals_local_changes_would_be_overwritten(self, mock_run, mock_integrate, mock_preserve):
         mock_run.side_effect = [
             {"status": "ok"},  # fetch
             {"status": "error", "stderr": "error: Your local changes to the following files would be overwritten by checkout"},
@@ -840,9 +888,10 @@ class TestCheckoutDevelopOrRecover(unittest.TestCase):
         self.assertEqual(result["auto_integrated"]["integrated"], True)
         self.assertEqual(mock_run.call_count, 3)
 
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits", return_value=None)
     @patch("agents.scrum_team.tools.github.integrate_open_changes")
     @patch("agents.scrum_team.tools.github._run")
-    def test_does_not_retry_an_unrelated_checkout_failure(self, mock_run, mock_integrate):
+    def test_does_not_retry_an_unrelated_checkout_failure(self, mock_run, mock_integrate, mock_preserve):
         mock_run.side_effect = [
             {"status": "ok"},  # fetch
             {"status": "error", "stderr": "fatal: couldn't find remote ref develop"},
@@ -855,9 +904,10 @@ class TestCheckoutDevelopOrRecover(unittest.TestCase):
         mock_integrate.assert_not_called()
         self.assertEqual(mock_run.call_count, 2)
 
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits", return_value=None)
     @patch("agents.scrum_team.tools.github.integrate_open_changes")
     @patch("agents.scrum_team.tools.github._run")
-    def test_gives_up_if_integration_finds_nothing_to_integrate(self, mock_run, mock_integrate):
+    def test_gives_up_if_integration_finds_nothing_to_integrate(self, mock_run, mock_integrate, mock_preserve):
         # Not every "would be overwritten" is dangling specs/.hc writes (could
         # be an untracked file elsewhere in the shared checkout) - if
         # integrate_open_changes had nothing to do, retrying would just fail
@@ -872,6 +922,149 @@ class TestCheckoutDevelopOrRecover(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(mock_run.call_count, 2)
+
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_uses_plain_checkout_once_local_is_confirmed_in_sync_with_origin(self, mock_run, mock_preserve):
+        # ISSUE-0050: once _preserve_local_only_develop_commits has already
+        # pushed (or merged-then-pushed) local <develop> to match origin, the
+        # usual reset-to-origin checkout is redundant - use a plain checkout
+        # instead of re-resetting (harmless either way once in sync, but a
+        # plain checkout can't ever race a not-yet-visible push).
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch
+            {"status": "ok"},  # plain checkout
+        ]
+        mock_preserve.return_value = {"status": "ok", "in_sync": True, "action": "merged_and_pushed"}
+
+        result = _checkout_develop_or_recover("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["preserved_local_commits"]["action"], "merged_and_pushed")
+        mock_run.assert_any_call(["git", "checkout", "develop"], cwd="/repo", tool_context=unittest.mock.ANY)
+
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_falls_back_to_reset_checkout_when_preservation_could_not_sync(self, mock_run, mock_preserve):
+        # A real, unresolvable merge conflict (rescued to a branch, not
+        # in_sync) - the original reset-to-origin checkout still has to run,
+        # same as before this fix existed, just with the loss now logged and
+        # recoverable instead of silent.
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch
+            {"status": "ok"},  # reset checkout
+        ]
+        mock_preserve.return_value = {"status": "error", "in_sync": False, "action": "rescued", "rescue_branch": "rescued-develop-abc123"}
+
+        result = _checkout_develop_or_recover("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result["status"], "ok")
+        mock_run.assert_any_call(["git", "checkout", "-B", "develop", "origin/develop"], cwd="/repo", tool_context=unittest.mock.ANY)
+
+
+class TestPreserveLocalOnlyDevelopCommits(unittest.TestCase):
+    """
+    ISSUE-0050 / 0.1.0-run33, 0.1.0-run34: _checkout_develop_or_recover's own
+    reset-to-origin checkout silently discarded local-only commits (e.g.
+    save_state_to_repo's checkpoint commits) - confirmed via a live git repro
+    (fetch/checkout -B/pull --ff-only don't lose anything on their own; the
+    unconditional `checkout -B <develop> origin/<develop>` does). This is
+    the fix: push (or merge-then-push) local-ahead commits before that reset
+    ever runs.
+    """
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_no_op_when_local_branch_does_not_exist_yet(self, mock_run):
+        mock_run.return_value = {"status": "error", "returncode": 1}
+
+        result = _preserve_local_only_develop_commits("/repo", "develop", tool_context=MagicMock())
+
+        self.assertIsNone(result)
+        self.assertEqual(mock_run.call_count, 1)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_no_op_when_local_is_not_ahead_of_origin(self, mock_run):
+        mock_run.side_effect = [
+            {"status": "ok", "returncode": 0},  # rev-parse --verify develop
+            {"status": "ok", "stdout": ""},  # rev-list origin/develop..develop - nothing
+        ]
+
+        result = _preserve_local_only_develop_commits("/repo", "develop", tool_context=MagicMock())
+
+        self.assertIsNone(result)
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_pushes_a_clean_fast_forward_ahead_of_origin(self, mock_run):
+        mock_run.side_effect = [
+            {"status": "ok", "returncode": 0},  # rev-parse --verify develop
+            {"status": "ok", "stdout": "abc123\n"},  # rev-list - local is ahead
+            {"status": "ok"},  # push succeeds - plain fast-forward
+        ]
+
+        result = _preserve_local_only_develop_commits("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result, {"status": "ok", "in_sync": True, "action": "pushed_local_ahead"})
+        self.assertEqual(mock_run.call_count, 3)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_merges_and_pushes_on_genuine_divergence_with_no_conflict(self, mock_run):
+        mock_run.side_effect = [
+            {"status": "ok", "returncode": 0},  # rev-parse --verify develop
+            {"status": "ok", "stdout": "abc123\n"},  # rev-list - local is ahead
+            {"status": "error"},  # plain push fails - diverged
+            {"status": "ok", "stdout": "abc123\n"},  # rev-parse develop (pre-merge tip)
+            {"status": "ok"},  # checkout develop
+            {"status": "ok"},  # merge origin/develop - clean
+            {"status": "ok"},  # push merged develop
+        ]
+
+        result = _preserve_local_only_develop_commits("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result, {"status": "ok", "in_sync": True, "action": "merged_and_pushed"})
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_rescues_local_tip_to_a_branch_on_a_real_merge_conflict(self, mock_run):
+        tool_context = MagicMock()
+        tool_context.state = {"decision_log": []}
+        mock_run.side_effect = [
+            {"status": "ok", "returncode": 0},  # rev-parse --verify develop
+            {"status": "ok", "stdout": "abc123\n"},  # rev-list - local is ahead
+            {"status": "error"},  # plain push fails - diverged
+            {"status": "ok", "stdout": "abc123\n"},  # rev-parse develop (pre-merge tip)
+            {"status": "ok"},  # checkout develop
+            {"status": "error", "stderr": "CONFLICT"},  # merge fails - real conflict
+            {"status": "ok"},  # merge --abort
+            {"status": "ok"},  # branch rescued-...
+            {"status": "ok"},  # push rescue branch
+        ]
+
+        result = _preserve_local_only_develop_commits("/repo", "develop", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(result["in_sync"])
+        self.assertEqual(result["action"], "rescued")
+        self.assertIn("abc123", result["rescue_branch"])
+        self.assertEqual(len(tool_context.state["decision_log"]), 1)
+        self.assertIn("rescued-develop-abc123", tool_context.state["decision_log"][0]["decision"])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_does_not_lose_result_when_merge_succeeds_but_push_fails(self, mock_run):
+        mock_run.side_effect = [
+            {"status": "ok", "returncode": 0},  # rev-parse --verify develop
+            {"status": "ok", "stdout": "abc123\n"},  # rev-list - local is ahead
+            {"status": "error"},  # plain push fails - diverged
+            {"status": "ok", "stdout": "abc123\n"},  # rev-parse develop (pre-merge tip)
+            {"status": "ok"},  # checkout develop
+            {"status": "ok"},  # merge origin/develop - clean
+            {"status": "error"},  # push of the merge fails (network, auth, ...)
+        ]
+
+        result = _preserve_local_only_develop_commits("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(result["in_sync"])
+        self.assertEqual(result["action"], "merged_but_push_failed")
 
 
 # A single Ready (not yet Accepted), non-Epic story - enough to satisfy
