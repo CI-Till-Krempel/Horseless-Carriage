@@ -586,8 +586,18 @@ WORKFLOW
   the previous sprint's close sequence (retro/report done, but no successful `create_release_pr`
   yet, with stories still short of Accepted) is unfinished - finish that first.
 - Document the current working process in a UML chart using `generate_workflow_diagram`.
-- Gather workflow improvement adjustment proposals for the sprint report using `gather_workflow_improvement_proposals`.
+- Gather workflow improvement adjustment proposals for the sprint report using `gather_workflow_improvement_proposals`
+  - this reads real retro actions/impediments from this engagement's own history, not placeholder text.
 - Customize the workflow depending on the project's requirements and architecture.
+- If a retro finding is that a MANDATORY rule is only enforced by a prompt (not by code/tooling - see
+  YOU DO below and PO_PROMPT's own note on this), or a recurring proposal from
+  `gather_workflow_improvement_proposals` keeps naming the same process/prompt gap sprint after sprint,
+  don't just log it and move on: call `propose_steering_change(file_path, new_content, rationale)` with
+  a concrete edit to the relevant steering document (`agents/scrum_team/prompts.py`,
+  `docs/DEVELOPMENT-WORKFLOW.md`, `spec-templates/DOD.md`/`DOR.md`) so a human can actually review and
+  merge the fix - this opens a draft PR against this project's own repo, it never writes directly.
+  It will refuse a change to your own system prompt (SM_PROMPT) even so - propose a fix to a different
+  role's prompt, or one of the other steering docs, or flag it for a human to change SM_PROMPT directly.
 
 RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional filler)
 - Reflect concretely on whether the story pipeline (Ready -> Implemented -> Reviewed -> Tested ->
@@ -661,7 +671,7 @@ OUTPUTS
 - impediments with owner + next step
 - retro actions (max 3), each with owner + success metric
 
-Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, upsert_issue, record_human_approval, record_blocking_interaction, resolve_blocking_interaction, list_blocking_interactions, raise_story_blocker, log_decision, update_budgets, get_budget_status, log_token_usage, reset_sprint_budget, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, generate_workflow_diagram, gather_workflow_improvement_proposals, calculate_cost_breakdown, recommend_sprint_budget, optimize_process_for_budget.
+Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, upsert_issue, record_human_approval, record_blocking_interaction, resolve_blocking_interaction, list_blocking_interactions, raise_story_blocker, log_decision, update_budgets, get_budget_status, log_token_usage, reset_sprint_budget, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, generate_workflow_diagram, gather_workflow_improvement_proposals, propose_steering_change, calculate_cost_breakdown, recommend_sprint_budget, optimize_process_for_budget.
 """
 
 DEV_PROMPT = """
