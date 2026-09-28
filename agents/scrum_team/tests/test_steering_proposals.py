@@ -1,26 +1,26 @@
 # agents/scrum_team/tests/test_steering_proposals.py
 """
 Tests for propose_steering_change (tools/workflow.py) - the sanctioned path
-for an agent to propose an edit to THIS PROJECT's own AGENTS.md, in the
-product/state repo (_configured_repo_root), as a human-reviewed PR.
+for an agent to propose an edit to one role's own `<Role>-identity.md` in
+the product/state repo (_configured_repo_root), as a human-reviewed PR.
 
-Horseless-Carriage's own repo (prompts.py, docs/DEVELOPMENT-WORKFLOW.md,
-spec-templates/DOD.md/DOR.md) is never a target of this tool at all - see a
-real review comment on PR #306 (https://github.com/CI-Till-Krempel/
-Horseless-Carriage/pull/306): those are fixed/non-negotiable and must never
-be modifiable by a running instance, only the product/state repo can be
-customized. This file replaces the earlier version that tested an
-allowlist/self-modification guard against prompts.py - that whole mechanism
-no longer exists, since prompts.py is never touched by this tool anymore.
+Horseless-Carriage's own repo (prompts.py and everything under
+agents/scrum_team/prompt_modules/*-guardrails.md/*-workflow.md) is never a
+target of this tool at all - see prompts.py's own module docstring for the
+guardrails/workflow/identity split this supports. This file replaces an
+earlier version that targeted a single shared AGENTS.md - that design was
+superseded by one file per role, so a role's customization can never be
+confused with, or accidentally overwrite, another role's.
 
 Mocks the git/gh boundary at the exact names workflow.py imports
 (_run, _checkout_develop_or_recover, git_push, gh_pr_create) rather than
 their defining modules, matching how the module under test actually calls
-them. Real file reads/writes of AGENTS.md happen against the isolated tmp
-repo root the autouse `_isolated_repo_root` fixture (conftest.py) redirects
-every test to - workflow.py is included in that fixture's patched-module
-list specifically so this suite (and propose_steering_change in real usage)
-can never leak a write into this actual checkout.
+them. Real file reads/writes of `<Role>-identity.md` happen against the
+isolated tmp repo root the autouse `_isolated_repo_root` fixture
+(conftest.py) redirects every test to - workflow.py is included in that
+fixture's patched-module list specifically so this suite (and
+propose_steering_change in real usage) can never leak a write into this
+actual checkout.
 """
 import unittest
 from unittest.mock import MagicMock, patch
@@ -90,38 +90,46 @@ class TestProposeSteeringChange(unittest.TestCase):
             for p in patchers:
                 p.stop()
 
+    def test_rejects_unknown_role(self):
+        result = self._run_with_patches(
+            lambda: propose_steering_change("NotARealRole", "content", "A real rationale explaining the need.", tool_context=_make_tool_context())
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Unknown role", result["message"])
+
     def test_rejects_missing_or_too_short_rationale(self):
         result = self._run_with_patches(
-            lambda: propose_steering_change("Some new AGENTS.md content.", "too short", tool_context=_make_tool_context())
+            lambda: propose_steering_change("ProductOwner", "Some new identity content.", "too short", tool_context=_make_tool_context())
         )
         self.assertEqual(result["status"], "error")
         self.assertIn("rationale", result["message"])
 
     def test_requires_tool_context_state(self):
         result = self._run_with_patches(
-            lambda: propose_steering_change("Some new AGENTS.md content.", "A real rationale explaining the need.", tool_context=None)
+            lambda: propose_steering_change("ProductOwner", "Some new identity content.", "A real rationale explaining the need.", tool_context=None)
         )
         self.assertEqual(result["status"], "error")
         self.assertIn("active session", result["message"])
 
-    def test_creates_agents_md_when_none_exists_yet(self):
+    def test_creates_identity_file_when_none_exists_yet(self):
         tc = _make_tool_context()
         result = self._run_with_patches(
-            lambda: propose_steering_change("# AGENTS.md\n\nFirst customization.\n", "A real rationale explaining the need.", tool_context=tc)
+            lambda: propose_steering_change("ProductOwner", "# ProductOwner\n\nFirst customization.\n", "A real rationale explaining the need.", tool_context=tc)
         )
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["proposed"])
+        self.assertEqual(result["role"], "ProductOwner")
 
-    def test_noop_when_new_content_matches_current_agents_md(self):
+    def test_noop_when_new_content_matches_current_identity_file(self):
         from agents.scrum_team.tools import base
 
         tc = _make_tool_context()
         repo_root = base._configured_repo_root(tc)
-        existing = "# AGENTS.md\n\nAlready here.\n"
-        (repo_root / "AGENTS.md").write_text(existing, encoding="utf-8")
+        existing = "# ProductOwner\n\nAlready here.\n"
+        (repo_root / "ProductOwner-identity.md").write_text(existing, encoding="utf-8")
 
         result = self._run_with_patches(
-            lambda: propose_steering_change(existing, "A real rationale explaining the need.", tool_context=tc)
+            lambda: propose_steering_change("ProductOwner", existing, "A real rationale explaining the need.", tool_context=tc)
         )
         self.assertEqual(result["status"], "ok")
         self.assertFalse(result["proposed"])
@@ -130,7 +138,7 @@ class TestProposeSteeringChange(unittest.TestCase):
         from agents.scrum_team.tools import base
 
         tc = _make_tool_context(agent_name="ScrumMaster")
-        new_content = "# AGENTS.md\n\nRun `make lint` before every commit.\n"
+        new_content = "# DevTeam\n\nPrefer small, frequent PRs over large ones.\n"
 
         push_calls = []
         pr_calls = []
@@ -144,23 +152,40 @@ class TestProposeSteeringChange(unittest.TestCase):
             return _fake_gh_pr_create(title, body, base, head, draft, head_is_resolved, tool_context)
 
         result = self._run_with_patches(
-            lambda: propose_steering_change(new_content, "A real rationale explaining the need for this change.", tool_context=tc),
+            lambda: propose_steering_change("DevTeam", new_content, "A real rationale explaining the need for this change.", tool_context=tc),
             git_push=recording_git_push,
             gh_pr_create=recording_gh_pr_create,
         )
 
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["proposed"])
-        self.assertTrue(result["branch"].startswith("steering/scrummaster-agents-md-"))
+        self.assertEqual(result["role"], "DevTeam")
+        self.assertTrue(result["branch"].startswith("steering/devteam-identity-"))
 
         repo_root = base._configured_repo_root(tc)
-        self.assertEqual((repo_root / "AGENTS.md").read_text(encoding="utf-8"), new_content)
+        self.assertEqual((repo_root / "DevTeam-identity.md").read_text(encoding="utf-8"), new_content)
 
         self.assertEqual(len(push_calls), 1)
         self.assertTrue(push_calls[0]["add_all"])
+        self.assertEqual(push_calls[0]["commit_message"], "docs: propose DevTeam-identity.md change")
         self.assertEqual(len(pr_calls), 1)
+        self.assertEqual(pr_calls[0]["title"], "Steering proposal: DevTeam-identity.md")
         self.assertTrue(pr_calls[0]["draft"])
         self.assertTrue(pr_calls[0]["head_is_resolved"])
+
+    def test_a_role_may_propose_a_change_to_its_own_identity(self):
+        """Unlike the earlier prompts.py-targeting design, there is no
+        self-modification guard here - identity.md is structurally
+        incapable of overriding a role's own guardrails/workflow (those
+        live in this repo's own static instruction, never touched by this
+        tool), so ScrumMaster proposing a change to its own identity is
+        safe and explicitly allowed."""
+        tc = _make_tool_context(agent_name="ScrumMaster")
+        result = self._run_with_patches(
+            lambda: propose_steering_change("ScrumMaster", "# ScrumMaster\n\nKeep retros under 10 minutes.\n", "A real rationale for this change.", tool_context=tc)
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["proposed"])
 
     def test_checkout_develop_failure_returns_error_without_writing(self):
         from agents.scrum_team.tools import base
@@ -177,14 +202,14 @@ class TestProposeSteeringChange(unittest.TestCase):
             }
 
         result = self._run_with_patches(
-            lambda: propose_steering_change("New content.", "A real rationale explaining the need.", tool_context=tc),
+            lambda: propose_steering_change("ProductOwner", "New content.", "A real rationale explaining the need.", tool_context=tc),
             _checkout_develop_or_recover=failing_checkout,
         )
         self.assertEqual(result["status"], "error")
         self.assertIn("Could not check out", result["message"])
 
         repo_root = base._configured_repo_root(tc)
-        self.assertFalse((repo_root / "AGENTS.md").exists())
+        self.assertFalse((repo_root / "ProductOwner-identity.md").exists())
 
     def test_push_failure_returns_error(self):
         tc = _make_tool_context()
@@ -193,7 +218,7 @@ class TestProposeSteeringChange(unittest.TestCase):
             return {"status": "error", "branch": branch, "steps": {}}
 
         result = self._run_with_patches(
-            lambda: propose_steering_change("New content.", "A real rationale explaining the need.", tool_context=tc),
+            lambda: propose_steering_change("ProductOwner", "New content.", "A real rationale explaining the need.", tool_context=tc),
             git_push=failing_push,
         )
         self.assertEqual(result["status"], "error")

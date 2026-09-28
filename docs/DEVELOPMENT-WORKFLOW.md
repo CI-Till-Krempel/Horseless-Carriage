@@ -276,6 +276,14 @@ require a human, and how chatty the orchestrator is between them - full detail i
 | Report verbosity per level | `report_detail_level()` in `helpers.py` | What `create_sprint_report` renders (full/business/executive) |
 | Who resolves a BLOCKED story's category | `BLOCKER_CATEGORY_OWNERS` / `should_escalate_blocker_to_user()` in `helpers.py` | Which role (or the human User) a `raise_story_blocker` category routes to |
 | How deep the Ready backlog must be before implementing | `.env`'s `TARGET_STORIES_PER_SPRINT` / `READY_BACKLOG_SPRINTS_TARGET` (read by `ready_backlog_shortfall()` in `helpers.py`) | The story-count threshold `create_sprint_backlog_pr` enforces before it will run at all |
+| A role's own tone/conventions/emphasis | `<Role>-identity.md` in the state repository (via ScrumMaster's `propose_steering_change`, or a direct hand-edit) | Injected into that role's session once per turn-1; supplements but can never override the guardrails/workflow below - see [State Repository § Structure](STATE-REPOSITORY.md#structure) |
+
+Every role's system prompt itself is assembled from 3 files (`agents/scrum_team/prompts.py`'s own
+module docstring has the authoritative detail): `<Role>-guardrails.md` (non-negotiable) and
+`<Role>-workflow.md` (this document's own content, mechanically enforced) live in
+`agents/scrum_team/prompt_modules/` in *this* repository and are never a customization target for
+any tool; `<Role>-identity.md` is the one piece that does live in the state repository, per the
+table row above.
 
 ## Verifying the tooling actually follows this state machine
 

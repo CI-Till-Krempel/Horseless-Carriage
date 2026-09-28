@@ -33,76 +33,50 @@ def stray_template_files(specs_dir: Path) -> list:
     return sorted(specs_dir.glob("TEMPLATE-*.md"))
 
 
-# Marker pair wrapping the baseline section ensure_agents_md_baseline writes
-# - its presence anywhere in AGENTS.md means this migration has already
-# run, so re-running it (every check_state_repo.py/doctor.py invocation) is
-# a cheap no-op instead of re-appending a duplicate copy.
-AGENTS_MD_BASELINE_BEGIN = "<!-- BEGIN horseless-carriage:baseline-workflow"
-AGENTS_MD_BASELINE_END = "<!-- END horseless-carriage:baseline-workflow -->"
-
-AGENTS_MD_BASELINE_SECTION = f"""{AGENTS_MD_BASELINE_BEGIN} (auto-added by check_state_repo.py - do not hand-edit this section; add your own customization elsewhere in this file, or propose a change via ScrumMaster's propose_steering_change tool) -->
-## Default Workflow (Horseless Carriage baseline)
-
-This section documents Horseless Carriage's built-in, non-customized process, mechanically enforced
-by the tooling - see the Horseless-Carriage project's own docs/DEVELOPMENT-WORKFLOW.md for the full
-diagrammed reference. Nothing below is required reading for the agents; it is a starting point you
-(or the team, via `propose_steering_change`) can edit, extend, or partially override elsewhere in
-this file.
-
-**Roles**: ScrumOrchestrator (routing only) - ProductOwner (vision/backlog/priorities/acceptance) -
-ScrumMaster (facilitation/impediments/retros/budget) - DevTeam (implementation) - Architect (technical
-review/ADRs) - QA (test strategy/build verification) - QualityGuardian (KPI reporting).
-
-**Sprint lifecycle**: `start_sprint` -> Product Owner plans the Ready backlog -> Sprint Backlog PR
-opened (merge may require human approval, depending on `INTERACTION_LEVEL`) -> each story runs the
-6-stage pipeline below, one at a time, priority order -> retro/impediment logged -> sprint report ->
-KPIs -> release approval (if required) -> release PR (develop -> main).
-
-**Per-story pipeline (6 stages, no skipping)**: Draft -> Ready -> Implemented -> Reviewed -> Tested ->
-Accepted. Architect's review gates Reviewed, QA's build/test run gates Tested, Product Owner's
-acceptance check gates Accepted - any of the three can deny and send the story back into development.
-
-**Interaction levels** (`.env`'s `INTERACTION_LEVEL`) decide which gates need a human: Product
-(default), Stakeholder, CEO, or EVAL (fully autonomous). See INTERACTION-LEVELS.md in the
-Horseless-Carriage repo for the full gate/approval matrix.
-{AGENTS_MD_BASELINE_END}
-"""
-
-
-def ensure_agents_md_baseline(state_repo_path: Path) -> str:
+def ensure_role_identity_defaults(state_repo_path: Path) -> dict:
     """
-    Migration for state repos that predate the AGENTS.md convention (see
-    agents/scrum_team/tools/workflow.py's propose_steering_change and
-    docs/STATE-REPOSITORY.md) - makes sure AGENTS.md documents Horseless
-    Carriage's default, non-customized workflow, without ever overwriting
-    or removing anything already there:
+    Migration for state repos that predate the per-role
+    `<Role>-identity.md` convention (see agents/scrum_team/prompts.py's
+    module docstring, tools/workflow.py's propose_steering_change, and
+    docs/STATE-REPOSITORY.md) - materializes each role's default identity
+    content as a real, editable file in the state repo, so a human
+    browsing it can find and hand-edit it directly instead of it only ever
+    existing as an invisible runtime fallback.
 
-    - AGENTS.md missing, or present but empty/whitespace-only: created (or
-      filled in) with just the baseline section under a fresh "# AGENTS.md"
-      heading.
-    - AGENTS.md exists with real content but lacks the baseline marker:
-      the baseline section is appended after everything already there -
-      existing content (including a pre-existing AGENTS.md unrelated to
-      Horseless Carriage, e.g. one written for a different tool) is left
-      byte-for-byte untouched above it.
-    - AGENTS.md already contains the baseline marker: no-op. Safe to call
-      on every check_state_repo.py/doctor.py invocation - idempotent by
-      construction, not by a separate "already migrated" flag.
+    Note this is a convenience, not a correctness requirement: agent.py's
+    role_identity_injection_callback already falls back to each role's
+    `<Role>-identity.default.md` (this project's own prompt_modules/) at
+    runtime when the state repo has no `<Role>-identity.md` of its own -
+    every role works correctly with or without this migration ever having
+    run. What this adds is a real file a team can discover and start
+    editing without first learning that fallback exists.
 
-    Returns "created", "appended", or "already-present".
+    Per role, in ROLE_NAMES (agents/scrum_team/prompts.py):
+    - `<Role>-identity.md` missing entirely: created with that role's
+      default identity content, verbatim.
+    - `<Role>-identity.md` already exists (any content, including empty):
+      left completely untouched - unlike the shared-file AGENTS.md
+      migration this replaces, each role has its own dedicated file, so
+      there's no "existing unrelated content" case to merge around; an
+      existing file always means either a prior migration or a real
+      customization already in place, and either way it's not this
+      function's place to touch it.
+
+    Returns {role: "created" | "already-present"} for every role in
+    ROLE_NAMES. Safe to call on every check_state_repo.py/doctor.py
+    invocation - each role's own result is independently idempotent.
     """
-    agents_md = state_repo_path / "AGENTS.md"
-    current = agents_md.read_text(encoding="utf-8", errors="replace") if agents_md.is_file() else ""
+    from agents.scrum_team.prompts import ROLE_NAMES, load_role_identity_default
 
-    if AGENTS_MD_BASELINE_BEGIN in current:
-        return "already-present"
-
-    if not current.strip():
-        agents_md.write_text(f"# AGENTS.md\n\n{AGENTS_MD_BASELINE_SECTION}", encoding="utf-8")
-        return "created"
-
-    agents_md.write_text(current.rstrip("\n") + "\n\n" + AGENTS_MD_BASELINE_SECTION, encoding="utf-8")
-    return "appended"
+    results = {}
+    for role in ROLE_NAMES:
+        identity_path = state_repo_path / f"{role}-identity.md"
+        if identity_path.is_file():
+            results[role] = "already-present"
+            continue
+        identity_path.write_text(load_role_identity_default(role), encoding="utf-8")
+        results[role] = "created"
+    return results
 
 
 def _walk_git_history_for_valid_state_json(state_repo_path: Path) -> str:
@@ -218,16 +192,15 @@ def run(repo_root: Path, interactive: bool = None, prompt=input) -> int:
     else:
         print("  [OK] No stray templates found in 'specs' directory.")
 
-    # 5. Migrate/verify AGENTS.md has the baseline workflow description -
-    # additive only, never overwrites existing content (see
-    # ensure_agents_md_baseline's own docstring).
-    agents_md_result = ensure_agents_md_baseline(state_repo_path)
-    if agents_md_result == "created":
-        print("  [OK] Created AGENTS.md with Horseless Carriage's baseline workflow description.")
-    elif agents_md_result == "appended":
-        print("  [OK] Added the baseline workflow description to your existing AGENTS.md (existing content preserved).")
+    # 5. Migrate/verify each role's default identity.md exists - additive
+    # only, never overwrites an existing file (see
+    # ensure_role_identity_defaults's own docstring).
+    identity_results = ensure_role_identity_defaults(state_repo_path)
+    created = sorted(role for role, result in identity_results.items() if result == "created")
+    if created:
+        print(f"  [OK] Created default identity.md for {len(created)} role(s) not yet customized: {', '.join(created)}.")
     else:
-        print("  [OK] AGENTS.md already documents the baseline workflow.")
+        print("  [OK] Every role already has its own identity.md.")
 
     # 6. Validate state.json structure
     state_file = state_repo_path / ".hc" / "state.json"
