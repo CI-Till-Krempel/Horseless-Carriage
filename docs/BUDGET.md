@@ -11,7 +11,9 @@ honored as a deprecated fallback (`get_env_with_deprecated_fallback` in `agents/
 if you haven't renamed it in your own `.env` yet.
 
 ## 1. Token Budget (ADK Layer)
-- **Unit**: Total tokens (e.g., 1,000,000).
+- **Unit**: Total tokens (e.g., 5,000,000 - the default as of GH issue #220; a real "product mode"
+  test-drive showed planning alone, before Dev/QA ever ran, can use just over 1,000,000, the
+  previous default).
 - **Scope**: **Per sprint.** Resets automatically at the start of every new sprint
   (`reset_sprint_budget`, or the eval harness's own per-sprint reset) - a sprint that used most of
   its budget doesn't starve every later sprint.
@@ -19,6 +21,19 @@ if you haven't renamed it in your own `.env` yet.
   call to LiteLLM is involved, so this guardrail applies **even if the LiteLLM proxy isn't
   running**. See step 1 of `check_cost_budget_callback` in `agents/scrum_team/agent.py`
   (usage is recorded by the separate `update_token_usage_callback`).
+- **Advance warning (GH issue #220)**: a one-time system-context message is injected once usage
+  crosses 75%, and again at 90%, of `SPRINT_TOKEN_BUDGET` - see `_maybe_inject_budget_warning` in
+  `agents/scrum_team/agent.py`. Previously the hard-halt itself was the only signal anyone got.
+- **Reserved floor for DevTeam/QA/Architect (GH issue #220)**: a verbose planning phase could
+  previously burn the entire sprint budget before Dev/QA/Architect ever got a single turn. Each of
+  those three roles is now guaranteed at least one real call this sprint even if the total is
+  already exhausted when it's first invoked - a **one-time** floor per role
+  (`NON_GRACE_FLOOR_ROLES`, `agents/scrum_team/helpers.py`), not a standing exemption: the instant
+  a role logs any real usage, it hard-halts on the next exhausted call exactly as before.
+- **Scaled close-out grace (GH issue #220)**: `SPRINT_CLOSEOUT_GRACE_PERCENT`'s ceiling
+  (`closeout_grace_percent`, `agents/scrum_team/helpers.py`) now scales down as less of the SPRINT
+  CLOSE SEQUENCE (retro -> KPIs -> sprint report -> release PR) remains outstanding, instead of
+  always granting the full configured percentage regardless of how much work is actually left.
 - **Automatic Tracking**: The system automatically tracks token usage after every LLM call and attributes it to the specific agent role.
 - **Purpose**: Prevents long-running loops or runaway agent conversations within a single sprint.
   LiteLLM natively supports rate limits (tokens per minute) but does not provide a hard-stop for a

@@ -1651,12 +1651,22 @@ class TestSprintCloseoutGrace(unittest.TestCase):
     cap.
     """
 
-    def _context(self, agent_name, token_total, token_usage):
+    def _context(self, agent_name, token_total, token_usage, agent_own_usage=None):
+        """
+        agent_own_usage: this agent's own recorded share of token_usage
+        (state.token_usage.agents[agent_name]) - defaults to token_usage
+        itself (i.e. "this agent already burned it all"), so every
+        pre-existing call site here keeps exercising the "already had a
+        turn this sprint" case, which the GH issue #220 reserved-floor
+        branch (NON_GRACE_FLOOR_ROLES, agent.py) must NOT apply to. Pass 0
+        explicitly to instead exercise "hasn't had a turn yet this sprint".
+        """
         mock_context = MagicMock()
         mock_context.agent_name = agent_name
         state = ScrumState()
         state.budgets.total = token_total
         state.token_usage.total = token_usage
+        state.token_usage.agents[agent_name] = token_usage if agent_own_usage is None else agent_own_usage
         if agent_name != "ScrumOrchestrator":
             state.litellm_keys[agent_name] = "sk-test-agent-key"
         mock_context.state = state.model_dump()
@@ -1753,6 +1763,130 @@ class TestSprintCloseoutGrace(unittest.TestCase):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
 
         self.assertIsNotNone(result)
+
+    def test_non_grace_role_with_no_usage_yet_gets_a_reserved_turn_despite_exhausted_budget(self):
+        """
+        GH issue #220: a verbose planning phase can burn the entire sprint's
+        token budget before DevTeam/QA/Architect ever get a single turn -
+        each of them must be guaranteed at least one real call this sprint
+        even if the total is already exhausted, as long as it hasn't logged
+        any usage of its own yet (NON_GRACE_FLOOR_ROLES, helpers.py).
+        """
+        for agent_name in ("DevTeam", "QA", "Architect"):
+            with self.subTest(agent_name=agent_name):
+                mock_context = self._context(agent_name, 100, 104, agent_own_usage=0)
+                # clear=True: scoped to the TOKEN floor logic - without it,
+                # an ambient LITELLM_MASTER_KEY/LITELLM_PROXY_API_BASE (e.g.
+                # .env.test's) leaks through to the unmocked USD check this
+                # branch now falls through to, and fails trying to reach a
+                # real proxy for a fake test key (same issue the sibling
+                # test_grace_role_gets_a_real_call_through_within_the_grace_
+                # ceiling test above already guards against).
+                with patch.dict("os.environ", {}, clear=True):
+                    with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                        result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                self.assertIsNone(result, f"{agent_name} should get its one reserved turn")
+
+    def test_non_grace_role_floor_is_one_time_not_a_standing_exemption(self):
+        """Once a non-grace role has logged ANY usage of its own this
+        sprint, the reserved floor no longer applies - it hard-halts on the
+        next exhausted call exactly as before this issue."""
+        for agent_name in ("DevTeam", "QA", "Architect"):
+            with self.subTest(agent_name=agent_name):
+                mock_context = self._context(agent_name, 100, 104, agent_own_usage=1)
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                self.assertIsNotNone(result, f"{agent_name} must not get a second reserved turn")
+
+
+class TestBudgetWarningTier(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #220): _maybe_inject_budget_warning injects
+    a one-time system-context message once sprint token usage crosses 75%,
+    and again at 90%, of the budget - previously the hard-halt itself was
+    the only signal anyone got. Gated by a single "highest threshold
+    already warned" flag in state (_budget_warning_pct_fired) so each
+    threshold fires at most once per sprint; reset_sprint_budget clears it
+    for the next one.
+    """
+
+    def _context(self, token_total, token_usage, already_warned_pct=0):
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total = token_total
+        state.token_usage.total = token_usage
+        mock_context.state = state.model_dump()
+        mock_context.state["_budget_warning_pct_fired"] = already_warned_pct
+        return mock_context
+
+    def _system_warnings(self, llm_request):
+        return [
+            p.text
+            for c in llm_request.contents
+            if c.role == "system"
+            for p in (c.parts or [])
+            if getattr(p, "text", None) and "SPRINT TOKEN BUDGET" in p.text
+        ]
+
+    def test_no_warning_below_75_percent(self):
+        mock_context = self._context(1000, 700)  # 70%
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        self.assertEqual(self._system_warnings(llm_request), [])
+        self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 0)
+
+    def test_warns_once_at_75_percent(self):
+        mock_context = self._context(1000, 750)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        warnings = self._system_warnings(llm_request)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("75%", warnings[0])
+        self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 75)
+
+    def test_does_not_repeat_75_percent_warning_on_a_later_call_still_under_90(self):
+        mock_context = self._context(1000, 750, already_warned_pct=75)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        self.assertEqual(self._system_warnings(llm_request), [])
+
+    def test_warns_again_at_90_percent_after_75_already_fired(self):
+        mock_context = self._context(1000, 900, already_warned_pct=75)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        warnings = self._system_warnings(llm_request)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("90%", warnings[0])
+        self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 90)
+
+    def test_no_further_warning_once_90_percent_already_fired(self):
+        mock_context = self._context(1000, 950, already_warned_pct=90)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        self.assertEqual(self._system_warnings(llm_request), [])
+
+    def test_no_warning_once_budget_is_fully_exhausted(self):
+        # Past the hard cap - the halt response (or the reserved-floor
+        # bypass) is what happens now, not the advance warning;
+        # _maybe_inject_budget_warning is only invoked while
+        # token_usage < token_limit.
+        mock_context = self._context(1000, 1000)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                check_cost_budget_callback(mock_context, llm_request)
+        self.assertEqual(self._system_warnings(llm_request), [])
+
+    def test_reset_sprint_budget_clears_the_warning_flag(self):
+        mock_context = self._context(1000, 900, already_warned_pct=90)
+        reset_sprint_budget(tool_context=mock_context)
+        self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 0)
 
 
 class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):

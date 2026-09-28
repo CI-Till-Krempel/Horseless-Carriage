@@ -91,6 +91,11 @@ def sprint_budget_reset_state_delta() -> Dict[str, Any]:
         "budget_reset_since_last_sprint_start": True,
         "critical_halt_notified": False,
         "sprint_report_safety_net_fired": False,
+        # GH issue #220: the 75%/90% budget-warning gate (see
+        # _maybe_inject_budget_warning, agent.py) - cleared so a new sprint's
+        # own approach to the ceiling warns again, rather than staying
+        # silently suppressed because a previous sprint already crossed 90%.
+        "_budget_warning_pct_fired": 0,
     }
 
 
@@ -352,9 +357,9 @@ def _sprint_length_feedback(s: Dict[str, Any]) -> str:
     token_limit = budgets.get("total", 0)
     if token_limit <= 0:
         try:
-            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 1000000))
+            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 5000000))
         except (ValueError, TypeError):
-            token_limit = 1000000
+            token_limit = 5000000
 
     token_used = s.get("token_usage", {}).get("total", 0)
     backlog = s.get("sprint_backlog", []) or []
