@@ -15,7 +15,8 @@ happened (specs/stories/EP-1-New-Epic.md, ST-1-New-Story.md,
 
 Every module that resolves a repo path imports its own bound reference via
 `from .base import _configured_repo_root` (docs.py, requirements.py,
-github.py, budget.py, scrum.py, quality.py, and agent.py itself) - each is
+github.py, budget.py, scrum.py, quality.py, workflow.py, and agent.py
+itself) - each is
 a separate name bound at import time, so patching base.py's copy alone
 would not affect calls made through the others (this is exactly how an
 earlier attempt at isolating agents.scrum_team.tools.requirements.
@@ -69,6 +70,7 @@ _MODULES_WITH_REPO_ROOT = [
     "agents.scrum_team.tools.budget",
     "agents.scrum_team.tools.scrum",
     "agents.scrum_team.tools.quality",
+    "agents.scrum_team.tools.workflow",
     "agents.scrum_team.agent",
 ]
 

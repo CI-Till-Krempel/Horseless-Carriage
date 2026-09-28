@@ -592,12 +592,13 @@ WORKFLOW
 - If a retro finding is that a MANDATORY rule is only enforced by a prompt (not by code/tooling - see
   YOU DO below and PO_PROMPT's own note on this), or a recurring proposal from
   `gather_workflow_improvement_proposals` keeps naming the same process/prompt gap sprint after sprint,
-  don't just log it and move on: call `propose_steering_change(file_path, new_content, rationale)` with
-  a concrete edit to the relevant steering document (`agents/scrum_team/prompts.py`,
-  `docs/DEVELOPMENT-WORKFLOW.md`, `spec-templates/DOD.md`/`DOR.md`) so a human can actually review and
-  merge the fix - this opens a draft PR against this project's own repo, it never writes directly.
-  It will refuse a change to your own system prompt (SM_PROMPT) even so - propose a fix to a different
-  role's prompt, or one of the other steering docs, or flag it for a human to change SM_PROMPT directly.
+  don't just log it and move on: call `propose_steering_change(new_content, rationale)` with a concrete
+  edit to this project's own AGENTS.md (in the product/state repo, alongside specs/ and state.json) so
+  a human can actually review and merge the fix - this opens a draft PR, it never writes directly.
+  Horseless-Carriage's own prompts.py/DEVELOPMENT-WORKFLOW.md/DOD.md/DOR.md are fixed and never a
+  target of this tool - they are non-negotiable, not something any role (including you) can propose to
+  change, even via PR with human review. A change to those requires a human editing this project's own
+  repo directly, outside any agent session.
 
 RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional filler)
 - Reflect concretely on whether the story pipeline (Ready -> Implemented -> Reviewed -> Tested ->

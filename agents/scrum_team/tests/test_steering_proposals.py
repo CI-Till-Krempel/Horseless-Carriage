@@ -1,42 +1,53 @@
 # agents/scrum_team/tests/test_steering_proposals.py
 """
 Tests for propose_steering_change (tools/workflow.py) - the sanctioned path
-for an agent to propose an edit to one of this project's own workflow
-steering documents (prompts.py, docs/DEVELOPMENT-WORKFLOW.md,
-spec-templates/DOD.md/DOR.md) as a human-reviewed PR against Horseless-
-Carriage's own repo, distinct from write_file (which only ever targets the
-configured target/state repo).
+for an agent to propose an edit to THIS PROJECT's own AGENTS.md, in the
+product/state repo (_configured_repo_root), as a human-reviewed PR.
 
-Only the git/gh subprocess boundary (agents.scrum_team.tools.workflow._run)
-is mocked, same convention as test_story_pipeline_state_machine.py's
-_fake_run for github.py - everything else (path allowlist checks, the
-rationale check, the own-prompt content guard, real file reads against this
-actual checkout) runs for real. _project_root() always resolves to the real
-Horseless-Carriage checkout even under pytest (see conftest.py's own note:
-only _configured_repo_root is isolated per test) - propose_steering_change
-never writes there directly regardless (all mutation happens inside a
-throwaway git-worktree tempdir), so this is safe to exercise as-is.
+Horseless-Carriage's own repo (prompts.py, docs/DEVELOPMENT-WORKFLOW.md,
+spec-templates/DOD.md/DOR.md) is never a target of this tool at all - see a
+real review comment on PR #306 (https://github.com/CI-Till-Krempel/
+Horseless-Carriage/pull/306): those are fixed/non-negotiable and must never
+be modifiable by a running instance, only the product/state repo can be
+customized. This file replaces the earlier version that tested an
+allowlist/self-modification guard against prompts.py - that whole mechanism
+no longer exists, since prompts.py is never touched by this tool anymore.
+
+Mocks the git/gh boundary at the exact names workflow.py imports
+(_run, _checkout_develop_or_recover, git_push, gh_pr_create) rather than
+their defining modules, matching how the module under test actually calls
+them. Real file reads/writes of AGENTS.md happen against the isolated tmp
+repo root the autouse `_isolated_repo_root` fixture (conftest.py) redirects
+every test to - workflow.py is included in that fixture's patched-module
+list specifically so this suite (and propose_steering_change in real usage)
+can never leak a write into this actual checkout.
 """
-import os
 import unittest
 from unittest.mock import MagicMock, patch
 
-from agents.scrum_team.tools.workflow import (
-    propose_steering_change,
-    _extract_prompt_constant,
-    _diff_touches_own_prompt,
-)
-from agents.scrum_team.tools.base import _project_root
+from agents.scrum_team.tools.workflow import propose_steering_change
 from agents.scrum_team.state import ScrumState
 
 
 _OK_RUN_RESULT = {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
 
 
-def _fake_run(cmd, cwd=None, tool_context=None, timeout=None, env_overrides=None):
-    if cmd[:3] == ["git", "remote", "show"]:
-        return {"status": "ok", "returncode": 0, "stdout": "  HEAD branch: main\n", "stderr": ""}
-    return dict(_OK_RUN_RESULT)
+def _fake_checkout_develop_or_recover(repo_root, develop, tool_context=None):
+    return {
+        "status": "ok",
+        "fetch": dict(_OK_RUN_RESULT),
+        "checkout": dict(_OK_RUN_RESULT),
+        "auto_integrated": None,
+        "preserved_local_commits": None,
+    }
+
+
+def _fake_git_push(branch, commit_message="chore: update", add_all=True, tool_context=None):
+    return {"status": "ok", "branch": branch, "steps": {}}
+
+
+def _fake_gh_pr_create(title, body="", base=None, head=None, draft=False, head_is_resolved=False, tool_context=None):
+    return {"status": "ok", "pr_number": 999, "url": "https://github.com/example/example/pull/999"}
 
 
 def _make_tool_context(agent_name="ScrumMaster"):
@@ -46,129 +57,147 @@ def _make_tool_context(agent_name="ScrumMaster"):
     return tc
 
 
-PROMPTS_PATH = "agents/scrum_team/prompts.py"
+def _patched(**overrides):
+    """
+    Patches the 4 git/gh-boundary names propose_steering_change calls,
+    defaulting to the succeed-cleanly fakes above; pass e.g.
+    git_push=my_fake to override just one for a specific test.
+    """
+    targets = {
+        "_run": _overrides_or(overrides, "_run", lambda *a, **k: dict(_OK_RUN_RESULT)),
+        "_checkout_develop_or_recover": _overrides_or(overrides, "_checkout_develop_or_recover", _fake_checkout_develop_or_recover),
+        "git_push": _overrides_or(overrides, "git_push", _fake_git_push),
+        "gh_pr_create": _overrides_or(overrides, "gh_pr_create", _fake_gh_pr_create),
+    }
+    return [
+        patch(f"agents.scrum_team.tools.workflow.{name}", side_effect=fn)
+        for name, fn in targets.items()
+    ]
 
 
-class TestProposeSteeringChangeGuards(unittest.TestCase):
-    @patch("agents.scrum_team.tools.workflow._run", side_effect=_fake_run)
-    def test_rejects_path_outside_allowlist(self, _mock_run):
-        result = propose_steering_change(
-            "agents/scrum_team/agent.py", "print('hi')\n", "A real rationale explaining the need.",
-            tool_context=_make_tool_context(),
+def _overrides_or(overrides, key, default):
+    return overrides.get(key, default)
+
+
+class TestProposeSteeringChange(unittest.TestCase):
+    def _run_with_patches(self, fn, **overrides):
+        patchers = _patched(**overrides)
+        for p in patchers:
+            p.start()
+        try:
+            return fn()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_rejects_missing_or_too_short_rationale(self):
+        result = self._run_with_patches(
+            lambda: propose_steering_change("Some new AGENTS.md content.", "too short", tool_context=_make_tool_context())
         )
-        self.assertEqual(result["status"], "error")
-        self.assertIn("can only target", result["message"])
-
-    @patch("agents.scrum_team.tools.workflow._run", side_effect=_fake_run)
-    def test_rejects_missing_or_too_short_rationale(self, _mock_run):
-        current = (_project_root() / PROMPTS_PATH).read_text(encoding="utf-8")
-        result = propose_steering_change(PROMPTS_PATH, current, "too short", tool_context=_make_tool_context())
         self.assertEqual(result["status"], "error")
         self.assertIn("rationale", result["message"])
 
-    @patch("agents.scrum_team.tools.workflow._run", side_effect=_fake_run)
-    def test_rejects_during_eval_run(self, _mock_run):
-        current = (_project_root() / PROMPTS_PATH).read_text(encoding="utf-8")
-        with patch.dict(os.environ, {"EVAL_RUN_ID": "test-run-1"}):
-            result = propose_steering_change(
-                PROMPTS_PATH, current + "\n# harmless trailing comment\n",
-                "A real rationale explaining the need for this change.",
-                tool_context=_make_tool_context(),
-            )
-        self.assertEqual(result["status"], "error")
-        self.assertIn("eval run", result["message"])
-
-    @patch("agents.scrum_team.tools.workflow._run", side_effect=_fake_run)
-    def test_rejects_path_traversal_attempt(self, _mock_run):
-        result = propose_steering_change(
-            "agents/scrum_team/../../../etc/passwd", "irrelevant",
-            "A real rationale explaining the need for this change.",
-            tool_context=_make_tool_context(),
-        )
-        self.assertEqual(result["status"], "error")
-
-    @patch("agents.scrum_team.tools.workflow._run", side_effect=_fake_run)
-    def test_noop_when_new_content_matches_current(self, _mock_run):
-        current = (_project_root() / PROMPTS_PATH).read_text(encoding="utf-8")
-        result = propose_steering_change(PROMPTS_PATH, current, "A real rationale explaining the need for this change.",
-                                          tool_context=_make_tool_context())
-        self.assertEqual(result["status"], "ok")
-        self.assertFalse(result["proposed"])
-
-    @patch("agents.scrum_team.tools.workflow._run", side_effect=_fake_run)
-    def test_refuses_role_editing_its_own_prompt(self, _mock_run):
-        current = (_project_root() / PROMPTS_PATH).read_text(encoding="utf-8")
-        sm_body = _extract_prompt_constant(current, "SM_PROMPT")
-        self.assertIsNotNone(sm_body)
-        mutated = current.replace(sm_body, sm_body + "\nExtra rogue instruction.\n")
-
-        result = propose_steering_change(
-            PROMPTS_PATH, mutated, "A real rationale explaining the need for this change.",
-            tool_context=_make_tool_context(agent_name="ScrumMaster"),
-        )
-        self.assertEqual(result["status"], "error")
-        self.assertIn("own system prompt", result["message"])
-
-    @patch("agents.scrum_team.tools.workflow._run", side_effect=_fake_run)
-    def test_allows_role_editing_a_different_roles_prompt(self, _mock_run):
-        current = (_project_root() / PROMPTS_PATH).read_text(encoding="utf-8")
-        po_body = _extract_prompt_constant(current, "PO_PROMPT")
-        self.assertIsNotNone(po_body)
-        mutated = current.replace(po_body, po_body + "\nExtra clarified instruction.\n")
-
-        result = propose_steering_change(
-            PROMPTS_PATH, mutated, "A real rationale explaining the need for this change.",
-            tool_context=_make_tool_context(agent_name="ScrumMaster"),
-        )
-        self.assertEqual(result["status"], "ok")
-        self.assertTrue(result["proposed"])
-
-    @patch("agents.scrum_team.tools.workflow._run", side_effect=_fake_run)
-    def test_successful_proposal_pushes_and_opens_draft_pr(self, mock_run):
-        current = (_project_root() / PROMPTS_PATH).read_text(encoding="utf-8")
-        po_body = _extract_prompt_constant(current, "PO_PROMPT")
-        mutated = current.replace(po_body, po_body + "\nExtra clarified instruction.\n")
-
-        result = propose_steering_change(
-            PROMPTS_PATH, mutated, "A real rationale explaining the need for this change.",
-            tool_context=_make_tool_context(agent_name="ScrumMaster"),
-        )
-        self.assertEqual(result["status"], "ok")
-        self.assertTrue(result["branch"].startswith("steering/scrummaster-prompts-"))
-
-        commands = [call.args[0] for call in mock_run.call_args_list]
-        self.assertTrue(any(c[:2] == ["git", "worktree"] and c[2] == "add" for c in commands))
-        self.assertTrue(any(c[:2] == ["git", "push"] for c in commands))
-        self.assertTrue(any(c[:3] == ["gh", "pr", "create"] and "--draft" in c for c in commands))
-        self.assertTrue(any(c[:3] == ["git", "worktree", "remove"] for c in commands))
-
     def test_requires_tool_context_state(self):
-        current = (_project_root() / PROMPTS_PATH).read_text(encoding="utf-8")
-        result = propose_steering_change(
-            PROMPTS_PATH, current + "\n# trivial change\n",
-            "A real rationale explaining the need for this change.",
-            tool_context=None,
+        result = self._run_with_patches(
+            lambda: propose_steering_change("Some new AGENTS.md content.", "A real rationale explaining the need.", tool_context=None)
         )
         self.assertEqual(result["status"], "error")
         self.assertIn("active session", result["message"])
 
+    def test_creates_agents_md_when_none_exists_yet(self):
+        tc = _make_tool_context()
+        result = self._run_with_patches(
+            lambda: propose_steering_change("# AGENTS.md\n\nFirst customization.\n", "A real rationale explaining the need.", tool_context=tc)
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["proposed"])
 
-class TestDiffTouchesOwnPrompt(unittest.TestCase):
-    def test_none_agent_name_never_matches(self):
-        self.assertFalse(_diff_touches_own_prompt("SM_PROMPT = \"\"\"a\"\"\"", "SM_PROMPT = \"\"\"b\"\"\"", None))
+    def test_noop_when_new_content_matches_current_agents_md(self):
+        from agents.scrum_team.tools import base
 
-    def test_unknown_role_never_matches(self):
-        self.assertFalse(_diff_touches_own_prompt("SM_PROMPT = \"\"\"a\"\"\"", "SM_PROMPT = \"\"\"b\"\"\"", "SomeNewRole"))
+        tc = _make_tool_context()
+        repo_root = base._configured_repo_root(tc)
+        existing = "# AGENTS.md\n\nAlready here.\n"
+        (repo_root / "AGENTS.md").write_text(existing, encoding="utf-8")
 
-    def test_detects_change_to_own_constant(self):
-        current = 'SM_PROMPT = """a"""\nPO_PROMPT = """x"""\n'
-        new = 'SM_PROMPT = """b"""\nPO_PROMPT = """x"""\n'
-        self.assertTrue(_diff_touches_own_prompt(current, new, "ScrumMaster"))
+        result = self._run_with_patches(
+            lambda: propose_steering_change(existing, "A real rationale explaining the need.", tool_context=tc)
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["proposed"])
 
-    def test_ignores_change_to_other_role_constant(self):
-        current = 'SM_PROMPT = """a"""\nPO_PROMPT = """x"""\n'
-        new = 'SM_PROMPT = """a"""\nPO_PROMPT = """y"""\n'
-        self.assertFalse(_diff_touches_own_prompt(current, new, "ScrumMaster"))
+    def test_successful_proposal_writes_file_pushes_and_opens_draft_pr(self):
+        from agents.scrum_team.tools import base
+
+        tc = _make_tool_context(agent_name="ScrumMaster")
+        new_content = "# AGENTS.md\n\nRun `make lint` before every commit.\n"
+
+        push_calls = []
+        pr_calls = []
+
+        def recording_git_push(branch, commit_message="chore: update", add_all=True, tool_context=None):
+            push_calls.append({"branch": branch, "commit_message": commit_message, "add_all": add_all})
+            return _fake_git_push(branch, commit_message, add_all, tool_context)
+
+        def recording_gh_pr_create(title, body="", base=None, head=None, draft=False, head_is_resolved=False, tool_context=None):
+            pr_calls.append({"title": title, "base": base, "head": head, "draft": draft, "head_is_resolved": head_is_resolved})
+            return _fake_gh_pr_create(title, body, base, head, draft, head_is_resolved, tool_context)
+
+        result = self._run_with_patches(
+            lambda: propose_steering_change(new_content, "A real rationale explaining the need for this change.", tool_context=tc),
+            git_push=recording_git_push,
+            gh_pr_create=recording_gh_pr_create,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["proposed"])
+        self.assertTrue(result["branch"].startswith("steering/scrummaster-agents-md-"))
+
+        repo_root = base._configured_repo_root(tc)
+        self.assertEqual((repo_root / "AGENTS.md").read_text(encoding="utf-8"), new_content)
+
+        self.assertEqual(len(push_calls), 1)
+        self.assertTrue(push_calls[0]["add_all"])
+        self.assertEqual(len(pr_calls), 1)
+        self.assertTrue(pr_calls[0]["draft"])
+        self.assertTrue(pr_calls[0]["head_is_resolved"])
+
+    def test_checkout_develop_failure_returns_error_without_writing(self):
+        from agents.scrum_team.tools import base
+
+        tc = _make_tool_context()
+
+        def failing_checkout(repo_root, develop, tool_context=None):
+            return {
+                "status": "error",
+                "fetch": dict(_OK_RUN_RESULT),
+                "checkout": {"status": "error", "stderr": "network unreachable", "returncode": 1},
+                "auto_integrated": None,
+                "preserved_local_commits": None,
+            }
+
+        result = self._run_with_patches(
+            lambda: propose_steering_change("New content.", "A real rationale explaining the need.", tool_context=tc),
+            _checkout_develop_or_recover=failing_checkout,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Could not check out", result["message"])
+
+        repo_root = base._configured_repo_root(tc)
+        self.assertFalse((repo_root / "AGENTS.md").exists())
+
+    def test_push_failure_returns_error(self):
+        tc = _make_tool_context()
+
+        def failing_push(branch, commit_message="chore: update", add_all=True, tool_context=None):
+            return {"status": "error", "branch": branch, "steps": {}}
+
+        result = self._run_with_patches(
+            lambda: propose_steering_change("New content.", "A real rationale explaining the need.", tool_context=tc),
+            git_push=failing_push,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("push", result["message"].lower())
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ Unlike the session history (which is transient and internal), the State Reposito
 
 - **`state.json`**: The internal machine-readable state of the Scrum artifacts (backlog, impediments, etc.).
 - **`specs/`**: A directory containing the actual generated documents (PRDs, ADRs, Stories) based on the templates in `spec-templates/`. See [Architecture § Repository documentation structure](ARCHITECTURE.md#repository-documentation-structure) for what goes in here and the story-workflow rules that govern it.
+- **`AGENTS.md`** (optional): This project's own customization of workflow/steering - conventions, extra process steps, anything beyond Horseless-Carriage's own fixed, non-negotiable prompts/workflow docs. Proposed via `propose_steering_change` (a ScrumMaster tool that always opens a draft PR here for human review, never a direct write) rather than hand-edited only, though a human can edit it directly too.
 
 ## Usage
 
