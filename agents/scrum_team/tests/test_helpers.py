@@ -11,7 +11,10 @@ from agents.scrum_team.helpers import (
     infer_blocker_category,
     should_escalate_blocker_to_user,
     ready_backlog_shortfall,
+    closeout_grace_percent,
+    closeout_remaining_work_fraction,
 )
+from agents.scrum_team.state import ScrumState
 
 
 class TestInteractionLevel(unittest.TestCase):
@@ -169,6 +172,74 @@ class TestReadyBacklogShortfall(unittest.TestCase):
 
     def test_backlog_scope_complete_defaults_to_false(self):
         self.assertEqual(ready_backlog_shortfall([]), 6)
+
+
+class TestCloseoutGraceScaling(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #220): closeout_grace_percent's ceiling
+    must scale down as less of the SPRINT CLOSE SEQUENCE (retro -> KPIs ->
+    sprint report -> release PR) remains outstanding, instead of always
+    granting the full configured percentage - see closeout_grace_percent/
+    closeout_remaining_work_fraction, agents/scrum_team/helpers.py.
+    """
+
+    def test_fresh_state_gets_the_full_remaining_fraction(self):
+        state = ScrumState()
+        self.assertEqual(closeout_remaining_work_fraction(state), 1.0)
+
+    def test_retro_fresh_reduces_the_remaining_fraction(self):
+        state = ScrumState()
+        state.retro_actions = [{"action": "a", "owner": "b", "success_metric": "c", "status": "open"}]
+        # retro_baseline defaults to 0; len(retro_actions)+len(impediment_log)=1 > 0 -> retro fresh.
+        self.assertEqual(closeout_remaining_work_fraction(state), 0.75)
+
+    def test_retro_and_kpi_fresh_reduces_further(self):
+        state = ScrumState()
+        state.retro_actions = [{"action": "a", "owner": "b", "success_metric": "c", "status": "open"}]
+        state.kpi_update_count = 1  # kpi_baseline defaults to 0 -> kpi fresh
+        self.assertEqual(closeout_remaining_work_fraction(state), 0.5)
+
+    def test_pending_release_means_only_release_remains(self):
+        # sprint_report_pending_release alone implies retro/KPIs/report all
+        # already happened - create_sprint_report only ever sets it True
+        # after both of those gates passed.
+        state = ScrumState()
+        state.sprint_report_pending_release = True
+        self.assertEqual(closeout_remaining_work_fraction(state), 0.25)
+
+    def test_stale_history_from_a_previous_sprint_does_not_count_as_fresh(self):
+        # retro_baseline/kpi_baseline are bumped to the then-current counts
+        # by create_sprint_report - a state carrying old history AND a
+        # matching baseline (the normal post-report shape) must not be
+        # mistaken for "already done this sprint".
+        state = ScrumState()
+        state.retro_actions = [{"action": "a", "owner": "b", "success_metric": "c", "status": "open"}]
+        state.retro_baseline = 1  # already consumed - not fresh
+        state.kpi_update_count = 3
+        state.kpi_baseline = 3  # already consumed - not fresh
+        self.assertEqual(closeout_remaining_work_fraction(state), 1.0)
+
+    def test_closeout_grace_percent_without_state_is_unscaled(self):
+        with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "20"}, clear=True):
+            self.assertEqual(closeout_grace_percent(), 20.0)
+            self.assertEqual(closeout_grace_percent(state=None), 20.0)
+
+    def test_closeout_grace_percent_scales_with_state(self):
+        state = ScrumState()
+        state.sprint_report_pending_release = True  # remaining fraction 0.25
+        with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "20"}, clear=True):
+            self.assertEqual(closeout_grace_percent(state), 5.0)  # 20 * 0.25
+
+    def test_closeout_grace_percent_never_scales_below_a_quarter_of_configured(self):
+        # Even with everything done bar the release PR (the smallest
+        # possible remaining fraction the model produces), the ceiling must
+        # not collapse below 25% of the configured percentage - ISSUE-0046
+        # already showed even the last step alone can burn real tokens on
+        # wrong guesses.
+        state = ScrumState()
+        state.sprint_report_pending_release = True
+        with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "4"}, clear=True):
+            self.assertEqual(closeout_grace_percent(state), 1.0)  # 4 * max(0.25, 0.25)
 
 
 if __name__ == "__main__":

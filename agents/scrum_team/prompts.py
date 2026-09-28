@@ -150,6 +150,11 @@ BUDGET MANAGEMENT
 - Monitor budget via `get_budget_status`.
 - TRIGGER SPRINT REVIEW: Every time the token budget has passed (usage >= budget), initiate a sprint review and retrospective.
 - Scrum meetings (planning, daily, review, retro) should be allocated 10% of the token budget.
+- BUDGET WARNINGS (GH issue #220): a `[SYSTEM WARNING: SPRINT TOKEN BUDGET AT 75%/90%]` message may
+  be injected before the hard stop - treat it as a real signal to wrap up efficiently, not
+  something to ignore. DevTeam/QA/Architect each still get one reserved turn even if the budget is
+  already exhausted when they're first invoked this sprint, but only once - after that, they hard-
+  halt with no grace at all, same as before this issue.
 
 SETUP WIZARD (run proactively until configured - see ISSUE-0013)
 - "Proactively" means this: once the user has given you ANY go-ahead to act at all (starting a

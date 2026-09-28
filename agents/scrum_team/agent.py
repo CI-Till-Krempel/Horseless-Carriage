@@ -251,6 +251,7 @@ from .helpers import (
     get_env_with_deprecated_fallback,
     closeout_grace_percent,
     SPRINT_CLOSEOUT_GRACE_ROLES,
+    NON_GRACE_FLOOR_ROLES,
 )
 from .prompts import (
     ORCHESTRATOR_PROMPT,
@@ -855,6 +856,44 @@ def ensure_state_initialized_callback(callback_context: CallbackContext, llm_req
     callback_context.state["_state_auto_initialized"] = True
 
 
+def _maybe_inject_budget_warning(
+    callback_context: CallbackContext, llm_request: LlmRequest, token_usage: int, token_limit: int
+) -> None:
+    """
+    GH issue #220: previously the only signal anyone got about the sprint
+    token budget was the hard-halt itself - no warning before the wall, just
+    a sudden stop mid-turn. Injects a one-time system-context message (same
+    `types.Content(role="system", ...)` pattern sprint_status_injection_
+    callback below uses) once usage crosses 75% and again at 90% of
+    SPRINT_TOKEN_BUDGET, so a human watching the console - and the model
+    itself - gets advance notice instead. Gated by a single "highest
+    threshold already warned" flag in state so each threshold fires at most
+    once per sprint; reset_sprint_budget clears it for the next one (see
+    sprint_budget_reset_state_delta, tools/budget.py).
+    """
+    if token_limit <= 0:
+        return
+    already_warned_pct = callback_context.state.get("_budget_warning_pct_fired", 0)
+    ratio_pct = (token_usage / token_limit) * 100
+    crossed = 90 if ratio_pct >= 90 else (75 if ratio_pct >= 75 else 0)
+    if not crossed or crossed <= already_warned_pct:
+        return
+    callback_context.state["_budget_warning_pct_fired"] = crossed
+    msg = (
+        f"\n[SYSTEM WARNING: SPRINT TOKEN BUDGET AT {crossed}%] {token_usage:,} / {token_limit:,} "
+        "tokens used this sprint. Work efficiently from here - once the budget is fully "
+        "exhausted, DevTeam/QA/Architect halt immediately (aside from a one-time reserved turn "
+        "each if they haven't had one yet this sprint); only ScrumMaster/ProductOwner/"
+        "QualityGuardian/ScrumOrchestrator get a small extra allowance to finish the SPRINT "
+        "CLOSE SEQUENCE (retro -> KPIs -> sprint report -> release PR)."
+    )
+    llm_request.contents.insert(0, types.Content(role="system", parts=[types.Part(text=msg)]))
+    logger.info(
+        "check_cost_budget_callback: injected %d%% sprint token budget warning (%s/%s tokens).",
+        crossed, token_usage, token_limit,
+    )
+
+
 def check_cost_budget_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> Optional[LlmResponse]:
     """
     BeforeModelCallback: Checks if the team is over budget before allowing an agent to start.
@@ -904,11 +943,13 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
     # Fallback to environment if state is missing/zero
     if token_limit <= 0:
         try:
-            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 1000000))
+            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 5000000))
         except (ValueError, TypeError):
-            token_limit = 1000000
-            
+            token_limit = 5000000
+
     token_usage = state.token_usage.total
+    if token_limit > 0 and token_usage < token_limit:
+        _maybe_inject_budget_warning(callback_context, llm_request, token_usage, token_limit)
     if token_limit > 0 and token_usage >= token_limit:
         _sync_roadmap_on_exhaustion_once(callback_context)
         # SPRINT CLOSE SEQUENCE grace (see closeout_grace_percent/
@@ -918,9 +959,22 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
         # tripped - nobody ever got a turn to run retro/create_sprint_report/
         # KPIs/create_release_pr. DevTeam/QA/Architect still halt immediately
         # here, unconditionally - their work is frozen; only closing the
-        # sprint out for real still needs turns.
-        grace_limit = token_limit * (1 + closeout_grace_percent() / 100.0)
+        # sprint out for real still needs turns. closeout_grace_percent(state)
+        # (not the bare no-arg form) scales that allowance down as less of
+        # the close-out sequence remains outstanding - see GH issue #220.
+        grace_limit = token_limit * (1 + closeout_grace_percent(state) / 100.0)
         if agent_name in SPRINT_CLOSEOUT_GRACE_ROLES and token_usage < grace_limit:
+            pass
+        elif agent_name in NON_GRACE_FLOOR_ROLES and state.token_usage.agents.get(agent_name, 0) == 0:
+            # GH issue #220: reserved floor - a verbose planning phase can
+            # burn the entire sprint's budget before DevTeam/QA/Architect
+            # ever get a single turn, exactly the failure this issue
+            # reported. Guarantee each of them at least one real call this
+            # sprint even if the total is already exhausted; the instant
+            # this role logs any real usage (update_token_usage_callback),
+            # this branch no longer applies and the plain hard-halt below
+            # resumes for it, same as today - this is a one-time floor, not
+            # a standing exemption.
             pass
         else:
             msg = (
@@ -1035,7 +1089,7 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
         if current_spend >= budget_limit:
             _sync_roadmap_on_exhaustion_once(callback_context)
             # Same SPRINT CLOSE SEQUENCE grace as the token check above.
-            grace_usd_limit = budget_limit * (1 + closeout_grace_percent() / 100.0)
+            grace_usd_limit = budget_limit * (1 + closeout_grace_percent(state) / 100.0)
             if agent_name in SPRINT_CLOSEOUT_GRACE_ROLES and current_spend < grace_usd_limit:
                 pass
             else:
