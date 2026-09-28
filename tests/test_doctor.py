@@ -443,6 +443,43 @@ class TestStateRepoStructureChecks:
         result = doctor.check(tmp_path)
         assert not any("specs" in w.message for w in result.warnings())
 
+    def test_missing_agents_md_is_migrated_with_a_note(self, valid_repo, monkeypatch, capsys):
+        """Acceptance Criteria: a state repo that predates the AGENTS.md
+        convention gets the baseline workflow section added automatically
+        on a plain doctor.py run, not just via the standalone
+        check_state_repo.py script."""
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        doctor.check(valid_repo)
+        agents_md = state_repo / "AGENTS.md"
+        assert agents_md.is_file()
+        assert doctor.check_state_repo.AGENTS_MD_BASELINE_BEGIN in agents_md.read_text(encoding="utf-8")
+        assert "Created AGENTS.md" in capsys.readouterr().out
+
+    def test_existing_agents_md_content_survives_a_doctor_run(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        (state_repo / "AGENTS.md").write_text("# AGENTS.md\n\nMy team's own notes.\n", encoding="utf-8")
+
+        doctor.check(valid_repo)
+
+        content = (state_repo / "AGENTS.md").read_text(encoding="utf-8")
+        assert "My team's own notes." in content
+        assert doctor.check_state_repo.AGENTS_MD_BASELINE_BEGIN in content
+        assert "Added the baseline workflow description" in capsys.readouterr().out
+
+    def test_already_migrated_agents_md_produces_no_note(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        doctor.check_state_repo.ensure_agents_md_baseline(state_repo)
+        capsys.readouterr()  # discard output from the setup call above
+
+        doctor.check(valid_repo)
+
+        out = capsys.readouterr().out
+        assert "Created AGENTS.md" not in out
+        assert "Added the baseline workflow description" not in out
+
 
 class TestGithubAccessCheck:
     """Acceptance Criteria (GH issue #60): "without the ability to read
