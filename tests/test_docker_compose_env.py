@@ -192,3 +192,70 @@ class TestNoSpuriousComposeWarningsForVarsWithSafeDefaults:
             f"{missing} are referenced as bare ${{VAR}} (no inline default) despite the code that "
             "reads them already defaulting gracefully - use ${VAR:-default} instead (GH issue #82)."
         )
+
+
+_ALL_COMPOSE_FILES = (
+    "docker-compose.yaml",
+    "docker-compose.local.yaml",
+    "docker-compose.local-hostollama.yaml",
+)
+
+
+def _db_service(compose_path: Path) -> dict:
+    data = yaml.safe_load((REPO_ROOT / compose_path).read_text(encoding="utf-8"))
+    return data["services"]["db"]
+
+
+class TestPostgresCredentialsAreNotHardcoded:
+    """GH issue #240: every install previously shared the identical hardcoded
+    POSTGRES_USER=llm_user / POSTGRES_PASSWORD=llm_password credential, and
+    the db service published itself to the host on 5433:5432 with no reason
+    to (only litellm, over the internal Compose network, ever connects to
+    it). Both are regression-tested here across all three compose files."""
+
+    def test_postgres_password_is_interpolated_not_hardcoded(self):
+        for compose_file in _ALL_COMPOSE_FILES:
+            entries = _db_service(Path(compose_file))["environment"]
+            password_entries = [e for e in entries if e.startswith("POSTGRES_PASSWORD=")]
+            assert password_entries, f"{compose_file}: db service is missing POSTGRES_PASSWORD"
+            value = password_entries[0].split("=", 1)[1]
+            assert value == "${POSTGRES_PASSWORD}", (
+                f"{compose_file}: db.environment.POSTGRES_PASSWORD is {value!r}, expected "
+                "${POSTGRES_PASSWORD} (Compose-level interpolation from .env) - a literal value "
+                "here means every install shares the same hardcoded credential again (GH issue #240)."
+            )
+
+    def test_db_service_has_no_host_port_publish(self):
+        for compose_file in _ALL_COMPOSE_FILES:
+            db = _db_service(Path(compose_file))
+            assert "ports" not in db, (
+                f"{compose_file}: db service still publishes a host port - nothing besides "
+                "litellm (over the internal Compose network) needs to reach Postgres directly "
+                "(GH issue #240)."
+            )
+
+
+class TestEnvTemplatesDoNotShipASharedPostgresPassword:
+    """Companion check to TestPostgresCredentialsAreNotHardcoded: the .env
+    templates themselves must use a placeholder (setup_llm.py's
+    lib_env.ensure_postgres_password generates a real one per install), not
+    the old shared 'llm_password' literal."""
+
+    def test_env_examples_use_a_placeholder_postgres_password(self):
+        import sys
+
+        sys.path.insert(0, str(REPO_ROOT))
+        import lib_env
+
+        for env_file in (".env.example", ".env.local.example"):
+            path = REPO_ROOT / env_file
+            password = lib_env.read_env_var(path, "POSTGRES_PASSWORD")
+            assert lib_env.is_placeholder(password), (
+                f"{env_file}: POSTGRES_PASSWORD is {password!r}, expected a placeholder - "
+                "setup_llm.py generates the real value per install (GH issue #240)."
+            )
+            database_url = lib_env.read_env_var(path, "DATABASE_URL")
+            assert "llm_password" not in database_url, (
+                f"{env_file}: DATABASE_URL still embeds the old shared 'llm_password' literal "
+                "(GH issue #240)."
+            )

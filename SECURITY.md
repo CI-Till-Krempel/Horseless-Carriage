@@ -20,6 +20,7 @@ it can be fixed before details are public.
 | `GITHUB_TOKEN` / `GITHUB_APP_PRIVATE_KEY` | `.env`, loaded into `ScrumState.github_token` at runtime (session-only) | No — deliberately excluded from `REPO_STATE_KEYS` (`agents/scrum_team/tools/scrum.py`) |
 | Per-agent LiteLLM virtual keys (`ScrumState.litellm_keys`) | Generated at runtime via the LiteLLM proxy, kept in session state | No — deliberately excluded from `REPO_STATE_KEYS` |
 | `LITELLM_MASTER_KEY` | `.env` only | No |
+| `POSTGRES_PASSWORD` / `DATABASE_URL` | `.env` only, generated per install by `setup_llm.py` (`lib_env.ensure_postgres_password`) instead of a shared hardcoded default | No |
 
 `REPO_STATE_KEYS` is an explicit allowlist, not a full dump of session state — see
 `test_save_state_to_repo_excludes_keys_outside_allowlist` and

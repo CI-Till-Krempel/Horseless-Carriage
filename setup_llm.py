@@ -848,6 +848,7 @@ def run_cloud_provider(provider: str, key_var: str, fetch_fn, provider_label: st
 
     lib_env.update_env_var(env_path, key_var, api_key)
     lib_env.ensure_master_key(env_path)
+    lib_env.ensure_postgres_password(env_path)
 
     write_litellm_yaml(provider, main_model, cheap_model, Path("litellm.yaml"))
     write_litellm_yaml(provider, main_model, cheap_model, Path(f"config/model-templates/litellm.cloud-{provider}.yaml"))
@@ -895,6 +896,7 @@ def run_local_provider(dev: bool = False) -> None:
 
     lib_env.update_env_var(env_path, "OLLAMA_MODEL", model)
     lib_env.ensure_master_key(env_path)
+    lib_env.ensure_postgres_password(env_path)
 
     print()
     print("--- Containerized vs. host-native Ollama ---")

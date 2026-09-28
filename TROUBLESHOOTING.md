@@ -77,10 +77,11 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   otherwise fails silently, with Docker starting the container either way. Check the prerequisites
   in [Setup § GPU Support](docs/SETUP.md#gpu-support), then verify directly with
   `docker compose <your -f args> exec ollama nvidia-smi`.
-- **Port already in use (`4000`, `8000`, or `5433`)** — those are the LiteLLM proxy, the ADK web UI,
-  and the Postgres host-mapped port respectively (`docker-compose.yaml`). Something else on your
-  machine (or a leftover Horseless Carriage stack — see above) is bound to it; stop that process or
-  the leftover stack, then retry.
+- **Port already in use (`4000` or `8000`)** — those are the LiteLLM proxy and the ADK web UI
+  respectively (`docker-compose.yaml`). Something else on your machine (or a leftover Horseless
+  Carriage stack — see above) is bound to it; stop that process or the leftover stack, then retry.
+  (Postgres is no longer published to the host at all as of GH issue #240 — only `litellm` reaches
+  it, over the internal Compose network.)
 - **Windows: `docker compose up` never asks about file sharing, then the agent can't see your state
   repo** — whichever drive `STATE_REPO_PATH` is on must be shared with Docker Desktop (**Settings →
   Resources → File Sharing**). See [Setup § Setting up on Windows](docs/SETUP.md#setting-up-on-windows).
