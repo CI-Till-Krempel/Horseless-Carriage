@@ -278,10 +278,11 @@ require a human, and how chatty the orchestrator is between them - full detail i
 | How deep the Ready backlog must be before implementing | `.env`'s `TARGET_STORIES_PER_SPRINT` / `READY_BACKLOG_SPRINTS_TARGET` (read by `ready_backlog_shortfall()` in `helpers.py`) | The story-count threshold `create_sprint_backlog_pr` enforces before it will run at all |
 | A role's own tone/conventions/emphasis | `<Role>-identity.md` in the state repository (via ScrumMaster's `propose_steering_change`, or a direct hand-edit) | Injected into that role's session once per turn-1; supplements but can never override the guardrails/workflow below - see [State Repository § Structure](STATE-REPOSITORY.md#structure) |
 
-Every role's system prompt itself is assembled from 3 files (`agents/scrum_team/prompts.py`'s own
-module docstring has the authoritative detail): `<Role>-guardrails.md` (non-negotiable) and
-`<Role>-workflow.md` (this document's own content, mechanically enforced) live in
-`agents/scrum_team/prompt_modules/` in *this* repository and are never a customization target for
+Every role's system prompt itself is assembled from several pieces - see [Agent Prompt
+Composition](AGENT-PROMPTS.md) for the full picture, including the Definition of Done/Ready
+checklists baked directly into the roles that need them. In short: `<Role>-guardrails.md`
+(non-negotiable) and `<Role>-workflow.md` (this document's own content, mechanically enforced) live
+in `agents/scrum_team/prompt_modules/` in *this* repository and are never a customization target for
 any tool; `<Role>-identity.md` is the one piece that does live in the state repository, per the
 table row above.
 
@@ -301,6 +302,8 @@ approval-withheld-then-merged flow, and the Story Spec PR evidence gate.
 ## Related docs
 
 [Architecture](ARCHITECTURE.md) (system diagram, "enforce in code" principle) ·
+[Agent Prompt Composition](AGENT-PROMPTS.md) (how each role's prompt is assembled, and why
+customization can't override the fixed parts) ·
 [Interaction Levels](INTERACTION-LEVELS.md) (full gate/approval semantics) ·
 [Budget Management](BUDGET.md) · [GitHub Integration](GITHUB-INTEGRATION.md) ·
 [RELEASE.md](../RELEASE.md) "Story workflow"/"Branching model" (operational/GitFlow detail)

@@ -10,7 +10,10 @@ from agents.scrum_team.prompts import (
     ARCH_PROMPT,
     QUALITY_GUARDIAN_PROMPT,
     ROLE_NAMES,
+    DOD_ROLES,
+    DOR_ROLES,
     _load_role_prompt,
+    _load_checklist,
     load_role_identity_default,
 )
 
@@ -68,6 +71,68 @@ class TestPromptModuleAssembly(unittest.TestCase):
                 # identity.default.md is never concatenated into the static
                 # prompts above - confirm it's genuinely absent from them.
                 self.assertNotIn(content.strip(), prompts_by_role[role])
+
+
+class TestDefinitionOfDoneAndReadyInjection(unittest.TestCase):
+    """
+    Acceptance Criteria (real PR review comment on #306): the DoD must be
+    known to every role involved in the realisation of a task (Dev Team
+    implements, Architect reviews, QA tests, Product Owner accepts - the
+    exact 4 roles DOD.md's own checklist names as owning a stage); the DoR
+    must be known to every role responsible for specifying/documenting
+    requirements and technical concepts (Product Owner, Architect - DOR.md
+    itself calls READY "Product Owner's stage gate, supported by Architect
+    for technical feasibility"). This must be part of prompt composition
+    itself (baked into the static prompt, not a separate read_doc call the
+    model has to think to make), and the content must be the literal
+    checklist file, so it can never drift from what read_doc returns for
+    the same path.
+    """
+
+    ALL_PROMPTS = [
+        (ORCHESTRATOR_PROMPT, "ScrumOrchestrator"),
+        (PO_PROMPT, "ProductOwner"),
+        (SM_PROMPT, "ScrumMaster"),
+        (DEV_PROMPT, "DevTeam"),
+        (QA_PROMPT, "QA"),
+        (ARCH_PROMPT, "Architect"),
+        (QUALITY_GUARDIAN_PROMPT, "QualityGuardian"),
+    ]
+
+    def test_dod_roles_are_exactly_the_realisation_roles(self):
+        self.assertEqual(set(DOD_ROLES), {"DevTeam", "Architect", "QA", "ProductOwner"})
+
+    def test_dor_roles_are_exactly_the_specification_roles(self):
+        self.assertEqual(set(DOR_ROLES), {"ProductOwner", "Architect"})
+
+    def test_dod_and_dor_appear_only_in_the_roles_that_need_them(self):
+        for prompt, role in self.ALL_PROMPTS:
+            with self.subTest(role=role):
+                self.assertEqual("DEFINITION OF DONE" in prompt, role in DOD_ROLES)
+                self.assertEqual("DEFINITION OF READY" in prompt, role in DOR_ROLES)
+
+    def test_injected_checklist_content_is_the_literal_file_not_a_paraphrase(self):
+        dod_text = _load_checklist("DOD")
+        dor_text = _load_checklist("DOR")
+        prompts_by_role = {role: prompt for prompt, role in self.ALL_PROMPTS}
+
+        for role in DOD_ROLES:
+            with self.subTest(role=role, checklist="DOD"):
+                self.assertIn(dod_text, prompts_by_role[role])
+        for role in DOR_ROLES:
+            with self.subTest(role=role, checklist="DOR"):
+                self.assertIn(dor_text, prompts_by_role[role])
+
+    def test_unknown_checklist_name_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            _load_checklist("NOT-A-REAL-CHECKLIST")
+
+    def test_dod_and_dor_follow_workflow_in_prompt_order(self):
+        for role in ("ProductOwner", "Architect"):
+            prompt = dict((r, p) for p, r in self.ALL_PROMPTS)[role]
+            with self.subTest(role=role):
+                self.assertLess(prompt.index("WORKFLOW ("), prompt.index("DEFINITION OF DONE"))
+                self.assertLess(prompt.index("WORKFLOW ("), prompt.index("DEFINITION OF READY"))
 
 
 class TestSelfTransferWarning(unittest.TestCase):
