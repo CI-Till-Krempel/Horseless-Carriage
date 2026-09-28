@@ -64,7 +64,10 @@ services:
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
     ports:
-      - "4000:4000"
+      # GH issue #239: bound to localhost by default - see docker-compose.yaml's
+      # identical entry. Set LITELLM_BIND_HOST=0.0.0.0 in .env to expose it on
+      # the LAN.
+      - "${LITELLM_BIND_HOST:-127.0.0.1}:4000:4000"
     volumes:
       # LITELLM_CONFIG_PATH lets a caller (e.g. run_adk_eval.py) point this
       # at a dedicated config - eval/adk/litellm.local.yaml, pinned to a
@@ -87,8 +90,11 @@ services:
       context: .
       dockerfile: agent.Dockerfile
     ports:
-      # ADK web frontend (only listens when AGENT_MODE=web, the default)
-      - "8000:8000"
+      # ADK web frontend (only listens when AGENT_MODE=web, the default).
+      # GH issue #239: bound to localhost by default - see docker-compose.yaml's
+      # identical entry. Set AGENT_WEB_BIND_HOST=0.0.0.0 in .env to expose it
+      # on the LAN.
+      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:8000:8000"
     volumes:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro

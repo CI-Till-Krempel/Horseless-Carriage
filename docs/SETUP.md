@@ -126,11 +126,17 @@ python run.py
 - **Copying `.env` templates manually** (only needed if you skip `setup_llm.py`/`setup_project.py`,
   which already do this for you): PowerShell's `copy` works like Unix `cp` - `copy .env.example .env`;
   the same command works in cmd.exe too.
-- **Firewall prompts**: the first `docker compose up` may trigger a Windows Defender Firewall prompt
-  for the ports LiteLLM (`4000`) and the ADK web UI (`8000`) listen on. Allow access on your private
-  network. The local/Ollama setup's `ollama` container is not published to the host at all (litellm
-  reaches it over Compose's internal network), so it triggers no such prompt - if you have a native
-  Ollama install listening on its default `11434`, it's untouched and won't conflict.
+- **Firewall prompts**: since GH issue #239, LiteLLM (`4000`) and the ADK web UI (`8000`) are bound
+  to `127.0.0.1` by default - neither has any authentication in front of it beyond
+  `LITELLM_MASTER_KEY` (see SECURITY.md), so they're no longer published to the LAN out of the box,
+  and `docker compose up` shouldn't trigger a firewall prompt for them at all on a default setup. If
+  you're intentionally sharing this instance on a trusted LAN (e.g. a shared dev box), set
+  `LITELLM_BIND_HOST=0.0.0.0` and/or `AGENT_WEB_BIND_HOST=0.0.0.0` in `.env` first - that will bring
+  back the firewall prompt, and you should allow access on your private network only if you trust
+  everyone who can reach that network segment. The local/Ollama setup's `ollama` container is not
+  published to the host at all (litellm reaches it over Compose's internal network), so it never
+  triggers such a prompt - if you have a native Ollama install listening on its default `11434`,
+  it's untouched and won't conflict.
 - **Long path limits**: this only affects tooling running directly on the Windows host, never inside
   the Linux `agent` container (which has no such limit). If you ever hit it anyway, enable long paths
   with `git config --system core.longpaths true`.

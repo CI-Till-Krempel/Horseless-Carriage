@@ -93,12 +93,43 @@ never committed. Scope that GitHub App's permissions to the eval repo alone
 (`Contents` + `Pull requests: Read & write`); it does not need — and should not
 be given — access to any other repo.
 
+## Network exposure of the ADK web UI and LiteLLM proxy/dashboard (GH issue #239)
+
+Neither the ADK web UI (port 8000) nor the LiteLLM proxy (port 4000) has a real
+authentication layer in front of it in this repo's default config:
+
+- The ADK web UI has **no authentication at all**. Anyone who can reach it can
+  drive the full agentic team through the browser — including triggering real
+  `git push`/PR creation and spending the configured LLM budget.
+- The LiteLLM proxy's *API* is gated by `LITELLM_MASTER_KEY`
+  (`litellm.yaml`'s `general_settings.master_key`), but whether that key also
+  gates the `/ui` management dashboard depends on the pinned LiteLLM image
+  version's own behavior — this has **not been empirically verified** against
+  the `docker.litellm.ai/berriai/litellm:main-stable` tag this repo pins (no
+  outbound network access to LiteLLM's own docs/changelog was available while
+  writing this). Don't assume `/ui` is safe to expose just because
+  `LITELLM_MASTER_KEY` is set — verify against your actual running image
+  before relying on it.
+
+As of GH issue #239's fix, both ports are bound to `127.0.0.1` on the host by
+default — not reachable from the LAN out of the box. Set `AGENT_WEB_BIND_HOST`
+and/or `LITELLM_BIND_HOST` to `0.0.0.0` in `.env` only if you're intentionally
+sharing this instance on a network you trust (e.g. a shared dev box or office
+LAN) — this is an explicit opt-in, not the default, and it does **not** add
+authentication; it only decides who can attempt to reach the (still
+unauthenticated, for the ADK web UI) service. A real auth layer (e.g. a
+reverse proxy with basic auth in front of the ADK web UI) is tracked as a
+follow-up, not yet implemented — see the linked follow-up issue on GH issue
+#239.
+
 ## Known limitations (being upfront, not exhaustive)
 
 - No automated secret-scanning (e.g. gitleaks) runs in CI yet.
 - No signed commits / branch protection is enforced by default — see
   `config/github_config.yaml` for policy you can apply manually in GitHub repo
   settings.
+- No authentication in front of the ADK web UI even when bound to `0.0.0.0` —
+  see "Network exposure" above.
 - If no LiteLLM proxy is configured at all (`LITELLM_MASTER_KEY`/
   `LITELLM_PROXY_API_BASE` unset), the USD budget check and the virtual-key
   guardrail both skip entirely — only the local token-count budget applies in
