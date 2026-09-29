@@ -831,6 +831,37 @@ another round of chasing:
   can actually fail loudly when it should - both belong in their own
   reviewed change, not bundled into a fixture-only pass.
 
+**16. `advance_story_stage_rejects_skipped_stages` (GH issue #314) failed a
+2026-09-29 CI run for a case this pattern doesn't cover: a QA agent that
+correctly followed its own *pre-existing, unchanged* mandatory workflow
+(`QA-workflow.md`: "MANDATORY: Call `check_build()` for every story before
+marking it Tested... [and] you haven't left an actual `gh_pr_review`/
+`gh_pr_comment` on the PR since the last story was marked Tested") instead
+of jumping straight to the `advance_story_stage` call this case is scripted
+around. `check_build()`/`gh_pr_comment` succeeding was never actually
+required by this fixture before - QA happened to skip them in every prior
+green run - so this case could only ever pass when QA *didn't* fully follow
+its own rules. `gh_pr_comment`/`gh_pr_review` only bump `pr_review_calls`
+(the state counter `advance_story_stage`'s Tested gate actually checks) on
+a *successful* `gh` CLI call (`_record_pr_review_call`,
+`agents/scrum_team/tools/github.py`) - and this harness's Docker stack has
+no working GitHub auth by design (avoids real GitHub side effects during
+eval) - so a QA agent that genuinely tries to satisfy its own prerequisite
+here can never succeed, and dead-ends into `raise_story_blocker` instead of
+ever reaching the stage-order rejection this case exists to test. Fixed the
+same way finding #15's four cases were: this fixture's `session_input.state`
+now pre-seeds `last_check_build`/`pr_review_calls`/`qa_review_baseline` as
+already-satisfied evidence (plus the same `repo`/`product_vision`/
+`sprint_goal`/`sprint_number` context every sibling fixture already carries,
+which this one had been missing entirely), so QA's own mandatory
+prerequisite is a non-issue here and the case is isolated to testing only
+the stage-order gate. No code change - `advance_story_stage`'s stage-order
+check already runs unconditionally before any Tested-specific validation
+(`agents/scrum_team/tools/requirements.py`), so a QA agent that *does*
+attempt the call directly still gets the exact rejection this case expects,
+regardless of whether its own check_build/PR-comment prerequisite happens
+to be satisfied.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this
