@@ -130,12 +130,20 @@
         "app_name": "scrum_team",
         "user_id": "product-human",
         "state": {
+          "repo": {"url": "git@github.com:example/example-state-repo.git", "local_path": "/tmp/state-repo", "default_branch": "main", "develop_branch": "develop"},
+          "product_vision": "A lightweight team task-tracking web app with login, task management, and reporting.",
+          "sprint_goal": "Deliver core login functionality this sprint.",
+          "sprint_number": 1,
+          "sprint_backlog_pr_sprint": 1,
           "product_backlog": [
             {"id": "US-0005", "title": "Add password reset", "type": "User Story", "stages_completed": ["Ready"]}
           ],
           "sprint_backlog": [
             {"id": "US-0005", "title": "Add password reset", "type": "User Story", "stages_completed": ["Ready"]}
           ],
+          "last_check_build": {"passing": true},
+          "pr_review_calls": {"QA": 1},
+          "qa_review_baseline": 0,
           "litellm_keys": {"QA": "eval-fixture-key-qa"}
         }
       }
