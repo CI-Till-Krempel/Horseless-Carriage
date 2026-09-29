@@ -91,6 +91,11 @@ def sprint_budget_reset_state_delta() -> Dict[str, Any]:
         "budget_reset_since_last_sprint_start": True,
         "critical_halt_notified": False,
         "sprint_report_safety_net_fired": False,
+        # GH issue #220: the 75%/90% budget-warning gate (see
+        # _maybe_inject_budget_warning, agent.py) - cleared so a new sprint's
+        # own approach to the ceiling warns again, rather than staying
+        # silently suppressed because a previous sprint already crossed 90%.
+        "_budget_warning_pct_fired": 0,
     }
 
 
@@ -352,9 +357,9 @@ def _sprint_length_feedback(s: Dict[str, Any]) -> str:
     token_limit = budgets.get("total", 0)
     if token_limit <= 0:
         try:
-            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 1000000))
+            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 5000000))
         except (ValueError, TypeError):
-            token_limit = 1000000
+            token_limit = 5000000
 
     token_used = s.get("token_usage", {}).get("total", 0)
     backlog = s.get("sprint_backlog", []) or []
@@ -1031,6 +1036,23 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                 report += f"- Security Scan: {security.get('vulnerability_scan_results')}\n"
             elif security.get("vulnerability_scan_note"):
                 report += f"- Security Scan: not available ({security['vulnerability_scan_note']})\n"
+
+            # Per-agent, so gated to "full" only, same as Per-Agent Token
+            # Usage above - granular per-role detail, not a team-level
+            # summary number a Stakeholder-level report needs.
+            prompt_context_usage = kpis.get("prompt_context_usage") or {}
+            if prompt_context_usage and detail == "full":
+                report += "\n### Per-Agent Prompt Context Usage\n"
+                for role, entry in prompt_context_usage.items():
+                    if entry.get("available"):
+                        report += (
+                            f"  - {role} ({entry.get('model')}): {entry.get('prompt_tokens'):,} / "
+                            f"{entry.get('context_window_tokens'):,} tokens ({entry.get('usage_percent')}%)\n"
+                        )
+                    else:
+                        report += f"  - {role} ({entry.get('model')}): not available ({entry.get('note', 'unknown')})\n"
+            elif prompt_context_usage:
+                omitted_sections.append("Per-Agent Prompt Context Usage")
         else:
             report += "No KPI data recorded for this sprint.\n"
     else:

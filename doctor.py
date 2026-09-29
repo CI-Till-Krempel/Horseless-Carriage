@@ -7,7 +7,9 @@ This script will:
 2. Check if .env exists and contains essential variables.
 3. Check if the STATE_REPO_PATH directory exists, has a 'specs' subdirectory
    with no stray template files (see check_state_repo.py for the fuller,
-   heavier version of this check, including state.json validation).
+   heavier version of this check, including state.json validation), and
+   materialize each role's default `<Role>-identity.md` if it doesn't
+   already exist (additive only - never overwrites an existing file).
 4. Check gh CLI authentication, and - given a GITHUB_REPO_URL and either
    GITHUB_TOKEN or a resolvable GitHub App token - live read access to that
    repo's issues and pull requests (see lib_github.py).
@@ -224,6 +226,19 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
                     warn(f"State repository has {len(stray_templates)} stray TEMPLATE-*.md file(s) "
                          "in 'specs/' that belong only in this project's spec-templates/ directory - "
                          "run python3 check_state_repo.py for details.")
+
+                # Migration for state repos that predate the per-role
+                # identity.md convention - purely additive (never
+                # overwrites an existing file, see
+                # ensure_role_identity_defaults's docstring), so this runs
+                # unconditionally on every doctor.py invocation rather than
+                # only warning like the stray-template check above, the
+                # same way the sessions/ auto-create below does.
+                identity_results = check_state_repo.ensure_role_identity_defaults(state_repo_path)
+                created_roles = sorted(role for role, result in identity_results.items() if result == "created")
+                if created_roles:
+                    print(f"NOTE: Created default identity.md in the state repository for {len(created_roles)} "
+                          f"role(s) not yet customized: {', '.join(created_roles)}.")
 
     sessions_dir = repo_root / "sessions"
     if not sessions_dir.is_dir():

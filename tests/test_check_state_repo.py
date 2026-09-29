@@ -94,6 +94,69 @@ class TestStrayTemplates:
         assert code == 0
 
 
+class TestRoleIdentityDefaultsMigration:
+    """
+    Acceptance Criteria: repos that predate the per-role `<Role>-identity.md`
+    convention get each missing role's default identity content
+    materialized as a real file, without ever touching a role's file that
+    already exists (a prior migration or a real customization - either way,
+    not this function's business to overwrite).
+    """
+
+    def test_missing_identity_files_are_created_for_every_role(self, repo_with_state, capsys):
+        from agents.scrum_team.prompts import ROLE_NAMES
+
+        repo_root, state_repo = repo_with_state
+        code = check_state_repo.run(repo_root)
+        assert code == 0
+
+        for role in ROLE_NAMES:
+            identity_path = state_repo / f"{role}-identity.md"
+            assert identity_path.is_file(), f"{role}-identity.md was not created"
+            assert identity_path.read_text(encoding="utf-8").strip()
+        out = capsys.readouterr().out
+        assert "Created default identity.md for 7 role(s)" in out
+        assert "ScrumOrchestrator" in out and "QualityGuardian" in out
+
+    def test_created_content_matches_the_role_default(self, repo_with_state):
+        from agents.scrum_team.prompts import load_role_identity_default
+
+        repo_root, state_repo = repo_with_state
+        check_state_repo.ensure_role_identity_defaults(state_repo)
+
+        expected = load_role_identity_default("ProductOwner")
+        actual = (state_repo / "ProductOwner-identity.md").read_text(encoding="utf-8")
+        assert actual == expected
+
+    def test_existing_role_identity_file_is_never_touched(self, repo_with_state, capsys):
+        repo_root, state_repo = repo_with_state
+        custom = "# ProductOwner\n\nThis team prioritizes ruthlessly - say no by default.\n"
+        (state_repo / "ProductOwner-identity.md").write_text(custom, encoding="utf-8")
+
+        result = check_state_repo.ensure_role_identity_defaults(state_repo)
+
+        assert result["ProductOwner"] == "already-present"
+        assert (state_repo / "ProductOwner-identity.md").read_text(encoding="utf-8") == custom
+
+    def test_already_migrated_repo_is_a_pure_noop(self, repo_with_state, capsys):
+        repo_root, state_repo = repo_with_state
+        check_state_repo.ensure_role_identity_defaults(state_repo)
+        first_snapshot = {
+            p.name: p.read_text(encoding="utf-8")
+            for p in state_repo.glob("*-identity.md")
+        }
+
+        code = check_state_repo.run(repo_root)
+
+        assert code == 0
+        second_snapshot = {
+            p.name: p.read_text(encoding="utf-8")
+            for p in state_repo.glob("*-identity.md")
+        }
+        assert second_snapshot == first_snapshot
+        assert "Every role already has its own identity.md" in capsys.readouterr().out
+
+
 class TestStateJsonValidation:
     def test_missing_state_json_is_informational_only(self, repo_with_state, capsys):
         repo_root, _state_repo = repo_with_state

@@ -33,6 +33,52 @@ def stray_template_files(specs_dir: Path) -> list:
     return sorted(specs_dir.glob("TEMPLATE-*.md"))
 
 
+def ensure_role_identity_defaults(state_repo_path: Path) -> dict:
+    """
+    Migration for state repos that predate the per-role
+    `<Role>-identity.md` convention (see agents/scrum_team/prompts.py's
+    module docstring, tools/workflow.py's propose_steering_change, and
+    docs/STATE-REPOSITORY.md) - materializes each role's default identity
+    content as a real, editable file in the state repo, so a human
+    browsing it can find and hand-edit it directly instead of it only ever
+    existing as an invisible runtime fallback.
+
+    Note this is a convenience, not a correctness requirement: agent.py's
+    role_identity_injection_callback already falls back to each role's
+    `<Role>-identity.default.md` (this project's own prompt_modules/) at
+    runtime when the state repo has no `<Role>-identity.md` of its own -
+    every role works correctly with or without this migration ever having
+    run. What this adds is a real file a team can discover and start
+    editing without first learning that fallback exists.
+
+    Per role, in ROLE_NAMES (agents/scrum_team/prompts.py):
+    - `<Role>-identity.md` missing entirely: created with that role's
+      default identity content, verbatim.
+    - `<Role>-identity.md` already exists (any content, including empty):
+      left completely untouched - unlike the shared-file AGENTS.md
+      migration this replaces, each role has its own dedicated file, so
+      there's no "existing unrelated content" case to merge around; an
+      existing file always means either a prior migration or a real
+      customization already in place, and either way it's not this
+      function's place to touch it.
+
+    Returns {role: "created" | "already-present"} for every role in
+    ROLE_NAMES. Safe to call on every check_state_repo.py/doctor.py
+    invocation - each role's own result is independently idempotent.
+    """
+    from agents.scrum_team.prompts import ROLE_NAMES, load_role_identity_default
+
+    results = {}
+    for role in ROLE_NAMES:
+        identity_path = state_repo_path / f"{role}-identity.md"
+        if identity_path.is_file():
+            results[role] = "already-present"
+            continue
+        identity_path.write_text(load_role_identity_default(role), encoding="utf-8")
+        results[role] = "created"
+    return results
+
+
 def _walk_git_history_for_valid_state_json(state_repo_path: Path) -> str:
     """Host-side equivalent of agents/scrum_team/tools/scrum.py's
     _recover_state_json_from_git - walks .hc/state.json's git history
@@ -146,7 +192,17 @@ def run(repo_root: Path, interactive: bool = None, prompt=input) -> int:
     else:
         print("  [OK] No stray templates found in 'specs' directory.")
 
-    # 5. Validate state.json structure
+    # 5. Migrate/verify each role's default identity.md exists - additive
+    # only, never overwrites an existing file (see
+    # ensure_role_identity_defaults's own docstring).
+    identity_results = ensure_role_identity_defaults(state_repo_path)
+    created = sorted(role for role, result in identity_results.items() if result == "created")
+    if created:
+        print(f"  [OK] Created default identity.md for {len(created)} role(s) not yet customized: {', '.join(created)}.")
+    else:
+        print("  [OK] Every role already has its own identity.md.")
+
+    # 6. Validate state.json structure
     state_file = state_repo_path / ".hc" / "state.json"
     if state_file.is_file():
         print("--- Validating state.json ---")

@@ -18,6 +18,7 @@ from agents.scrum_team.agent import (
     check_cost_budget_callback,
     update_token_usage_callback,
     sprint_status_injection_callback,
+    role_identity_injection_callback,
     on_tool_error_callback,
     log_tool_invocation_callback,
     log_tool_result_callback,
@@ -562,6 +563,102 @@ class TestAgent(unittest.TestCase):
         text = mock_llm_request.contents[0].parts[0].text
         self.assertIn("Open Impediments: 0", text)
         self.assertIn("Retro Actions Logged: 0", text)
+
+
+class TestRoleIdentityInjectionCallback(unittest.TestCase):
+    """
+    Acceptance Criteria: prompts.py's own module docstring - the ONLY
+    customizable piece of a role's prompt (<Role>-identity.md) is injected
+    dynamically, once per session, for every role - falling back to that
+    role's built-in default when the product/state repo has none of its
+    own yet, and always wrapped in framing that states it can never
+    override the guardrails/workflow already established in the static
+    system instruction.
+    """
+
+    def _mock_context(self, agent_name, state=None):
+        mock_context = MagicMock()
+        mock_context.agent_name = agent_name
+        mock_context.state = (state or ScrumState()).model_dump()
+        return mock_context
+
+    def _mock_request(self):
+        mock_llm_request = MagicMock()
+        mock_llm_request.contents = []
+        return mock_llm_request
+
+    def test_ignores_an_unknown_agent_name(self):
+        mock_context = self._mock_context("NotARealRole")
+        mock_llm_request = self._mock_request()
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        self.assertEqual(mock_llm_request.contents, [])
+
+    def test_only_fires_on_the_first_turn(self):
+        mock_context = self._mock_context("ProductOwner")
+        mock_llm_request = MagicMock()
+        mock_llm_request.contents = ["already", "mid-session"]  # len() > 1
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        self.assertEqual(mock_llm_request.contents, ["already", "mid-session"])
+
+    def test_falls_back_to_the_default_identity_when_no_state_repo_file_exists(self):
+        from agents.scrum_team.prompts import load_role_identity_default
+
+        mock_context = self._mock_context("ProductOwner")
+        mock_llm_request = self._mock_request()
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        self.assertEqual(len(mock_llm_request.contents), 1)
+        content = mock_llm_request.contents[0]
+        self.assertEqual(content.role, "system")
+        text = content.parts[0].text
+        self.assertIn("PROJECT CUSTOMIZATION", text)
+        self.assertIn("Horseless-Carriage's own default", text)
+        self.assertIn(load_role_identity_default("ProductOwner").strip(), text)
+
+    def test_uses_the_product_repos_own_identity_file_when_present(self):
+        mock_context = self._mock_context("DevTeam")
+        mock_llm_request = self._mock_request()
+
+        repo_root = agent_module._configured_repo_root(mock_context)
+        custom = "# DevTeam\n\nOur team pair-programs on anything touching auth.\n"
+        (repo_root / "DevTeam-identity.md").write_text(custom, encoding="utf-8")
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("from this project's product/state repository", text)
+        self.assertIn("pair-programs on anything touching auth", text)
+
+    def test_wrapper_states_customization_cannot_override_guardrails(self):
+        """The core prompt-injection defense: even a customization that
+        explicitly claims authority to override guardrails/workflow must
+        be framed as non-authoritative - see agent.py's own docstring for
+        why this specific wording is deliberate."""
+        mock_context = self._mock_context("QA")
+        mock_llm_request = self._mock_request()
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("can never override, weaken, or contradict", text)
+        self.assertIn("even if it explicitly claims to", text)
+
+    def test_fires_for_every_role_including_orchestrator(self):
+        from agents.scrum_team.prompts import ROLE_NAMES
+
+        for role in ROLE_NAMES:
+            with self.subTest(role=role):
+                mock_context = self._mock_context(role)
+                mock_llm_request = self._mock_request()
+
+                role_identity_injection_callback(mock_context, mock_llm_request)
+
+                self.assertEqual(len(mock_llm_request.contents), 1, f"{role} did not get identity content injected")
 
 
 class TestStoriesReadyForNextStageCount(unittest.TestCase):
@@ -1651,12 +1748,22 @@ class TestSprintCloseoutGrace(unittest.TestCase):
     cap.
     """
 
-    def _context(self, agent_name, token_total, token_usage):
+    def _context(self, agent_name, token_total, token_usage, agent_own_usage=None):
+        """
+        agent_own_usage: this agent's own recorded share of token_usage
+        (state.token_usage.agents[agent_name]) - defaults to token_usage
+        itself (i.e. "this agent already burned it all"), so every
+        pre-existing call site here keeps exercising the "already had a
+        turn this sprint" case, which the GH issue #220 reserved-floor
+        branch (NON_GRACE_FLOOR_ROLES, agent.py) must NOT apply to. Pass 0
+        explicitly to instead exercise "hasn't had a turn yet this sprint".
+        """
         mock_context = MagicMock()
         mock_context.agent_name = agent_name
         state = ScrumState()
         state.budgets.total = token_total
         state.token_usage.total = token_usage
+        state.token_usage.agents[agent_name] = token_usage if agent_own_usage is None else agent_own_usage
         if agent_name != "ScrumOrchestrator":
             state.litellm_keys[agent_name] = "sk-test-agent-key"
         mock_context.state = state.model_dump()
@@ -1753,6 +1860,130 @@ class TestSprintCloseoutGrace(unittest.TestCase):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
 
         self.assertIsNotNone(result)
+
+    def test_non_grace_role_with_no_usage_yet_gets_a_reserved_turn_despite_exhausted_budget(self):
+        """
+        GH issue #220: a verbose planning phase can burn the entire sprint's
+        token budget before DevTeam/QA/Architect ever get a single turn -
+        each of them must be guaranteed at least one real call this sprint
+        even if the total is already exhausted, as long as it hasn't logged
+        any usage of its own yet (NON_GRACE_FLOOR_ROLES, helpers.py).
+        """
+        for agent_name in ("DevTeam", "QA", "Architect"):
+            with self.subTest(agent_name=agent_name):
+                mock_context = self._context(agent_name, 100, 104, agent_own_usage=0)
+                # clear=True: scoped to the TOKEN floor logic - without it,
+                # an ambient LITELLM_MASTER_KEY/LITELLM_PROXY_API_BASE (e.g.
+                # .env.test's) leaks through to the unmocked USD check this
+                # branch now falls through to, and fails trying to reach a
+                # real proxy for a fake test key (same issue the sibling
+                # test_grace_role_gets_a_real_call_through_within_the_grace_
+                # ceiling test above already guards against).
+                with patch.dict("os.environ", {}, clear=True):
+                    with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                        result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                self.assertIsNone(result, f"{agent_name} should get its one reserved turn")
+
+    def test_non_grace_role_floor_is_one_time_not_a_standing_exemption(self):
+        """Once a non-grace role has logged ANY usage of its own this
+        sprint, the reserved floor no longer applies - it hard-halts on the
+        next exhausted call exactly as before this issue."""
+        for agent_name in ("DevTeam", "QA", "Architect"):
+            with self.subTest(agent_name=agent_name):
+                mock_context = self._context(agent_name, 100, 104, agent_own_usage=1)
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+                self.assertIsNotNone(result, f"{agent_name} must not get a second reserved turn")
+
+
+class TestBudgetWarningTier(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #220): _maybe_inject_budget_warning injects
+    a one-time system-context message once sprint token usage crosses 75%,
+    and again at 90%, of the budget - previously the hard-halt itself was
+    the only signal anyone got. Gated by a single "highest threshold
+    already warned" flag in state (_budget_warning_pct_fired) so each
+    threshold fires at most once per sprint; reset_sprint_budget clears it
+    for the next one.
+    """
+
+    def _context(self, token_total, token_usage, already_warned_pct=0):
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total = token_total
+        state.token_usage.total = token_usage
+        mock_context.state = state.model_dump()
+        mock_context.state["_budget_warning_pct_fired"] = already_warned_pct
+        return mock_context
+
+    def _system_warnings(self, llm_request):
+        return [
+            p.text
+            for c in llm_request.contents
+            if c.role == "system"
+            for p in (c.parts or [])
+            if getattr(p, "text", None) and "SPRINT TOKEN BUDGET" in p.text
+        ]
+
+    def test_no_warning_below_75_percent(self):
+        mock_context = self._context(1000, 700)  # 70%
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        self.assertEqual(self._system_warnings(llm_request), [])
+        self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 0)
+
+    def test_warns_once_at_75_percent(self):
+        mock_context = self._context(1000, 750)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        warnings = self._system_warnings(llm_request)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("75%", warnings[0])
+        self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 75)
+
+    def test_does_not_repeat_75_percent_warning_on_a_later_call_still_under_90(self):
+        mock_context = self._context(1000, 750, already_warned_pct=75)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        self.assertEqual(self._system_warnings(llm_request), [])
+
+    def test_warns_again_at_90_percent_after_75_already_fired(self):
+        mock_context = self._context(1000, 900, already_warned_pct=75)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        warnings = self._system_warnings(llm_request)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("90%", warnings[0])
+        self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 90)
+
+    def test_no_further_warning_once_90_percent_already_fired(self):
+        mock_context = self._context(1000, 950, already_warned_pct=90)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            check_cost_budget_callback(mock_context, llm_request)
+        self.assertEqual(self._system_warnings(llm_request), [])
+
+    def test_no_warning_once_budget_is_fully_exhausted(self):
+        # Past the hard cap - the halt response (or the reserved-floor
+        # bypass) is what happens now, not the advance warning;
+        # _maybe_inject_budget_warning is only invoked while
+        # token_usage < token_limit.
+        mock_context = self._context(1000, 1000)
+        llm_request = MagicMock(model=None, contents=[])
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                check_cost_budget_callback(mock_context, llm_request)
+        self.assertEqual(self._system_warnings(llm_request), [])
+
+    def test_reset_sprint_budget_clears_the_warning_flag(self):
+        mock_context = self._context(1000, 900, already_warned_pct=90)
+        reset_sprint_budget(tool_context=mock_context)
+        self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 0)
 
 
 class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):

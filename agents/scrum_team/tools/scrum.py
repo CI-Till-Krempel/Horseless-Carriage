@@ -80,7 +80,9 @@ def sync_budgets_from_env(tool_context=None) -> Dict[str, Any]:
     Refreshes state.budgets.total/total_usd from the current
     SPRINT_TOKEN_BUDGET/TOTAL_USD_BUDGET (or deprecated SPRINT_USD_BUDGET)
     environment variables, then applies the HARD GUARDRAIL - never leave
-    either at 0/negative, defaulting to 1M tokens / $10 instead. Cheap and
+    either at 0/negative, defaulting to 5M tokens / $10 instead (GH issue
+    #220 - raised from 1M to match SPRINT_TOKEN_BUDGET's own default).
+    Cheap and
     side-effect-free beyond that (no I/O, no repo access) - safe to call on
     every turn, not just once.
 
@@ -122,7 +124,7 @@ def sync_budgets_from_env(tool_context=None) -> Dict[str, Any]:
     # HARD GUARDRAIL: Never allow 0 budget if not explicitly intended (and even then, discourage it)
     # Default to sensible values if still 0
     if budgets.get("total", 0) <= 0:
-        budgets["total"] = 1000000  # Default 1M tokens
+        budgets["total"] = 5000000  # Default 5M tokens (GH issue #220)
     if budgets.get("total_usd", 0.0) <= 0.0:
         budgets["total_usd"] = 10.0  # Default $10.00
 

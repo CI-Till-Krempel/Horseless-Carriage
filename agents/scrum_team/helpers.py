@@ -11,7 +11,7 @@ def get_process_overhead_percentage() -> float:
     return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
 
 
-def closeout_grace_percent() -> float:
+def closeout_grace_percent(state=None) -> float:
     """
     How much EXTRA token/USD budget (as a percentage of the main sprint
     ceiling) ScrumMaster/ProductOwner/QualityGuardian/ScrumOrchestrator may
@@ -38,8 +38,71 @@ def closeout_grace_percent() -> float:
     with nowhere left to redirect. Each agent's own LiteLLM virtual-key
     budget is still the ultimate financial backstop underneath this either
     way.
+
+    GH issue #220: the flat percentage above must be sized for the worst
+    case (the whole close-out sequence still outstanding) every time, even
+    on a call made after most of it has already finished - e.g. only
+    create_release_pr left. When a ScrumState is passed, scale the
+    configured percentage down by closeout_remaining_work_fraction(state)
+    so a mostly-finished close-out gets a smaller ceiling than one that
+    hasn't started, while never going below 25% of the configured value (a
+    real incident showed even the *last* remaining step - a bad hand-off
+    guess right before create_release_pr - can burn real tokens on its own,
+    see ISSUE-0046 above). Omit state (or pass None) to get the flat,
+    unscaled percentage - existing callers that never dealt with per-sprint
+    progress signals keep today's exact behavior.
     """
-    return float(os.getenv("SPRINT_CLOSEOUT_GRACE_PERCENT", "20.0"))
+    base = float(os.getenv("SPRINT_CLOSEOUT_GRACE_PERCENT", "20.0"))
+    if state is None:
+        return base
+    return base * max(closeout_remaining_work_fraction(state), 0.25)
+
+
+def closeout_remaining_work_fraction(state) -> float:
+    """
+    Estimates how much of the SPRINT CLOSE SEQUENCE (retro -> KPIs ->
+    create_sprint_report -> create_release_pr) is still outstanding this
+    sprint, as a fraction in [0.0, 1.0], purely from existing state signals
+    - see GH issue #220. Used by closeout_grace_percent to scale its ceiling
+    down as less work remains, instead of a flat percentage.
+
+    Mirrors the exact "fresh since baseline" checks create_sprint_report
+    (tools/budget.py) and calculate_kpis (tools/quality.py) already enforce,
+    rather than inventing new state: retro_baseline/kpi_baseline are bumped
+    to the then-current counts the moment create_sprint_report succeeds, so
+    a value still above baseline means that step is fresh *this* sprint.
+    sprint_report_pending_release is set True by create_sprint_report and
+    cleared by create_release_pr - so True on its own already implies retro,
+    KPIs, and the report are all done and only the release PR remains.
+
+    A brand-new ScrumState (nothing done yet) returns 1.0 - the full
+    configured grace - identical to closeout_grace_percent()'s behavior
+    before this scaling existed.
+    """
+    process_signals = len(state.retro_actions or []) + len(state.impediment_log or [])
+    retro_fresh = process_signals > state.retro_baseline
+    kpi_fresh = state.kpi_update_count > state.kpi_baseline
+
+    TOTAL_STEPS = 4  # retro, KPIs, sprint report, release PR
+    if state.sprint_report_pending_release:
+        steps_done = 3  # retro + KPIs + sprint report already done; only release remains
+    else:
+        steps_done = (1 if retro_fresh else 0) + (1 if kpi_fresh else 0)
+
+    return (TOTAL_STEPS - steps_done) / TOTAL_STEPS
+
+
+# GH issue #220: roles that get NO SPRINT CLOSE SEQUENCE grace (see
+# SPRINT_CLOSEOUT_GRACE_ROLES/closeout_grace_percent above) but should still
+# be guaranteed at least one real turn each sprint even if a verbose
+# planning phase already exhausted the whole main token budget before any
+# of them ran once - see check_cost_budget_callback's reserved-floor branch,
+# agent.py. Deliberately a ONE-TIME floor per role, not a standing
+# exemption: it only applies while state.token_usage.agents has no recorded
+# usage at all for that role this sprint - the instant it logs any real
+# usage (update_token_usage_callback), the floor no longer applies and the
+# normal hard-halt (no grace at all) resumes for that role, same as today.
+NON_GRACE_FLOOR_ROLES = frozenset({"DevTeam", "QA", "Architect"})
 
 
 # The roles the SPRINT CLOSE SEQUENCE actually needs a real turn from once

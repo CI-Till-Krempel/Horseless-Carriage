@@ -594,7 +594,7 @@ class TestSyncBudgetsFromEnv(unittest.TestCase):
             tool_context.state = {}
             sync_budgets_from_env(tool_context=tool_context)
 
-        self.assertEqual(tool_context.state["budgets"]["total"], 1000000)
+        self.assertEqual(tool_context.state["budgets"]["total"], 5000000)
         self.assertEqual(tool_context.state["budgets"]["total_usd"], 10.0)
 
     def test_never_floors_a_genuinely_positive_configured_value(self):
