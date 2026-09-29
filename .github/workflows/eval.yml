@@ -82,6 +82,11 @@ jobs:
             # general_settings.master_key accepts it as a valid bearer
             # token for any request.
             echo "LITELLM_PROXY_API_KEY=$LITELLM_MASTER_KEY"
+            # GH issue #240: docker-compose.yaml's db service now
+            # interpolates POSTGRES_PASSWORD from the environment instead of
+            # a hardcoded literal - an empty value makes Postgres refuse to
+            # start at all, taking litellm down with it (depends_on: db).
+            echo "POSTGRES_PASSWORD=llm_password"
             echo "DATABASE_URL=postgresql://llm_user:llm_password@db:5432/litellm_db"
             echo "GITHUB_APP_ID=$EVAL_GITHUB_APP_ID"
             echo "GITHUB_APP_PRIVATE_KEY=$PRIVATE_KEY_SINGLE_LINE"

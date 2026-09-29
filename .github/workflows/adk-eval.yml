@@ -43,6 +43,11 @@ jobs:
             # - the proxy's general_settings.master_key accepts it as a
             # valid bearer token for any request.
             echo "LITELLM_PROXY_API_KEY=$LITELLM_MASTER_KEY"
+            # GH issue #240: docker-compose.yaml's db service now
+            # interpolates POSTGRES_PASSWORD from the environment instead of
+            # a hardcoded literal - an empty value makes Postgres refuse to
+            # start at all, taking litellm down with it (depends_on: db).
+            echo "POSTGRES_PASSWORD=llm_password"
             echo "DATABASE_URL=postgresql://llm_user:llm_password@db:5432/litellm_db"
             echo "SESSION_ID=adk-eval-${{ github.run_number }}"
           } > .env.adk-eval
