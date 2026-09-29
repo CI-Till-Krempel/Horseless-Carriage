@@ -541,6 +541,70 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_renders_per_agent_prompt_context_usage(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (real PR review comment): the percentage of a
+        role's model's context window occupied by its concatenated system
+        prompt must be tracked on a per-agent basis in the sprint report,
+        at full detail (granular per-role numbers, same gating as
+        Per-Agent Token Usage) - not rendered at all at coarser levels.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["sprint_report_kpis"] = {
+            "team_effectiveness": {"say_do_ratio": 0.8, "commitment_reliability": 1.0},
+            "result_quality": {"defect_escape_rate": 0.05, "customer_satisfaction": 4.5},
+            "maintainability": {"test_coverage_available": False},
+            "security": {"vulnerability_scan_available": False},
+            "prompt_context_usage": {
+                "ProductOwner": {
+                    "model": "scrum-po", "prompt_tokens": 5318,
+                    "context_window_tokens": 1048576, "usage_percent": 0.51, "available": True,
+                },
+                "ScrumMaster": {
+                    "model": "scrum-sm", "prompt_tokens": 3092,
+                    "context_window_tokens": None, "usage_percent": None, "available": False,
+                    "note": "Could not determine this model's context window.",
+                },
+            },
+        }
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertIn("### Per-Agent Prompt Context Usage", report)
+        self.assertIn("ProductOwner (scrum-po): 5,318 / 1,048,576 tokens (0.51%)", report)
+        self.assertIn("ScrumMaster (scrum-sm): not available", report)
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_per_agent_prompt_context_usage_omitted_at_business_detail(self, mock_write_file):
+        """Same gating as Per-Agent Token Usage: granular per-role numbers
+        are "full" detail only, dropped (with a Full Process Detail
+        pointer) at the Stakeholder/"business" level."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["sprint_report_kpis"] = {
+            "team_effectiveness": {"say_do_ratio": 0.8},
+            "prompt_context_usage": {
+                "ProductOwner": {
+                    "model": "scrum-po", "prompt_tokens": 5318,
+                    "context_window_tokens": 1048576, "usage_percent": 0.51, "available": True,
+                },
+            },
+        }
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True):
+            report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertNotIn("### Per-Agent Prompt Context Usage", report)
+        self.assertIn("## Full Process Detail", report)
+        self.assertIn("Per-Agent Prompt Context Usage", report.split("## Full Process Detail")[1])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_accepts_impediment_alone(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria: an impediment (not just a retro action)

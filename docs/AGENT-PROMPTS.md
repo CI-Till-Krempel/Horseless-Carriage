@@ -82,8 +82,16 @@ layers, from least to most important:
    by a cleverly-worded customization to attempt something out of bounds still has that attempt
    mechanically refused, the same as if no customization existed at all.
 
+## Tracking context window usage
+
+Since the model backing each role may vary (`SCRUM_<ROLE>_MODEL` env vars), so does its context
+window - a role's concatenated, static system prompt (the guardrails + workflow + DoD/DoR pieces
+above, never the dynamically-injected identity content) is measured against that role's own model's
+context window and reported per agent, at full detail, in the sprint report's KPI dashboard - see
+[Budget Management § Quality KPIs](BUDGET.md#quality-kpis).
+
 ## Related docs
 
 [Development Workflow](DEVELOPMENT-WORKFLOW.md) (the same gates/pipeline, as a team-wide diagram) ·
 [State Repository](STATE-REPOSITORY.md) (where `<Role>-identity.md` lives, and how to propose a
-change to it)
+change to it) · [Budget Management](BUDGET.md) (per-agent prompt context usage in the sprint report)

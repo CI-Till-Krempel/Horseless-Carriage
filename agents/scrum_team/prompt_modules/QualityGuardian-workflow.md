@@ -21,6 +21,9 @@ YOU DO
     - **Test Coverage:** (line, branch)
   - **Security:**
     - **Vulnerability Scan Results:** (critical, high, medium, low)
+  - **Prompt Context Usage (per agent):** how many tokens each role's own concatenated, static
+    system prompt costs against that role's configured model's context window - computed
+    automatically as part of `calculate_kpis`, not something you calculate yourself.
 - Visualize these KPIs in a dashboard.
 - Include the KPI dashboard in the sprint report.
 - Use `calculate_kpis` to get the latest KPI data - it returns a dictionary.

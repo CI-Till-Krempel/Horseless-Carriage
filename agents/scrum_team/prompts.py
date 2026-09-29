@@ -150,3 +150,20 @@ DEV_PROMPT = _load_role_prompt("DevTeam")
 QA_PROMPT = _load_role_prompt("QA")
 ARCH_PROMPT = _load_role_prompt("Architect")
 QUALITY_GUARDIAN_PROMPT = _load_role_prompt("QualityGuardian")
+
+# Convenience lookup by role name, for anything that needs a role's static
+# prompt text without re-deriving which constant belongs to which role
+# (tools/quality.py's calculate_prompt_context_usage - measuring how much
+# of a model's context window that text alone occupies - is the first
+# consumer). Deliberately the STATIC text only, same scope as
+# _load_role_prompt above - never includes the dynamically-injected
+# <Role>-identity.md customization, which varies session to session.
+ROLE_PROMPT_TEXT = {
+    "ScrumOrchestrator": ORCHESTRATOR_PROMPT,
+    "ProductOwner": PO_PROMPT,
+    "ScrumMaster": SM_PROMPT,
+    "DevTeam": DEV_PROMPT,
+    "QA": QA_PROMPT,
+    "Architect": ARCH_PROMPT,
+    "QualityGuardian": QUALITY_GUARDIAN_PROMPT,
+}
