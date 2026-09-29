@@ -33,7 +33,7 @@ budget halts the sprint mechanically. See [Budget Management](docs/BUDGET.md).
 
 **How much human oversight is required — can I really leave it unattended?**
 You choose: from "approve every story" down to fully hands-off, via `INTERACTION_LEVEL`
-(`Product` / `Stakeholder` / `CEO` / `EVAL`). This isn't just documentation — it mechanically gates
+(`Product` / `CEO` / `EVAL`). This isn't just documentation — it mechanically gates
 which approvals are required before the team may implement a story or release an increment.
 **⚠️ Experimental — every level other than `Product` (the default) is not yet thoroughly tested.**
 See [Interaction Levels](docs/INTERACTION-LEVELS.md).

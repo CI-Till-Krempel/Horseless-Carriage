@@ -17,8 +17,6 @@ Covers, each as its own mechanical gate:
   short of holding enough queued-up work.
 - create_sprint_backlog_pr opens the PR but withholds the merge until a
   required human approval is freshly recorded, then merges on re-call.
-- record_design_approval, at the Stakeholder level, refuses without real
-  evidence (a merged create_story_spec_pr) instead of a bare assertion.
 
 Only genuine external boundaries are mocked (agents.scrum_team.tools.
 github._run) - state mutations and file writes all run for real, into the
@@ -32,7 +30,7 @@ from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
-    upsert_story, set_priority, advance_story_stage, record_design_approval,
+    upsert_story, set_priority, advance_story_stage,
 )
 from agents.scrum_team.tools.scrum import start_sprint, record_human_approval
 from agents.scrum_team.tools.github import (
@@ -50,15 +48,12 @@ class _FakeGhRuns:
     otherwise make. `gh pr view <branch> ...` looks up `pr_states` (a dict
     of branch -> "OPEN"/"MERGED"/None) so tests can control exactly what
     create_sprint_backlog_pr's/create_story_spec_pr's "does a PR already
-    exist" check and story_spec_pr_merged's evidence check each see -
-    everything else (fetch/checkout/push/pr create/merge) just succeeds.
+    exist" check sees - everything else (fetch/checkout/push/pr create/merge)
+    just succeeds.
     """
 
     def __init__(self):
         self.pr_states = {}
-
-    def merge(self, branch):
-        self.pr_states[branch] = "MERGED"
 
     def __call__(self, cmd, cwd=None, tool_context=None, timeout=None, env_overrides=None):
         if cmd and cmd[:3] == ["gh", "pr", "view"]:
@@ -294,10 +289,10 @@ class TestSprintBacklogPrApprovalGate(unittest.TestCase):
         self.assertEqual(tc.state["sprint_backlog_pr_sprint"], 1)
 
 
-class TestStorySpecPrEvidenceGate(unittest.TestCase):
-    """At the Stakeholder interaction level, record_design_approval now
-    requires real evidence - this story's own create_story_spec_pr branch
-    must have actually merged - instead of a bare assertion."""
+class TestStorySpecPrAlwaysMerges(unittest.TestCase):
+    """create_story_spec_pr merges immediately after opening - no interaction
+    level currently requires a separate per-story design-review gate (see
+    docs/INTERACTION-LEVELS.md)."""
 
     def _new_context(self):
         tc = MagicMock()
@@ -318,34 +313,16 @@ class TestStorySpecPrEvidenceGate(unittest.TestCase):
         return result["item"]["id"]
 
     @patch("agents.scrum_team.tools.github._run")
-    @patch.dict(os.environ, {"INTERACTION_LEVEL": "Stakeholder"})
-    def test_refuses_without_merged_spec_pr_then_succeeds_once_merged(self, mock_run):
+    def test_spec_pr_merges_immediately(self, mock_run):
         fake = _FakeGhRuns()
         mock_run.side_effect = fake
         tc = self._new_context()
         story_id = self._draft_story(tc, "Add login flow")
 
         _as(tc, "ProductOwner")
-        denied = record_design_approval(story_id, "Looks good to me.", tool_context=tc)
-        self.assertEqual(denied["status"], "error")
-        self.assertIn("create_story_spec_pr", denied["message"])
-
         spec_pr = create_story_spec_pr(story_id, tool_context=tc)
         self.assertEqual(spec_pr["status"], "ok")
-        # Stakeholder level: opened, but NOT auto-merged - a human still
-        # needs to review/merge it themselves.
-        self.assertFalse(spec_pr["merged"])
-
-        still_denied = record_design_approval(story_id, "Looks good to me.", tool_context=tc)
-        self.assertEqual(still_denied["status"], "error")
-
-        # The human merges it themselves (simulated: the fake PR store now
-        # reports MERGED for this story's branch).
-        fake.merge(f"story-spec/{story_id}")
-
-        approved = record_design_approval(story_id, "Looks good to me.", tool_context=tc)
-        self.assertEqual(approved["status"], "ok")
-        self.assertTrue(tc.state["product_backlog"][0]["design_approved"])
+        self.assertTrue(spec_pr["merged"])
 
 
 if __name__ == "__main__":

@@ -37,13 +37,11 @@ class TestInteractionLevel(unittest.TestCase):
 
     def test_required_pre_implementation_approval_by_level(self):
         self.assertEqual(required_pre_implementation_approval("Product"), "sprint")
-        self.assertEqual(required_pre_implementation_approval("Stakeholder"), "sprint")
         self.assertEqual(required_pre_implementation_approval("CEO"), "budget")
         self.assertIsNone(required_pre_implementation_approval("EVAL"))
 
     def test_required_pre_release_approval_by_level(self):
         self.assertEqual(required_pre_release_approval("Product"), "release")
-        self.assertEqual(required_pre_release_approval("Stakeholder"), "release")
         self.assertIsNone(required_pre_release_approval("CEO"))
         self.assertIsNone(required_pre_release_approval("EVAL"))
 
@@ -54,7 +52,6 @@ class TestInteractionLevel(unittest.TestCase):
 
     def test_report_detail_level_by_level(self):
         self.assertEqual(report_detail_level("Product"), "full")
-        self.assertEqual(report_detail_level("Stakeholder"), "business")
         self.assertEqual(report_detail_level("CEO"), "executive")
         self.assertEqual(report_detail_level("EVAL"), "full")
 
@@ -86,7 +83,7 @@ class TestBlockerRouting(unittest.TestCase):
         self.assertFalse(should_escalate_blocker_to_user("technical", "Product"))
 
     def test_should_escalate_blocker_to_user_false_at_other_levels(self):
-        for level in ("Stakeholder", "CEO", "EVAL"):
+        for level in ("CEO", "EVAL"):
             with self.subTest(level=level):
                 self.assertFalse(should_escalate_blocker_to_user("product", level))
 

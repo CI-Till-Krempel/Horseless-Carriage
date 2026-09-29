@@ -167,7 +167,7 @@ def get_env_with_deprecated_fallback(new_name: str, old_name: str) -> str | None
 # read fresh from the environment wherever it's needed (same pattern as
 # get_process_overhead_percentage above), so it can't drift from what's
 # actually configured for the running process.
-INTERACTION_LEVELS = ("Product", "Stakeholder", "CEO", "EVAL")
+INTERACTION_LEVELS = ("Product", "CEO", "EVAL")
 _DEFAULT_INTERACTION_LEVEL = "Product"
 
 # Which record_human_approval(approval_type, ...) must have a fresh entry
@@ -178,33 +178,14 @@ _DEFAULT_INTERACTION_LEVEL = "Product"
 # judgment," not "any approval type satisfies it."
 _PRE_IMPLEMENTATION_APPROVAL_BY_LEVEL = {
     "Product": "sprint",
-    "Stakeholder": "sprint",
     "CEO": "budget",
     "EVAL": None,
 }
 _PRE_RELEASE_APPROVAL_BY_LEVEL = {
     "Product": "release",
-    "Stakeholder": "release",
     "CEO": None,
     "EVAL": None,
 }
-
-# Whether advance_story_stage(..., "Ready") requires the story's mockup/
-# design to have been cleared via record_design_approval first (GH issue
-# #94: "the designs are cleared by stakeholder review, then they are
-# ready"), per interaction level. Unlike the sprint/release approvals above
-# (one shared approval unlocks every story for the rest of the sprint),
-# this is tracked per-story (see record_design_approval,
-# agents/scrum_team/tools/requirements.py) - each story's own design needs
-# its own sign-off, not one blanket approval for the whole backlog.
-# - Product: not required - this human IS the Product Owner day-to-day, so
-#   the Draft-stage conversation itself already is the review.
-# - Stakeholder: required - this is exactly the "designs cleared by
-#   stakeholder review" case the issue describes.
-# - CEO: not required - a CEO-level human approves budget, not per-story
-#   design.
-# - EVAL: not required - fully autonomous, no human to review anything.
-_PRE_READY_DESIGN_APPROVAL_REQUIRED_LEVELS = {"Stakeholder"}
 
 
 def get_interaction_level() -> str:
@@ -231,17 +212,10 @@ def required_pre_release_approval(level: str | None = None) -> str | None:
     return _PRE_RELEASE_APPROVAL_BY_LEVEL.get(level or get_interaction_level())
 
 
-def requires_pre_ready_design_approval(level: str | None = None) -> bool:
-    """Whether advance_story_stage(..., "Ready") requires a fresh, per-story
-    record_design_approval call at this interaction level - see
-    _PRE_READY_DESIGN_APPROVAL_REQUIRED_LEVELS."""
-    return (level or get_interaction_level()) in _PRE_READY_DESIGN_APPROVAL_REQUIRED_LEVELS
-
-
 # How much detail create_sprint_report actually renders for the human at
 # each interaction level (see docs/INTERACTION-LEVELS.md) - distinct from
-# the approval-gate mappings above: a Stakeholder/CEO human still needs the
-# team's retrospective to have genuinely happened (create_sprint_report's
+# the approval-gate mappings above: a CEO human still needs the team's
+# retrospective to have genuinely happened (create_sprint_report's
 # retro_baseline gate applies at every level, unconditionally), they just
 # don't need every internal/technical detail rendered in the report they
 # personally read.
@@ -249,22 +223,18 @@ def requires_pre_ready_design_approval(level: str | None = None) -> bool:
 #   story-level estimates, full transcript excerpts. For Product (embedded
 #   day-to-day) and EVAL (the report is analyzed by tooling afterwards, not
 #   read by a human at all - trimming it would only lose signal).
-# - "business": drops internal/technical numbers (per-agent token usage,
-#   transcript excerpts) a business stakeholder has no use for, keeps
-#   everything about what was delivered and how the process went.
 # - "executive": budget and headline outcomes only - a CEO approves spend,
 #   not process detail; everything else is one line pointing at where the
 #   full detail still lives (specs/reports/), never silently discarded.
 _REPORT_DETAIL_LEVEL_BY_LEVEL = {
     "Product": "full",
-    "Stakeholder": "business",
     "CEO": "executive",
     "EVAL": "full",
 }
 
 
 def report_detail_level(level: str | None = None) -> str:
-    """"full" | "business" | "executive" - see _REPORT_DETAIL_LEVEL_BY_LEVEL."""
+    """"full" | "executive" - see _REPORT_DETAIL_LEVEL_BY_LEVEL."""
     return _REPORT_DETAIL_LEVEL_BY_LEVEL.get(level or get_interaction_level(), "full")
 
 # Backlog item status values that count as "finished" for progress tracking
@@ -296,10 +266,7 @@ def is_story_done(status) -> bool:
 # completes it once a story concept/mockup exists worth shaping into a
 # real backlog item (collaborating with Architect on technical feasibility,
 # same as it already does for Ready - dedicated UX Lead/Business Analyst
-# roles are a larger follow-up, not part of this pipeline yet). Moving on
-# to "Ready" additionally requires the design to be cleared by
-# record_design_approval first, at interaction levels where that's required
-# (see requires_pre_ready_design_approval below).
+# roles are a larger follow-up, not part of this pipeline yet).
 STORY_STAGES = ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]
 
 STAGE_OWNERS = {
@@ -375,11 +342,9 @@ def is_low_quality_retro_text(text) -> bool:
 # "category" decides who's asked to clarify: a technical question goes to
 # Architect, a product/business question goes to Product Owner - or, at the
 # "Product" interaction level, straight to the human User instead, since
-# that human already IS the acting product owner day-to-day (same reasoning
-# as requires_pre_ready_design_approval's "Product: not required - this
-# human IS the Product Owner" note above). Technical questions always go to
-# Architect regardless of level - there's no "human Architect" role at any
-# level.
+# that human already IS the acting product owner day-to-day. Technical
+# questions always go to Architect regardless of level - there's no "human
+# Architect" role at any level.
 BLOCKER_CATEGORIES = ("technical", "product")
 
 BLOCKER_CATEGORY_OWNERS = {"technical": "Architect", "product": "ProductOwner"}

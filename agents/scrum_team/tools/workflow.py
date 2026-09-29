@@ -152,10 +152,12 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
 
     Refuses an unknown role, a missing/too-short rationale, or a no-op
     (new_content already matches what's there). Always opens a draft PR
-    against the product/state repo's develop branch and leaves it
-    unmerged - same human-review-required pattern as create_story_spec_pr's
-    Stakeholder path, regardless of interaction level, since this changes
-    how a role behaves, not just one story's content.
+    against the product/state repo's develop branch and leaves it unmerged
+    for human review, regardless of interaction level - unlike
+    create_story_spec_pr (which self-merges immediately, no interaction
+    level requiring a separate design-review gate), this changes how a role
+    behaves, not just one story's content, so it always needs a human to
+    actually look at it.
     """
     if role not in ROLE_NAMES:
         return {

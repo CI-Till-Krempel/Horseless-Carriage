@@ -45,7 +45,7 @@ the team:
    given) or initializes a fresh local git repo there - see
    [State Repository](STATE-REPOSITORY.md) for what this directory is and
    why it needs to exist before the agent can run.
-5. **Human interaction level** (`Product` / `Stakeholder` / `CEO` / `EVAL` -
+5. **Human interaction level** (`Product` / `CEO` / `EVAL` -
    see below) and **sprint budgets** (token budget, USD budget, max process
    overhead percentage - see [Budget Management](BUDGET.md)).
 6. Writes all of the above into `.env` and the active `litellm.yaml` (or,
@@ -267,7 +267,6 @@ full breakdown. Four levels:
 | Level | The human's role |
 |---|---|
 | `Product` (default) | Product Owner stand-in: task-level priorities, developer questions. |
-| `Stakeholder` ⚠️ *Experimental* | Business stakeholder: business needs, release order, feature approval, review feedback. |
 | `CEO` ⚠️ *Experimental* | Approves only the sprint budget; reads the sprint report as a management summary. |
 | `EVAL` ⚠️ *Experimental* | No human at all - fixed-length automated evaluation runs (see [Evaluation](EVALUATION.md)). |
 
@@ -277,8 +276,8 @@ tested.**
 This isn't just documentation - it changes which `record_human_approval` gate is mechanically
 required before the team may implement stories (`advance_story_stage(..., "Implemented")`) or
 release an increment (`create_release_pr`), and how much detail `create_sprint_report` actually
-renders (full technical detail at Product/EVAL, business-framed at Stakeholder, budget-and-headlines
-only at CEO); see the linked doc for the exact mapping.
+renders (full technical detail at Product/EVAL, budget-and-headlines only at CEO); see the linked
+doc for the exact mapping.
 
 ## Notes
 

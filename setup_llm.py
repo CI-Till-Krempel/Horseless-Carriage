@@ -285,11 +285,11 @@ def _setup_state_repo(env_path: Path) -> None:
         print(f"STATE_REPO_PATH set to {state_repo_path}, but it isn't ready yet - see the message above.")
 
 
-_INTERACTION_LEVEL_CHOICES = {"1": "Product", "2": "Stakeholder", "3": "CEO", "4": "EVAL"}
+_INTERACTION_LEVEL_CHOICES = {"1": "Product", "2": "CEO", "3": "EVAL"}
 
 
 def current_interaction_level_choice(env_path: Path) -> str:
-    """Which numbered choice ("1"-"4") to default the Human Interaction
+    """Which numbered choice ("1"-"3") to default the Human Interaction
     Level prompt to - whichever matches INTERACTION_LEVEL already set in
     .env, or "1" (Product) if unset/unrecognized. Re-running setup_llm.py
     previously always defaulted back to "1" here regardless of what was
@@ -367,9 +367,8 @@ def prompt_project_settings(env_path: Path, is_local: bool = False) -> None:
     default_choice = current_interaction_level_choice(env_path)
     level_descriptions = {
         "1": "Product     - most supervised",
-        "2": "Stakeholder",
-        "3": "CEO",
-        "4": "EVAL        - fully automated, no human gate (used by the eval harness)",
+        "2": "CEO",
+        "3": "EVAL        - fully automated, no human gate (used by the eval harness)",
     }
     for choice_key, desc in level_descriptions.items():
         marker = " (current)" if choice_key == default_choice else ""

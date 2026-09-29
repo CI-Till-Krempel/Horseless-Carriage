@@ -578,31 +578,6 @@ class TestBudgetTools(unittest.TestCase):
         self.assertIn("ProductOwner (scrum-po): 5,318 / 1,048,576 tokens (0.51%)", report)
         self.assertIn("ScrumMaster (scrum-sm): not available", report)
 
-    @patch("agents.scrum_team.tools.docs.write_file")
-    def test_per_agent_prompt_context_usage_omitted_at_business_detail(self, mock_write_file):
-        """Same gating as Per-Agent Token Usage: granular per-role numbers
-        are "full" detail only, dropped (with a Full Process Detail
-        pointer) at the Stakeholder/"business" level."""
-        tool_context = MagicMock()
-        tool_context.state = ScrumState().model_dump()
-        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
-        tool_context.state["kpi_update_count"] = 1
-        tool_context.state["sprint_report_kpis"] = {
-            "team_effectiveness": {"say_do_ratio": 0.8},
-            "prompt_context_usage": {
-                "ProductOwner": {
-                    "model": "scrum-po", "prompt_tokens": 5318,
-                    "context_window_tokens": 1048576, "usage_percent": 0.51, "available": True,
-                },
-            },
-        }
-        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True):
-            report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
-
-        self.assertNotIn("### Per-Agent Prompt Context Usage", report)
-        self.assertIn("## Full Process Detail", report)
-        self.assertIn("Per-Agent Prompt Context Usage", report.split("## Full Process Detail")[1])
-
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_accepts_impediment_alone(self, mock_write_file, mock_getenv):
@@ -850,28 +825,15 @@ class TestBudgetTools(unittest.TestCase):
             self.assertIn("Most recent contribution per agent", report)
             self.assertNotIn("Full Process Detail", report)
 
-    def test_create_sprint_report_business_detail_at_stakeholder_level(self):
-        """
-        Acceptance Criteria: Stakeholder keeps process/business content (retro, impediments,
-        estimates) but drops internal technical numbers (per-agent usage, transcript excerpts).
-        """
-        report = self._report_with_full_content("Stakeholder")
-        self.assertIn("## Retrospective Actions", report)
-        self.assertIn("## Impediments", report)
-        self.assertIn("## Story Estimates vs Actual Tokens", report)
-        self.assertNotIn("### Per-Agent Token Usage", report)
-        self.assertNotIn("Most recent contribution per agent", report)
-        self.assertIn("## Full Process Detail", report)
-        self.assertIn("Per-Agent Token Usage", report.split("## Full Process Detail")[1])
-
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_lists_blocked_stories(self, mock_write_file):
         """
         Acceptance Criteria: a story still BLOCKED (raise_story_blocker) when
         the sprint closes must show up in the report as an "Open Questions
-        for Stakeholder" item, so the Stakeholder can give feedback/guidance
-        on it before the next sprint - the mechanical hand-off point between
-        "the team couldn't resolve it this sprint" and human review.
+        for Stakeholder" item, so whoever reads the report can give
+        feedback/guidance on it before the next sprint - the mechanical
+        hand-off point between "the team couldn't resolve it this sprint"
+        and human review.
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()

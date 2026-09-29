@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
-    advance_story_stage, upsert_backlog_item, record_design_approval, record_acceptance_check, plan_backlog_item,
+    advance_story_stage, upsert_backlog_item, record_acceptance_check, plan_backlog_item,
     set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
     raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
     update_roadmap, _strip_story_block_from_other_versions,
@@ -583,84 +583,6 @@ class TestDraftStage(unittest.TestCase):
         result = advance_story_stage("US-0001", "Ready", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["stages_completed"], ["Draft", "Ready"])
-
-
-@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
-@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
-@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
-class TestReadyDesignApprovalGate(unittest.TestCase):
-    """
-    Acceptance Criteria (GH issue #94): "the designs are cleared by
-    stakeholder review, then they are ready" - at the Stakeholder
-    interaction level, Ready requires record_design_approval to have been
-    called for that specific story. Not required at Product/CEO/EVAL.
-    """
-
-    def test_ready_blocked_at_stakeholder_level_without_design_approval(self, mock_save, mock_md, mock_roadmap):
-        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True):
-            tc = _tool_context("ProductOwner", [])
-            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
-            self.assertEqual(result["status"], "error")
-            self.assertIn("record_design_approval", result["message"])
-
-    def test_ready_rejection_records_blocking_interaction(self, mock_save, mock_md, mock_roadmap):
-        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True):
-            tc = _tool_context("ProductOwner", [])
-            advance_story_stage("US-0001", "Ready", tool_context=tc)
-            self.assertEqual(len(tc.state["blocking_interactions"]), 1)
-            self.assertEqual(tc.state["blocking_interactions"][0]["kind"], "approval")
-
-    def test_ready_succeeds_at_stakeholder_level_once_design_approved(self, mock_save, mock_md, mock_roadmap):
-        # record_design_approval now requires evidence this story's own
-        # create_story_spec_pr branch actually merged (see
-        # test_sprint_and_approval_gates.py::TestStorySpecPrEvidenceGate for
-        # that gate's own dedicated coverage) - not the concern of this
-        # test, which is about the Ready gate reading design_approved once
-        # it's set.
-        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Stakeholder"}, clear=True), \
-             patch("agents.scrum_team.tools.github.story_spec_pr_merged", return_value=True):
-            tc = _tool_context("ProductOwner", [])
-            record_design_approval("US-0001", "Looks good", tool_context=tc)
-            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
-            self.assertEqual(result["status"], "ok")
-
-    def test_ready_requires_no_design_approval_at_product_level(self, mock_save, mock_md, mock_roadmap):
-        with patch.dict("os.environ", {"INTERACTION_LEVEL": "Product"}, clear=True):
-            tc = _tool_context("ProductOwner", [])
-            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
-            self.assertEqual(result["status"], "ok")
-
-    def test_ready_requires_no_design_approval_at_ceo_level(self, mock_save, mock_md, mock_roadmap):
-        with patch.dict("os.environ", {"INTERACTION_LEVEL": "CEO"}, clear=True):
-            tc = _tool_context("ProductOwner", [])
-            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
-            self.assertEqual(result["status"], "ok")
-
-    def test_ready_requires_no_design_approval_at_eval_level(self, mock_save, mock_md, mock_roadmap):
-        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
-            tc = _tool_context("ProductOwner", [])
-            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
-            self.assertEqual(result["status"], "ok")
-
-
-@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
-class TestRecordDesignApproval(unittest.TestCase):
-    """Acceptance Criteria (GH issue #94): record_design_approval sets a
-    per-story flag (not a shared sprint-wide approval) on both backlog
-    copies, so the Ready gate above can check it per story."""
-
-    def test_sets_flag_on_both_backlog_copies(self, mock_save):
-        tc = _tool_context("ProductOwner", [])
-        result = record_design_approval("US-0001", "Reviewed with stakeholder", tool_context=tc)
-        self.assertEqual(result["status"], "ok")
-        self.assertTrue(tc.state["product_backlog"][0]["design_approved"])
-        self.assertTrue(tc.state["sprint_backlog"][0]["design_approved"])
-        self.assertEqual(tc.state["product_backlog"][0]["design_approval_note"], "Reviewed with stakeholder")
-
-    def test_unknown_story_errors(self, mock_save):
-        tc = _tool_context("ProductOwner", [])
-        result = record_design_approval("US-9999", "note", tool_context=tc)
-        self.assertEqual(result["status"], "error")
 
 
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})

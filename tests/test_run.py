@@ -517,7 +517,7 @@ class TestDetectExperimentalFeatures:
 
     def test_multiple_experimental_features_combine(self, tmp_path):
         _write_local_config(tmp_path)
-        (tmp_path / ".env").write_text("OLLAMA_MODEL='llama3.1:8b'\nINTERACTION_LEVEL='Stakeholder'\n")
+        (tmp_path / ".env").write_text("OLLAMA_MODEL='llama3.1:8b'\nINTERACTION_LEVEL='CEO'\n")
         features = run.detect_experimental_features(tmp_path, "cli", True)
         assert len(features) == 4
 

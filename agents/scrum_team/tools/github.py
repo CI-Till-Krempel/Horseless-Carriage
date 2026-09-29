@@ -10,38 +10,15 @@ from ..helpers import (
     required_pre_implementation_approval,
     sprint_backlog_pr_missing,
     ready_backlog_shortfall,
-    get_interaction_level,
 )
-
-def story_spec_pr_merged(story_id: str, tool_context=None) -> bool:
-    """
-    True if this story's own create_story_spec_pr branch (story-spec/<id>)
-    has actually merged - the evidence record_design_approval requires at
-    the Stakeholder interaction level (see agents/scrum_team/tools/
-    requirements.py) instead of trusting the model's own assertion that a
-    stakeholder reviewed the story's spec. False on any lookup failure
-    (branch never existed, `gh` unreachable, etc.) - the caller decides
-    what to do with "not merged", this never raises.
-    """
-    repo_root = str(_configured_repo_root(tool_context))
-    branch = _with_eval_branch_prefix(f"story-spec/{story_id}")
-    result = _run(["gh", "pr", "view", branch, "--json", "state"], cwd=repo_root, tool_context=tool_context)
-    if result.get("status") != "ok":
-        return False
-    try:
-        data = json.loads(result.get("stdout", "") or "{}")
-    except Exception:
-        return False
-    return data.get("state") == "MERGED"
-
 
 def release_pr_still_open(tool_context=None) -> bool:
     """
     True if a release PR (develop -> main, or their eval-run-resolved
     equivalents) is currently open and unmerged - the evidence start_sprint
     (tools/scrum.py) requires before planning the next increment. False on
-    any lookup failure or genuinely no open PR, never raises - mirrors
-    story_spec_pr_merged's own fail-safe shape.
+    any lookup failure or genuinely no open PR, never raises - a fail-safe
+    shape, since a lookup failure shouldn't itself block planning.
 
     create_release_pr never merges anything itself (see its own docstring)
     - merging main is always an out-of-band human/external action, at every
@@ -788,7 +765,7 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
         if pr_res.get("status") != "ok":
             return {"status": "error", "message": "Failed to open the Sprint Backlog PR.", "push": push_res, "pr": pr_res}
 
-    # "Approve sprint planning" (Stakeholder level) / budget approval (CEO):
+    # "Approve sprint planning" (Product level) / budget approval (CEO):
     # this PR is now real approval evidence, not an instant self-merge - it
     # stays open, unmerged, until a fresh approval of whatever type this
     # interaction level requires before Implemented has been recorded (see
@@ -848,17 +825,11 @@ def create_story_spec_pr(title_or_id: str, tool_context=None) -> Dict[str, Any]:
     from create_sprint_backlog_pr above (which bundles every story reaching
     Ready this sprint into one PR) - a real eval run's feedback was that
     bundling gives a reviewer no way to approve one story's spec without
-    approving the whole sprint's; this is the "review every story"/
-    "stakeholder approval by merge request" mechanism for that.
-
-    - At EVAL/Product/CEO (no separate human spec-reviewer at these levels -
-      see docs/INTERACTION-LEVELS.md's existing rationale for why design
-      approval itself isn't required at those levels either): merges
-      immediately after opening, same as create_sprint_backlog_pr's
-      no-approval-required path.
-    - At Stakeholder: opens the PR and leaves it unmerged for the human to
-      review/merge - record_design_approval now requires evidence (a real
-      merge of THIS PR) instead of a bare assertion, at that level.
+    approving the whole sprint's; this is the "review every story" mechanism
+    for that. Merges immediately after opening, same as
+    create_sprint_backlog_pr's no-approval-required path - no interaction
+    level currently requires a separate per-story design-review gate (see
+    docs/INTERACTION-LEVELS.md).
     """
     state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
     product_backlog = state.get("product_backlog", []) or []
@@ -925,11 +896,8 @@ def create_story_spec_pr(title_or_id: str, tool_context=None) -> Dict[str, Any]:
     if pr_res.get("status") != "ok":
         return {"status": "error", "message": "Failed to open the story spec PR.", "push": push_res, "pr": pr_res}
 
-    merge_res = None
-    merged = False
-    if get_interaction_level() != "Stakeholder":
-        merge_res = _run(["gh", "pr", "merge", actual_branch, "--merge", "--admin"], cwd=repo_root, tool_context=tool_context)
-        merged = merge_res.get("status") == "ok"
+    merge_res = _run(["gh", "pr", "merge", actual_branch, "--merge", "--admin"], cwd=repo_root, tool_context=tool_context)
+    merged = merge_res.get("status") == "ok"
 
     return {
         "status": "ok",
