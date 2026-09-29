@@ -341,6 +341,7 @@ from .tools.quality import (
 from .tools.workflow import (
     generate_workflow_diagram,
     gather_workflow_improvement_proposals,
+    propose_steering_change,
 )
 from .tools.budget import (
     calculate_cost_breakdown,
@@ -2212,13 +2213,14 @@ scrum_master = LlmAgent(
         integrate_open_changes,
         generate_workflow_diagram,
         gather_workflow_improvement_proposals,
+        propose_steering_change,
         calculate_cost_breakdown,
         recommend_sprint_budget,
         optimize_process_for_budget,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
-   
+
 dev_team = LlmAgent(
     name="DevTeam",
     model=LiteLlm(get_model_name("dev")),
