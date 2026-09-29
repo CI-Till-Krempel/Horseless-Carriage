@@ -37,10 +37,12 @@ services:
     image: postgres:16-alpine
     environment:
       - POSTGRES_USER=llm_user
-      - POSTGRES_PASSWORD=llm_password
+      # GH issue #240: generated per-install by lib_env.ensure_postgres_password
+      # (called from setup_llm.py) instead of a hardcoded literal shared by
+      # every deployment. No host port publish either - only litellm needs to
+      # reach this over the internal Compose network.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=litellm_db
-    ports:
-      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped

@@ -227,3 +227,37 @@ class TestWebUiAndProxyPortsBindToLocalhostByDefault:
                 f"{compose_file}: litellm service's port publish must default to 127.0.0.1 via "
                 "LITELLM_BIND_HOST, not publish to 0.0.0.0 unconditionally (GH issue #239)."
             )
+
+
+class TestPostgresCredentialsAreNotHardcodedAndNotPublished:
+    """
+    GH issue #240: every install used to share the identical hardcoded
+    POSTGRES_PASSWORD=llm_password across every deployment, and the db
+    service published its port to the host (5433:5432) even though only
+    the litellm service (over the internal Compose network) ever needs to
+    reach it.
+    """
+
+    _COMPOSE_FILES = (
+        "docker-compose.yaml",
+        "docker-compose.local.yaml",
+        "docker-compose.local-hostollama.yaml",
+    )
+
+    def test_postgres_password_is_interpolated_not_hardcoded(self):
+        for compose_file in self._COMPOSE_FILES:
+            data = yaml.safe_load((REPO_ROOT / compose_file).read_text(encoding="utf-8"))
+            env = data["services"]["db"]["environment"]
+            assert "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" in env, (
+                f"{compose_file}: db service's POSTGRES_PASSWORD must be interpolated from "
+                "the environment, not a hardcoded literal shared by every deployment (GH issue #240)."
+            )
+            assert not any(e.startswith("POSTGRES_PASSWORD=") and e != "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" for e in env)
+
+    def test_db_service_does_not_publish_a_host_port(self):
+        for compose_file in self._COMPOSE_FILES:
+            data = yaml.safe_load((REPO_ROOT / compose_file).read_text(encoding="utf-8"))
+            assert "ports" not in data["services"]["db"], (
+                f"{compose_file}: db service must not publish a host port - only litellm needs to "
+                "reach it, over the internal Compose network (GH issue #240)."
+            )

@@ -163,6 +163,33 @@ class TestEnsureMasterKey:
         assert lib_env.read_env_var(env_file, "LITELLM_MASTER_KEY") == "already-real-value"
 
 
+class TestEnsurePostgresPassword:
+    def test_generates_password_when_missing(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        lib_env.ensure_postgres_password(env_file)
+        password = lib_env.read_env_var(env_file, "POSTGRES_PASSWORD")
+        database_url = lib_env.read_env_var(env_file, "DATABASE_URL")
+        assert password and not lib_env.is_placeholder(password)
+        assert database_url == f"postgresql://llm_user:{password}@db:5432/litellm_db"
+
+    def test_generates_password_when_placeholder(self, tmp_path):
+        env_file = tmp_path / ".env"
+        lib_env.update_env_var(env_file, "POSTGRES_PASSWORD", "<generated_on_first_setup>")
+        lib_env.ensure_postgres_password(env_file)
+        password = lib_env.read_env_var(env_file, "POSTGRES_PASSWORD")
+        assert not lib_env.is_placeholder(password)
+        assert lib_env.read_env_var(env_file, "DATABASE_URL") == f"postgresql://llm_user:{password}@db:5432/litellm_db"
+
+    def test_leaves_existing_real_password_untouched(self, tmp_path):
+        env_file = tmp_path / ".env"
+        lib_env.update_env_var(env_file, "POSTGRES_PASSWORD", "already-real-password")
+        lib_env.update_env_var(env_file, "DATABASE_URL", "postgresql://llm_user:already-real-password@db:5432/litellm_db")
+        lib_env.ensure_postgres_password(env_file)
+        assert lib_env.read_env_var(env_file, "POSTGRES_PASSWORD") == "already-real-password"
+        assert lib_env.read_env_var(env_file, "DATABASE_URL") == "postgresql://llm_user:already-real-password@db:5432/litellm_db"
+
+
 class TestLoadEnvFile:
     def test_missing_file_returns_empty_dict(self, tmp_path):
         assert lib_env.load_env_file(tmp_path / "nope.env") == {}

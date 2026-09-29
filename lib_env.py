@@ -102,6 +102,23 @@ def ensure_master_key(path: Path) -> None:
         print(">> Generated a new LITELLM_MASTER_KEY (and set LITELLM_PROXY_API_KEY to match).")
 
 
+def ensure_postgres_password(path: Path) -> None:
+    """Generates a real POSTGRES_PASSWORD (and matching DATABASE_URL) if the
+    current value is missing or still a placeholder - see GH issue #240:
+    every install used to share the same hardcoded 'llm_password', and
+    docker-compose.yaml/.local.yaml/.local-hostollama.yaml all now read
+    POSTGRES_PASSWORD via ${VAR} interpolation instead of a literal. Compose
+    doesn't recursively expand ${VAR} references *within* a .env value, so
+    DATABASE_URL - which LiteLLM reads directly - must be written out here
+    with the real password already substituted in, not as another reference."""
+    current = read_env_var(path, "POSTGRES_PASSWORD")
+    if is_placeholder(current):
+        new_password = gen_secret()
+        update_env_var(path, "POSTGRES_PASSWORD", new_password)
+        update_env_var(path, "DATABASE_URL", f"postgresql://llm_user:{new_password}@db:5432/litellm_db")
+        print(">> Generated a new POSTGRES_PASSWORD (and updated DATABASE_URL to match).")
+
+
 def load_env_file(path: Path) -> dict:
     """Parses a .env file into a dict, for read-only inspection (e.g. doctor.py).
     Does not mutate os.environ or the file; does not evaluate shell syntax."""
