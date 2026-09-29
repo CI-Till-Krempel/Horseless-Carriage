@@ -485,7 +485,27 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
     # commit/push against whatever branch was previously checked out would
     # silently write the change somewhere other than the caller's intended
     # target (see GH issue #104 - this used to discard the result entirely).
-    checkout = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    if allow_protected and branch in protected_branches:
+        # GH issue #317: this call can sit a while after a caller's own last
+        # _checkout_develop_or_recover sync (e.g. create_release_pr's land-
+        # the-report step, with LLM-driven report rendering running in
+        # between) - origin can move in that window (a concurrent
+        # merge_story_pr landing a commit server-side is the common case).
+        # Re-sync here, immediately before committing, with the same safe
+        # fetch+preserve-then-reset pattern _checkout_develop_or_recover
+        # already uses, instead of blindly committing on top of whatever
+        # the working tree happens to be - a plain `checkout -B branch`
+        # here (no origin sync at all) was the actual gap: local commits
+        # piled up against a stale base while every push kept getting
+        # rejected non-fast-forward, growing worse every retry.
+        _run(["git", "fetch", "origin", branch], cwd=repo_root, tool_context=tool_context)
+        preserved = _preserve_local_only_develop_commits(repo_root, branch, tool_context=tool_context)
+        if preserved is not None and preserved.get("in_sync"):
+            checkout = _run(["git", "checkout", branch], cwd=repo_root, tool_context=tool_context)
+        else:
+            checkout = _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_root, tool_context=tool_context)
+    else:
+        checkout = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
     if checkout.get("status") == "error":
         return {"status": "error", "message": f"Could not check out branch '{branch}': {checkout.get('stderr') or checkout.get('message')}", "steps": {"checkout": checkout}}
 
@@ -941,6 +961,15 @@ def merge_story_pr(pr_id: str | int | None = None, admin: bool = False, tool_con
       story-level merge should respect real branch-protection like any
       normal PR merge; forced-admin merges are for the eval harness's own
       sprint-level (develop->main) automation, not this.
+
+    GH issue #317: `gh pr merge` is a GitHub-API-side operation - it lands
+    the merge commit on origin's develop directly, independent of this
+    container's own local git state. Nothing else re-syncs the local clone
+    afterward, so local develop silently falls one commit behind origin the
+    moment this succeeds - a standing race for whichever write to develop
+    happens next (most often create_release_pr's own push, several turns
+    later). Best-effort fast-forward here closes that gap at the source
+    instead of relying solely on the next write's own divergence check.
     """
     repo_root = str(_configured_repo_root(tool_context))
     cmd = ["gh", "pr", "merge"]
@@ -949,7 +978,17 @@ def merge_story_pr(pr_id: str | int | None = None, admin: bool = False, tool_con
     cmd.append("--merge")
     if admin:
         cmd.append("--admin")
-    return _run(cmd, cwd=repo_root, tool_context=tool_context)
+    result = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    if result.get("status") == "ok":
+        develop = _develop_branch_name(tool_context)
+        _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
+        _run(["git", "checkout", develop], cwd=repo_root, tool_context=tool_context)
+        # --ff-only: never overwrite or discard local-only work here - if
+        # local has diverged, this is a no-op and the next
+        # _checkout_develop_or_recover call remains the authoritative
+        # recovery path (it already handles that case safely).
+        _run(["git", "merge", "--ff-only", f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+    return result
 
 def gh_pr_status(tool_context=None) -> Dict[str, Any]:
     """

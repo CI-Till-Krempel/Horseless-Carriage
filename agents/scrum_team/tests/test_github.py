@@ -245,6 +245,84 @@ class TestGitHubTools(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         mock_run.assert_called()
 
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_allow_protected_resyncs_with_origin_before_committing(self, mock_run, mock_preserve):
+        """
+        Acceptance Criteria (GH issue #317): a plain `checkout -B <branch>`
+        here (no origin sync at all) was the actual gap behind the
+        roadmap-desync root cause - local commits piled up against a stale
+        base while every push kept getting rejected non-fast-forward,
+        growing worse every retry. When local hasn't diverged from origin
+        (nothing to preserve), this must reset to origin/<branch> before
+        committing, the same safe pattern _checkout_develop_or_recover uses.
+        """
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch
+            {"status": "ok"},  # reset checkout -B develop origin/develop
+            {"status": "ok"},  # add -A
+            {"status": "ok", "returncode": 1},  # staged check (something staged)
+            {"status": "ok", "returncode": 0},  # commit
+            {"status": "ok", "returncode": 0},  # push
+        ]
+        mock_preserve.return_value = None
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["repo"] = {"default_branch": "main", "develop_branch": "develop"}
+
+        result = _git_push_impl(branch="develop", allow_protected=True, tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_run.assert_any_call(["git", "fetch", "origin", "develop"], cwd=unittest.mock.ANY, tool_context=tool_context)
+        mock_run.assert_any_call(["git", "checkout", "-B", "develop", "origin/develop"], cwd=unittest.mock.ANY, tool_context=tool_context)
+
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_allow_protected_uses_plain_checkout_once_confirmed_in_sync(self, mock_run, mock_preserve):
+        """Mirrors _checkout_develop_or_recover's own equivalent test - once
+        local <develop>'s own unique commits have already been pushed (or
+        merged-then-pushed) to match origin, the reset is redundant."""
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch
+            {"status": "ok"},  # plain checkout develop
+            {"status": "ok"},  # add -A
+            {"status": "ok", "returncode": 1},  # staged check
+            {"status": "ok", "returncode": 0},  # commit
+            {"status": "ok", "returncode": 0},  # push
+        ]
+        mock_preserve.return_value = {"status": "ok", "in_sync": True, "action": "pushed_local_ahead"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["repo"] = {"default_branch": "main", "develop_branch": "develop"}
+
+        result = _git_push_impl(branch="develop", allow_protected=True, tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_run.assert_any_call(["git", "checkout", "develop"], cwd=unittest.mock.ANY, tool_context=tool_context)
+
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_non_protected_branch_skips_the_resync_entirely(self, mock_run, mock_preserve):
+        """A plain feature-branch push (allow_protected=False, the normal
+        agent-facing git_push path) never needs this - feature branches are
+        exclusive to one story/agent, so there's no origin-drift race to
+        guard against, and no reason to spend an extra fetch on every call."""
+        mock_run.side_effect = [
+            {"status": "ok"},  # checkout -B (no origin arg)
+            {"status": "ok"},  # add -A
+            {"status": "ok", "returncode": 1},  # staged check
+            {"status": "ok", "returncode": 0},  # commit
+            {"status": "ok", "returncode": 0},  # push
+        ]
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = _git_push_impl(branch="feature/US-0001-add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_preserve.assert_not_called()
+        mock_run.assert_any_call(["git", "checkout", "-B", "feature/US-0001-add-login"], cwd=unittest.mock.ANY, tool_context=tool_context)
+
     def test_git_push_tool_has_no_allow_protected_parameter(self):
         """
         Acceptance Criteria: a real ADK eval run showed a live model, under
@@ -1244,7 +1322,7 @@ class TestMergeStoryPr(unittest.TestCase):
 
         merge_story_pr(tool_context=tool_context)
 
-        mock_run.assert_called_once_with(
+        mock_run.assert_any_call(
             ["gh", "pr", "merge", "--merge"], cwd=unittest.mock.ANY, tool_context=tool_context,
         )
 
@@ -1256,8 +1334,47 @@ class TestMergeStoryPr(unittest.TestCase):
 
         merge_story_pr(pr_id=7, admin=True, tool_context=tool_context)
 
-        mock_run.assert_called_once_with(
+        mock_run.assert_any_call(
             ["gh", "pr", "merge", "7", "--merge", "--admin"], cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_successful_merge_syncs_local_develop_to_origin(self, mock_run):
+        """
+        Acceptance Criteria (GH issue #317): `gh pr merge` lands on origin's
+        develop directly, independent of this container's local git state -
+        without a sync, local develop silently falls one commit behind until
+        some later write's own divergence check discovers it. A successful
+        merge must fetch+fast-forward local develop immediately.
+        """
+        mock_run.return_value = {"status": "ok"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        merge_story_pr(tool_context=tool_context)
+
+        mock_run.assert_any_call(
+            ["git", "fetch", "origin", "develop"], cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
+        mock_run.assert_any_call(
+            ["git", "checkout", "develop"], cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
+        mock_run.assert_any_call(
+            ["git", "merge", "--ff-only", "origin/develop"], cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_failed_merge_does_not_attempt_a_sync(self, mock_run):
+        """No PR actually merged - nothing new landed on origin's develop to
+        sync to, and attempting one would just be a pointless extra call."""
+        mock_run.return_value = {"status": "error", "stderr": "PR not found"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        merge_story_pr(tool_context=tool_context)
+
+        mock_run.assert_called_once_with(
+            ["gh", "pr", "merge", "--merge"], cwd=unittest.mock.ANY, tool_context=tool_context,
         )
 
 
