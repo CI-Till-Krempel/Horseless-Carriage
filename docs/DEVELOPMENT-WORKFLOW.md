@@ -12,7 +12,7 @@ source of truth for their slice; this page is the composite map plus the knobs t
 | Agent | Owns | Key tools |
 |---|---|---|
 | 🧑‍✈️ **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
-| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_design_approval`, `record_acceptance_check`, `deny_review`, `raise_story_blocker`/`resolve_story_blocker`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
+| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_acceptance_check`, `deny_review`, `raise_story_blocker`/`resolve_story_blocker`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
 | 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `raise_story_blocker`, `update_budgets`/`get_budget_status` |
 | 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `raise_story_blocker`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
 | 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `deny_review`, `raise_story_blocker`/`resolve_story_blocker`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
@@ -43,7 +43,7 @@ the same as a failed review, a failed build, or Product Owner acceptance sending
 development.
 
 **Interaction levels** (highlighted on every branch they affect - see section 3 for the full matrix):
-🔵 Product · 🟣 Stakeholder · 🟠 CEO · 🤖 EVAL (fully autonomous, no human at all)
+🔵 Product · 🟠 CEO · 🤖 EVAL (fully autonomous, no human at all)
 
 **🚫 BLOCKED**: not drawn as a branch off every single node below (it would make both diagrams
 illegible) - any stage in diagram 2 can transition here instead, whenever the team genuinely can't
@@ -65,7 +65,7 @@ flowchart TD
     F --> G["🧑‍💼 ProductOwner\n🔧 create_sprint_report\n📄 specs/reports/SPRINT-REPORT-N.md\n❌ refuses without a fresh retro/impediment"]:::po
     G --> H["🧑‍⚖️ QualityGuardian\n🔧 calculate_kpis + update_sprint_report"]:::qg
     H --> I{"Release approval\nrequired at this level?"}:::gate
-    I -- "🔵 Product / 🟣 Stakeholder" --> J["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval('release')"]:::human
+    I -- "🔵 Product" --> J["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval('release')"]:::human
     I -- "🟠 CEO / 🤖 EVAL" --> K
     J --> ReleaseGate{{"Approved?"}}:::loop
     ReleaseGate -- "❌ no — more work needed" --> D
@@ -101,15 +101,10 @@ flowchart TD
         StoryDraft --> Prioritize["🧑‍💼 ProductOwner\n🔧 set_priority / plan_backlog_item"]:::po
     end
     Prioritize --> Draft["🧑‍💼 ProductOwner (+👷 Architect feasibility)\n🔄 DRAFT\n🔧 advance_story_stage\ntitle/user story/AC refined until real, not placeholder"]:::po
-    Draft --> GateReady{"Stakeholder level?"}:::gate
-    GateReady -- "🟣 Stakeholder" --> SpecPR["🧑‍💼 ProductOwner\n🔧 create_story_spec_pr\nper-story Story Spec PR, left open for review"]:::po
-    SpecPR --> Design["🟥👤 HUMAN APPROVAL\n🔧 record_design_approval\n❌ refuses unless the Story Spec PR has actually merged"]:::human
-    Design --> DesignGate{{"Design approved?"}}:::loop
-    DesignGate -- "❌ no — revise & resubmit" --> Draft
-    DesignGate -- "✅ yes" --> Ready
-    GateReady -- "🔵 Product / 🟠 CEO / 🤖 EVAL" --> Ready["🧑‍💼 ProductOwner (+👷 Architect)\n🔄 READY\nreal title/story/AC + estimate"]:::po
+    Draft --> SpecPR["🧑‍💼 ProductOwner\n🔧 create_story_spec_pr\nper-story Story Spec PR, merges immediately"]:::po
+    SpecPR --> Ready["🧑‍💼 ProductOwner (+👷 Architect)\n🔄 READY\nreal title/story/AC + estimate"]:::po
     Ready --> GateImpl{"Approval required\nfor this level?"}:::gate
-    GateImpl -- "🔵 Product / 🟣 Stakeholder: sprint" --> Approve1["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval"]:::human
+    GateImpl -- "🔵 Product: sprint" --> Approve1["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval"]:::human
     GateImpl -- "🟠 CEO: budget" --> Approve1
     GateImpl -- "🤖 EVAL: none" --> Branch
     Approve1 --> ApproveGate{{"Approved?"}}:::loop
@@ -172,16 +167,15 @@ Use `product_vision` and `architecture_vision` together, top-down: (re)plan `spe
 release sequence (MVP first), break the MVP scope into Epics, then detail each Epic's Stories - before
 advancing any of them past Draft.
 
-**Approval by merge request, not by assertion.** Two PRs now stand as the real approval evidence
-instead of a bare "yes, reviewed" call:
-- `create_story_spec_pr(title_or_id)` opens a PR containing just one story's own spec - at Product/
-  CEO/EVAL it merges immediately (no separate human spec-reviewer at those levels); at Stakeholder it
-  stays open, and `record_design_approval` now mechanically refuses unless that PR has actually
-  merged.
-- `create_sprint_backlog_pr` ("approve sprint planning") opens the Sprint Backlog PR either way, but
-  only merges immediately where no human approval is required before Implemented (CEO once budget is
-  approved, EVAL always); at Product/Stakeholder it stays open until a fresh `sprint` approval is
-  recorded (`record_human_approval`), then a re-call merges it.
+**Approval by merge request, not by assertion.**
+- `create_story_spec_pr(title_or_id)` opens a PR containing just one story's own spec, for
+  reviewability ("review every story," not just the whole sprint's backlog at once) - merges
+  immediately, since no interaction level currently requires a separate per-story design reviewer.
+- `create_sprint_backlog_pr` ("approve sprint planning") is the real approval evidence instead of a
+  bare "yes, reviewed" call: it opens the Sprint Backlog PR either way, but only merges immediately
+  where no human approval is required before Implemented (CEO once budget is approved, EVAL always);
+  at Product it stays open until a fresh `sprint` approval is recorded (`record_human_approval`),
+  then a re-call merges it.
 
 Its counterpart, `deny_review(title_or_id, stage, reason)`, is the *only* way to deny Reviewed/
 Tested/Accepted mechanically instead of just never calling `advance_story_stage` (with the "why", if
@@ -251,16 +245,15 @@ flowchart LR
 
 ## 3. Interaction levels (who's in the loop, and how much)
 
-`INTERACTION_LEVEL` (`.env`, four values) decides which of the two gate diamonds above actually
+`INTERACTION_LEVEL` (`.env`, three values) decides which of the gate diamonds above actually
 require a human, and how chatty the orchestrator is between them - full detail in
 [INTERACTION-LEVELS.md](INTERACTION-LEVELS.md).
 
-| Level | Ready gate | Implemented gate | Release gate | Report detail |
-|---|---|---|---|---|
-| 🔵 **Product** (default) | none | `sprint` approval | `release` approval | full |
-| 🟣 **Stakeholder** | `record_design_approval` per story | `sprint` approval | `release` approval | business |
-| 🟠 **CEO** | none | `budget` approval | none | executive |
-| 🤖 **EVAL** | none | none | none | full |
+| Level | Implemented gate | Release gate | Report detail |
+|---|---|---|---|
+| 🔵 **Product** (default) | `sprint` approval | `release` approval | full |
+| 🟠 **CEO** | `budget` approval | none | executive |
+| 🤖 **EVAL** | none | none | full |
 
 ## Customization points
 

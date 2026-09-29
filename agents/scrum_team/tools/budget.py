@@ -893,8 +893,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         
     # How much of what follows actually gets rendered depends on the
     # interaction level (see docs/INTERACTION-LEVELS.md) - "full" (Product,
-    # EVAL) keeps everything below; "business" (Stakeholder) drops
-    # internal/technical numbers; "executive" (CEO) is budget + headline
+    # EVAL) keeps everything below; "executive" (CEO) is budget + headline
     # outcomes only. The underlying data (retro_actions, impediment_log,
     # story_estimates, transcript) is never trimmed in state - only what
     # this one rendering surfaces to the human reading it.
@@ -931,8 +930,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # requirements.py) when the sprint closes - never mind an unresolved
     # question, or a mechanical loop-detection trip that couldn't find a
     # resolution this sprint. Rendered at every interaction level
-    # (unconditionally, unlike the detail-gated sections below): a
-    # Stakeholder giving guidance is exactly who this is for, but a CEO
+    # (unconditionally, unlike the detail-gated sections below): a CEO
     # reading only the executive summary still needs to know the increment
     # is incomplete because of a genuine open question, not just budget.
     blocked_stories = []
@@ -958,7 +956,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     else:
         report += "No stories are currently blocked.\n"
 
-    if detail in ("full", "business"):
+    if detail == "full":
         report += "\n## Retrospective Actions (including efficiency improvements)\n"
         if retro:
             for action in retro:
@@ -984,7 +982,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
 
     # Include story estimates if present
     estimates = s.get("story_estimates", {})
-    if detail in ("full", "business"):
+    if detail == "full":
         if estimates:
             report += "\n## Story Estimates vs Actual Tokens\n"
             for title, entry in estimates.items():
@@ -1006,7 +1004,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # "include the KPI dashboard in the sprint report". Rendered here now
     # that the gate above guarantees it's fresh for this sprint.
     kpis = s.get("sprint_report_kpis") or {}
-    if detail in ("full", "business"):
+    if detail == "full":
         report += "\n## KPI Dashboard\n"
         if kpis:
             team_effectiveness = kpis.get("team_effectiveness") or {}
@@ -1038,8 +1036,8 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                 report += f"- Security Scan: not available ({security['vulnerability_scan_note']})\n"
 
             # Per-agent, so gated to "full" only, same as Per-Agent Token
-            # Usage above - granular per-role detail, not a team-level
-            # summary number a Stakeholder-level report needs.
+            # Usage above - granular per-role detail, not something the
+            # rest of this section's team-level summary numbers need.
             prompt_context_usage = kpis.get("prompt_context_usage") or {}
             if prompt_context_usage and detail == "full":
                 report += "\n### Per-Agent Prompt Context Usage\n"
@@ -1065,12 +1063,12 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # regardless of which detail level's report text references it.
     # "full" adds a condensed per-agent excerpt so a technical reviewer can
     # trace which agent made which decision without opening the full
-    # transcript file; "business" keeps just the location pointer, since
-    # that level of technical trace has no use for a business stakeholder;
-    # "executive" omits the section entirely (see omitted_sections below).
+    # transcript file; "executive" omits the section entirely (see
+    # omitted_sections below) - that level of technical trace has no use for
+    # a CEO approving budget, not process detail.
     transcript = s.get("transcript", [])
     transcript_result = _write_conversation_transcript(tool_context)
-    if detail in ("full", "business"):
+    if detail == "full":
         report += "\n## Conversation Transcript\n"
         if transcript:
             report += (

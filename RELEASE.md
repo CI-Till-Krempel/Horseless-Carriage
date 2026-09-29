@@ -206,13 +206,6 @@ way a stage is marked complete, and it enforces, in code:
   same check `create_from_template`/`upsert_adr` already apply to templates themselves (see
   `_strip_agent_safeguard_comments` in `agents/scrum_team/tools/docs.py`), now applied to content
   quality, not just leftover template markup.
-- **Design approval before Ready** (GH issue #94): at the Stakeholder interaction level, moving
-  Draft → Ready also requires `record_design_approval(title_or_id, note)` to have been called for
-  that specific story - "the designs are cleared by stakeholder review, then they are ready." This
-  is per-story (a flag set directly on that story), unlike the shared sprint/release approvals
-  below - see `requires_pre_ready_design_approval` in `agents/scrum_team/helpers.py`. Not required
-  at Product (the human IS the Product Owner day-to-day), CEO (approves budget, not per-story
-  design), or EVAL (fully autonomous).
 - **No bypass**: `upsert_story`/`upsert_epic`/`plan_sprint_backlog_item` refuse to set `status`
   directly to any of the 6 stage names *or* a legacy done-synonym ("Done"/"completed"/"closed" -
   `_story_stages_completed`'s read-side backward compat treats any of those as every stage complete,
@@ -255,8 +248,8 @@ leave PR reviews, so there was nothing for Accepted's gate to check at all - any
 previously call `advance_story_stage(id, "Accepted")` on assertion alone.
 `record_acceptance_check(title_or_id, note, tool_context=None)` (`agents/scrum_team/tools/
 requirements.py`) records that Product Owner actually verified the acceptance criteria, as a
-per-story **counter** (`acceptance_check_count`) rather than a one-time flag like
-`record_design_approval`'s `design_approved`. `advance_story_stage`'s Accepted gate now refuses unless
+per-story **counter** (`acceptance_check_count`) rather than a one-time flag.
+`advance_story_stage`'s Accepted gate now refuses unless
 this count is above zero.
 
 **A denial has teeth, for Reviewed/Tested/Accepted (ISSUE-0044).** The Reviewed/Tested gates' own
@@ -306,7 +299,8 @@ position is preserved for whenever it's resolved), but no longer freezes every l
 behind it. If it's genuinely never resolved this sprint, it isn't silently dropped: `create_sprint_report`
 now always includes an "Open Questions for Stakeholder" section (ungated by interaction-level detail
 tier, unlike Retrospective Actions/Impediments below) listing every story still BLOCKED when the
-sprint closes, so the Stakeholder can give feedback/guidance on it before the next sprint starts.
+sprint closes, so whoever reads the report can give feedback/guidance on it before the next sprint
+starts.
 
 ### Sprint retrospective enforcement
 
@@ -329,7 +323,7 @@ skippable prompt instruction into a hand-off the tooling itself forces.
 
 | Level | Pre-implementation | Pre-release |
 |---|---|---|
-| Product / Stakeholder | `"sprint"` | `"release"` |
+| Product | `"sprint"` | `"release"` |
 | CEO | `"budget"` | none |
 | EVAL | none | none |
 
@@ -343,9 +337,9 @@ the most-supervised level, instead of silently disabling every gate. `run_eval.p
 mechanically guaranteed rather than resting entirely on the model obeying scripted prompt text.
 
 `create_sprint_report` also branches on level via `report_detail_level()`, rather than always
-rendering the same unconditional content: `full` (Product, EVAL) keeps everything, `business`
-(Stakeholder) drops per-agent token usage and transcript excerpts, `executive` (CEO) renders budget
-and headline outcomes only. This is in the report-generation code itself, not left to the PO agent's
+rendering the same unconditional content: `full` (Product, EVAL) keeps everything, `executive` (CEO)
+renders budget and headline outcomes only. This is in the report-generation code itself, not left to
+the PO agent's
 prompt-following, so a human at a given level gets a consistently-shaped report regardless of how
 that call happened to be phrased - and no data is silently dropped: an omitted section is still named
 explicitly under a "Full Process Detail" heading, pointing at exactly where it still lives - most

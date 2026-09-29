@@ -70,7 +70,7 @@ scenario says so explicitly in its own citation comment.
 | `guided-setup-wizard.feature` | `setup_llm.py`/`setup_all.py`/`setup_project.py` |
 | `doctor-gate.feature` | `doctor.py`'s punch-list gate |
 | `run-modes.feature` | `run.py`'s web/cli/daemon/dev modes |
-| `human-interaction-levels.feature` | `INTERACTION_LEVEL` (Product/Stakeholder/CEO/EVAL) |
+| `human-interaction-levels.feature` | `INTERACTION_LEVEL` (Product/CEO/EVAL) |
 | `budget-enforcement.feature` | `check_cost_budget_callback` (token + USD) |
 | `state-repository-recovery.feature` | state.json corruption detection/recovery |
 | `notifications.feature` | `record_blocking_interaction` + `Notifier` plugins |

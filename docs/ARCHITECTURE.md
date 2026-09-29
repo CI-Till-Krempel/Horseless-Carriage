@@ -139,7 +139,7 @@ Every story passes through exactly these 6 stages, in this exact order, no skipp
 | Stage | Owner | Gate |
 |---|---|---|
 | DRAFT | Product Owner (Architect supports on technical feasibility) | Story concept/mockup being shaped into a real backlog item - not yet fully specified (GH issue #94) |
-| READY | Product Owner (Architect supports on technical feasibility) | Real title/user story/acceptance criteria, Dev Team estimate - see `spec-templates/DOR.md`. At the Stakeholder interaction level, also requires `record_design_approval` for this story (see below) |
+| READY | Product Owner (Architect supports on technical feasibility) | Real title/user story/acceptance criteria, Dev Team estimate - see `spec-templates/DOR.md` |
 | IMPLEMENTED | Dev Team | Real, working code committed and pushed |
 | REVIEWED | Architect | Architectural/technical review complete |
 | TESTED | QA | `check_build()` passes; test strategy verified |
@@ -161,13 +161,6 @@ nicely in a prompt:
 - **Content quality**: rejects marking READY (or the legacy "Done"/"Accepted") if the title/user
   story/acceptance criteria are missing or still placeholder text
   (`_story_readiness_issues` in `agents/scrum_team/tools/requirements.py`).
-- **Design approval before Ready** (GH issue #94): at the Stakeholder interaction level, a story
-  must have `record_design_approval(title_or_id, note)` called for it - a per-story flag, not a
-  shared sprint-wide approval - before it can move from DRAFT to READY ("the designs are cleared by
-  stakeholder review, then they are ready"). Not required at Product/CEO/EVAL - see
-  `requires_pre_ready_design_approval` in `agents/scrum_team/helpers.py`. At Stakeholder level,
-  `record_design_approval` itself now requires real evidence: this story's own `create_story_spec_pr`
-  branch (`agents/scrum_team/tools/github.py`) must have actually merged, not just an assertion.
 - **This sprint's specs must be merged before implementing** (`sprint_backlog_pr_missing` in
   `agents/scrum_team/helpers.py`): `start_feature_branch` and `advance_story_stage(..., "Implemented")`
   both refuse until `create_sprint_backlog_pr` has succeeded for the *current* sprint - closing the

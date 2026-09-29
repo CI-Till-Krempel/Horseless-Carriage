@@ -80,7 +80,7 @@ logs and warns loudly if it reports `library=cpu` despite the flag being on.
 **⚠️ Experimental — every level other than `Product` (the default) is not yet thoroughly
 tested.**
 
-`INTERACTION_LEVEL` (`Product` / `Stakeholder` / `CEO` / `EVAL`,
+`INTERACTION_LEVEL` (`Product` / `CEO` / `EVAL`,
 case-insensitive; unset or unrecognized falls back to the most restrictive,
 `Product`) changes which approvals gate `advance_story_stage`,
 `create_release_pr`, and how much detail `create_sprint_report` renders —

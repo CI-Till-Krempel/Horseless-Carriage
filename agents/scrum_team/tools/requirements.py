@@ -11,7 +11,6 @@ from ..helpers import (
     blocks_direct_status_set,
     is_source_file,
     required_pre_implementation_approval,
-    requires_pre_ready_design_approval,
     BLOCKER_CATEGORIES,
     BLOCKER_CATEGORY_OWNERS,
     should_escalate_blocker_to_user,
@@ -1369,31 +1368,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     source_touch_count = None
     architect_review_count = None
     qa_review_count = None
-    if stage == "Ready":
-        # GH issue #94: at interaction levels where a story's mockup/design
-        # must be cleared by stakeholder review before it's Ready, that
-        # approval is tracked per-story (record_design_approval sets this
-        # flag directly on the story) rather than via the shared,
-        # per-sprint human_approvals list the Implemented/release gates
-        # use below - one blanket approval doesn't stand in for having
-        # actually reviewed THIS story's own design.
-        if requires_pre_ready_design_approval() and not (
-            product_item.get("design_approved") or sprint_item.get("design_approved")
-        ):
-            message = (
-                f"Cannot mark '{story_id}' as Ready - this interaction level requires the story's "
-                f"mockup/design to be cleared by stakeholder review first. Call "
-                f"record_design_approval('{story_id}', ...) once it has been."
-            )
-            from .notifications import record_blocking_interaction
-            record_blocking_interaction(
-                "approval",
-                f"Story '{story_id}' is waiting on design approval before it can be marked Ready.",
-                detail=message,
-                tool_context=tool_context,
-            )
-            return {"status": "error", "message": message}
-    elif stage == "Implemented":
+    if stage == "Implemented":
         # Belt-and-suspenders alongside start_feature_branch's own check
         # (agents/scrum_team/tools/github.py) - covers spike stories, which
         # skip start_feature_branch entirely since they have no code to
@@ -1678,72 +1653,6 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     }
 
 
-def record_design_approval(title_or_id: str, note: str = "", tool_context=None) -> Dict[str, Any]:
-    """
-    Records that a human has reviewed and cleared this specific story's
-    mockup/design (GH issue #94: "the designs are cleared by stakeholder
-    review, then they are ready") - the mechanical counterpart
-    advance_story_stage(..., "Ready") checks for (via
-    requires_pre_ready_design_approval, agents/scrum_team/helpers.py) at
-    interaction levels where that's required, instead of trusting the
-    model's own assertion that a stakeholder looked at it.
-
-    Deliberately per-story (a `design_approved` flag set directly on this
-    one story, in both backlog copies), unlike record_human_approval's
-    "sprint"/"release"/"budget" types - those are single approvals that
-    cover every story for the rest of the sprint/release, but one blanket
-    approval doesn't stand in for having actually reviewed each story's own
-    design.
-
-    At the Stakeholder level specifically, this now requires real evidence
-    instead of a bare assertion: this story's own create_story_spec_pr
-    (agents/scrum_team/tools/github.py) must have actually merged. A
-    real eval run's feedback was that stakeholder approval should happen
-    "by merge requests for the specific stories" - without this check,
-    calling this tool was itself the only "approval" that ever happened,
-    with no external artifact behind it at all.
-    """
-    from .scrum import save_state_to_repo
-    from .github import story_spec_pr_merged
-
-    s = tool_context.state
-    sprint_backlog = list(s.get("sprint_backlog", []))
-    product_backlog = list(s.get("product_backlog", []))
-    sprint_idx = next((i for i, x in enumerate(sprint_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
-    product_idx = next((i for i, x in enumerate(product_backlog) if x.get("id") == title_or_id or x.get("title") == title_or_id), None)
-    if sprint_idx is None and product_idx is None:
-        return {"status": "error", "message": f"No story found matching '{title_or_id}'."}
-
-    story_id_for_evidence = (
-        (product_backlog[product_idx].get("id") if product_idx is not None else None)
-        or (sprint_backlog[sprint_idx].get("id") if sprint_idx is not None else None)
-        or title_or_id
-    )
-    if requires_pre_ready_design_approval() and not story_spec_pr_merged(story_id_for_evidence, tool_context):
-        return {
-            "status": "error",
-            "message": (
-                f"Cannot record design approval for '{story_id_for_evidence}' - its "
-                f"story-spec/{story_id_for_evidence} PR (see create_story_spec_pr) hasn't merged "
-                "yet. Call create_story_spec_pr(title_or_id) first and get it reviewed/merged, "
-                "then retry."
-            ),
-        }
-
-    update = {"design_approved": True, "design_approval_note": note.strip()}
-    if sprint_idx is not None:
-        sprint_backlog[sprint_idx] = {**sprint_backlog[sprint_idx], **update}
-        s["sprint_backlog"] = sprint_backlog
-    if product_idx is not None:
-        product_backlog[product_idx] = {**product_backlog[product_idx], **update}
-        s["product_backlog"] = product_backlog
-
-    story_id = (product_backlog[product_idx].get("id") if product_idx is not None
-                else sprint_backlog[sprint_idx].get("id")) or title_or_id
-    save_state_to_repo(tool_context)
-    return {"status": "ok", "story_id": story_id, "design_approved": True}
-
-
 def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None) -> Dict[str, Any]:
     """
     Records that Product Owner has actually verified this story's acceptance
@@ -1753,8 +1662,7 @@ def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None)
     acceptance criteria were checked.
 
     Deliberately a per-story COUNTER (`acceptance_check_count`), not a
-    one-time boolean like record_design_approval's `design_approved` -
-    Accepted is deniable via deny_review, and ISSUE-0044's snapshot
+    one-time boolean - Accepted is deniable via deny_review, and ISSUE-0044's snapshot
     mechanism (a denial must be followed by a genuinely NEW signal, not just
     re-use of whatever satisfied the gate before) needs something that can
     grow past a snapshot taken at deny time. A boolean would already read

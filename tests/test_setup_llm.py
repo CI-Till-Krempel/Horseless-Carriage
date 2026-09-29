@@ -306,16 +306,16 @@ class TestCurrentInteractionLevelChoice:
     def test_no_env_file_defaults_to_product(self, tmp_path):
         assert setup_llm.current_interaction_level_choice(tmp_path / ".env") == "1"
 
-    def test_reads_back_stakeholder(self, tmp_path):
-        env_path = tmp_path / ".env"
-        env_path.write_text("")
-        lib_env.update_env_var(env_path, "INTERACTION_LEVEL", "Stakeholder")
-        assert setup_llm.current_interaction_level_choice(env_path) == "2"
-
     def test_reads_back_ceo(self, tmp_path):
         env_path = tmp_path / ".env"
         env_path.write_text("")
         lib_env.update_env_var(env_path, "INTERACTION_LEVEL", "CEO")
+        assert setup_llm.current_interaction_level_choice(env_path) == "2"
+
+    def test_reads_back_eval(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "INTERACTION_LEVEL", "EVAL")
         assert setup_llm.current_interaction_level_choice(env_path) == "3"
 
     def test_unrecognized_value_defaults_to_product(self, tmp_path):
@@ -386,7 +386,7 @@ class TestPromptProjectSettings:
         # git name, git email, interaction level (bad, then good "2"), token budget, usd budget, overhead
         answers = ["", "", "12", "2", "", "", ""]
         env_path = self._run(monkeypatch, tmp_path, answers, is_local=False)
-        assert lib_env.read_env_var(env_path, "INTERACTION_LEVEL") == "Stakeholder"
+        assert lib_env.read_env_var(env_path, "INTERACTION_LEVEL") == "CEO"
         assert "Invalid choice" in capsys.readouterr().err
 
 

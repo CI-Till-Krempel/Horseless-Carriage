@@ -153,10 +153,10 @@ class TestAgentContainerEnvironmentCompleteness:
         )
 
     def test_interaction_level_specifically_is_passed_through(self):
-        """The exact symptom reported in GH issue #76: INTERACTION_LEVEL=
-        Stakeholder in .env was read back as "Product" inside the running
-        agent - because this exact variable was missing from both compose
-        files' agent environment list."""
+        """The exact symptom reported in GH issue #76: a configured
+        INTERACTION_LEVEL in .env was read back as "Product" inside the
+        running agent - because this exact variable was missing from both
+        compose files' agent environment list."""
         for compose_file in ("docker-compose.yaml", "docker-compose.local.yaml", "docker-compose.local-hostollama.yaml"):
             assert "INTERACTION_LEVEL" in _agent_service_env_var_names(Path(compose_file)), compose_file
 

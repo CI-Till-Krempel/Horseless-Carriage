@@ -722,8 +722,8 @@ finds nothing to load and each case runs against its own fixture state
 only, as if it were the only case in the run. This resets the *state file*
 only, not the scratch repo's git history/branches (feature branches, PRs-
 as-branches on the local bare remote) - a case whose tool calls scan git
-log/branches directly (`release_pr_still_open`, `story_spec_pr_merged`)
-could still, in principle, observe another case's commits. No case in this
+log/branches directly (e.g. `release_pr_still_open`) could still, in
+principle, observe another case's commits. No case in this
 evalset currently does that from a fresh session's first turn, so this is
 a documented residual limitation, not something worked around here.
 

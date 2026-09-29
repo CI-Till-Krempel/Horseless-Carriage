@@ -14,10 +14,6 @@ if it does.
 
 - [ ] Story reached DRAFT first (GH issue #94) - the concept/mockup was actually shaped, not skipped
       straight to READY with placeholder content
-- [ ] At the Stakeholder interaction level: the design has been cleared via
-      `record_design_approval(title_or_id, note)` - a per-story approval, not a shared sprint-wide
-      one (see `requires_pre_ready_design_approval` in `agents/scrum_team/helpers.py`); not required
-      at Product/CEO/EVAL
 
 - [ ] Story has a clear "As a ... I want ... so that ..." statement - not left blank, not still the
       template placeholder
