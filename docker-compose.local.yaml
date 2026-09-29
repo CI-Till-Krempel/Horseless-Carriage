@@ -15,10 +15,11 @@ services:
     image: postgres:16-alpine
     environment:
       - POSTGRES_USER=llm_user
-      - POSTGRES_PASSWORD=llm_password
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=litellm_db
-    ports:
-      - "5433:5432"
+    # No host port publish (GH issue #240): only the litellm service below
+    # needs to reach this database, over the internal Compose network -
+    # nothing on the host needs direct DB access.
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped

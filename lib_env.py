@@ -102,6 +102,22 @@ def ensure_master_key(path: Path) -> None:
         print(">> Generated a new LITELLM_MASTER_KEY (and set LITELLM_PROXY_API_KEY to match).")
 
 
+def ensure_postgres_password(path: Path) -> None:
+    """Generates a real POSTGRES_PASSWORD (and rebuilds the matching
+    DATABASE_URL to embed it) if the current value is missing or still a
+    placeholder - every install otherwise shares the identical hardcoded
+    llm_user/llm_password credential (GH issue #240). DATABASE_URL can't
+    just reference ${POSTGRES_PASSWORD}: Compose does not re-expand ${...}
+    found inside a value it already read from .env, so the resolved
+    password must be embedded directly in the string written here."""
+    current = read_env_var(path, "POSTGRES_PASSWORD")
+    if is_placeholder(current):
+        new_password = gen_secret()
+        update_env_var(path, "POSTGRES_PASSWORD", new_password)
+        update_env_var(path, "DATABASE_URL", f"postgresql://llm_user:{new_password}@db:5432/litellm_db")
+        print(">> Generated a new POSTGRES_PASSWORD (and updated DATABASE_URL to match).")
+
+
 def load_env_file(path: Path) -> dict:
     """Parses a .env file into a dict, for read-only inspection (e.g. doctor.py).
     Does not mutate os.environ or the file; does not evaluate shell syntax."""
