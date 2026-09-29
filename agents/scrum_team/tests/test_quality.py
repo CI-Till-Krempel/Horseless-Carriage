@@ -22,8 +22,9 @@ _TOOL_NOT_INSTALLED = {
 
 
 class TestQualityTools(unittest.TestCase):
+    @patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={})
     @patch("agents.scrum_team.tools.quality._run")
-    def test_calculate_kpis(self, mock_run):
+    def test_calculate_kpis(self, mock_run, mock_fetch_context_windows):
         """
         Acceptance Criteria:
         - KPIs are calculated and returned as a dictionary.
@@ -359,8 +360,9 @@ class TestQualityTools(unittest.TestCase):
         self.assertIsNone(result["vulnerability_scan_results"])
         self.assertEqual(result["note"], "could not parse bandit output")
 
+    @patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={})
     @patch("agents.scrum_team.tools.quality._run")
-    def test_calculate_kpis_all_tools_unavailable(self, mock_run):
+    def test_calculate_kpis_all_tools_unavailable(self, mock_run, mock_fetch_context_windows):
         """
         Acceptance Criteria (US-0008):
         - With pytest, radon, and bandit all unavailable, calculate_kpis()
@@ -386,8 +388,9 @@ class TestQualityTools(unittest.TestCase):
         self.assertIn("radon", maintainability["code_complexity_note"])
         self.assertIn("bandit", kpis["security"]["vulnerability_scan_note"])
 
+    @patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={})
     @patch("agents.scrum_team.tools.quality._run")
-    def test_calculate_kpis_partial_tooling_flags_independently(self, mock_run):
+    def test_calculate_kpis_partial_tooling_flags_independently(self, mock_run, mock_fetch_context_windows):
         """
         Acceptance Criteria (US-0008):
         - With pytest present but radon/bandit unavailable, the available
@@ -419,9 +422,10 @@ class TestQualityTools(unittest.TestCase):
         self.assertFalse(kpis["security"]["vulnerability_scan_available"])
         self.assertIsNone(kpis["security"]["vulnerability_scan_results"])
 
+    @patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={})
     @patch("agents.scrum_team.tools.docs.write_file")
     @patch("agents.scrum_team.tools.quality._run")
-    def test_sprint_report_generation_survives_total_tooling_failure(self, mock_run, mock_write_file):
+    def test_sprint_report_generation_survives_total_tooling_failure(self, mock_run, mock_write_file, mock_fetch_context_windows):
         """
         Acceptance Criteria (US-0008 edge case):
         - Total tooling failure degrades gracefully: calculate_kpis() ->
@@ -580,6 +584,104 @@ class TestQualityTools(unittest.TestCase):
             check_build(tool_context=tool_context)
 
         self.assertEqual(tool_context.state["last_check_build"], {"checked": None, "passing": None})
+
+
+class TestPromptContextUsage(unittest.TestCase):
+    """
+    Acceptance Criteria (real PR review comment): since the context window
+    of the model backing each role may vary (different roles can be
+    configured with different models), track what percentage of it is
+    occupied by that role's own concatenated, static system prompt - per
+    agent, not just in aggregate.
+    """
+
+    def test_every_role_is_present_with_no_master_key_configured(self):
+        """No LITELLM_MASTER_KEY at all - the most common "not wired up
+        yet"/local-provider case - must degrade to unavailable per role,
+        never raise or return partial results."""
+        from agents.scrum_team.tools.quality import calculate_prompt_context_usage
+        from agents.scrum_team.prompts import ROLE_NAMES
+
+        with patch.dict(os.environ, {}, clear=True):
+            usage = calculate_prompt_context_usage()
+
+        self.assertEqual(set(usage.keys()), set(ROLE_NAMES))
+        for role, entry in usage.items():
+            with self.subTest(role=role):
+                self.assertFalse(entry["available"])
+                self.assertIsNone(entry["context_window_tokens"])
+                self.assertIsNone(entry["usage_percent"])
+                self.assertIn("note", entry)
+                self.assertGreater(entry["prompt_tokens"], 0)
+
+    @patch("agents.scrum_team.tools.quality.requests.get")
+    def test_proxy_unreachable_degrades_to_unavailable_without_raising(self, mock_get):
+        from agents.scrum_team.tools.quality import calculate_prompt_context_usage
+
+        mock_get.side_effect = ConnectionError("no route to host")
+        with patch.dict(os.environ, {"LITELLM_MASTER_KEY": "test-key"}):
+            usage = calculate_prompt_context_usage()
+
+        self.assertFalse(usage["ProductOwner"]["available"])
+        self.assertGreater(usage["ProductOwner"]["prompt_tokens"], 0)
+
+    @patch("agents.scrum_team.tools.quality.requests.get")
+    def test_successful_proxy_response_computes_real_percentage(self, mock_get):
+        from agents.scrum_team.tools.quality import calculate_prompt_context_usage
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "data": [
+                {
+                    "model_name": "scrum-po",
+                    "litellm_params": {"model": "gemini/gemini-2.5-pro"},
+                    "model_info": {"max_input_tokens": 1000},
+                },
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        with patch.dict(os.environ, {"LITELLM_MASTER_KEY": "test-key"}):
+            usage = calculate_prompt_context_usage()
+
+        po = usage["ProductOwner"]
+        self.assertTrue(po["available"])
+        self.assertEqual(po["context_window_tokens"], 1000)
+        self.assertEqual(po["usage_percent"], round(100 * po["prompt_tokens"] / 1000, 2))
+        # A role this response doesn't mention at all stays unavailable,
+        # independently - one role's data never fabricates another's.
+        self.assertFalse(usage["ScrumMaster"]["available"])
+
+    @patch("agents.scrum_team.tools.quality.requests.get")
+    def test_entries_missing_max_input_tokens_are_skipped_not_crashed_on(self, mock_get):
+        from agents.scrum_team.tools.quality import calculate_prompt_context_usage
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.json.return_value = {
+            "data": [
+                {"model_name": "scrum-po", "litellm_params": {"model": "gemini/gemini-2.5-pro"}, "model_info": {}},
+            ]
+        }
+        mock_get.return_value = mock_response
+
+        with patch.dict(os.environ, {"LITELLM_MASTER_KEY": "test-key"}):
+            usage = calculate_prompt_context_usage()
+
+        self.assertFalse(usage["ProductOwner"]["available"])
+
+    def test_calculate_kpis_includes_prompt_context_usage_for_every_role(self):
+        from agents.scrum_team.prompts import ROLE_NAMES
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        with patch("agents.scrum_team.tools.quality._run", return_value=_TOOL_NOT_INSTALLED), \
+             patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"), \
+             patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={}):
+            kpis = calculate_kpis(tool_context=tool_context)
+
+        self.assertEqual(set(kpis["prompt_context_usage"].keys()), set(ROLE_NAMES))
 
 
 if __name__ == "__main__":

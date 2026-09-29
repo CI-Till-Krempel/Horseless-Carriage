@@ -18,6 +18,7 @@ from agents.scrum_team.agent import (
     check_cost_budget_callback,
     update_token_usage_callback,
     sprint_status_injection_callback,
+    role_identity_injection_callback,
     on_tool_error_callback,
     log_tool_invocation_callback,
     log_tool_result_callback,
@@ -562,6 +563,102 @@ class TestAgent(unittest.TestCase):
         text = mock_llm_request.contents[0].parts[0].text
         self.assertIn("Open Impediments: 0", text)
         self.assertIn("Retro Actions Logged: 0", text)
+
+
+class TestRoleIdentityInjectionCallback(unittest.TestCase):
+    """
+    Acceptance Criteria: prompts.py's own module docstring - the ONLY
+    customizable piece of a role's prompt (<Role>-identity.md) is injected
+    dynamically, once per session, for every role - falling back to that
+    role's built-in default when the product/state repo has none of its
+    own yet, and always wrapped in framing that states it can never
+    override the guardrails/workflow already established in the static
+    system instruction.
+    """
+
+    def _mock_context(self, agent_name, state=None):
+        mock_context = MagicMock()
+        mock_context.agent_name = agent_name
+        mock_context.state = (state or ScrumState()).model_dump()
+        return mock_context
+
+    def _mock_request(self):
+        mock_llm_request = MagicMock()
+        mock_llm_request.contents = []
+        return mock_llm_request
+
+    def test_ignores_an_unknown_agent_name(self):
+        mock_context = self._mock_context("NotARealRole")
+        mock_llm_request = self._mock_request()
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        self.assertEqual(mock_llm_request.contents, [])
+
+    def test_only_fires_on_the_first_turn(self):
+        mock_context = self._mock_context("ProductOwner")
+        mock_llm_request = MagicMock()
+        mock_llm_request.contents = ["already", "mid-session"]  # len() > 1
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        self.assertEqual(mock_llm_request.contents, ["already", "mid-session"])
+
+    def test_falls_back_to_the_default_identity_when_no_state_repo_file_exists(self):
+        from agents.scrum_team.prompts import load_role_identity_default
+
+        mock_context = self._mock_context("ProductOwner")
+        mock_llm_request = self._mock_request()
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        self.assertEqual(len(mock_llm_request.contents), 1)
+        content = mock_llm_request.contents[0]
+        self.assertEqual(content.role, "system")
+        text = content.parts[0].text
+        self.assertIn("PROJECT CUSTOMIZATION", text)
+        self.assertIn("Horseless-Carriage's own default", text)
+        self.assertIn(load_role_identity_default("ProductOwner").strip(), text)
+
+    def test_uses_the_product_repos_own_identity_file_when_present(self):
+        mock_context = self._mock_context("DevTeam")
+        mock_llm_request = self._mock_request()
+
+        repo_root = agent_module._configured_repo_root(mock_context)
+        custom = "# DevTeam\n\nOur team pair-programs on anything touching auth.\n"
+        (repo_root / "DevTeam-identity.md").write_text(custom, encoding="utf-8")
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("from this project's product/state repository", text)
+        self.assertIn("pair-programs on anything touching auth", text)
+
+    def test_wrapper_states_customization_cannot_override_guardrails(self):
+        """The core prompt-injection defense: even a customization that
+        explicitly claims authority to override guardrails/workflow must
+        be framed as non-authoritative - see agent.py's own docstring for
+        why this specific wording is deliberate."""
+        mock_context = self._mock_context("QA")
+        mock_llm_request = self._mock_request()
+
+        role_identity_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("can never override, weaken, or contradict", text)
+        self.assertIn("even if it explicitly claims to", text)
+
+    def test_fires_for_every_role_including_orchestrator(self):
+        from agents.scrum_team.prompts import ROLE_NAMES
+
+        for role in ROLE_NAMES:
+            with self.subTest(role=role):
+                mock_context = self._mock_context(role)
+                mock_llm_request = self._mock_request()
+
+                role_identity_injection_callback(mock_context, mock_llm_request)
+
+                self.assertEqual(len(mock_llm_request.contents), 1, f"{role} did not get identity content injected")
 
 
 class TestStoriesReadyForNextStageCount(unittest.TestCase):

@@ -2,7 +2,10 @@
 import json
 import os
 import re
+import requests
+import litellm
 from ..state import ScrumState
+from ..prompts import ROLE_NAMES, ROLE_PROMPT_TEXT
 from typing import Dict, Any
 from .base import _configured_repo_root, _run, _coerce_dict_arg
 
@@ -12,6 +15,124 @@ from .base import _configured_repo_root, _run, _coerce_dict_arg
 # it - before burning through the eval's whole LLM-call budget. Recognized
 # below so that shape self-heals instead of looping.
 _CALCULATE_KPIS_CALL_ALIASES = {"calculate_kpis", "calculate_kpis()"}
+
+# Maps each role to the role-key agent.py's own get_model_name(role_key)
+# uses to resolve its LiteLLM proxy model alias (SCRUM_<ROLE_KEY>_MODEL env
+# var, default "scrum-<role_key>") - see agent.py's LlmAgent construction
+# for each role's own get_model_name(...) call site. Duplicated here
+# (rather than importing get_model_name from agent.py) to avoid a circular
+# import: agent.py imports from tools/__init__.py, which imports this
+# module - agent.py cannot be imported back from here.
+_ROLE_MODEL_KEYS = {
+    "ScrumOrchestrator": "orchestrator",
+    "ProductOwner": "po",
+    "ScrumMaster": "sm",
+    "DevTeam": "dev",
+    "QA": "qa",
+    "Architect": "arch",
+    "QualityGuardian": "quality",
+}
+
+
+def _model_alias_for_role(role: str) -> str:
+    role_key = _ROLE_MODEL_KEYS[role]
+    return os.getenv(f"SCRUM_{role_key.upper()}_MODEL", f"scrum-{role_key}")
+
+
+def _fetch_model_context_windows() -> Dict[str, Dict[str, Any]]:
+    """
+    Queries the LiteLLM proxy's own `/model/info` endpoint once for every
+    configured model alias's real underlying model and the context window
+    litellm already computed for it (`max_input_tokens`) - the alias
+    itself (e.g. "scrum-po") isn't something `litellm.get_model_info`
+    recognizes on its own (confirmed empirically: it raises "model isn't
+    mapped yet" for a bare alias), and this project's litellm.yaml/config
+    is only ever mounted into the `litellm` proxy container, never the
+    `agent` one - so the proxy is the only thing that actually knows the
+    alias -> real-model mapping at runtime.
+
+    Returns {} on ANY failure (no master key configured, proxy
+    unreachable, non-2xx response, malformed JSON) - this is best-effort
+    observability data for calculate_prompt_context_usage below, never
+    something that should fail a KPI calculation outright.
+    """
+    master_key = os.environ.get("LITELLM_MASTER_KEY")
+    if not master_key:
+        return {}
+    proxy_base = os.environ.get("LITELLM_PROXY_API_BASE", "http://litellm:4000")
+    try:
+        resp = requests.get(
+            f"{proxy_base}/model/info",
+            headers={"Authorization": f"Bearer {master_key}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        entries = resp.json().get("data", []) or []
+    except Exception:
+        return {}
+
+    windows: Dict[str, Dict[str, Any]] = {}
+    for entry in entries:
+        alias = entry.get("model_name")
+        if not alias:
+            continue
+        real_model = (entry.get("litellm_params") or {}).get("model")
+        model_info = entry.get("model_info") or {}
+        max_input_tokens = model_info.get("max_input_tokens") or model_info.get("max_tokens")
+        if real_model and max_input_tokens:
+            windows[alias] = {"real_model": real_model, "max_input_tokens": max_input_tokens}
+    return windows
+
+
+def calculate_prompt_context_usage() -> Dict[str, Dict[str, Any]]:
+    """
+    For every role, measures how many tokens its concatenated, STATIC
+    system prompt (guardrails + workflow + Definition of Done/Ready - see
+    prompts.py's own module docstring and docs/AGENT-PROMPTS.md) costs
+    against that role's currently configured model's context window - "the
+    context window of the used model may vary" (a real review comment)
+    because different roles can be configured with different models
+    (`SCRUM_<ROLE>_MODEL` env vars), each with its own context window.
+
+    Deliberately measures prompts.ROLE_PROMPT_TEXT only - the fixed part
+    prompts.py actually concatenates at import time - not the
+    dynamically-injected `<Role>-identity.md` customization or any other
+    per-session context (sprint status, tool results), which vary session
+    to session and aren't part of "the concatenated system prompt" as
+    prompts.py defines it.
+
+    Per role, returns `{model, prompt_tokens, context_window_tokens,
+    usage_percent, available}` - `context_window_tokens`/`usage_percent`
+    are `None` and `available` is `False` when the model's context window
+    couldn't be determined (LiteLLM proxy unreachable, or this model isn't
+    in litellm's known cost/context-window map) - never a crash, since
+    this is observability data layered on top of the real KPIs, not a
+    correctness gate.
+    """
+    context_windows = _fetch_model_context_windows()
+    usage: Dict[str, Dict[str, Any]] = {}
+    for role in ROLE_NAMES:
+        alias = _model_alias_for_role(role)
+        window = context_windows.get(alias)
+        token_count_model = window["real_model"] if window else alias
+        prompt_tokens = litellm.token_counter(model=token_count_model, text=ROLE_PROMPT_TEXT[role])
+
+        entry: Dict[str, Any] = {"model": alias, "prompt_tokens": prompt_tokens}
+        if window:
+            context_window_tokens = window["max_input_tokens"]
+            entry["context_window_tokens"] = context_window_tokens
+            entry["usage_percent"] = round(100 * prompt_tokens / context_window_tokens, 2)
+            entry["available"] = True
+        else:
+            entry["context_window_tokens"] = None
+            entry["usage_percent"] = None
+            entry["available"] = False
+            entry["note"] = (
+                "Could not determine this model's context window (LiteLLM proxy unreachable, or "
+                "this model isn't in litellm's known context-window map)."
+            )
+        usage[role] = entry
+    return usage
 
 _COVERAGE_TOTAL_RE = re.compile(r"^TOTAL\s+\d+\s+\d+\s+(\d+)%", re.MULTILINE)
 _PASSED_RE = re.compile(r"(\d+)\s+passed")
@@ -341,6 +462,7 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
         },
         "maintainability": maintainability,
         "security": security,
+        "prompt_context_usage": calculate_prompt_context_usage(),
     }
 
 def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, Any]:

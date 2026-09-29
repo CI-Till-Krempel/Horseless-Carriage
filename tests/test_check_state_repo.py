@@ -94,80 +94,67 @@ class TestStrayTemplates:
         assert code == 0
 
 
-class TestAgentsMdBaselineMigration:
+class TestRoleIdentityDefaultsMigration:
     """
-    Acceptance Criteria: repos that predate the AGENTS.md convention get
-    migrated (a marked baseline-workflow section is added) without ever
-    losing or overwriting whatever is already in AGENTS.md - including
-    content unrelated to Horseless-Carriage entirely (e.g. an AGENTS.md
-    some other tool already put there).
+    Acceptance Criteria: repos that predate the per-role `<Role>-identity.md`
+    convention get each missing role's default identity content
+    materialized as a real file, without ever touching a role's file that
+    already exists (a prior migration or a real customization - either way,
+    not this function's business to overwrite).
     """
 
-    def test_missing_agents_md_is_created_with_baseline(self, repo_with_state, capsys):
+    def test_missing_identity_files_are_created_for_every_role(self, repo_with_state, capsys):
+        from agents.scrum_team.prompts import ROLE_NAMES
+
         repo_root, state_repo = repo_with_state
         code = check_state_repo.run(repo_root)
         assert code == 0
 
-        agents_md = state_repo / "AGENTS.md"
-        assert agents_md.is_file()
-        content = agents_md.read_text(encoding="utf-8")
-        assert check_state_repo.AGENTS_MD_BASELINE_BEGIN in content
-        assert check_state_repo.AGENTS_MD_BASELINE_END in content
-        assert "Created AGENTS.md with Horseless Carriage's baseline workflow description" in capsys.readouterr().out
+        for role in ROLE_NAMES:
+            identity_path = state_repo / f"{role}-identity.md"
+            assert identity_path.is_file(), f"{role}-identity.md was not created"
+            assert identity_path.read_text(encoding="utf-8").strip()
+        out = capsys.readouterr().out
+        assert "Created default identity.md for 7 role(s)" in out
+        assert "ScrumOrchestrator" in out and "QualityGuardian" in out
 
-    def test_empty_agents_md_is_treated_as_missing(self, repo_with_state):
+    def test_created_content_matches_the_role_default(self, repo_with_state):
+        from agents.scrum_team.prompts import load_role_identity_default
+
         repo_root, state_repo = repo_with_state
-        (state_repo / "AGENTS.md").write_text("   \n\n  ", encoding="utf-8")
+        check_state_repo.ensure_role_identity_defaults(state_repo)
 
-        result = check_state_repo.ensure_agents_md_baseline(state_repo)
+        expected = load_role_identity_default("ProductOwner")
+        actual = (state_repo / "ProductOwner-identity.md").read_text(encoding="utf-8")
+        assert actual == expected
 
-        assert result == "created"
-        content = (state_repo / "AGENTS.md").read_text(encoding="utf-8")
-        assert content.startswith("# AGENTS.md")
-        assert check_state_repo.AGENTS_MD_BASELINE_BEGIN in content
-
-    def test_existing_content_is_preserved_and_baseline_appended(self, repo_with_state, capsys):
+    def test_existing_role_identity_file_is_never_touched(self, repo_with_state, capsys):
         repo_root, state_repo = repo_with_state
-        existing = "# AGENTS.md\n\n## Team conventions\n\nAlways run `make lint` before committing.\n"
-        (state_repo / "AGENTS.md").write_text(existing, encoding="utf-8")
+        custom = "# ProductOwner\n\nThis team prioritizes ruthlessly - say no by default.\n"
+        (state_repo / "ProductOwner-identity.md").write_text(custom, encoding="utf-8")
 
-        code = check_state_repo.run(repo_root)
-        assert code == 0
+        result = check_state_repo.ensure_role_identity_defaults(state_repo)
 
-        content = (state_repo / "AGENTS.md").read_text(encoding="utf-8")
-        assert content.startswith(existing.rstrip("\n"))
-        assert "Always run `make lint` before committing." in content
-        assert check_state_repo.AGENTS_MD_BASELINE_BEGIN in content
-        assert "Added the baseline workflow description to your existing AGENTS.md (existing content preserved)" in capsys.readouterr().out
-
-    def test_unrelated_pre_existing_agents_md_is_never_overwritten(self, repo_with_state):
-        """Even an AGENTS.md written for a completely different tool, with
-        no Horseless-Carriage content at all, must only ever be appended
-        to - never replaced or truncated."""
-        repo_root, state_repo = repo_with_state
-        unrelated = "# AGENTS.md\n\nThis file is used by SomeOtherAgentTool for its own purposes.\n"
-        (state_repo / "AGENTS.md").write_text(unrelated, encoding="utf-8")
-
-        result = check_state_repo.ensure_agents_md_baseline(state_repo)
-
-        assert result == "appended"
-        content = (state_repo / "AGENTS.md").read_text(encoding="utf-8")
-        assert "SomeOtherAgentTool" in content
-        assert content.index("SomeOtherAgentTool") < content.index(check_state_repo.AGENTS_MD_BASELINE_BEGIN)
+        assert result["ProductOwner"] == "already-present"
+        assert (state_repo / "ProductOwner-identity.md").read_text(encoding="utf-8") == custom
 
     def test_already_migrated_repo_is_a_pure_noop(self, repo_with_state, capsys):
         repo_root, state_repo = repo_with_state
-        check_state_repo.ensure_agents_md_baseline(state_repo)
-        first_content = (state_repo / "AGENTS.md").read_text(encoding="utf-8")
+        check_state_repo.ensure_role_identity_defaults(state_repo)
+        first_snapshot = {
+            p.name: p.read_text(encoding="utf-8")
+            for p in state_repo.glob("*-identity.md")
+        }
 
         code = check_state_repo.run(repo_root)
 
         assert code == 0
-        second_content = (state_repo / "AGENTS.md").read_text(encoding="utf-8")
-        assert second_content == first_content
-        assert "AGENTS.md already documents the baseline workflow" in capsys.readouterr().out
-        # Only one copy of the marker - re-running never duplicates it.
-        assert second_content.count(check_state_repo.AGENTS_MD_BASELINE_BEGIN) == 1
+        second_snapshot = {
+            p.name: p.read_text(encoding="utf-8")
+            for p in state_repo.glob("*-identity.md")
+        }
+        assert second_snapshot == first_snapshot
+        assert "Every role already has its own identity.md" in capsys.readouterr().out
 
 
 class TestStateJsonValidation:

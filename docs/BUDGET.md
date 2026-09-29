@@ -101,6 +101,15 @@ The system tracks performance indicators to provide visibility into team health:
 - **Code Complexity**: A maintainability metric to ensure long-term velocity.
 - **Test Coverage**: The percentage of the codebase exercised by automated tests.
 - **Vulnerability Scan Results**: Tracks critical, high, medium, and low security findings.
+- **Per-Agent Prompt Context Usage**: What percentage of the configured model's context window each
+  role's own concatenated, static system prompt (guardrails + workflow + Definition of Done/Ready -
+  see [Agent Prompt Composition](AGENT-PROMPTS.md)) occupies before a single turn of real
+  conversation happens. Tracked per role, not just in aggregate, because different roles can be
+  configured with different models (`SCRUM_<ROLE>_MODEL` env vars), each with its own context
+  window size - a role's own number can only be interpreted against its own model's limit, not a
+  shared one. Best-effort: unavailable for a role whose model's context window can't be determined
+  (the LiteLLM proxy is unreachable, or the model isn't in litellm's known context-window map) -
+  reported as such rather than a guessed number.
 
 ### Sprint Report
 At the end of each sprint, the Product Owner generates a report via `create_sprint_report`, which
@@ -155,6 +164,11 @@ No impediments logged.
 - Say-Do Ratio: 0.9
 - Test Coverage: 85%
 - Defect Escape Rate: 2%
+
+### Per-Agent Prompt Context Usage
+  - ProductOwner (scrum-po): 5,318 / 1,048,576 tokens (0.51%)
+  - DevTeam (scrum-dev): 3,598 / 1,048,576 tokens (0.34%)
+  - ScrumMaster (scrum-sm): not available (Could not determine this model's context window)
 ```
 
 The "Sprint Length Feedback" section is advisory only - see `_sprint_length_feedback` in

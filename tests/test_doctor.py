@@ -443,42 +443,43 @@ class TestStateRepoStructureChecks:
         result = doctor.check(tmp_path)
         assert not any("specs" in w.message for w in result.warnings())
 
-    def test_missing_agents_md_is_migrated_with_a_note(self, valid_repo, monkeypatch, capsys):
-        """Acceptance Criteria: a state repo that predates the AGENTS.md
-        convention gets the baseline workflow section added automatically
-        on a plain doctor.py run, not just via the standalone
-        check_state_repo.py script."""
+    def test_missing_identity_files_are_migrated_with_a_note(self, valid_repo, monkeypatch, capsys):
+        """Acceptance Criteria: a state repo that predates the per-role
+        identity.md convention gets each role's default identity content
+        materialized automatically on a plain doctor.py run, not just via
+        the standalone check_state_repo.py script."""
+        from agents.scrum_team.prompts import ROLE_NAMES
+
         _patch_proxy_unreachable(monkeypatch)
         state_repo = valid_repo / "state_repo"
         doctor.check(valid_repo)
-        agents_md = state_repo / "AGENTS.md"
-        assert agents_md.is_file()
-        assert doctor.check_state_repo.AGENTS_MD_BASELINE_BEGIN in agents_md.read_text(encoding="utf-8")
-        assert "Created AGENTS.md" in capsys.readouterr().out
+        for role in ROLE_NAMES:
+            assert (state_repo / f"{role}-identity.md").is_file()
+        assert "Created default identity.md in the state repository for 7 role(s)" in capsys.readouterr().out
 
-    def test_existing_agents_md_content_survives_a_doctor_run(self, valid_repo, monkeypatch, capsys):
+    def test_existing_identity_file_survives_a_doctor_run(self, valid_repo, monkeypatch, capsys):
         _patch_proxy_unreachable(monkeypatch)
         state_repo = valid_repo / "state_repo"
-        (state_repo / "AGENTS.md").write_text("# AGENTS.md\n\nMy team's own notes.\n", encoding="utf-8")
+        custom = "# ProductOwner\n\nMy team's own notes.\n"
+        (state_repo / "ProductOwner-identity.md").write_text(custom, encoding="utf-8")
 
         doctor.check(valid_repo)
 
-        content = (state_repo / "AGENTS.md").read_text(encoding="utf-8")
-        assert "My team's own notes." in content
-        assert doctor.check_state_repo.AGENTS_MD_BASELINE_BEGIN in content
-        assert "Added the baseline workflow description" in capsys.readouterr().out
+        assert (state_repo / "ProductOwner-identity.md").read_text(encoding="utf-8") == custom
+        note_line = next(line for line in capsys.readouterr().out.splitlines() if "Created default identity.md" in line)
+        assert "6 role(s)" in note_line
+        assert "ProductOwner" not in note_line
 
-    def test_already_migrated_agents_md_produces_no_note(self, valid_repo, monkeypatch, capsys):
+    def test_already_migrated_repo_produces_no_note(self, valid_repo, monkeypatch, capsys):
         _patch_proxy_unreachable(monkeypatch)
         state_repo = valid_repo / "state_repo"
-        doctor.check_state_repo.ensure_agents_md_baseline(state_repo)
+        doctor.check_state_repo.ensure_role_identity_defaults(state_repo)
         capsys.readouterr()  # discard output from the setup call above
 
         doctor.check(valid_repo)
 
         out = capsys.readouterr().out
-        assert "Created AGENTS.md" not in out
-        assert "Added the baseline workflow description" not in out
+        assert "Created default identity.md" not in out
 
 
 class TestGithubAccessCheck:
