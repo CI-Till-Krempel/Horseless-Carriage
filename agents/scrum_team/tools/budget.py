@@ -344,6 +344,105 @@ def _summarize_transcript(transcript: List[Dict[str, Any]]) -> List[Dict[str, An
         last_by_agent[agent_name] = entry
     return [last_by_agent[name] for name in order]
 
+def _effective_sprint_token_limit(s: Dict[str, Any]) -> int:
+    """budgets.total if set, else SPRINT_TOKEN_BUDGET from the environment
+    (default 5,000,000) - the same per-sprint ceiling check_cost_budget_callback
+    (agent.py) enforces live, shared here so every advisory computed against
+    "the sprint's token budget" uses one consistent source."""
+    budgets = s.get("budgets", {})
+    token_limit = budgets.get("total", 0)
+    if token_limit <= 0:
+        try:
+            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 5000000))
+        except (ValueError, TypeError):
+            token_limit = 5000000
+    return token_limit
+
+
+def estimate_sprint_capacity(s: Dict[str, Any]) -> float | None:
+    """
+    Average actual tokens per completed story, computed from every
+    story_estimates[*].actual logged so far (log_story_tokens) - persists
+    across sprints, unlike token_usage/sprint_backlog which
+    reset_sprint_budget clears each sprint. The same "observed
+    tokens-per-completed-story rate" _sprint_length_feedback already
+    extrapolates from at sprint *close*, exposed here for use at sprint
+    *start* too (see sprint_capacity_advisory below). None if nothing has
+    been logged yet (sprint 1, before any log_story_tokens call) - callers
+    must fall back to a configured default themselves.
+    """
+    estimates = s.get("story_estimates", {}) or {}
+    actuals = [
+        e.get("actual") for e in estimates.values()
+        if isinstance(e, dict) and isinstance(e.get("actual"), (int, float))
+    ]
+    if not actuals:
+        return None
+    return sum(actuals) / len(actuals)
+
+
+def sprint_capacity_advisory(s: Dict[str, Any]) -> str | None:
+    """
+    Advisory-only (see _sprint_length_feedback's own docstring for the same
+    posture - never applied automatically, never a hard gate): flags when
+    this sprint's planned backlog looks clearly under-sized relative to the
+    available token budget, so Product Owner can pull in more Ready
+    stories before Dev Team starts, instead of leaving budget unspent - the
+    opposite failure mode from _sprint_length_feedback's "budget too small"
+    branch. Deliberately advisory rather than a gate: a maximization
+    pressure risks the same "team fabricates stories/estimates just to
+    satisfy a mechanical target" failure ready_backlog_shortfall's own
+    docstring (agents/scrum_team/helpers.py) already guards against, just
+    aimed the other way.
+
+    Returns None if there's nothing worth flagging: an empty backlog, or no
+    way yet to estimate its size (sprint 1, before any story_estimates
+    exist at all), or a backlog that already looks appropriately sized.
+    """
+    backlog = [i for i in (s.get("sprint_backlog") or []) if i.get("type", "User Story") != "Epic"]
+    if not backlog:
+        return None
+
+    token_limit = _effective_sprint_token_limit(s)
+    if token_limit <= 0:
+        return None
+
+    estimates = s.get("story_estimates", {}) or {}
+
+    def _explicit_estimate(item):
+        entry = estimates.get(item.get("id") or item.get("title"))
+        if isinstance(entry, dict) and isinstance(entry.get("estimate"), (int, float)):
+            return entry["estimate"]
+        return None
+
+    explicit = [e for e in (_explicit_estimate(item) for item in backlog) if e is not None]
+    avg_actual = estimate_sprint_capacity(s)
+
+    if len(explicit) == len(backlog):
+        projected_total = sum(explicit)
+        per_story = projected_total / len(backlog)
+    elif avg_actual is not None:
+        projected_total = avg_actual * len(backlog)
+        per_story = avg_actual
+    else:
+        # No historical actuals yet and not every planned story has its own
+        # estimate - nothing reliable to project from.
+        return None
+
+    if projected_total >= 0.7 * token_limit:
+        return None
+
+    room = token_limit - projected_total
+    more_stories = int(room // per_story) if per_story > 0 else 0
+    fit_note = f" - roughly {more_stories} more would fit at the observed rate" if more_stories > 0 else ""
+    return (
+        f"This sprint's planned backlog ({len(backlog)} stories, ~{projected_total:,.0f} tokens "
+        f"estimated) looks well under this sprint's {token_limit:,} token budget{fit_note}. Consider "
+        "pulling more Ready stories into this sprint before Dev Team starts, rather than leaving "
+        "budget unspent."
+    )
+
+
 def _sprint_length_feedback(s: Dict[str, Any]) -> str:
     """
     Advisory-only: flags when this sprint looks budget-starved (hit its
@@ -353,14 +452,7 @@ def _sprint_length_feedback(s: Dict[str, Any]) -> str:
     config (SPRINT_TOKEN_BUDGET / EVAL_SPRINT_TOKEN_BUDGET) - see README.md
     "Budget Management" / RELEASE.md "Team performance evaluation".
     """
-    budgets = s.get("budgets", {})
-    token_limit = budgets.get("total", 0)
-    if token_limit <= 0:
-        try:
-            token_limit = int(os.environ.get("SPRINT_TOKEN_BUDGET", 5000000))
-        except (ValueError, TypeError):
-            token_limit = 5000000
-
+    token_limit = _effective_sprint_token_limit(s)
     token_used = s.get("token_usage", {}).get("total", 0)
     backlog = s.get("sprint_backlog", []) or []
     total_items = len(backlog)

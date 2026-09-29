@@ -1137,6 +1137,33 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         mock_run.assert_called_with(
             ["gh", "pr", "merge", "sprint-backlog/3", "--merge", "--admin"], cwd=unittest.mock.ANY, tool_context=tool_context,
         )
+        # No sprint_backlog seeded in this fixture - nothing to project a
+        # capacity advisory from, so it's simply absent, not an error.
+        self.assertNotIn("capacity_advisory", result)
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
+    def test_surfaces_capacity_advisory_when_backlog_is_undersized(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """GH issue #294: a non-blocking nudge when the committed backlog
+        looks clearly under-sized relative to the sprint's token budget."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 3,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY,
+            "sprint_backlog": _ONE_READY_STORY,
+            "story_estimates": {"US-0001": {"estimate": 50_000}},
+            "budgets": {"total": 1_000_000},
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("capacity_advisory", result)
+        self.assertIn("under this sprint's 1,000,000 token budget", result["capacity_advisory"])
 
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "error", "stderr": "no such ref"})
     @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)

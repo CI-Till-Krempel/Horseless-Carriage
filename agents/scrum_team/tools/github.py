@@ -801,7 +801,8 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
     # release PR - this PR is planning documentation, not code, so there's
     # no build/test gate meaningful to wait on.
     merge_res = _run(["gh", "pr", "merge", actual_branch, "--merge", "--admin"], cwd=repo_root, tool_context=tool_context)
-    if merge_res.get("status") == "ok" and tool_context and getattr(tool_context, "state", None):
+    merged = merge_res.get("status") == "ok"
+    if merged and tool_context and getattr(tool_context, "state", None):
         # Only set once the merge actually succeeded - this is exactly what
         # sprint_backlog_pr_missing (agents/scrum_team/helpers.py) checks
         # before letting Dev Team start any story this sprint.
@@ -809,15 +810,25 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
         from .scrum import save_state_to_repo
         save_state_to_repo(tool_context)
 
-    return {
-        "status": "ok" if merge_res.get("status") == "ok" else "error",
-        "merged": merge_res.get("status") == "ok",
+    result = {
+        "status": "ok" if merged else "error",
+        "merged": merged,
         "sprint_number": sprint_number,
         "branch": actual_branch,
         "push": push_res,
         "pr": pr_res,
         "merge": merge_res,
     }
+    if merged:
+        # GH issue #294: advisory-only nudge if the committed backlog looks
+        # clearly under-sized relative to the sprint's token budget - see
+        # sprint_capacity_advisory's own docstring for why this stays a
+        # suggestion, never a gate.
+        from .budget import sprint_capacity_advisory
+        advisory = sprint_capacity_advisory(state)
+        if advisory:
+            result["capacity_advisory"] = advisory
+    return result
 
 def create_story_spec_pr(title_or_id: str, tool_context=None) -> Dict[str, Any]:
     """
