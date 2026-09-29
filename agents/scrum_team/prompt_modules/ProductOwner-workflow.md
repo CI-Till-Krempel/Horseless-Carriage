@@ -90,6 +90,12 @@ SPRINT PLANNING - PUBLISH THE BACKLOG BEFORE DEV TEAM STARTS
   At EVAL (and any level requiring none) it merges immediately, same as today.
 - `create_sprint_backlog_pr` refuses to run if Scrum Master hasn't called `start_sprint` yet - get
   that done first if it's rejected for that reason.
+- A successful call may return a `capacity_advisory` message (GH issue #294) if this sprint's
+  planned backlog looks clearly under-sized relative to the token budget, based on the observed
+  actual-tokens-per-story rate from prior sprints (or each story's own estimate, if no prior actuals
+  exist yet). Advisory only, never a gate - but if you see it, prefer pulling more Ready stories into
+  this sprint's backlog and re-planning over starting Dev Team on a thin sprint that leaves budget
+  unspent.
 
 SPRINT REVIEW & RELEASE
 - Create a Management Summary Report (`create_sprint_report`) as the sprint review, once this

@@ -17,6 +17,8 @@ from agents.scrum_team.tools.budget import (
     sprint_budget_reset_state_delta,
     _write_conversation_transcript,
     _file_retro_items_as_issues,
+    estimate_sprint_capacity,
+    sprint_capacity_advisory,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -931,6 +933,108 @@ class TestBudgetTools(unittest.TestCase):
         self.assertIn("## Full Process Detail", report)
         for section in ("Per-Agent Token Usage", "Retrospective Actions", "Impediments", "Story Estimates vs Actual Tokens", "Conversation Transcript"):
             self.assertIn(section, report.split("## Full Process Detail")[1])
+
+
+class TestEstimateSprintCapacity(unittest.TestCase):
+    """Acceptance Criteria (GH issue #294): the historical actual-tokens-
+    per-story rate, computed from every story_estimates[*].actual logged so
+    far - independent of token_usage/sprint_backlog, which reset per sprint."""
+
+    def test_none_when_nothing_logged_yet(self):
+        self.assertIsNone(estimate_sprint_capacity({}))
+        self.assertIsNone(estimate_sprint_capacity({"story_estimates": {}}))
+
+    def test_none_when_only_estimates_exist_with_no_actuals(self):
+        s = {"story_estimates": {"US-0001": {"estimate": 1000}}}
+        self.assertIsNone(estimate_sprint_capacity(s))
+
+    def test_averages_actuals_across_stories(self):
+        s = {"story_estimates": {
+            "US-0001": {"estimate": 1000, "actual": 800},
+            "US-0002": {"estimate": 1000, "actual": 1200},
+        }}
+        self.assertEqual(estimate_sprint_capacity(s), 1000)
+
+    def test_ignores_entries_missing_an_actual(self):
+        s = {"story_estimates": {
+            "US-0001": {"estimate": 1000, "actual": 900},
+            "US-0002": {"estimate": 1000},
+        }}
+        self.assertEqual(estimate_sprint_capacity(s), 900)
+
+
+class TestSprintCapacityAdvisory(unittest.TestCase):
+    """Acceptance Criteria (GH issue #294): advisory-only nudge when the
+    planned sprint backlog looks clearly under-sized relative to the token
+    budget - the opposite failure mode from _sprint_length_feedback's
+    "budget too small" branch."""
+
+    def test_none_with_empty_backlog(self):
+        self.assertIsNone(sprint_capacity_advisory({"sprint_backlog": []}))
+        self.assertIsNone(sprint_capacity_advisory({}))
+
+    def test_none_when_no_estimate_data_available_at_all(self):
+        s = {
+            "sprint_backlog": [{"id": "US-0001", "title": "Add login"}],
+            "budgets": {"total": 1_000_000},
+        }
+        self.assertIsNone(sprint_capacity_advisory(s))
+
+    def test_none_when_backlog_already_well_sized(self):
+        s = {
+            "sprint_backlog": [{"id": "US-0001"}, {"id": "US-0002"}],
+            "story_estimates": {
+                "US-0001": {"estimate": 400_000},
+                "US-0002": {"estimate": 400_000},
+            },
+            "budgets": {"total": 1_000_000},
+        }
+        self.assertIsNone(sprint_capacity_advisory(s))
+
+    def test_flags_undersized_backlog_using_explicit_estimates(self):
+        s = {
+            "sprint_backlog": [{"id": "US-0001"}, {"id": "US-0002"}],
+            "story_estimates": {
+                "US-0001": {"estimate": 100_000},
+                "US-0002": {"estimate": 100_000},
+            },
+            "budgets": {"total": 1_000_000},
+        }
+        advisory = sprint_capacity_advisory(s)
+        self.assertIsNotNone(advisory)
+        self.assertIn("under this sprint's 1,000,000 token budget", advisory)
+        self.assertIn("more would fit", advisory)
+
+    def test_falls_back_to_historical_actuals_when_a_story_has_no_estimate(self):
+        s = {
+            "sprint_backlog": [{"id": "US-0003"}],
+            "story_estimates": {
+                "US-0001": {"estimate": 100_000, "actual": 100_000},
+                "US-0002": {"estimate": 100_000, "actual": 100_000},
+                # US-0003 (this sprint's own story) has no estimate at all yet.
+            },
+            "budgets": {"total": 1_000_000},
+        }
+        advisory = sprint_capacity_advisory(s)
+        self.assertIsNotNone(advisory)
+        self.assertIn("1 stories", advisory)
+
+    def test_epics_excluded_from_backlog_size(self):
+        s = {
+            "sprint_backlog": [{"id": "EP-0001", "type": "Epic"}],
+            "budgets": {"total": 1_000_000},
+        }
+        self.assertIsNone(sprint_capacity_advisory(s))
+
+    def test_ignores_env_budget_fallback_when_state_budget_is_zero_and_none_configured(self):
+        s = {
+            "sprint_backlog": [{"id": "US-0001"}],
+            "story_estimates": {"US-0001": {"estimate": 100}},
+            "budgets": {"total": 0},
+        }
+        with patch.dict("os.environ", {"SPRINT_TOKEN_BUDGET": "1000000"}, clear=True):
+            advisory = sprint_capacity_advisory(s)
+        self.assertIsNotNone(advisory)
 
 
 class TestWriteConversationTranscript(unittest.TestCase):
