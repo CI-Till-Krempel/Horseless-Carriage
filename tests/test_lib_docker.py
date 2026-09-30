@@ -20,6 +20,38 @@ class _FakeResponse:
         return False
 
 
+class TestComposeProjectArgs:
+    """GH issue #288: the prefix ("horseless-carriage" by default) is
+    overridable via COMPOSE_PROJECT_NAME_PREFIX in <repo_root>/.env - so two
+    DIFFERENT target projects, each with their own Horseless Carriage
+    submodule + .env, get different Compose project names (and therefore
+    different container/image names) instead of colliding."""
+
+    def test_default_prefix_with_no_repo_root(self):
+        assert lib_docker.compose_project_args("dev") == ["-p", "horseless-carriage-dev"]
+
+    def test_default_prefix_when_env_file_is_absent(self, tmp_path):
+        assert lib_docker.compose_project_args("dev", tmp_path) == ["-p", "horseless-carriage-dev"]
+
+    def test_default_prefix_when_env_file_has_no_override(self, tmp_path):
+        (tmp_path / ".env").write_text("SOME_OTHER_VAR='x'\n")
+        assert lib_docker.compose_project_args("eval", tmp_path) == ["-p", "horseless-carriage-eval"]
+
+    def test_uses_configured_prefix_from_env_file(self, tmp_path):
+        (tmp_path / ".env").write_text("COMPOSE_PROJECT_NAME_PREFIX='my-project'\n")
+        assert lib_docker.compose_project_args("dev", tmp_path) == ["-p", "my-project-dev"]
+
+    def test_different_repo_roots_do_not_collide(self, tmp_path):
+        project_a = tmp_path / "a"
+        project_b = tmp_path / "b"
+        project_a.mkdir()
+        project_b.mkdir()
+        (project_a / ".env").write_text("COMPOSE_PROJECT_NAME_PREFIX='project-a'\n")
+        (project_b / ".env").write_text("COMPOSE_PROJECT_NAME_PREFIX='project-b'\n")
+        assert lib_docker.compose_project_args("dev", project_a) == ["-p", "project-a-dev"]
+        assert lib_docker.compose_project_args("dev", project_b) == ["-p", "project-b-dev"]
+
+
 class TestHostOllamaReachable:
     """GH issue #93: host-Ollama mode has no `ollama` container for
     doctor.py's other checks to inspect, so this checks reachability

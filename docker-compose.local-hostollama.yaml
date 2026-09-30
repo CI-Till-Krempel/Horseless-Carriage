@@ -56,7 +56,7 @@ services:
       # GH issue #239: bound to localhost by default - see docker-compose.yaml's
       # identical entry. Set LITELLM_BIND_HOST=0.0.0.0 in .env to expose it on
       # the LAN.
-      - "${LITELLM_BIND_HOST:-127.0.0.1}:4000:4000"
+      - "${LITELLM_BIND_HOST:-127.0.0.1}:${LITELLM_HOST_PORT:-4000}:4000"
     volumes:
       # LITELLM_CONFIG_PATH lets a caller (e.g. run_adk_eval.py --host-ollama)
       # point this at a dedicated config - eval/adk/litellm.local-hostollama.yaml -
@@ -94,7 +94,7 @@ services:
       # GH issue #239: bound to localhost by default - see docker-compose.yaml's
       # identical entry. Set AGENT_WEB_BIND_HOST=0.0.0.0 in .env to expose it
       # on the LAN.
-      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:8000:8000"
+      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
     volumes:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro

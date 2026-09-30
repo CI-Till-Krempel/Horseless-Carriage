@@ -28,7 +28,12 @@ services:
       # /ui on every image version). Set LITELLM_BIND_HOST=0.0.0.0 in .env
       # to expose it on the LAN (e.g. a shared dev box) - an explicit,
       # informed opt-in instead of the old silent default.
-      - "${LITELLM_BIND_HOST:-127.0.0.1}:4000:4000"
+      # GH issue #288: host-side port itself is also overridable
+      # (LITELLM_HOST_PORT) - new_project.py sets this automatically when
+      # more than one Horseless Carriage installation needs to run
+      # concurrently on the same machine (e.g. HC installed into two
+      # different target repos), so their host port bindings don't collide.
+      - "${LITELLM_BIND_HOST:-127.0.0.1}:${LITELLM_HOST_PORT:-4000}:4000"
     volumes:
       # LITELLM_CONFIG_PATH lets a caller (e.g. run_adk_eval.py) point this
       # at a dedicated config - eval/adk/litellm.ci.yaml - instead of
@@ -67,7 +72,9 @@ services:
       # authentication at all. Set AGENT_WEB_BIND_HOST=0.0.0.0 in .env to
       # expose it on the LAN (e.g. a shared dev box) - an explicit, informed
       # opt-in instead of the old silent default.
-      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:8000:8000"
+      # GH issue #288: see the litellm service's identical LITELLM_HOST_PORT
+      # note above - same per-installation collision avoidance.
+      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
     volumes:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro
