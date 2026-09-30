@@ -64,6 +64,36 @@ to `REPO_STATE_KEYS`.
   GitHub.** Treat anything written under `REPO_STATE_KEYS` as eventually public
   within your team/org, even if the repo is private.
 
+## What the `agent` container can read (GH issue #296)
+
+The `agent` container's process environment is not sealed off from an agent's own
+tool calls — a curated tool like `check_build`/`_execute_test_suite_coverage`
+(`agents/scrum_team/tools/quality.py`) runs code the agent itself authored via
+`write_file`, and that code inherits the full container environment via `_run`'s
+`env = os.environ.copy()` (`agents/scrum_team/tools/base.py`). **Whatever secret
+reaches this container's environment, an agent's own generated code can in
+principle read.** The actual guarantee here is not "the agent can't read
+secrets" — it's **reducing which secrets reach the container at all** to only
+those it genuinely needs to do its job:
+
+- `docker-compose*.yaml`'s `agent` service environment deliberately does **not**
+  carry `GOOGLE_API_KEY`/`ANTHROPIC_API_KEY`/`OPENAI_API_KEY` — the agent process
+  never calls a provider API directly, only the LiteLLM proxy (via
+  `LITELLM_MASTER_KEY`/`LITELLM_PROXY_API_KEY`). Only the `litellm` service's own
+  environment block needs raw provider keys. `tests/test_docker_compose_env.py`'s
+  `TestAgentContainerDoesNotOverexposeProviderSecrets` guards against a future
+  change re-adding one of these "just in case" without deliberate review.
+- What `agent` still legitimately holds — `LITELLM_MASTER_KEY`,
+  `LITELLM_PROXY_API_KEY`, `GITHUB_TOKEN`/`GITHUB_APP_PRIVATE_KEY` — is used
+  directly by the agent's own curated tools (creating per-agent virtual keys,
+  git/GitHub operations) and can't be trimmed further without moving credential
+  use behind a broker/sidecar process the agent never directly holds secrets
+  for. That's a substantially larger architecture change, out of scope here —
+  tracked as a possible follow-up alongside #286 if pursued.
+- Network exfiltration of whatever a secret an agent *can* read is a separate
+  concern from being able to read it at all — see #287 (network restriction,
+  not yet implemented) for that angle.
+
 ## Financial guardrails (not a secret, but a real spend-control review)
 
 `inject_litellm_key_callback` (`agents/scrum_team/agent.py`) falls back to

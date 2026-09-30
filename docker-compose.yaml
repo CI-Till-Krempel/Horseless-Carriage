@@ -85,7 +85,10 @@ services:
       - STATE_REPO_PATH=${STATE_REPO_PATH}
       - INTERNAL_STATE_REPO_PATH=/app/state_repo
       - LITELLM_PROXY_API_BASE=http://litellm:4000
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      # GH issue #296: GOOGLE_API_KEY deliberately NOT passed here - the
+      # agent process never calls a provider API directly, only the
+      # LiteLLM proxy (via LITELLM_PROXY_API_KEY/LITELLM_MASTER_KEY below).
+      # Only litellm's own service block above needs provider keys.
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
