@@ -1,0 +1,18 @@
+# GH issue #337: overlay used ONLY by .github/workflows/eval.yml's own
+# `docker compose` invocations (an extra `-f docker-compose.eval.yml`) -
+# the team-performance evaluation harness (run_eval.py) needs the `agent`
+# container to actually reach a package registry (pip/npm) to install a
+# real generated product's real dependencies, which the default, narrower
+# allowlist (config/net-proxy/allowlist.filter, github.com/api.github.com
+# only - see GH issue #287) doesn't allow.
+#
+# This ONLY swaps net-proxy's allowlist file via a volume mount over the
+# image's built-in one - every other service (agent, litellm, db) and the
+# network topology itself (agent-net staying internal: true) are entirely
+# unchanged from docker-compose.yaml. Real end-user projects never pass
+# this file to `docker compose` at all, so they keep the default, narrower
+# allowlist unconditionally.
+services:
+  net-proxy:
+    volumes:
+      - ./config/net-proxy/allowlist-eval.filter:/etc/tinyproxy/allowlist.filter:ro

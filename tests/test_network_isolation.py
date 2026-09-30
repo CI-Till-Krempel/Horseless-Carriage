@@ -95,3 +95,55 @@ class TestNetProxyAllowlist:
         text = (REPO_ROOT / "config" / "net-proxy" / "tinyproxy.conf").read_text(encoding="utf-8")
         assert "FilterDefaultDeny Yes" in text
         assert "allowlist.filter" in text
+
+
+class TestEvalNetworkAllowlistOverride:
+    """
+    Regression test for GH issue #337: the team-performance eval harness
+    generates a real product with real pip/npm dependencies, which
+    check_build() has no way to install under #287's default, narrower
+    allowlist - docker-compose.eval.yml (used ONLY by .github/workflows/
+    eval.yml) swaps net-proxy's allowlist file for a wider one permitting
+    package registries too. Real end-user projects never reference this
+    file, so their egress stays exactly as narrow as #287 left it.
+    """
+
+    def test_eval_allowlist_permits_github_and_package_registries(self):
+        text = (REPO_ROOT / "config" / "net-proxy" / "allowlist-eval.filter").read_text(encoding="utf-8")
+        patterns = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+        assert patterns == [
+            r"^github\.com(:[0-9]+)?$",
+            r"^api\.github\.com(:[0-9]+)?$",
+            r"^pypi\.org(:[0-9]+)?$",
+            r"^files\.pythonhosted\.org(:[0-9]+)?$",
+            r"^registry\.npmjs\.org(:[0-9]+)?$",
+        ]
+
+    def test_default_allowlist_is_unaffected_by_the_eval_overlay_existing(self):
+        """The eval-specific file is additive, not a replacement - the
+        default allowlist every real end-user project uses must stay
+        exactly as narrow as GH issue #287 left it regardless."""
+        text = (REPO_ROOT / "config" / "net-proxy" / "allowlist.filter").read_text(encoding="utf-8")
+        assert "pypi" not in text
+        assert "npmjs" not in text
+
+    def test_eval_compose_override_only_touches_net_proxys_volume_mount(self):
+        data = yaml.safe_load((REPO_ROOT / "docker-compose.eval.yml").read_text(encoding="utf-8"))
+        services = data.get("services", {})
+        assert set(services.keys()) == {"net-proxy"}, (
+            "docker-compose.eval.yml must only override net-proxy - broadening any other service "
+            "here would silently change behavior for whichever compose files this happens to be "
+            "combined with."
+        )
+        volumes = services["net-proxy"]["volumes"]
+        assert volumes == ["./config/net-proxy/allowlist-eval.filter:/etc/tinyproxy/allowlist.filter:ro"]
+
+    def test_eval_workflow_passes_the_override_to_every_compose_invocation(self):
+        text = (REPO_ROOT / ".github" / "workflows" / "eval.yml").read_text(encoding="utf-8")
+        compose_lines = [line for line in text.splitlines() if "docker compose" in line]
+        assert compose_lines, "expected at least one docker compose invocation in eval.yml"
+        for line in compose_lines:
+            assert "-f docker-compose.eval.yml" in line, (
+                f"every docker compose invocation in eval.yml must include the eval network "
+                f"allowlist override (GH issue #337) - missing in: {line.strip()!r}"
+            )
