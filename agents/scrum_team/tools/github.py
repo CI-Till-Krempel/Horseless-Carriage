@@ -779,6 +779,39 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
             ),
         }
 
+    # GH issue (0.1.0-run42): _file_retro_items_as_issues (budget.py) files
+    # every retro action/impediment as a real, Must-priority Issue in
+    # product_backlog specifically "so it can't be silently starved" - but
+    # nothing mechanically forced Sprint Planning to ever pick one back up.
+    # A real eval run showed exactly that: a dependency-pinning Issue filed
+    # in Sprint 1 sat at Draft, unaddressed, through Sprints 2-5 - every
+    # later sprint's own retro just filed MORE Issues on top, none of them
+    # ever planned in either. This is the same choke point as the Ready-
+    # backlog shortfall check right below (Dev Team can't start until this
+    # PR merges), extended so a filed Must Issue can't be silently ignored
+    # forever the way a merely-thin backlog already couldn't be.
+    unaddressed_must_issues = [
+        item for item in (state.get("product_backlog", []) or [])
+        if item.get("type") == "Issue"
+        and item.get("priority") == "Must"
+        and not item.get("blocked")
+        and "Ready" not in (item.get("stages_completed") or [])
+        and "Accepted" not in (item.get("stages_completed") or [])
+    ]
+    if unaddressed_must_issues:
+        ids = ", ".join(sorted(i.get("id") or i.get("title") or "(no id)" for i in unaddressed_must_issues))
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot create the Sprint Backlog PR yet - {len(unaddressed_must_issues)} Must-priority "
+                f"Issue(s) filed from a previous sprint's retrospective/impediment log are still sitting "
+                f"unaddressed at Draft, never planned into a sprint: {ids}. Call "
+                "advance_story_stage(id_or_title, 'Ready') for each one (then plan_sprint_backlog_item "
+                "to actually queue it for this sprint), or set_priority(id_or_title, ...) to something "
+                "other than 'Must' if it turns out not to actually warrant that, before retrying."
+            ),
+        }
+
     # A real eval run showed "start implementing" was only ever a prompt
     # instruction away from "the backlog barely has any Ready work at all" -
     # this is the single choke point (Dev Team can't start until this PR

@@ -123,6 +123,14 @@ def sprint_budget_reset_state_delta() -> Dict[str, Any]:
         "budget_reset_since_last_sprint_start": True,
         "critical_halt_notified": False,
         "sprint_report_safety_net_fired": False,
+        # GH issue (0.1.0-run42): the numbered specs/reports/SPRINT-REPORT-
+        # NNN.md path this sprint's report was written to (create_sprint_report
+        # / render_fallback_sprint_report both set this on write, and reuse it
+        # on any later call this same sprint instead of allocating a new
+        # number - see render_fallback_sprint_report's own docstring). Cleared
+        # here so a later sprint's first report call still allocates its own
+        # fresh number.
+        "sprint_report_path": "",
         # GH issue #220: the 75%/90% budget-warning gate (see
         # _maybe_inject_budget_warning, agent.py) - cleared so a new sprint's
         # own approach to the ceiling warns again, rather than staying
@@ -705,6 +713,17 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
     as-is - this never overwrites a genuine report with this degraded
     stand-in, it only ever fills the gap when none exists yet.
 
+    create_release_pr also calls this unconditionally to (re-)land the
+    report on develop before opening the PR, regardless of whether it was
+    ever called this sprint before. Without state.sprint_report_path
+    tracking the numbered file this sprint already used, that second call
+    would allocate and write an entirely new SPRINT-REPORT-NNN.md with the
+    exact same (reused) content - a real eval run (0.1.0-run42) showed
+    this exact bug, turning 5 sprints into 12+ numbered report files.
+    Reusing the already-allocated path here instead makes repeat calls
+    within the same sprint idempotent on the file path, not just the
+    text.
+
     Takes no arguments beyond tool_context: there is no free-form path or
     content parameter anywhere in this function for a caller to redirect -
     it can only ever render this one report from state and write it to
@@ -800,10 +819,16 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
         # again until a real create_release_pr clears this.
         s["sprint_report_pending_release"] = True
 
-    numbered_path = _next_sprint_report_path(tool_context)
+    # Reuse this sprint's already-allocated numbered path if one exists
+    # (either a prior call to this same function this sprint, or a real
+    # create_sprint_report success) rather than burning a fresh sequence
+    # number on every call - see this function's own docstring above for
+    # the exact duplicate-file bug this avoids.
+    numbered_path = s.get("sprint_report_path") or _next_sprint_report_path(tool_context)
     write_file(numbered_path, report, overwrite=True, tool_context=tool_context)
     latest_path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
+    s["sprint_report_path"] = numbered_path
     return {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
 
 
@@ -1229,10 +1254,17 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         )
 
     s["sprint_report"] = report
-    numbered_path = _next_sprint_report_path(tool_context)
+    # Reuse this sprint's already-allocated numbered path if one exists
+    # (e.g. render_fallback_sprint_report already fired earlier this sprint
+    # via the budget-halt safety net, then the sprint recovered enough
+    # grace for this real report to also succeed) - see
+    # render_fallback_sprint_report's own docstring for the duplicate-file
+    # bug this avoids.
+    numbered_path = s.get("sprint_report_path") or _next_sprint_report_path(tool_context)
     write_file(numbered_path, report, overwrite=True, tool_context=tool_context)
     latest_path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
+    s["sprint_report_path"] = numbered_path
 
     # Snapshot the count that satisfied this sprint's requirement, so next
     # sprint's gate demands something *new* again rather than trivially
