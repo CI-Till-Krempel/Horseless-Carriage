@@ -1516,6 +1516,28 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "the build and call check_build() again until it passes before retrying."
                 ),
             })
+        # GH eval run39: a real eval run rewrote requirements.txt (dropping
+        # Flask) AFTER check_build had already passed, and nobody called
+        # check_build() again before QA ran the test suite - last_build
+        # above still read passing=True (it was, for the manifest that
+        # existed at the time), so this gate sailed past it straight into
+        # pytest's own ModuleNotFoundError, 11 times in a row. write_file
+        # (docs.py) bumps dependency_manifest_write_count on every write to
+        # requirements.txt/package.json; check_build() snapshots it into
+        # manifest_write_count_at_check the moment it actually runs - if
+        # that snapshot is behind the live counter, a dependency manifest
+        # write happened that this check_build result never saw.
+        current_manifest_writes = s.get("dependency_manifest_write_count", 0)
+        checked_manifest_writes = last_build.get("manifest_write_count_at_check", 0)
+        if current_manifest_writes > checked_manifest_writes:
+            return _reject_stage_transition(tool_context, story_id, stage, {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - requirements.txt/package.json has changed "
+                    "since the last check_build() result. Call check_build() again against the "
+                    "current manifest before retrying - the passing result on file is stale."
+                ),
+            })
         # GH issue #114: check_build() only verifies the build/dependency
         # install, not that any tests actually ran or passed - this gate
         # previously accepted a clean build + a QA PR comment as sufficient

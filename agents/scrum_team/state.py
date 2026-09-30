@@ -47,6 +47,7 @@ class ScrumState(BaseModel):
     release_approval_baseline: int = 0
     dev_touch_baseline: int = 0
     last_check_build: Optional[Dict[str, Any]] = None
+    dependency_manifest_write_count: int = 0
     pr_review_calls: Dict[str, int] = Field(default_factory=dict)
     architect_review_baseline: int = 0
     qa_review_baseline: int = 0

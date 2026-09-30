@@ -57,6 +57,22 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
                 pass
         abs_path.write_text(content, encoding="utf-8")
         _record_touched_file(path, tool_context)
+        # GH eval run39: check_build()'s pip/npm install result was still
+        # being trusted by advance_story_stage's Tested gate even after a
+        # LATER rewrite of requirements.txt/package.json - a real eval run
+        # emptied requirements.txt (dropping Flask) after check_build had
+        # already passed, and nobody re-ran it before QA's pytest attempt
+        # hit ModuleNotFoundError 11 times in a row against a build nobody
+        # had actually re-verified. Bumping this counter on every write to
+        # either manifest, at repo root, lets that gate tell "check_build
+        # ran against exactly this manifest" apart from "check_build ran at
+        # some point, before the manifest changed" - see check_build's own
+        # snapshot of this counter and the Tested gate's freshness check.
+        if tool_context and getattr(tool_context, "state", None) and abs_path.parent == repo_root.resolve() \
+                and abs_path.name in ("requirements.txt", "package.json"):
+            tool_context.state["dependency_manifest_write_count"] = (
+                tool_context.state.get("dependency_manifest_write_count", 0) + 1
+            )
         return {"status": "ok", "path": str(abs_path), "overwrote_existing_content": overwrote_existing_content}
     except Exception as e:
         return {"status": "error", "message": str(e)}

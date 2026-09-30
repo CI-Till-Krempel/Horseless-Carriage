@@ -99,6 +99,30 @@ class TestSprintFilesTouched(unittest.TestCase):
         result = write_file("notes/new.md", "content", tool_context=self.tool_context)
         self.assertFalse(result["overwrote_existing_content"])
 
+    def test_write_file_increments_dependency_manifest_write_count_for_requirements_txt(self):
+        write_file("requirements.txt", "flask\n", tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state["dependency_manifest_write_count"], 1)
+
+    def test_write_file_increments_dependency_manifest_write_count_for_package_json(self):
+        write_file("package.json", "{}", tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state["dependency_manifest_write_count"], 1)
+
+    def test_write_file_increments_on_every_rewrite_not_just_the_first(self):
+        write_file("requirements.txt", "flask\n", tool_context=self.tool_context)
+        write_file("requirements.txt", "\n", overwrite=True, tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state["dependency_manifest_write_count"], 2)
+
+    def test_write_file_does_not_increment_for_a_nested_requirements_txt(self):
+        """Only the root-level manifest is what check_build actually
+        installs from - a same-named file elsewhere in the tree isn't
+        the one the Tested gate's staleness check cares about."""
+        write_file("subdir/requirements.txt", "flask\n", tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state.get("dependency_manifest_write_count", 0), 0)
+
+    def test_write_file_does_not_increment_for_unrelated_files(self):
+        write_file("notes/foo.md", "content", tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state.get("dependency_manifest_write_count", 0), 0)
+
     def test_upsert_prd_records_touched_path(self):
         upsert_prd("This is a PRD.", "test.md", tool_context=self.tool_context)
         self.assertIn("specs/requirements/PRD-test.md", self.tool_context.state["sprint_files_touched"])

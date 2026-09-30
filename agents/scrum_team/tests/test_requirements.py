@@ -269,6 +269,43 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("check_build", result["message"])
 
+    def test_tested_blocked_when_check_build_is_stale_against_a_later_manifest_write(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (GH eval run39): a real eval run rewrote
+        requirements.txt (dropping Flask) AFTER check_build had already
+        passed, and nobody re-ran check_build before QA's pytest attempt -
+        this gate must catch that instead of trusting a stale passing=True
+        against a manifest that's since changed.
+        """
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {
+            "checked": "requirements.txt",
+            "passing": True,
+            "manifest_write_count_at_check": 1,
+        }
+        tc.state["dependency_manifest_write_count"] = 2  # a later rewrite happened
+        result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("check_build", result["message"])
+        self.assertIn("changed", result["message"])
+
+    def test_tested_succeeds_when_check_build_matches_the_current_manifest(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {
+            "checked": "requirements.txt",
+            "passing": True,
+            "manifest_write_count_at_check": 2,
+        }
+        tc.state["dependency_manifest_write_count"] = 2
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
     def test_tested_blocked_when_no_tests_actually_ran(self, mock_save, mock_md, mock_roadmap):
         """
         Acceptance Criteria (GH issue #114): check_build() only verifies the
