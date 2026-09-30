@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import new_project
+import project_registry
 
 
 class TestSanitizeComposeProjectPrefix:
@@ -197,3 +198,36 @@ class TestAddAsSubmodule:
              patch("subprocess.run", return_value=mock_result):
             with pytest.raises(SystemExit):
                 new_project._add_as_submodule(this_checkout, target_repo)
+
+
+class TestInstallIfNested:
+    def test_registers_the_project_when_nested_inside_another_repo(self, tmp_path):
+        target_repo = tmp_path / "target"
+        target_repo.mkdir()
+        (target_repo / ".git").mkdir()
+        repo_root = target_repo / "horseless-carriage"
+        repo_root.mkdir()
+
+        registry_path = tmp_path / "registry.json"
+        with patch.object(new_project, "_configure_for_target_project") as mock_configure, \
+             patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            new_project._install_if_nested(repo_root)
+            projects = project_registry.load()
+
+        mock_configure.assert_called_once_with(repo_root, target_repo)
+        assert len(projects) == 1
+        assert projects[0]["name"] == "target"
+        assert projects[0]["hc_path"] == str(repo_root)
+        assert projects[0]["target_repo"] == str(target_repo)
+
+    def test_does_nothing_when_standalone_not_nested_in_a_repo(self, tmp_path):
+        repo_root = tmp_path / "standalone-checkout"
+        repo_root.mkdir()
+
+        registry_path = tmp_path / "registry.json"
+        with patch.object(new_project, "_configure_for_target_project") as mock_configure, \
+             patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            new_project._install_if_nested(repo_root)
+
+        mock_configure.assert_not_called()
+        assert not registry_path.is_file()

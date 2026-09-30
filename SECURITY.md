@@ -123,6 +123,13 @@ reverse proxy with basic auth in front of the ADK web UI) is tracked as a
 follow-up, not yet implemented — see the linked follow-up issue on GH issue
 #239.
 
+`dashboard.py` (GH issue #310) follows the same pattern - **no authentication in front of it**,
+binds to `127.0.0.1` by default (`--bind-host` to change). Anyone who can reach it can see every
+registered project's sprint goal/budget/state and start or stop any of their docker stacks. Only
+its `/start`/`/stop` endpoints require the target path to already be in the local registry
+(`~/.horseless-carriage/projects.json`) - they can't be pointed at an arbitrary filesystem path via
+the query string.
+
 ## Known limitations (being upfront, not exhaustive)
 
 - No automated secret-scanning (e.g. gitleaks) runs in CI yet.
