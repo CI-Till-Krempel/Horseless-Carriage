@@ -11,6 +11,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - external-net
 
   litellm:
     # GH issue #298: pinned to a digest instead of the floating main-stable
@@ -46,6 +48,14 @@ services:
     depends_on:
       - db
     restart: unless-stopped
+    # GH issue #287: on both networks - reachable directly (bypassing
+    # net-proxy entirely) by `agent` over agent-net, while keeping its own
+    # unrestricted egress to commercial providers over external-net. This is
+    # a deliberate, already-scoped egress path distinct from `agent`'s
+    # arbitrary shell/tool access, so it isn't routed through the allowlist.
+    networks:
+      - external-net
+      - agent-net
 
   agent:
     build:
@@ -99,6 +109,19 @@ services:
       - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_REPO_URL=${GITHUB_REPO_URL}
+      # GH issue #287: agent-net (below) has no route to the internet at
+      # all - this is the only path out, and net-proxy's allowlist
+      # (config/net-proxy/allowlist.filter) is the actual enforcement
+      # point. NO_PROXY excludes litellm: agent reaches it directly over
+      # the network they both share, never through this proxy. Set in both
+      # cases since not every tool respects the same casing (git/gh/curl
+      # via libcurl check the lowercase form first).
+      - HTTP_PROXY=http://net-proxy:8888
+      - HTTPS_PROXY=http://net-proxy:8888
+      - http_proxy=http://net-proxy:8888
+      - https_proxy=http://net-proxy:8888
+      - NO_PROXY=litellm
+      - no_proxy=litellm
       # GH issue #82: Compose prints a "variable is not set" warning for any
       # bare ${VAR} reference left unset in .env, even when the code being
       # run already has a perfectly good default for it (get_interaction_level(),
@@ -164,10 +187,30 @@ services:
       - SPRINT_CLOSEOUT_GRACE_PERCENT=${SPRINT_CLOSEOUT_GRACE_PERCENT:-20.0}
     depends_on:
       - litellm
+      - net-proxy
     # Keep the container running and allow for interactive sessions
     stdin_open: true
     tty: true
     command: ["/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh"]
+    # GH issue #287: agent-net only - internal: true (below) means this
+    # container has NO route to the internet except through net-proxy's
+    # allowlist. It never calls a provider API directly (only litellm, over
+    # this same network), so this doesn't affect real LLM calls at all.
+    networks:
+      - agent-net
+
+  # GH issue #287: forward-proxy sidecar - the only way anything on
+  # agent-net can reach the outside world. See net-proxy.Dockerfile /
+  # config/net-proxy/ for the actual allowlist (github.com/api.github.com,
+  # for agent's git+gh tooling - nothing broader).
+  net-proxy:
+    build:
+      context: .
+      dockerfile: net-proxy.Dockerfile
+    networks:
+      - external-net
+      - agent-net
+    restart: unless-stopped
 
   # -----------------------------------------
   # For a fully local, no-commercial-LLM setup (self-hosted Ollama instead of
@@ -175,6 +218,19 @@ services:
   # file: `docker compose -f docker-compose.local.yaml up`. See
   # config/model-templates/litellm.local-ollama.yaml for the model mapping.
   # -----------------------------------------
+
+networks:
+  # Normal bridge network with unrestricted outbound access - db/litellm's
+  # own commercial-provider calls/net-proxy's own uplink live here.
+  external-net:
+    driver: bridge
+  # GH issue #287: internal: true means Docker gives this network NO route
+  # to the outside world at all, regardless of what's plugged into it -
+  # this is the actual mechanism restricting agent's egress, not just an
+  # application-level convention that could be routed around.
+  agent-net:
+    driver: bridge
+    internal: true
 
 volumes:
   postgres_data:
