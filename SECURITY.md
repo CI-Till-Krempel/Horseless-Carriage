@@ -162,6 +162,16 @@ network), not an application-level convention — see [Network Sandboxing](docs/
 for the full design and its one known limitation (best-effort against accidental/generated-code
 network calls, not a hardened container-escape boundary).
 
+**Exception, scoped to CI's own team-performance eval only (GH issue #337):** `.github/workflows/
+eval.yml` passes an extra `-f docker-compose.eval.yml`, which swaps `net-proxy`'s allowlist for one
+that also permits `pypi.org`/`files.pythonhosted.org`/`registry.npmjs.org` — the eval harness
+generates a real product with real pip/npm dependencies, which `check_build()` has no way to
+install under the default allowlist. Real end-user projects never pass this file, so `docker
+compose up` against `docker-compose.yaml`/`.local.yaml`/`.local-hostollama.yaml` alone keeps the
+default, narrower allowlist unconditionally. Per the issue's own decision, this override is a
+checked-in file requiring a normal human-reviewed PR to change — there's no runtime/agent-driven
+mechanism that can broaden it.
+
 ## Known limitations (being upfront, not exhaustive)
 
 - No automated secret-scanning (e.g. gitleaks) runs in CI yet.

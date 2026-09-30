@@ -130,7 +130,7 @@ jobs:
 
       - name: Start dependency services
         run: |
-          docker compose --env-file .env.eval up -d db litellm
+          docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval up -d db litellm
           until curl -sf http://localhost:4000/health/readiness > /dev/null; do
             echo "Waiting for litellm..."
             sleep 2
@@ -138,7 +138,15 @@ jobs:
 
       - name: Run evaluation sprints and analysis
         run: |
-          docker compose --env-file .env.eval run --rm agent bash -c '
+          # GH issue #337: docker-compose.eval.yml swaps net-proxy's egress
+          # allowlist to also permit pypi.org/files.pythonhosted.org/
+          # registry.npmjs.org - the real generated product's own
+          # check_build() (pip install/npm install) has no route to a
+          # package registry at all under the default, narrower allowlist
+          # (GH issue #287), which a real eval run hit as an unfixable
+          # ModuleNotFoundError loop. Real end-user projects never pass
+          # this file, so they keep the default allowlist unconditionally.
+          docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval run --rm agent bash -c '
             set -e
             python3 -m agents.scrum_team.scripts.run_eval \
               --sprints "${{ github.event.inputs.sprints || 5 }}" \
@@ -175,4 +183,4 @@ jobs:
 
       - name: Stop dependency services
         if: always()
-        run: docker compose --env-file .env.eval down -v
+        run: docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval down -v
