@@ -11,6 +11,7 @@ from agents.scrum_team.tools.quality import (
     _execute_test_suite_coverage,
     _compute_code_complexity,
     _scan_security_vulnerabilities,
+    _compute_say_do_ratio,
 )
 from agents.scrum_team.tools.budget import create_sprint_report
 from agents.scrum_team.state import ScrumState
@@ -615,6 +616,79 @@ class TestQualityTools(unittest.TestCase):
             check_build(tool_context=tool_context)
 
         self.assertEqual(tool_context.state["last_check_build"]["manifest_write_count_at_check"], 3)
+
+
+class TestComputeSayDoRatio(unittest.TestCase):
+    """
+    Acceptance Criteria (GH eval run39): say_do_ratio must reflect this
+    sprint's actual committed-vs-accepted outcome, not a fixed 0.8 - a real
+    eval run showed that exact constant in the report's KPI table next to
+    0 stories accepted across every one of its 5 sprints.
+    """
+
+    def test_none_with_no_state(self):
+        result = _compute_say_do_ratio(tool_context=None)
+        self.assertIsNone(result["say_do_ratio"])
+
+    def test_none_with_empty_sprint_backlog(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = _compute_say_do_ratio(tool_context=tool_context)
+        self.assertIsNone(result["say_do_ratio"])
+        self.assertIn("no stories committed", result["note"])
+
+    def test_zero_when_nothing_committed_was_accepted(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+        tool_context.state["sprint_backlog"] = [
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+        result = _compute_say_do_ratio(tool_context=tool_context)
+        self.assertEqual(result["say_do_ratio"], 0.0)
+
+    def test_partial_ratio_when_some_stories_accepted(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            {"id": "US-0002", "title": "B", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+        tool_context.state["sprint_backlog"] = [
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            {"id": "US-0002", "title": "B", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+        result = _compute_say_do_ratio(tool_context=tool_context)
+        self.assertEqual(result["say_do_ratio"], 0.5)
+
+    def test_epics_excluded_from_the_committed_count(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "EP-0001", "title": "An epic", "type": "Epic", "stages_completed": []},
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+        ]
+        tool_context.state["sprint_backlog"] = [
+            {"id": "EP-0001", "title": "An epic", "type": "Epic", "stages_completed": []},
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+        ]
+        result = _compute_say_do_ratio(tool_context=tool_context)
+        self.assertEqual(result["say_do_ratio"], 1.0)
+
+    def test_calculate_kpis_reports_defect_escape_rate_as_unavailable_not_fabricated(self):
+        """The other half of GH eval run39's KPI fix: no fake number in its
+        place, an honest 'not available' matching how maintainability/
+        security already handle a metric this system can't compute yet."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        with patch("agents.scrum_team.tools.quality._run", return_value=_TOOL_NOT_INSTALLED), \
+             patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={}), \
+             patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="unknown"):
+            kpis = calculate_kpis(tool_context=tool_context)
+        self.assertIsNone(kpis["result_quality"]["defect_escape_rate"])
+        self.assertIn("not available", kpis["result_quality"]["defect_escape_rate_note"])
 
 
 class TestPromptContextUsage(unittest.TestCase):

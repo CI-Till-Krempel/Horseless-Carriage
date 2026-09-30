@@ -431,6 +431,39 @@ def check_build(tool_context=None) -> Dict[str, Any]:
     }
 
 
+def _compute_say_do_ratio(tool_context=None) -> Dict[str, Any]:
+    """
+    Say-Do Ratio: how much of what this sprint committed to
+    (ScrumState.sprint_backlog, Epics excluded - not a committed delivery
+    unit themselves, same exclusion already used for the analysis harness's
+    own accepted/stories_implemented series in run_eval_analysis.py) was
+    actually delivered (reached Accepted) - a real ratio derived from
+    session state, not a fixed placeholder.
+
+    Previously hardcoded to 0.8 regardless of actual sprint outcome - a
+    real eval run (0.1.0-run39) showed this exact fixed value in the
+    report's KPI table next to 0 real stories accepted across every one of
+    its 5 sprints, reading as "things are fine" when they weren't.
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return {"say_do_ratio": None, "note": "no session state available"}
+    s = tool_context.state
+    sprint_backlog = s.get("sprint_backlog", []) or []
+    product_backlog = s.get("product_backlog", []) or []
+    committed = [item for item in sprint_backlog if item.get("type") != "Epic"]
+    if not committed:
+        return {"say_do_ratio": None, "note": "no stories committed to this sprint yet"}
+
+    from .requirements import _story_stages_completed
+    delivered = sum(
+        1 for item in committed
+        if "Accepted" in _story_stages_completed(
+            next((p for p in product_backlog if p.get("id") == item.get("id")), {}), item
+        )
+    )
+    return {"say_do_ratio": round(delivered / len(committed), 2), "note": None}
+
+
 def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     """
     Calculates and returns a dictionary of quality KPIs.
@@ -438,11 +471,20 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     test_coverage/tests_run/tests_failed are derived from actually executing
     the target repo's test suite (US-0005). code_complexity is derived from
     a real static analysis tool (US-0006). vulnerability_scan_results is
-    derived from a real security scan (US-0007).
+    derived from a real security scan (US-0007). say_do_ratio is derived
+    from the sprint's own committed-vs-accepted backlog (GH eval run39).
+
+    commitment_reliability/customer_satisfaction/defect_escape_rate remain
+    placeholders - no principled way to compute them exists in this system
+    yet (no separate estimate-accuracy tracking, human satisfaction survey,
+    or defect/bug-lifecycle data). defect_escape_rate is reported
+    unavailable rather than replaced with a different but equally fabricated
+    number - see its own note below.
     """
     coverage_result = _execute_test_suite_coverage(tool_context)
     complexity_result = _compute_code_complexity(tool_context)
     security_result = _scan_security_vulnerabilities(tool_context)
+    say_do_result = _compute_say_do_ratio(tool_context)
 
     maintainability = {
         "code_complexity": complexity_result["code_complexity"],
@@ -464,13 +506,24 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     if security_result["note"]:
         security["vulnerability_scan_note"] = security_result["note"]
 
+    team_effectiveness = {
+        "say_do_ratio": say_do_result["say_do_ratio"],
+        "commitment_reliability": 1.0,
+    }
+    if say_do_result["note"]:
+        team_effectiveness["say_do_ratio_note"] = say_do_result["note"]
+
     return {
-        "team_effectiveness": {
-            "say_do_ratio": 0.8,
-            "commitment_reliability": 1.0,
-        },
+        "team_effectiveness": team_effectiveness,
         "result_quality": {
-            "defect_escape_rate": 0.05,
+            # GH eval run39: no defect/bug-lifecycle tracking exists in this
+            # system to compute a real escape rate from - reported
+            # unavailable rather than swapped for a different, equally
+            # fabricated constant (the same "never fabricate, report
+            # unavailable" rule already applied to maintainability/security
+            # below).
+            "defect_escape_rate": None,
+            "defect_escape_rate_note": "not available - no defect/bug-lifecycle tracking exists yet",
             "customer_satisfaction": 4.5,
         },
         "maintainability": maintainability,
