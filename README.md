@@ -118,6 +118,17 @@ installation — before handing off to the same guided `setup_all.py` flow above
 added the submodule yourself (`git submodule add <this-repo-url> horseless-carriage`), just run
 `python3 new_project.py` from inside it — same effect, no `--target-repo` needed.
 
+Every project `new_project.py` installs gets registered on this machine (`~/.horseless-carriage/
+projects.json`) — see them all, along with each one's state (working / waiting for confirmation /
+resting), interaction level, sprint goal, and budget, in one place:
+
+```bash
+python3 dashboard.py       # http://127.0.0.1:8899 by default
+```
+
+Start/stop each project's own docker stack right from the dashboard — nothing runs continuously in
+the background beyond the dashboard's own lightweight polling (GH issue #310).
+
 ## Documentation
 
 | Topic | What's there |

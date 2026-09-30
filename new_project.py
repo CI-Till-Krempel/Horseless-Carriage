@@ -50,6 +50,11 @@ re-run is always safe), and none of it applies at all if this checkout
 isn't nested inside another repo - running this script against a
 traditional standalone checkout is a harmless no-op that just hands off to
 setup_all.py's normal guided flow.
+
+GH issue #310: a nested (installed-into-a-project) run also registers the
+project in project_registry.py's shared list (~/.horseless-carriage/
+projects.json), so `python3 dashboard.py` can show every project installed
+on this machine, not just the one you happen to be looking at right now.
 """
 import argparse
 import os
@@ -59,6 +64,7 @@ import subprocess
 from pathlib import Path
 
 import lib_env
+import project_registry
 import setup_all
 import setup_llm
 
@@ -178,6 +184,29 @@ def _configure_for_target_project(repo_root: Path, target_repo: Path) -> None:
              f"{var} set to {free_port} instead.")
 
 
+def _install_if_nested(repo_root: Path) -> None:
+    """If repo_root is nested one level under another repo (installed as
+    that project's submodule - whether by this script or by hand), applies
+    the per-project .env defaults and registers it in project_registry.py
+    so dashboard.py (GH issue #310) can list it. A no-op for a traditional
+    standalone checkout."""
+    parent = repo_root.parent
+    if not (parent / ".git").exists():
+        info(f"{repo_root} is a standalone checkout (not nested inside another repo) - "
+             "proceeding with setup_all.py's normal defaults.")
+        return
+
+    info(f"Detected {repo_root} is installed inside {parent} - configuring per-project defaults for it.")
+    _configure_for_target_project(repo_root, parent)
+    # GH issue #310: dashboard.py reads this registry to list every
+    # installed project - registering here (not a separate manual step) is
+    # what connects the two issues, per #310's own decision comment ("#288
+    # owning add a project, this issue owning list/observe registered
+    # projects").
+    project_registry.register(parent.name, repo_root, parent)
+    info(f"Registered '{parent.name}' - see it with: python3 dashboard.py")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -195,13 +224,7 @@ def main() -> None:
     else:
         repo_root = this_checkout
 
-    parent = repo_root.parent
-    if (parent / ".git").exists():
-        info(f"Detected {repo_root} is installed inside {parent} - configuring per-project defaults for it.")
-        _configure_for_target_project(repo_root, parent)
-    else:
-        info(f"{repo_root} is a standalone checkout (not nested inside another repo) - "
-             "proceeding with setup_all.py's normal defaults.")
+    _install_if_nested(repo_root)
 
     print()
     os.chdir(repo_root)
