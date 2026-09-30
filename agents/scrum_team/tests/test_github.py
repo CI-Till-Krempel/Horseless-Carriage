@@ -302,12 +302,13 @@ class TestGitHubTools(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
     @patch("agents.scrum_team.tools.github._run")
-    def test_non_protected_branch_skips_the_resync_entirely(self, mock_run, mock_preserve):
-        """A plain feature-branch push (allow_protected=False, the normal
-        agent-facing git_push path) never needs this - feature branches are
-        exclusive to one story/agent, so there's no origin-drift race to
-        guard against, and no reason to spend an extra fetch on every call."""
+    def test_non_protected_branch_with_no_remote_copy_skips_the_resync(self, mock_run, mock_preserve):
+        """A brand-new feature branch (never pushed before) has nothing on
+        origin to sync against yet - falls through to the plain checkout,
+        same as before this branch ever needed a resync at all."""
         mock_run.side_effect = [
+            {"status": "ok"},  # fetch origin <branch>
+            {"status": "error", "returncode": 1},  # rev-parse --verify origin/<branch> - doesn't exist
             {"status": "ok"},  # checkout -B (no origin arg)
             {"status": "ok"},  # add -A
             {"status": "ok", "returncode": 1},  # staged check
@@ -322,6 +323,65 @@ class TestGitHubTools(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         mock_preserve.assert_not_called()
         mock_run.assert_any_call(["git", "checkout", "-B", "feature/US-0001-add-login"], cwd=unittest.mock.ANY, tool_context=tool_context)
+
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_non_protected_branch_resyncs_with_origin_when_a_remote_copy_exists(self, mock_run, mock_preserve):
+        """
+        Acceptance Criteria (GH eval run39): a feature branch has the exact
+        same origin-divergence risk #317 fixed for protected branches - a
+        real eval run saw one diverge by 26 commits because this path never
+        synced against origin's own copy at all before committing on top of
+        whatever the local working copy happened to have. When local hasn't
+        diverged from origin (nothing to preserve), this must reset to
+        origin/<branch> before committing, same as the protected-branch path.
+        """
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch origin <branch>
+            {"status": "ok", "returncode": 0},  # rev-parse --verify origin/<branch> - exists
+            {"status": "ok"},  # reset checkout -B <branch> origin/<branch>
+            {"status": "ok"},  # add -A
+            {"status": "ok", "returncode": 1},  # staged check
+            {"status": "ok", "returncode": 0},  # commit
+            {"status": "ok", "returncode": 0},  # push
+        ]
+        mock_preserve.return_value = None
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = _git_push_impl(branch="feature/US-0001-add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_run.assert_any_call(
+            ["git", "checkout", "-B", "feature/US-0001-add-login", "origin/feature/US-0001-add-login"],
+            cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_non_protected_branch_uses_plain_checkout_once_confirmed_in_sync(self, mock_run, mock_preserve):
+        """Mirrors the protected-branch path's own equivalent test - once
+        local's own unique commits have already been pushed (or merged-
+        then-pushed) to match origin, the reset is redundant."""
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch origin <branch>
+            {"status": "ok", "returncode": 0},  # rev-parse --verify origin/<branch> - exists
+            {"status": "ok"},  # plain checkout <branch>
+            {"status": "ok"},  # add -A
+            {"status": "ok", "returncode": 1},  # staged check
+            {"status": "ok", "returncode": 0},  # commit
+            {"status": "ok", "returncode": 0},  # push
+        ]
+        mock_preserve.return_value = {"status": "ok", "in_sync": True, "action": "pushed_local_ahead"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = _git_push_impl(branch="feature/US-0001-add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_run.assert_any_call(
+            ["git", "checkout", "feature/US-0001-add-login"], cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
 
     def test_git_push_tool_has_no_allow_protected_parameter(self):
         """
@@ -406,7 +466,7 @@ class TestGitHubTools(unittest.TestCase):
         result = git_push(branch="feature-branch", tool_context=tool_context)
 
         self.assertEqual(result["status"], "error")
-        mock_run.assert_called_once_with(
+        mock_run.assert_any_call(
             ["git", "checkout", "-B", "feature-branch"],
             cwd=unittest.mock.ANY,
             tool_context=tool_context,
@@ -423,6 +483,10 @@ class TestGitHubTools(unittest.TestCase):
         the intended commit never actually happened anywhere.
         """
         def fake_run(cmd, **kwargs):
+            if cmd[:2] == ["git", "fetch"]:
+                return {"status": "ok", "returncode": 0}
+            if cmd[:3] == ["git", "rev-parse", "--verify"]:
+                return {"status": "error", "returncode": 1}  # no remote copy of this branch yet
             if cmd[:2] == ["git", "checkout"]:
                 return {"status": "ok", "returncode": 0}
             if cmd[:2] == ["git", "add"]:

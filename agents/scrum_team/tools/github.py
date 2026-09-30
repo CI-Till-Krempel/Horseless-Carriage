@@ -505,7 +505,30 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
         else:
             checkout = _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_root, tool_context=tool_context)
     else:
-        checkout = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+        # GH eval run39: a feature branch has the exact same origin-
+        # divergence risk #317 fixed for protected branches - it can pick
+        # up local commits across sprint/session boundaries (a fresh
+        # working-copy state that's lost track of what was already pushed
+        # for this same branch earlier) that a plain `checkout -B branch`
+        # (no origin sync at all) never reconciles against origin's own
+        # copy. A real eval run saw one feature branch diverge by 26
+        # commits this way, and every subsequent push kept getting
+        # rejected non-fast-forward. Only applies when origin actually has
+        # a copy of this branch already - a brand-new feature branch has
+        # nothing to sync against yet, so falls through to the plain
+        # checkout unchanged.
+        _run(["git", "fetch", "origin", branch], cwd=repo_root, tool_context=tool_context)
+        remote_exists = _run(
+            ["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"], cwd=repo_root, tool_context=tool_context
+        ).get("returncode") == 0
+        if remote_exists:
+            preserved = _preserve_local_only_develop_commits(repo_root, branch, tool_context=tool_context)
+            if preserved is not None and preserved.get("in_sync"):
+                checkout = _run(["git", "checkout", branch], cwd=repo_root, tool_context=tool_context)
+            else:
+                checkout = _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_root, tool_context=tool_context)
+        else:
+            checkout = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
     if checkout.get("status") == "error":
         return {"status": "error", "message": f"Could not check out branch '{branch}': {checkout.get('stderr') or checkout.get('message')}", "steps": {"checkout": checkout}}
 
