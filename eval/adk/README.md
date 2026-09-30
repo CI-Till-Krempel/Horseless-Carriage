@@ -862,6 +862,41 @@ attempt the call directly still gets the exact rejection this case expects,
 regardless of whether its own check_build/PR-comment prerequisite happens
 to be satisfied.
 
+**17. `advance_story_stage_rejects_skipped_stages` failed a 2026-09-30 CI run
+a second time, in a new way finding #16's fixture fix doesn't cover.** QA
+correctly called `advance_story_stage(US-0005, "Tested")` and was correctly
+rejected ("hasn't completed ['Implemented', 'Reviewed'] yet") - this
+case's own scripted turn worked exactly as intended. But the conversation
+didn't stop there: ScrumOrchestrator kept going past its single scripted
+invocation, cycling `init_scrum_state()` -> `list_docs()` ->
+`transfer_to_agent` with ProductOwner five times, each round insisting
+"specs/ remains empty and US-0005 does not exist" - even though the story
+*is* right there in `session_input.state.product_backlog`/`sprint_backlog`,
+which the rejection message itself already reflects. `list_docs()` lists
+markdown files under `specs/` on disk, which this fixture (like every
+fixture in this file) only ever seeds via ADK's session `state` dict, never
+by also writing matching files to disk - so the model was trusting a
+disk-listing tool over state a tool rejection had already confirmed was
+real, and kept re-checking instead of treating the rejection as the
+conversation's actual answer. This eventually hit ADK's own per-invocation
+cap (`google.adk.agents.invocation_context.LlmCallsLimitExceededError: Max
+number of llm calls limit of `20` exceeded`), so the case never even
+reached a scored trajectory - it errored out instead.
+
+Unlike #15/#16, this isn't a fixture gap (the story data was already
+correct and complete) - it's the model not treating a mechanical rejection
+as terminal. Fixed with a new `ScrumOrchestrator-guardrails.md` bullet:
+"A tool's rejection is itself the final, reportable outcome - not a cue to
+keep investigating... do not re-verify the same fact via `list_docs` or
+another read-only tool, and do not keep transferring between agents hoping
+a different check will disagree." Scoped to `ScrumOrchestrator` only (the
+role that actually looped here) rather than every role's guardrails, to
+keep the change matched to the observed failure. Not yet re-verified
+against a live re-run at the time this was written - if it recurs, it
+should be added to `run_adk_eval.py`'s `KNOWN_FLAKY_EVAL_IDS` alongside
+the other two live-model-non-determinism cases instead of chasing further
+prompt tweaks.
+
 ## These `EvalCase`s were hand-authored, not captured from a live run
 
 No live LLM/Docker was available to record a real trace in this
