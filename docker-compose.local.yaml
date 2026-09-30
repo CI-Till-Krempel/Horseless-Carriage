@@ -63,7 +63,9 @@ services:
     # "Performance Tuning" section.
 
   litellm:
-    image: docker.litellm.ai/berriai/litellm:main-stable
+    # GH issue #298: pinned to a digest instead of the floating main-stable
+    # tag - see docker-compose.yaml's identical entry for the re-pin command.
+    image: docker.litellm.ai/berriai/litellm:main-stable@sha256:df15400b5b80925c45d3fd53f8f7a6c0eaa8a25a86833e1b358002e129018943
     ports:
       # GH issue #239: bound to localhost by default - see docker-compose.yaml's
       # identical entry. Set LITELLM_BIND_HOST=0.0.0.0 in .env to expose it on

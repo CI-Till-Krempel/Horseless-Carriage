@@ -124,3 +124,65 @@ class TestLlmTestAlias:
         ok, detail = lib_llm_test.llm_test_alias("http://127.0.0.1:1", "any-key", "scrum-po", timeout_secs=2)
         assert ok is False
         assert "could not reach" in detail
+
+
+class TestLlmCheckModelPricing:
+    def test_flags_alias_resolving_to_zero_cost(self, mock_proxy):
+        base_url, behavior = mock_proxy
+        behavior["model_info"] = [
+            {
+                "model_name": "scrum-po",
+                "litellm_params": {"model": "gemini/gemini-1.5-pro"},
+                "model_info": {"input_cost_per_token": 0, "output_cost_per_token": 0},
+            }
+        ]
+        warnings = lib_llm_test.llm_check_model_pricing(base_url, behavior["valid_key"], timeout_secs=5)
+        assert len(warnings) == 1
+        assert "scrum-po" in warnings[0]
+        assert "gemini/gemini-1.5-pro" in warnings[0]
+
+    def test_flags_alias_with_missing_cost_fields(self, mock_proxy):
+        """model_info entirely absent must be treated the same as an
+        explicit 0 - both mean "no price on file"."""
+        base_url, behavior = mock_proxy
+        behavior["model_info"] = [
+            {"model_name": "scrum-dev", "litellm_params": {"model": "openai/gpt-5-hypothetical"}, "model_info": {}}
+        ]
+        warnings = lib_llm_test.llm_check_model_pricing(base_url, behavior["valid_key"], timeout_secs=5)
+        assert len(warnings) == 1
+        assert "scrum-dev" in warnings[0]
+
+    def test_does_not_flag_a_correctly_priced_alias(self, mock_proxy):
+        base_url, behavior = mock_proxy
+        behavior["model_info"] = [
+            {
+                "model_name": "scrum-eval-cheap",
+                "litellm_params": {"model": "openai/gpt-3.5-turbo"},
+                "model_info": {"input_cost_per_token": 0.0000005, "output_cost_per_token": 0.0000015},
+            }
+        ]
+        warnings = lib_llm_test.llm_check_model_pricing(base_url, behavior["valid_key"], timeout_secs=5)
+        assert warnings == []
+
+    def test_does_not_flag_ollama_aliases(self, mock_proxy):
+        """A self-hosted local model genuinely has no per-token price -
+        that's correct, not a misconfiguration to warn about."""
+        base_url, behavior = mock_proxy
+        behavior["model_info"] = [
+            {
+                "model_name": "scrum-po",
+                "litellm_params": {"model": "ollama/llama3.1:8b"},
+                "model_info": {"input_cost_per_token": 0, "output_cost_per_token": 0},
+            }
+        ]
+        warnings = lib_llm_test.llm_check_model_pricing(base_url, behavior["valid_key"], timeout_secs=5)
+        assert warnings == []
+
+    def test_unreachable_returns_empty_list_without_raising(self):
+        warnings = lib_llm_test.llm_check_model_pricing("http://127.0.0.1:1", "any-key", timeout_secs=2)
+        assert warnings == []
+
+    def test_auth_failure_returns_empty_list_without_raising(self, mock_proxy):
+        base_url, _ = mock_proxy
+        warnings = lib_llm_test.llm_check_model_pricing(base_url, "wrong-key", timeout_secs=5)
+        assert warnings == []

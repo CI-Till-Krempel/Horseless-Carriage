@@ -13,7 +13,13 @@ services:
     restart: unless-stopped
 
   litellm:
-    image: docker.litellm.ai/berriai/litellm:main-stable
+    # GH issue #298: pinned to a digest instead of the floating main-stable
+    # tag, so upgrading LiteLLM (and picking up its bundled pricing-table
+    # updates) is a deliberate, visible bump here rather than whatever
+    # image happened to be latest on a given pull. Re-pin periodically via
+    # `docker pull docker.litellm.ai/berriai/litellm:main-stable && docker
+    # inspect ... --format '{{json .RepoDigests}}'`.
+    image: docker.litellm.ai/berriai/litellm:main-stable@sha256:df15400b5b80925c45d3fd53f8f7a6c0eaa8a25a86833e1b358002e129018943
     ports:
       # GH issue #239: bound to localhost by default - the proxy/UI has no
       # auth in front of it beyond LITELLM_MASTER_KEY (which may not gate

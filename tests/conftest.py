@@ -24,7 +24,7 @@ class _MockLiteLLMHandler(BaseHTTPRequestHandler):
     """A minimal stand-in for the LiteLLM proxy's /health/liveliness and
     /chat/completions endpoints, configurable per-test via `behavior`."""
 
-    behavior = {"valid_key": "good-key", "missing_model": None}
+    behavior = {"valid_key": "good-key", "missing_model": None, "model_info": []}
 
     def log_message(self, *args):  # silence request logging during tests
         pass
@@ -33,6 +33,12 @@ class _MockLiteLLMHandler(BaseHTTPRequestHandler):
         if self.path.startswith("/health/liveliness"):
             self.send_response(200)
             self.end_headers()
+        elif self.path.startswith("/model/info"):
+            auth = self.headers.get("Authorization", "")
+            if auth != f"Bearer {self.behavior['valid_key']}":
+                self._json(401, {"error": {"message": "Invalid API key"}})
+                return
+            self._json(200, {"data": self.behavior.get("model_info", [])})
         else:
             self.send_response(404)
             self.end_headers()
@@ -61,7 +67,7 @@ class _MockLiteLLMHandler(BaseHTTPRequestHandler):
 def mock_proxy():
     """Yields (base_url, behavior_dict). Mutate behavior_dict in a test to
     control auth/model-not-found responses before making requests."""
-    _MockLiteLLMHandler.behavior = {"valid_key": "good-key", "missing_model": None}
+    _MockLiteLLMHandler.behavior = {"valid_key": "good-key", "missing_model": None, "model_info": []}
     server = HTTPServer(("127.0.0.1", 0), _MockLiteLLMHandler)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
