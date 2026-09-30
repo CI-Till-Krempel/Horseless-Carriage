@@ -14,6 +14,9 @@ from agents.scrum_team.scripts.run_eval_analysis import (
     _kpi_time_series,
     _render_kpi_graphs,
     _render_report,
+    _collect_blockers,
+    _render_blockers_section,
+    _render_stopped_early_callout,
 )
 
 _BASE_MANIFEST = {
@@ -170,3 +173,134 @@ def test_render_report_includes_kpi_trends_section():
     report = _render_report(manifest, _JUDGMENT)
 
     assert "## KPI Trends" in report
+
+
+def _sprint_with_backlog(number, product_backlog=None, sprint_backlog=None):
+    return {
+        "sprint_number": number,
+        "product_backlog": product_backlog or [],
+        "sprint_backlog": sprint_backlog or [],
+        "sprint_report_kpis": None,
+    }
+
+
+class TestCollectBlockers:
+    def test_empty_with_no_sprints(self):
+        assert _collect_blockers({"sprints": []}) == []
+
+    def test_finds_blocked_stories_in_the_last_sprint(self):
+        manifest = {
+            "sprints": [
+                _sprint_with_backlog(1, product_backlog=[{"id": "US-0001"}]),
+                _sprint_with_backlog(2, product_backlog=[
+                    {"id": "US-0001", "title": "Add login", "blocked": {"category": "technical", "question": "why?", "raised_by": "Architect"}},
+                    {"id": "US-0002"},
+                ]),
+            ]
+        }
+        blockers = _collect_blockers(manifest)
+        assert len(blockers) == 1
+        story_id, title, blocked = blockers[0]
+        assert story_id == "US-0001"
+        assert blocked["category"] == "technical"
+
+    def test_only_looks_at_the_last_sprint_not_earlier_ones(self):
+        """product_backlog is the full, cumulative backlog each sprint - an
+        earlier sprint's now-resolved blocker must not still show up just
+        because it was blocked at some point in the past."""
+        manifest = {
+            "sprints": [
+                _sprint_with_backlog(1, product_backlog=[
+                    {"id": "US-0001", "blocked": {"category": "technical", "question": "why?"}},
+                ]),
+                _sprint_with_backlog(2, product_backlog=[
+                    {"id": "US-0001", "blocked": None},  # resolved since sprint 1
+                ]),
+            ]
+        }
+        assert _collect_blockers(manifest) == []
+
+
+class TestRenderBlockersSection:
+    def test_no_blockers_message_when_nothing_is_blocked(self):
+        manifest = {"sprints": [_sprint_with_backlog(1)]}
+        rendered = "\n".join(_render_blockers_section(manifest))
+        assert "## Blockers" in rendered
+        assert "No stories are blocked" in rendered
+
+    def test_lists_each_blocked_story(self):
+        manifest = {
+            "sprints": [
+                _sprint_with_backlog(1, product_backlog=[
+                    {"id": "US-0001", "title": "Add login", "blocked": {"category": "product", "question": "which color?", "raised_by": "ProductOwner"}},
+                ]),
+            ]
+        }
+        rendered = "\n".join(_render_blockers_section(manifest))
+        assert "US-0001" in rendered
+        assert "which color?" in rendered
+        assert "ProductOwner" in rendered
+
+
+class TestRenderStoppedEarlyCallout:
+    def test_empty_when_the_run_completed_normally(self):
+        assert _render_stopped_early_callout({"stopped_early": False}) == []
+
+    def test_surfaces_the_stop_reason_prominently(self):
+        manifest = {"stopped_early": True, "stop_reason": "budget_critical_halt", "sprints_requested": 5, "sprints": [1]}
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "⚠️ Evaluation Stopped Early" in rendered
+        assert "budget_critical_halt" in rendered
+        assert "1" in rendered and "5" in rendered
+
+    def test_surfaces_the_blocked_story_when_present(self):
+        manifest = {
+            "stopped_early": True,
+            "stop_reason": "blocked_needs_human",
+            "sprints_requested": 5,
+            "sprints": [1],
+            "blocked_story": {"id": "US-0003", "blocked": {"category": "product", "question": "which color?", "raised_by": "ProductOwner"}},
+        }
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "US-0003" in rendered
+        assert "which color?" in rendered
+
+    def test_surfaces_crash_details_when_present(self):
+        manifest = {
+            "stopped_early": True,
+            "stop_reason": "crashed",
+            "sprints_requested": 5,
+            "sprints": [1],
+            "crash_sprint": 2,
+            "crash_error": "RateLimitError: rate limited",
+        }
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "2" in rendered
+        assert "RateLimitError" in rendered
+
+
+def test_render_report_includes_stopped_early_callout_and_blockers_section():
+    manifest = {
+        "run_id": "test-run",
+        "branch": "eval/test-run/main",
+        "model": "scrum-eval-cheap",
+        "sprints_requested": 5,
+        "stopped_early": True,
+        "stop_reason": "budget_critical_halt",
+        "sprints": [_sprint_with_backlog(1, product_backlog=[
+            {"id": "US-0001", "title": "Add login", "blocked": {"category": "technical", "question": "why?", "raised_by": "Architect"}},
+        ])],
+        "pr_merges": [],
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "finished_at": "2026-01-01T01:00:00+00:00",
+    }
+
+    report = _render_report(manifest, _JUDGMENT)
+
+    assert "## ⚠️ Evaluation Stopped Early" in report
+    assert "## Blockers" in report
+    assert "US-0001" in report
+    # The callout/blockers must appear before the methodology note - the
+    # single most important fact about a cancelled run belongs at the top,
+    # not buried after everything else.
+    assert report.index("Evaluation Stopped Early") < report.index("Methodology note")

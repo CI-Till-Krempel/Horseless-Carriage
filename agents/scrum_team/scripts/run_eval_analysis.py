@@ -324,6 +324,100 @@ def _call_judge(prompt: str, model: str) -> dict:
         return {"error": f"Judge response was not valid JSON: {e}", "raw_response": raw_text}
 
 
+_STOP_REASON_EXPLANATIONS = {
+    "max_duration_exceeded": "the run's own wall-clock safety net (--max-duration-minutes) was reached",
+    "budget_critical_halt": "a sprint hit a critical token/USD budget halt with no clean close-out afterward",
+    "crashed": "the run crashed with an unhandled exception",
+    "blocked_needs_human": "a BLOCKED story's category escalates straight to a human this scripted driver has no way to provide",
+    "blocked_unresolved_across_sprint": "a BLOCKED story was still unresolved after a full sprint's own budget to fix it",
+}
+
+
+def _render_stopped_early_callout(manifest: dict) -> list:
+    """
+    GH issue #336 (stop-on-blocker) exists precisely so a cancelled run
+    stops for a REASON, not just silently - but a real user still had to
+    dig through raw GitHub Actions logs to find out why a run only
+    completed 1 of 5 requested sprints (stop_reason was buried in
+    manifest.json, never surfaced in the human-facing report at all).
+    Rendered as the very first thing after the run header, before anything
+    else - this is the single most important fact about a cancelled run.
+    """
+    if not manifest.get("stopped_early"):
+        return []
+    stop_reason = manifest.get("stop_reason", "unknown")
+    explanation = _STOP_REASON_EXPLANATIONS.get(stop_reason, "see stop_reason below for the raw code")
+    lines = [
+        "## ⚠️ Evaluation Stopped Early",
+        "",
+        f"Only {len(manifest.get('sprints', []))} of {manifest.get('sprints_requested')} requested sprints "
+        f"completed - **{explanation}**.",
+        "",
+        f"- Stop reason: `{stop_reason}`",
+    ]
+    if manifest.get("crash_sprint") is not None:
+        lines.append(f"- Crashed during sprint: {manifest['crash_sprint']}")
+    if manifest.get("crash_error"):
+        lines.append(f"- Crash error: `{manifest['crash_error']}`")
+    blocked_story = manifest.get("blocked_story")
+    if blocked_story:
+        blocked = blocked_story.get("blocked", {}) or {}
+        lines.append(
+            f"- Blocked story: **{blocked_story.get('id')}** - {blocked.get('category', 'unknown')}: "
+            f"{blocked.get('question', '(no question recorded)')} "
+            f"(raised by {blocked.get('raised_by', 'unknown')})"
+        )
+    lines.append("")
+    return lines
+
+
+def _collect_blockers(manifest: dict) -> list:
+    """
+    Every story BLOCKED (raise_story_blocker, agents/scrum_team/tools/
+    requirements.py) as of the LAST completed sprint's final state -
+    product_backlog is the full, cumulative backlog each sprint, so the
+    most recent one is the authoritative "still blocked as of run end"
+    view (the same semantics create_sprint_report's own "Open Questions
+    for Stakeholder (Blockers)" section already uses for a single sprint -
+    this is that same view, for whichever sprint the run actually ended on).
+    Returns a list of (story_id, title, blocked_dict) tuples.
+    """
+    sprints = manifest.get("sprints", [])
+    if not sprints:
+        return []
+    last_sprint = sprints[-1]
+    blockers = []
+    seen_ids = set()
+    for collection_name in ("product_backlog", "sprint_backlog"):
+        for item in last_sprint.get(collection_name) or []:
+            blocked = item.get("blocked")
+            if not blocked:
+                continue
+            story_id = item.get("id") or item.get("title")
+            if story_id in seen_ids:
+                continue
+            seen_ids.add(story_id)
+            blockers.append((story_id, item.get("title", story_id), blocked))
+    return blockers
+
+
+def _render_blockers_section(manifest: dict) -> list:
+    blockers = _collect_blockers(manifest)
+    lines = ["## Blockers", ""]
+    if not blockers:
+        lines.append("No stories are blocked as of the last completed sprint.")
+        lines.append("")
+        return lines
+    for story_id, title, blocked in blockers:
+        lines.append(
+            f"- **{story_id}** ({title}) - {blocked.get('category', 'unknown')}: "
+            f"{blocked.get('question', '(no question recorded)')} "
+            f"(raised by {blocked.get('raised_by', 'unknown')})"
+        )
+    lines.append("")
+    return lines
+
+
 def _render_report(manifest: dict, judgment: dict) -> str:
     lines = [
         "# Team Performance Evaluation Report",
@@ -336,6 +430,10 @@ def _render_report(manifest: dict, judgment: dict) -> str:
         f"- Started: {manifest.get('started_at')}",
         f"- Finished: {manifest.get('finished_at')}",
         "",
+    ]
+    lines += _render_stopped_early_callout(manifest)
+    lines += _render_blockers_section(manifest)
+    lines += [
         "## Methodology note",
         "This run used a scripted, unattended driver (`run_eval.py`) that pre-approves "
         "every sprint goal/backlog and auto-merges any PR that opens against the eval "

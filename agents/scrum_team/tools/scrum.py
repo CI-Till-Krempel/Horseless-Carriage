@@ -744,6 +744,21 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
     # harness-only concept, invisible to the agents' own state/tools).
     s["sprint_number"] = s.get("sprint_number", 0) + 1
     _ = save_state_to_repo(tool_context)
+    # GH issue (eval run41): a dangling uncommitted specs/.hc write left
+    # over from the previous sprint's close-out (or this call's own
+    # save_state_to_repo above) used to just sit in the working tree until
+    # whichever checkout happened to run first tripped over it ("local
+    # changes would be overwritten") - see _checkout_with_auto_integrate's
+    # own docstring for the reactive fix. Sweeping here too means the new
+    # sprint actually starts from a clean working copy, not just recovers
+    # from a dirty one on the first branch switch. Best-effort: this must
+    # never block a sprint from starting over a git hiccup unrelated to the
+    # sprint-start gates above.
+    from .github import integrate_open_changes
+    try:
+        integrate_open_changes(tool_context)
+    except Exception:
+        pass
     return {"status": "ok", "sprint_goal": s["sprint_goal"], "sprint_number": s["sprint_number"]}
 
 

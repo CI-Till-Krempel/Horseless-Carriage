@@ -21,6 +21,7 @@ from agents.scrum_team.tools.github import (
     merge_story_pr,
     integrate_open_changes,
     _checkout_develop_or_recover,
+    _checkout_with_auto_integrate,
     _preserve_local_only_develop_commits,
     release_pr_still_open,
 )
@@ -900,6 +901,40 @@ class TestStartFeatureBranch(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("develop", result["message"])
 
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits", return_value=None)
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_start_feature_branch_self_heals_dangling_changes_on_its_own_checkout(
+        self, mock_run, mock_integrate, mock_preserve, mock_git_push, mock_gh_pr_create
+    ):
+        """
+        Acceptance Criteria (GH eval run41): a real eval run hit "local
+        changes would be overwritten" specifically on start_feature_branch's
+        OWN feature-branch checkout (a previous story's advance_story_stage
+        roadmap update was still sitting uncommitted) - unlike the develop
+        checkout right next to it, this one had no self-heal at all and
+        DevTeam had to notice the failure and call integrate_open_changes
+        itself before retrying by hand.
+        """
+        mock_run.side_effect = [
+            {"status": "ok"},  # _checkout_develop_or_recover: fetch develop
+            {"status": "ok"},  # _checkout_develop_or_recover: checkout develop
+            {"status": "error", "stderr": "error: Your local changes to the following files would be overwritten by checkout"},
+            {"status": "ok"},  # retried feature-branch checkout
+        ]
+        mock_integrate.return_value = {"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]}
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-4-resume-work"}
+        tool_context = MagicMock()
+        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1}
+
+        result = start_feature_branch("US-4", "Resume Work", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_integrate.assert_called_once()
+        self.assertEqual(mock_run.call_count, 4)
+
 
 class TestReleasePrStillOpen(unittest.TestCase):
     """
@@ -997,6 +1032,73 @@ class TestIntegrateOpenChanges(unittest.TestCase):
             integrate_open_changes(tool_context=MagicMock())
             status_call = mock_run.call_args_list[0]
             self.assertNotIn(".hc", status_call.args[0])
+
+
+class TestCheckoutWithAutoIntegrate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH eval run41): the shared self-heal-on-"would be
+    overwritten" helper every checkout call site in this module uses -
+    _checkout_develop_or_recover's own checkout, start_feature_branch's
+    feature-branch checkout, create_story_spec_pr/create_sprint_backlog_pr's
+    branch checkouts - factored out once so a new call site can't
+    reintroduce the gap start_feature_branch's own checkout had (a real
+    eval run hit it with no self-heal at all) by simply forgetting to copy
+    the pattern.
+    """
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_self_heals_would_be_overwritten_and_retries_the_same_command(self, mock_run, mock_integrate):
+        mock_run.side_effect = [
+            {"status": "error", "stderr": "local changes would be overwritten by checkout"},
+            {"status": "ok"},
+        ]
+        mock_integrate.return_value = {"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]}
+
+        checkout, auto_integrated = _checkout_with_auto_integrate(["git", "checkout", "-B", "feature/x"], "/repo", tool_context=MagicMock())
+
+        self.assertEqual(checkout["status"], "ok")
+        self.assertEqual(auto_integrated["integrated"], True)
+        mock_integrate.assert_called_once()
+        self.assertEqual(mock_run.call_count, 2)
+        for call in mock_run.call_args_list:
+            self.assertEqual(call.args[0], ["git", "checkout", "-B", "feature/x"])
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_does_not_retry_an_unrelated_failure(self, mock_run, mock_integrate):
+        mock_run.return_value = {"status": "error", "stderr": "fatal: couldn't find remote ref develop"}
+
+        checkout, auto_integrated = _checkout_with_auto_integrate(["git", "checkout", "-B", "develop"], "/repo", tool_context=MagicMock())
+
+        self.assertEqual(checkout["status"], "error")
+        self.assertIsNone(auto_integrated)
+        mock_integrate.assert_not_called()
+        self.assertEqual(mock_run.call_count, 1)
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gives_up_when_integration_finds_nothing_to_integrate(self, mock_run, mock_integrate):
+        mock_run.return_value = {"status": "error", "stderr": "would be overwritten by checkout"}
+        mock_integrate.return_value = {"status": "ok", "integrated": False, "message": "nothing to integrate"}
+
+        checkout, auto_integrated = _checkout_with_auto_integrate(["git", "checkout", "-B", "develop"], "/repo", tool_context=MagicMock())
+
+        self.assertEqual(checkout["status"], "error")
+        self.assertFalse(auto_integrated["integrated"])
+        self.assertEqual(mock_run.call_count, 1)
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_returns_ok_immediately_when_checkout_succeeds_first_try(self, mock_run, mock_integrate):
+        mock_run.return_value = {"status": "ok"}
+
+        checkout, auto_integrated = _checkout_with_auto_integrate(["git", "checkout", "develop"], "/repo", tool_context=MagicMock())
+
+        self.assertEqual(checkout["status"], "ok")
+        self.assertIsNone(auto_integrated)
+        mock_integrate.assert_not_called()
+        self.assertEqual(mock_run.call_count, 1)
 
 
 class TestCheckoutDevelopOrRecover(unittest.TestCase):

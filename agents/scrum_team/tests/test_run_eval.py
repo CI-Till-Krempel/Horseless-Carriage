@@ -43,6 +43,35 @@ class _OtherValueErrorRunner:
         yield  # pragma: no cover
 
 
+class _FakeEvent:
+    def __init__(self, author="TestAgent"):
+        self.author = author
+        self.content = None
+
+
+class _OneEventThenHaltRunner:
+    """Yields exactly one event then ends the turn - with max_events=1,
+    _run_one_sprint's host-side loop breaks with stop_reason
+    "max_events_reached" right after, the same way a real eval run's
+    sprint got cut off mid-close-out."""
+
+    async def run_async(self, user_id, session_id, new_message, state_delta):
+        yield _FakeEvent()
+
+
+class _StatefulSessionService:
+    """Unlike _FakeSessionService (a fresh, empty-state session every call),
+    returns the SAME session/state across calls - so a mutation made mid-
+    sprint (or by this test's own setup) is still visible on the next
+    get_session() call, matching real ADK session behavior."""
+
+    def __init__(self, state):
+        self._session = _FakeSession(state)
+
+    async def get_session(self, app_name, user_id, session_id):
+        return self._session
+
+
 class _RecordingRunner:
     """Records every state_delta it's called with, then ends the turn
     immediately (no sprint report) so _run_one_sprint keeps nudging until
@@ -222,3 +251,75 @@ class TestSprintNeedsHumanThisHarnessCannotProvide:
             "product_backlog": [_story("US-0002", {"category": "technical", "question": "why?"})]
         }
         assert _sprint_needs_human_this_harness_cannot_provide(sprint_result, {"US-0001"}) is None
+
+
+class TestHostSideSprintReportBackstop:
+    """
+    Acceptance Criteria (GH eval run41): a real run's SPRINT CLOSE SEQUENCE
+    grace made genuine progress (retro logged, KPIs computed) but got cut
+    off by this harness's own max_events cap one turn before ProductOwner's
+    create_sprint_report - agent.py's own safety net only fires once a
+    grace-eligible role's turn ALSO exceeds its own (shrunk) grace
+    allowance, which never happened here, so no report was ever produced.
+    _run_one_sprint now calls the same mechanism directly as a backstop
+    whenever the sprint ends with critical_halt_notified set but no report.
+    """
+
+    def test_calls_the_backstop_when_critical_halt_left_no_report(self):
+        state = {"critical_halt_notified": True}
+        session_service = _StatefulSessionService(state)
+
+        def _fake_ensure(tool_context):
+            tool_context.state["sprint_report"] = "# Fallback Report"
+
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=_fake_ensure) as mock_ensure:
+            result = _run(_run_one_sprint(
+                _OneEventThenHaltRunner(), session_service, "app", "user", "session-1",
+                "hello", max_events=1, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        mock_ensure.assert_called_once()
+        assert result["stop_reason"] == "max_events_reached"
+        assert result["sprint_report"] == "# Fallback Report"
+
+    def test_does_not_call_the_backstop_when_a_real_report_already_exists(self):
+        state = {"critical_halt_notified": True, "sprint_report": "# Real Report"}
+        session_service = _StatefulSessionService(state)
+
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt") as mock_ensure:
+            result = _run(_run_one_sprint(
+                _OneEventThenHaltRunner(), session_service, "app", "user", "session-1",
+                "hello", max_events=1, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        mock_ensure.assert_not_called()
+        assert result["sprint_report"] == "# Real Report"
+
+    def test_does_not_call_the_backstop_without_a_critical_halt(self):
+        """A sprint that just ran out of max_events without ever hitting a
+        budget halt has nothing for this backstop to fix - no report was
+        ever going to exist regardless of how the sequence played out."""
+        state = {}
+        session_service = _StatefulSessionService(state)
+
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt") as mock_ensure:
+            result = _run(_run_one_sprint(
+                _OneEventThenHaltRunner(), session_service, "app", "user", "session-1",
+                "hello", max_events=1, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        mock_ensure.assert_not_called()
+        assert result["sprint_report"] is None
+
+    def test_backstop_failure_is_non_fatal(self):
+        state = {"critical_halt_notified": True}
+        session_service = _StatefulSessionService(state)
+
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=RuntimeError("git hiccup")):
+            result = _run(_run_one_sprint(
+                _OneEventThenHaltRunner(), session_service, "app", "user", "session-1",
+                "hello", max_events=1, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        assert result["stop_reason"] == "max_events_reached"
+        assert result["sprint_report"] is None

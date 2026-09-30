@@ -472,6 +472,30 @@ of only being noticed anecdotally.
   already started with it blocked (the team had a full sprint's own budget to
   resolve it themselves and didn't - further sprints are the same bet with no
   new information).
+  **A sprint report always exists, even when the harness's own event/time
+  caps cut the close-out sequence off first** (0.1.0-run41): a real run's
+  SPRINT CLOSE SEQUENCE grace was making genuine progress (retro logged,
+  KPIs computed) but got cut off by `max_events_per_sprint` one turn before
+  ProductOwner's `create_sprint_report` - agent.py's own safety net
+  (`_ensure_sprint_report_on_final_halt_once`) only fires once a
+  grace-eligible role's own turn *also* exceeds its (shrunk) grace
+  allowance, which never happened here; the sprint just ran out of
+  *host-side* turns first. `_run_one_sprint` now calls the exact same
+  mechanism directly as a backstop whenever a sprint ends with
+  `critical_halt_notified` set but no report - the in-agent budget grace
+  and this harness's own event/time caps are two independent stopping
+  mechanisms, and "a report always exists" needs a backstop that doesn't
+  depend on which one fires first.
+  **The rendered report now surfaces *why* a run stopped early, and lists
+  every currently-BLOCKED story** (0.1.0-run41): previously `stop_reason`/
+  `blocked_story` lived only in `manifest.json` - a user had to dig through
+  raw GitHub Actions logs to find out why a run only completed 1 of 5
+  requested sprints. `run_eval_analysis.py`'s `_render_report` now renders
+  a "⚠️ Evaluation Stopped Early" callout (stop reason, crash detail, or the
+  blocked story - whichever applies) as the very first thing after the run
+  header, and a "## Blockers" section listing every story still BLOCKED as
+  of the last completed sprint - the same view `create_sprint_report`'s own
+  "Open Questions for Stakeholder (Blockers)" section already gives per-sprint.
   **Local runs only** (`GITHUB_ACTIONS` unset): before spending anything, the
   script checks that the LiteLLM proxy is actually reachable, not just
   configured - the USD guardrail above lives entirely in the proxy (see
