@@ -90,6 +90,28 @@ if you haven't renamed it in your own `.env` yet.
   token budget above is the only guardrail that applies to a local/Ollama sprint** — set
   `SPRINT_TOKEN_BUDGET` accordingly.
 - **Tools**: `update_budgets(total_usd=0.50)`, `create_litellm_virtual_key()`.
+- **Depends on LiteLLM's bundled pricing table being current** (GH issue #298): every USD
+  figure above - `scrum-sprint-budget` spend, and the "Actual USD Spend" line in the sprint
+  report - is only as accurate as the per-token price LiteLLM's own bundled table has on
+  file for each configured model id. A newly-released or retired/renamed model id can
+  silently resolve to **zero cost** instead of an error - the chat completion still
+  succeeds normally, so nothing about a running sprint looks wrong; only the derived USD
+  figure is. Two defenses against this, both from GH issue #298:
+  - The `litellm` image is pinned to a digest (not the floating `main-stable` tag) in all
+    three `docker-compose*.yaml` files, so picking up LiteLLM's latest pricing-table
+    updates is a deliberate, visible re-pin rather than whatever happened to be latest on
+    a given pull. Re-pin with `docker pull docker.litellm.ai/berriai/litellm:main-stable
+    && docker inspect docker.litellm.ai/berriai/litellm:main-stable --format
+    '{{json .RepoDigests}}'`.
+  - `doctor.py` queries the live proxy's `/model/info` endpoint and warns about any
+    non-local (`ollama/`-prefixed aliases are expected to be free) configured alias whose
+    resolved input/output cost-per-token both come back zero or missing. The sprint report
+    itself (`create_sprint_report`/`render_fallback_sprint_report` in
+    `agents/scrum_team/tools/budget.py`) also carries a runtime version of the same check -
+    a ⚠️ SAFETY WARNING line if "Actual USD Spend" reports $0.00 alongside a substantial
+    amount of real token usage this session (and the sprint isn't a local/Ollama one),
+    since that combination is almost always this pricing gap rather than genuinely free
+    usage.
 
 ## Monitoring & Reporting
 

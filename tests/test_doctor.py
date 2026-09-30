@@ -405,6 +405,44 @@ class TestLlmConfigurationSection:
         assert "401" in out
         assert code == 0  # a failed live test is a warning, not a hard failure
 
+    def test_warns_when_a_configured_alias_resolves_to_zero_cost(self, valid_repo, mock_proxy, capsys):
+        """
+        Acceptance Criteria (GH issue #298): a chat completion succeeding
+        (LLM connectivity: OK) says nothing about whether LiteLLM's bundled
+        pricing table actually has a price for that model id - doctor.py
+        must check that separately and warn if it doesn't.
+        """
+        base_url, behavior = mock_proxy
+        behavior["model_info"] = [
+            {
+                "model_name": "scrum-po",
+                "litellm_params": {"model": "gemini/gemini-1.5-pro"},
+                "model_info": {"input_cost_per_token": 0, "output_cost_per_token": 0},
+            }
+        ]
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace('LITELLM_MASTER_KEY="testkey"\n', f'LITELLM_MASTER_KEY="{behavior["valid_key"]}"\n'))
+        code = doctor.run(valid_repo, proxy_base_url=base_url)
+        out = capsys.readouterr().out
+        assert "resolves to $0 cost per token" in out
+        assert "gemini/gemini-1.5-pro" in out
+        assert code == 0  # a pricing gap is a warning, not a hard failure
+
+    def test_no_pricing_warning_when_every_alias_is_priced(self, valid_repo, mock_proxy, capsys):
+        base_url, behavior = mock_proxy
+        behavior["model_info"] = [
+            {
+                "model_name": "scrum-po",
+                "litellm_params": {"model": "gemini/gemini-flash-lite-latest"},
+                "model_info": {"input_cost_per_token": 0.0000001, "output_cost_per_token": 0.0000004},
+            }
+        ]
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace('LITELLM_MASTER_KEY="testkey"\n', f'LITELLM_MASTER_KEY="{behavior["valid_key"]}"\n'))
+        doctor.run(valid_repo, proxy_base_url=base_url)
+        out = capsys.readouterr().out
+        assert "resolves to $0 cost per token" not in out
+
 
 class TestStateRepoStructureChecks:
     """Acceptance Criteria (GH issue #60): doctor.py now runs the cheap,

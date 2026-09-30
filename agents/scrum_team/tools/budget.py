@@ -15,6 +15,38 @@ from ..helpers import (
     get_env_with_deprecated_fallback,
 )
 
+# GH issue #298: below this many tokens, "$0 spend" is indistinguishable
+# from a sprint that just started - only worth flagging once there's been
+# enough real usage that a genuinely-priced model would show *some* cost.
+_SUSPICIOUS_ZERO_SPEND_TOKEN_THRESHOLD = 50_000
+
+
+def _zero_cost_spend_warning(current_spend, tokens_used) -> str:
+    """
+    GH issue #298: LiteLLM's bundled pricing table not covering a configured
+    model id (new release, or retired/renamed) makes every completion routed
+    through it report $0 cost - silently, since the completion itself still
+    succeeds normally. A sprint report showing "$0.00 Actual USD Spend" after
+    tens of thousands of real tokens is that bug caught live, not genuinely
+    free usage, so this flags it rather than letting it read as good news.
+    Skipped for LLM_LOCAL_PROVIDER sessions (Ollama has no cost to
+    misreport) and below the token threshold above.
+    """
+    if (
+        current_spend == 0
+        and tokens_used >= _SUSPICIOUS_ZERO_SPEND_TOKEN_THRESHOLD
+        and os.environ.get("LLM_LOCAL_PROVIDER") != "true"
+    ):
+        return (
+            "⚠️ SAFETY WARNING: Actual USD Spend reports $0.00 despite "
+            f"{tokens_used:,} tokens used this session - this usually means a configured "
+            "model id isn't in LiteLLM's bundled pricing table (new release, or retired/"
+            "renamed), not that usage was genuinely free. Run `python3 doctor.py` to check "
+            "every configured model's resolved cost-per-token.\n"
+        )
+    return ""
+
+
 def update_budgets(total_usd: float = None, tool_context=None) -> Dict[str, Any]:
     """
     Update the total USD budget for the sprint.
@@ -722,6 +754,7 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
             current_spend = budgets.get("current_usd_spend")
             if current_spend is not None:
                 report += f"- Actual USD Spend: ${current_spend:.2f}\n"
+                report += _zero_cost_spend_warning(current_spend, usage.get("total", 0))
 
         blocked_stories = []
         seen_ids = set()
@@ -1002,6 +1035,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         current_spend = budgets.get("current_usd_spend")
         if current_spend is not None:
             report += f"- Actual USD Spend (LiteLLM): ${current_spend:.2f}\n"
+            report += _zero_cost_spend_warning(current_spend, usage.get("total", 0))
         else:
             report += "- Actual USD Spend (LiteLLM): not yet available (no live proxy budget check has run this session)\n"
 

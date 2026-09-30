@@ -1,4 +1,5 @@
 # agents/scrum_team/tests/test_budget.py
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -237,6 +238,70 @@ class TestBudgetTools(unittest.TestCase):
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
 
         self.assertIn("Actual USD Spend (LiteLLM): not yet available", report["report"])
+
+    @patch.dict(os.environ, {}, clear=False)
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_warns_on_suspicious_zero_spend(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (GH issue #298): $0.00 actual spend after a lot
+        of real token usage almost always means a configured model id isn't
+        in LiteLLM's bundled pricing table, not that usage was free - the
+        report must flag this rather than let it read as good news.
+        """
+        os.environ.pop("LLM_LOCAL_PROVIDER", None)
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 0
+        tool_context.state["token_usage"]["total"] = 75_000
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertIn("SAFETY WARNING", report["report"])
+        self.assertIn("75,000 tokens", report["report"])
+
+    @patch.dict(os.environ, {}, clear=False)
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_no_warning_below_token_threshold(self, mock_write_file, mock_getenv):
+        """A sprint that just started genuinely has $0 spend and few
+        tokens - must not be flagged as suspicious."""
+        os.environ.pop("LLM_LOCAL_PROVIDER", None)
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 0
+        tool_context.state["token_usage"]["total"] = 100
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertNotIn("SAFETY WARNING", report["report"])
+
+    @patch.dict(os.environ, {"LLM_LOCAL_PROVIDER": "true"})
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_no_warning_for_local_provider(self, mock_write_file, mock_getenv):
+        """Ollama/local sessions genuinely have no cost to report - $0
+        spend there is correct, not a misconfiguration."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 0
+        tool_context.state["token_usage"]["total"] = 75_000
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertNotIn("SAFETY WARNING", report["report"])
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
@@ -1138,6 +1203,25 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         # not re-triggered here for content that already existed.
         written_paths = [c.args[0] for c in mock_write_file.call_args_list]
         self.assertIn("specs/reports/SPRINT-REPORT-LATEST.md", written_paths)
+
+    @patch.dict(os.environ, {}, clear=False)
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-003.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_warns_on_suspicious_zero_spend(self, mock_write_file, mock_next_path):
+        """Same GH issue #298 safety warning as create_sprint_report - the
+        fallback path renders straight from state, so it needs its own
+        wiring of the shared helper, not automatic coverage from the real
+        report's tests."""
+        os.environ.pop("LLM_LOCAL_PROVIDER", None)
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 0
+        tool_context.state["token_usage"]["total"] = 75_000
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertIn("SAFETY WARNING", result["report"])
 
 
 class TestFileRetroItemsAsIssues(unittest.TestCase):
