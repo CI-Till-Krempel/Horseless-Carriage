@@ -36,6 +36,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import requests
 
@@ -369,6 +370,57 @@ def _sprint_should_abort_run(sprint_result: dict) -> bool:
     return bool(sprint_result["critical_halt"]) and sprint_result["stop_reason"] != "sprint_report_produced"
 
 
+def _blocked_stories(sprint_result: dict) -> dict:
+    """{story_id_or_title: blocked_dict} for every story currently BLOCKED
+    (raise_story_blocker, agents/scrum_team/tools/requirements.py) at the
+    end of this sprint - via product_backlog, the authoritative superset
+    (sprint_backlog is just this sprint's committed subset)."""
+    blocked = {}
+    for item in sprint_result.get("product_backlog") or []:
+        b = item.get("blocked")
+        if b:
+            blocked[item.get("id") or item.get("title")] = b
+    return blocked
+
+
+def _sprint_needs_human_this_harness_cannot_provide(sprint_result: dict, previously_blocked_ids: set) -> Optional[tuple]:
+    """
+    GH issue #336: a real eval run (0.1.0-run39) had a story get BLOCKED by
+    the mechanical loop-breaker (agent.py's _detect_transfer_loop/
+    _detect_repeated_call_loop) in sprint 2, then sat blocked through
+    sprints 3-5 with no resolution - this scripted driver has no way to
+    call resolve_story_blocker itself (it "pre-approves every sprint goal/
+    backlog... standing in for the human review gate real usage requires"
+    - see the report's own Methodology note), so those 3 remaining sprints
+    burned real tokens/budget on a story that could never move forward.
+
+    Returns (story_id, blocked_dict, reason) the first time either holds,
+    else None:
+    - reason="needs_human": the blocker's own category escalates straight
+      to the human User at this interaction level (should_escalate_blocker_
+      to_user, agents/scrum_team/helpers.py) - this harness has no human to
+      answer it, so continuing is certain wasted budget, not a chance at
+      progress.
+    - reason="unresolved_across_sprint": the SAME story was already BLOCKED
+      at the end of the *previous* sprint and still is now - the team had a
+      full sprint's own budget to resolve it themselves (a "technical"
+      blocker doesn't require a human) and didn't, so further sprints are
+      the same bet with no new information. One full sprint's grace before
+      concluding this, not an immediate stop, since Architect/whoever owns
+      it may genuinely still be working it when the sprint just happens to
+      end.
+    """
+    from agents.scrum_team.helpers import should_escalate_blocker_to_user
+    current_blocked = _blocked_stories(sprint_result)
+    for story_id, blocked in current_blocked.items():
+        if should_escalate_blocker_to_user(blocked.get("category")):
+            return (story_id, blocked, "needs_human")
+    for story_id in previously_blocked_ids:
+        if story_id in current_blocked:
+            return (story_id, current_blocked[story_id], "unresolved_across_sprint")
+    return None
+
+
 async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, session_id: str, message_text: str, max_events: int, deadline: float, max_nudges: int = 4) -> dict:
     """
     Sends message_text, then - if the model stops with plain text and no
@@ -573,6 +625,12 @@ async def _main_async(args: argparse.Namespace) -> dict:
     # into the manifest/report afterwards.
     print(f"--- Horseless Carriage v{_hc_version()} (commit {manifest['hc_commit']}) ---", file=sys.stderr)
 
+    # GH issue #336: carried across sprint boundaries so
+    # _sprint_needs_human_this_harness_cannot_provide can tell "still
+    # blocked, same as last sprint" apart from "just got blocked this
+    # sprint" - see that function's own docstring.
+    previously_blocked_ids = set()
+
     for sprint_number in range(1, args.sprints + 1):
         if time.monotonic() >= deadline:
             print(f"--- max duration ({args.max_duration_minutes}m) reached before sprint {sprint_number}/{args.sprints} - stopping ---", file=sys.stderr)
@@ -631,6 +689,32 @@ async def _main_async(args: argparse.Namespace) -> dict:
                 "cleanly via the grace allowance - continuing ---",
                 file=sys.stderr,
             )
+
+        blocker = _sprint_needs_human_this_harness_cannot_provide(sprint_result, previously_blocked_ids)
+        if blocker:
+            story_id, blocked, reason = blocker
+            if reason == "needs_human":
+                explanation = (
+                    f"'{story_id}' is blocked on a {blocked.get('category')}-category question that "
+                    f"escalates straight to a human at this interaction level: {blocked.get('question')!r} "
+                    "- this scripted harness has no human to answer it."
+                )
+            else:
+                explanation = (
+                    f"'{story_id}' was already blocked at the end of the previous sprint and still is "
+                    f"now ({blocked.get('question')!r}) - a full sprint's own budget didn't resolve it."
+                )
+            print(
+                f"--- sprint {sprint_number}/{args.sprints}: {explanation} Continuing would just burn "
+                "further sprints' budget on a story that can't move forward - stopping run ---",
+                file=sys.stderr,
+            )
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = f"blocked_{reason}"
+            manifest["blocked_story"] = {"id": story_id, "blocked": blocked}
+            break
+
+        previously_blocked_ids = set(_blocked_stories(sprint_result).keys())
 
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
     return manifest

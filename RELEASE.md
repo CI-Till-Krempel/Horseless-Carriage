@@ -455,6 +455,23 @@ of only being noticed anecdotally.
   running until the CI job's own hard `timeout-minutes` kills the process with
   no output at all. Verified directly: forcing the deadline to 0 stops the run
   before sprint 1 with `stopped_early: true` and a valid, if empty, report.
+  **Stops early on a story blocked with no real way forward** (GH issue #336):
+  a real eval run (0.1.0-run39) had a story get BLOCKED by the mechanical
+  loop-breaker in sprint 2, then sat blocked through sprints 3-5 with no
+  resolution - this scripted driver has no way to call `resolve_story_blocker`
+  itself (see below: it "pre-approves every sprint goal/backlog... standing in
+  for the human review gate real usage requires"), so those 3 remaining
+  sprints burned real tokens/budget on a story that could never move forward.
+  `_sprint_needs_human_this_harness_cannot_provide` (`run_eval.py`) now stops
+  the run (`stop_reason: "blocked_needs_human"`/`"blocked_unresolved_across_sprint"`)
+  the moment either holds: a BLOCKED story's category escalates straight to
+  the human User at this interaction level
+  (`should_escalate_blocker_to_user`, `agents/scrum_team/helpers.py` - this
+  driver has no human to answer it, so an immediate stop, not a wasted
+  sprint), or the *same* story is still BLOCKED at the end of a sprint that
+  already started with it blocked (the team had a full sprint's own budget to
+  resolve it themselves and didn't - further sprints are the same bet with no
+  new information).
   **Local runs only** (`GITHUB_ACTIONS` unset): before spending anything, the
   script checks that the LiteLLM proxy is actually reachable, not just
   configured - the USD guardrail above lives entirely in the proxy (see

@@ -5,9 +5,16 @@ directly via asyncio.run() inside plain sync test functions.
 """
 
 import asyncio
+import os
 import time
+from unittest.mock import patch
 
-from agents.scrum_team.scripts.run_eval import _run_one_sprint, _sprint_should_abort_run
+from agents.scrum_team.scripts.run_eval import (
+    _run_one_sprint,
+    _sprint_should_abort_run,
+    _blocked_stories,
+    _sprint_needs_human_this_harness_cannot_provide,
+)
 from agents.scrum_team.tools.budget import sprint_budget_reset_state_delta
 
 
@@ -125,3 +132,93 @@ def test_sprint_should_abort_when_a_critical_halt_left_no_clean_close_out():
     # from exactly this kind of unclean state (GH issue #167).
     assert _sprint_should_abort_run({"critical_halt": True, "stop_reason": "max_nudges_exhausted"}) is True
     assert _sprint_should_abort_run({"critical_halt": True, "stop_reason": "max_events_reached"}) is True
+
+
+def _story(story_id, blocked=None):
+    return {"id": story_id, "title": story_id, "blocked": blocked}
+
+
+class TestBlockedStories:
+    def test_empty_when_nothing_blocked(self):
+        sprint_result = {"product_backlog": [_story("US-0001")]}
+        assert _blocked_stories(sprint_result) == {}
+
+    def test_finds_every_blocked_story(self):
+        sprint_result = {
+            "product_backlog": [
+                _story("US-0001", {"category": "technical", "question": "why?"}),
+                _story("US-0002"),
+                _story("US-0003", {"category": "product", "question": "which color?"}),
+            ]
+        }
+        result = _blocked_stories(sprint_result)
+        assert set(result.keys()) == {"US-0001", "US-0003"}
+
+    def test_handles_missing_product_backlog(self):
+        assert _blocked_stories({}) == {}
+
+
+@patch.dict(os.environ, {}, clear=False)
+class TestSprintNeedsHumanThisHarnessCannotProvide:
+    def setup_method(self):
+        os.environ.pop("INTERACTION_LEVEL", None)  # default: "Product"
+
+    def test_none_when_nothing_blocked(self):
+        sprint_result = {"product_backlog": [_story("US-0001")]}
+        assert _sprint_needs_human_this_harness_cannot_provide(sprint_result, set()) is None
+
+    def test_needs_human_for_a_product_category_blocker_at_product_level(self):
+        """
+        Acceptance Criteria (GH eval run39): at the "Product" interaction
+        level (this harness's own default), a "product"-category blocker
+        escalates straight to the human User (should_escalate_blocker_to_
+        user, agents/scrum_team/helpers.py) - this scripted harness has no
+        human to answer it, so it must stop immediately, not wait a sprint.
+        """
+        sprint_result = {
+            "product_backlog": [_story("US-0001", {"category": "product", "question": "which color?"})]
+        }
+        result = _sprint_needs_human_this_harness_cannot_provide(sprint_result, set())
+        assert result is not None
+        story_id, blocked, reason = result
+        assert story_id == "US-0001"
+        assert reason == "needs_human"
+
+    def test_no_immediate_stop_for_a_fresh_technical_blocker(self):
+        """A "technical" blocker never escalates to the human (Architect
+        always owns it) - freshly blocked this sprint, it gets a full
+        sprint's grace before this stops the run."""
+        sprint_result = {
+            "product_backlog": [_story("US-0001", {"category": "technical", "question": "why?"})]
+        }
+        assert _sprint_needs_human_this_harness_cannot_provide(sprint_result, set()) is None
+
+    def test_stops_when_a_technical_blocker_persists_across_a_sprint_boundary(self):
+        """
+        Acceptance Criteria (GH eval run39): US-0001 was blocked by the
+        mechanical loop-breaker in sprint 2 and sat blocked through sprints
+        3-5 with no resolution - a full sprint's own budget didn't move it,
+        so further sprints are the same bet with no new information.
+        """
+        sprint_result = {
+            "product_backlog": [_story("US-0001", {"category": "technical", "question": "why?"})]
+        }
+        result = _sprint_needs_human_this_harness_cannot_provide(sprint_result, {"US-0001"})
+        assert result is not None
+        story_id, blocked, reason = result
+        assert story_id == "US-0001"
+        assert reason == "unresolved_across_sprint"
+
+    def test_does_not_stop_when_a_previously_blocked_story_was_resolved(self):
+        sprint_result = {"product_backlog": [_story("US-0001")]}  # no longer blocked
+        assert _sprint_needs_human_this_harness_cannot_provide(sprint_result, {"US-0001"}) is None
+
+    def test_does_not_stop_when_a_different_story_is_newly_blocked(self):
+        """Only the SAME story persisting across the boundary counts - a
+        different story blocked for the first time this sprint gets its
+        own full sprint's grace, same as any other fresh technical
+        blocker."""
+        sprint_result = {
+            "product_backlog": [_story("US-0002", {"category": "technical", "question": "why?"})]
+        }
+        assert _sprint_needs_human_this_harness_cannot_provide(sprint_result, {"US-0001"}) is None
