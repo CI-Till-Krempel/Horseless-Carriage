@@ -1,0 +1,9 @@
+# GH issue #287: egress allowlist for the `agent` container's git/gh
+# tooling - matched against the CONNECT (HTTPS) target host[:port], so the
+# optional :443 suffix is included. Deliberately just these two hosts, per
+# the issue's own decision - not github's broader domain family
+# (codeload.github.com, objects.githubusercontent.com, ...), since nothing
+# this repo's tooling does today needs them. Extend here (with a comment
+# explaining why) if a future tool genuinely needs another host.
+^github\.com(:[0-9]+)?$
+^api\.github\.com(:[0-9]+)?$

@@ -123,6 +123,15 @@ reverse proxy with basic auth in front of the ADK web UI) is tracked as a
 follow-up, not yet implemented — see the linked follow-up issue on GH issue
 #239.
 
+## Outbound network restriction for the `agent` container (GH issue #287, #180)
+
+The `agent` container - full shell/tool access, `git`+`gh` installed - has no route to the
+internet at all except through a forward-proxy sidecar allowlisting exactly `github.com`/
+`api.github.com`. This is a Docker-level network guarantee (`internal: true` on its own Compose
+network), not an application-level convention — see [Network Sandboxing](docs/SETUP.md#network-sandboxing-gh-issue-287-180)
+for the full design and its one known limitation (best-effort against accidental/generated-code
+network calls, not a hardened container-escape boundary).
+
 ## Known limitations (being upfront, not exhaustive)
 
 - No automated secret-scanning (e.g. gitleaks) runs in CI yet.

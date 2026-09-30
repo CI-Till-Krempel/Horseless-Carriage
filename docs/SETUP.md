@@ -258,6 +258,40 @@ service entirely, so there's nothing there for `docker-compose.gpu.yaml` to acce
 `doctor.py` checks host-mode reachability directly (a plain HTTP request to
 `http://localhost:11434`) instead of inspecting a container, since there is no container to inspect.
 
+## Network Sandboxing (GH issue #287, #180)
+
+The `agent` container - the one running the LLM-driven team, with `git`/`gh` installed and full
+shell/tool access - has **no route to the internet at all** except through a small forward-proxy
+sidecar (`net-proxy`, `net-proxy.Dockerfile`), which allowlists exactly two hosts: `github.com` and
+`api.github.com` (the only hosts `agent`'s own tooling needs - see `agents/scrum_team/tools/
+github.py`/`base.py`'s `_run`). Anything else - a `curl` to an arbitrary URL, a `pip install` from
+inside a generated test, whatever - fails outright, not silently through to some other host.
+
+- **How it's enforced**: `agent` sits alone on `agent-net`, a Compose network marked `internal:
+  true` - Docker itself gives this network no route out, regardless of what's plugged into it. The
+  only way anything on `agent-net` reaches the outside world is through `net-proxy`, which also sits
+  on `external-net` (normal, unrestricted egress) and bridges the two. `agent`'s `HTTP_PROXY`/
+  `HTTPS_PROXY` env vars point at `net-proxy:8888`; its actual allowlist is
+  `config/net-proxy/allowlist.filter` (tinyproxy's `Filter`/`FilterDefaultDeny Yes`).
+- **`litellm` keeps its own unrestricted egress**, on `external-net` - it's the one service that
+  calls commercial LLM providers (Gemini/OpenAI/Anthropic) directly, a legitimate and already
+  budget-scoped path distinct from `agent`'s arbitrary tool access. It's also on `agent-net` so
+  `agent` reaches it *directly* (never through `net-proxy` - `NO_PROXY=litellm` on `agent`), keeping
+  every real LLM call on the fast, direct path.
+- **Extending the allowlist**: edit `config/net-proxy/allowlist.filter` (one regex per line, matched
+  against the CONNECT target `host[:port]`) and rebuild `net-proxy` (`docker compose build
+  net-proxy`). Add a comment explaining why - this is a deliberately narrow, two-host allowlist, not
+  a general-purpose egress policy.
+- **Known limitation - this is best-effort, not a hard security boundary**: `internal: true` is
+  real Docker Engine enforcement on Linux and inside Docker Desktop's Linux VM (Mac/Windows) alike,
+  but a container with enough privilege (e.g. `NET_ADMIN`, which this project's compose files never
+  grant `agent`) could still manipulate its own network namespace. This is defense against
+  `agent`-authored code making an unexpected network call, not a guarantee against a
+  deliberately-malicious container escape.
+- **Test coverage**: `tests/test_network_isolation.py` asserts the network topology (agent-net is
+  `internal: true`, `agent` is on it alone, `litellm`/`net-proxy` bridge both networks, the
+  allowlist file's exact contents) across all three compose files, so this can't silently regress.
+
 ## Human Interaction Levels
 
 How much of a human is actually in the loop is configurable via `INTERACTION_LEVEL` (`.env`, set

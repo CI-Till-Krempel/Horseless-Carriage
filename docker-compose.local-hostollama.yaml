@@ -45,6 +45,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - external-net
 
   litellm:
     image: docker.litellm.ai/berriai/litellm:main-stable
@@ -73,6 +75,13 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
+    # GH issue #287: see docker-compose.yaml's identical entry - reachable
+    # directly by `agent` over agent-net, while keeping its own
+    # unrestricted egress to commercial providers over external-net (and
+    # the native host Ollama, which needs no network isolation here).
+    networks:
+      - external-net
+      - agent-net
 
   agent:
     build:
@@ -113,6 +122,15 @@ services:
       - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_REPO_URL=${GITHUB_REPO_URL}
+      # GH issue #287: see docker-compose.yaml's identical entry - agent-net
+      # (below) has no route to the internet at all except through
+      # net-proxy's allowlist (config/net-proxy/allowlist.filter).
+      - HTTP_PROXY=http://net-proxy:8888
+      - HTTPS_PROXY=http://net-proxy:8888
+      - http_proxy=http://net-proxy:8888
+      - https_proxy=http://net-proxy:8888
+      - NO_PROXY=litellm
+      - no_proxy=litellm
       # GH issue #82: Compose prints a "variable is not set" warning for any
       # bare ${VAR} reference left unset in .env, even when the code being
       # run already has a perfectly good default for it (get_interaction_level(),
@@ -180,10 +198,33 @@ services:
       - SPRINT_CLOSEOUT_GRACE_PERCENT=${SPRINT_CLOSEOUT_GRACE_PERCENT:-20.0}
     depends_on:
       - litellm
+      - net-proxy
     # Keep the container running and allow for interactive sessions
     stdin_open: true
     tty: true
     command: ["/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh"]
+    # GH issue #287: see docker-compose.yaml's identical entry - internal:
+    # true (below) means this container has NO route to the internet
+    # except through net-proxy's allowlist.
+    networks:
+      - agent-net
+
+  # GH issue #287: see docker-compose.yaml's identical entry.
+  net-proxy:
+    build:
+      context: .
+      dockerfile: net-proxy.Dockerfile
+    networks:
+      - external-net
+      - agent-net
+    restart: unless-stopped
+
+networks:
+  external-net:
+    driver: bridge
+  agent-net:
+    driver: bridge
+    internal: true
 
 volumes:
   postgres_data:
