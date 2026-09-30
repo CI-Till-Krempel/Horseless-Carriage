@@ -123,6 +123,39 @@ def integrate_open_changes(tool_context=None) -> Dict[str, Any]:
     return {"status": "ok", "integrated": True, "files": files, "commit": commit}
 
 
+def _checkout_with_auto_integrate(checkout_cmd: list, repo_root: str, tool_context=None) -> tuple:
+    """
+    Runs a git checkout command; on the specific "local changes would be
+    overwritten" failure, self-heals by calling integrate_open_changes()
+    (committing dangling specs/.hc writes out of the way onto whatever
+    branch is currently checked out) and retrying the checkout once. Any
+    other failure (network, auth, a real content conflict) is returned
+    as-is, unretried - this only ever recovers the one specific, safe-to-
+    auto-resolve failure mode _checkout_develop_or_recover's own docstring
+    already documents in depth.
+
+    Shared by every checkout call site in this module (GH eval run41:
+    start_feature_branch's own feature-branch checkout hit exactly this and
+    had no self-heal at all, unlike _checkout_develop_or_recover's develop
+    checkout right next to it - DevTeam had to notice the failure and call
+    integrate_open_changes itself before retrying by hand) - see
+    _checkout_develop_or_recover for the original of this exact pattern,
+    now factored out here so a new checkout call site can't reintroduce the
+    same gap by simply forgetting to copy it.
+
+    Returns (checkout_result, auto_integrated_result_or_None) - callers
+    should surface auto_integrated in their own error message when present,
+    same convention _checkout_develop_or_recover already established.
+    """
+    checkout = _run(checkout_cmd, cwd=repo_root, tool_context=tool_context)
+    auto_integrated = None
+    if checkout.get("status") == "error" and "would be overwritten" in (checkout.get("stderr") or "").lower():
+        auto_integrated = integrate_open_changes(tool_context)
+        if auto_integrated.get("integrated"):
+            checkout = _run(checkout_cmd, cwd=repo_root, tool_context=tool_context)
+    return checkout, auto_integrated
+
+
 def _preserve_local_only_develop_commits(repo_root: str, develop: str, tool_context=None) -> Dict[str, Any] | None:
     """
     ISSUE-0050 / 0.1.0-run33, 0.1.0-run34: _checkout_develop_or_recover's own
@@ -262,14 +295,10 @@ def _checkout_develop_or_recover(repo_root: str, develop: str, tool_context=None
         # (a no-op, since they now match) but a plain checkout also avoids
         # any risk of a race between this push and the reset re-reading a
         # not-yet-visible origin ref.
-        checkout = _run(["git", "checkout", develop], cwd=repo_root, tool_context=tool_context)
+        checkout_cmd = ["git", "checkout", develop]
     else:
-        checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
-    auto_integrated = None
-    if checkout.get("status") == "error" and "would be overwritten" in (checkout.get("stderr") or "").lower():
-        auto_integrated = integrate_open_changes(tool_context)
-        if auto_integrated.get("integrated"):
-            checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+        checkout_cmd = ["git", "checkout", "-B", develop, f"origin/{develop}"]
+    checkout, auto_integrated = _checkout_with_auto_integrate(checkout_cmd, repo_root, tool_context=tool_context)
     return {
         "status": checkout.get("status"),
         "fetch": fetch,
@@ -501,9 +530,9 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
         _run(["git", "fetch", "origin", branch], cwd=repo_root, tool_context=tool_context)
         preserved = _preserve_local_only_develop_commits(repo_root, branch, tool_context=tool_context)
         if preserved is not None and preserved.get("in_sync"):
-            checkout = _run(["git", "checkout", branch], cwd=repo_root, tool_context=tool_context)
+            checkout_cmd = ["git", "checkout", branch]
         else:
-            checkout = _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_root, tool_context=tool_context)
+            checkout_cmd = ["git", "checkout", "-B", branch, f"origin/{branch}"]
     else:
         # GH eval run39: a feature branch has the exact same origin-
         # divergence risk #317 fixed for protected branches - it can pick
@@ -524,13 +553,26 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
         if remote_exists:
             preserved = _preserve_local_only_develop_commits(repo_root, branch, tool_context=tool_context)
             if preserved is not None and preserved.get("in_sync"):
-                checkout = _run(["git", "checkout", branch], cwd=repo_root, tool_context=tool_context)
+                checkout_cmd = ["git", "checkout", branch]
             else:
-                checkout = _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_root, tool_context=tool_context)
+                checkout_cmd = ["git", "checkout", "-B", branch, f"origin/{branch}"]
         else:
-            checkout = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+            checkout_cmd = ["git", "checkout", "-B", branch]
+    # GH issue (eval run41): whichever checkout was chosen above, a dangling
+    # uncommitted write under specs/.hc (from a prior story's advance_story_
+    # stage roadmap update, upsert_story, etc. - none of those commit, see
+    # integrate_open_changes' own docstring) can make it fail outright with
+    # "local changes would be overwritten" - a real eval run hit exactly
+    # this on start_feature_branch's own equivalent checkout. Self-heal via
+    # the same commit-out-of-the-way-then-retry-once pattern
+    # _checkout_develop_or_recover already uses for its own checkout.
+    checkout, auto_integrated = _checkout_with_auto_integrate(checkout_cmd, repo_root, tool_context=tool_context)
     if checkout.get("status") == "error":
-        return {"status": "error", "message": f"Could not check out branch '{branch}': {checkout.get('stderr') or checkout.get('message')}", "steps": {"checkout": checkout}}
+        return {
+            "status": "error",
+            "message": f"Could not check out branch '{branch}': {checkout.get('stderr') or checkout.get('message')}",
+            "steps": {"checkout": checkout, "auto_integrated": auto_integrated},
+        }
 
     r1 = None
     if add_all:
@@ -655,11 +697,20 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
             "auto_integrated": recovery["auto_integrated"],
         }
 
-    checkout_feature = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    # GH issue (eval run41): this checkout has the exact same "dangling
+    # uncommitted specs/.hc write" exposure as the develop checkout right
+    # above it - a real eval run hit this here specifically (a previous
+    # story's advance_story_stage roadmap update was still uncommitted when
+    # DevTeam tried to branch off for the next one) and had no self-heal at
+    # all, unlike the develop checkout next to it. Same helper, same fix.
+    checkout_feature, feature_auto_integrated = _checkout_with_auto_integrate(
+        ["git", "checkout", "-B", branch], repo_root, tool_context=tool_context
+    )
     if checkout_feature.get("status") == "error":
         return {
             "status": "error",
             "message": f"Could not create branch '{branch}': {checkout_feature.get('stderr') or checkout_feature.get('message')}",
+            "auto_integrated": feature_auto_integrated,
         }
 
     push_res = git_push(branch=branch, commit_message=f"chore: start {story_id}", tool_context=tool_context)
@@ -784,11 +835,14 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 "auto_integrated": recovery["auto_integrated"],
             }
 
-        checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+        checkout_branch, branch_auto_integrated = _checkout_with_auto_integrate(
+            ["git", "checkout", "-B", branch], repo_root, tool_context=tool_context
+        )
         if checkout_branch.get("status") == "error":
             return {
                 "status": "error",
                 "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}",
+                "auto_integrated": branch_auto_integrated,
             }
 
         push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", tool_context=tool_context)
@@ -922,11 +976,14 @@ def create_story_spec_pr(title_or_id: str, tool_context=None) -> Dict[str, Any]:
             "fetch": recovery["fetch"],
             "auto_integrated": recovery["auto_integrated"],
         }
-    checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    checkout_branch, branch_auto_integrated = _checkout_with_auto_integrate(
+        ["git", "checkout", "-B", branch], repo_root, tool_context=tool_context
+    )
     if checkout_branch.get("status") == "error":
         return {
             "status": "error",
             "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}",
+            "auto_integrated": branch_auto_integrated,
         }
 
     add_res = _run(["git", "add", rel_path], cwd=repo_root, tool_context=tool_context)

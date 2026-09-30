@@ -768,7 +768,7 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
                     continue
                 seen_ids.add(story_id)
                 blocked_stories.append((story_id, item.get("title", story_id), blocked))
-        report += "\n## Open Questions for Stakeholder\n"
+        report += "\n## Open Questions for Stakeholder (Blockers)\n"
         if blocked_stories:
             for story_id, story_title, blocked in blocked_stories:
                 report += (
@@ -1072,7 +1072,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             seen_ids.add(story_id)
             blocked_stories.append((story_id, item.get("title", story_id), blocked))
 
-    report += "\n## Open Questions for Stakeholder\n"
+    report += "\n## Open Questions for Stakeholder (Blockers)\n"
     if blocked_stories:
         for story_id, story_title, blocked in blocked_stories:
             report += (

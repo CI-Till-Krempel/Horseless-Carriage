@@ -407,6 +407,35 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tool_context.state["sprint_goal"], "Ship the Heinzelmann control-server MVP")
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    def test_start_sprint_sweeps_dangling_open_changes_before_returning(self, mock_integrate):
+        """
+        Acceptance Criteria (GH eval run41): a dangling uncommitted specs/
+        .hc write left over from the previous sprint's close-out used to
+        just sit in the working tree until the first checkout of the new
+        sprint happened to trip over it ("local changes would be
+        overwritten"). start_sprint now sweeps it immediately, so the new
+        sprint actually starts from a clean working copy.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = start_sprint("Ship the Heinzelmann control-server MVP", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_integrate.assert_called_once_with(tool_context)
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", side_effect=RuntimeError("git hiccup"))
+    def test_start_sprint_still_succeeds_if_the_sweep_itself_fails(self, mock_integrate):
+        """Best-effort: a git hiccup unrelated to the sprint-start gates
+        above must never block a sprint from actually starting."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = start_sprint("Ship the Heinzelmann control-server MVP", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
     def test_start_sprint_rejects_blank_or_placeholder_goal(self):
         """Acceptance Criteria (ISSUE-0011): mirrors is_low_quality_retro_text's guard."""
         tool_context = MagicMock()

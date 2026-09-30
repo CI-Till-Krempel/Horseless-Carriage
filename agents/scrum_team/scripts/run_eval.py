@@ -552,6 +552,33 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
             stop_reason = "max_duration_exceeded"
             break
 
+    if not sprint_report and session.state.get("critical_halt_notified"):
+        # GH issue (eval run41): a real run's SPRINT CLOSE SEQUENCE grace
+        # was making genuine progress (retro logged, KPIs computed) but got
+        # cut off by THIS HARNESS'S OWN max_events/max_duration cap one
+        # turn before ProductOwner's create_sprint_report - agent.py's own
+        # safety net (_ensure_sprint_report_on_final_halt_once) only fires
+        # once a grace-eligible role's own turn ALSO exceeds its (shrunk)
+        # grace allowance, which never happened here; the sprint just ran
+        # out of *host-side* turns first. These are two independent
+        # stopping mechanisms - the in-agent budget grace, and this
+        # harness's own event/time caps - and "a sprint report always
+        # exists" needs a backstop that doesn't depend on which one fires
+        # first. Calls the exact same mechanism agent.py's own safety net
+        # uses, from here, against a minimal state-only shim (everything
+        # it touches only ever reads/writes .state).
+        from agents.scrum_team.agent import _ensure_sprint_report_on_final_halt
+
+        class _HostToolContext:
+            def __init__(self, state):
+                self.state = state
+
+        try:
+            _ensure_sprint_report_on_final_halt(_HostToolContext(session.state))
+            sprint_report = session.state.get("sprint_report")
+        except Exception as e:
+            print(f"WARNING: host-side sprint report backstop failed (non-fatal): {type(e).__name__}: {e}", file=sys.stderr)
+
     return {
         "final_text": final_text,
         "event_count": len(events),
