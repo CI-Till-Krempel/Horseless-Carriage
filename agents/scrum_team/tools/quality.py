@@ -400,15 +400,28 @@ def check_build(tool_context=None) -> Dict[str, Any]:
             "message": "No requirements.txt or package.json found - no recognized dependency manifest to check.",
         }
         if tool_context and getattr(tool_context, "state", None):
-            tool_context.state["last_check_build"] = {"checked": None, "passing": None}
+            tool_context.state["last_check_build"] = {
+                "checked": None,
+                "passing": None,
+                "manifest_write_count_at_check": tool_context.state.get("dependency_manifest_write_count", 0),
+            }
         return result
 
     passing = result.get("status") == "ok"
     # Persisted so advance_story_stage's "Tested" gate (ISSUE-0004) can
     # verify check_build actually ran and passed, instead of trusting QA's
-    # own say-so that it did.
+    # own say-so that it did. manifest_write_count_at_check snapshots
+    # write_file's dependency-manifest counter (docs.py) at the moment this
+    # install actually ran - see the Tested gate's own freshness check for
+    # why: a real eval run kept trusting a stale passing=True after
+    # requirements.txt was rewritten (dropping Flask) with no re-run of
+    # check_build in between.
     if tool_context and getattr(tool_context, "state", None):
-        tool_context.state["last_check_build"] = {"checked": checked, "passing": passing}
+        tool_context.state["last_check_build"] = {
+            "checked": checked,
+            "passing": passing,
+            "manifest_write_count_at_check": tool_context.state.get("dependency_manifest_write_count", 0),
+        }
     return {
         "status": "ok" if passing else "error",
         "checked": checked,

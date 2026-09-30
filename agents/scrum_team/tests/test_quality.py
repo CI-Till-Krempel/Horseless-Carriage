@@ -569,7 +569,10 @@ class TestQualityTools(unittest.TestCase):
             mock_repo_root.return_value = Path(tmp_dir)
             check_build(tool_context=tool_context)
 
-        self.assertEqual(tool_context.state["last_check_build"], {"checked": "requirements.txt", "passing": True})
+        self.assertEqual(
+            tool_context.state["last_check_build"],
+            {"checked": "requirements.txt", "passing": True, "manifest_write_count_at_check": 0},
+        )
 
     @patch("agents.scrum_team.tools.quality._configured_repo_root")
     def test_check_build_persists_not_checked_result(self, mock_repo_root):
@@ -583,7 +586,35 @@ class TestQualityTools(unittest.TestCase):
             mock_repo_root.return_value = Path(tmp_dir)
             check_build(tool_context=tool_context)
 
-        self.assertEqual(tool_context.state["last_check_build"], {"checked": None, "passing": None})
+        self.assertEqual(
+            tool_context.state["last_check_build"],
+            {"checked": None, "passing": None, "manifest_write_count_at_check": 0},
+        )
+
+    @patch("agents.scrum_team.tools.quality._configured_repo_root")
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_check_build_snapshots_the_current_manifest_write_count(self, mock_run, mock_repo_root):
+        """
+        Acceptance Criteria (GH eval run39): check_build's snapshot must
+        reflect whatever the live dependency_manifest_write_count is AT THE
+        TIME it runs, not always 0 - otherwise a later write after this
+        check_build would look "fresh" (0 == 0) even though it genuinely
+        happened afterward.
+        """
+        from pathlib import Path
+        import tempfile
+
+        mock_run.return_value = {"status": "ok", "stdout": "", "stderr": ""}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["dependency_manifest_write_count"] = 3
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "requirements.txt").write_text("pytest\n")
+            mock_repo_root.return_value = Path(tmp_dir)
+            check_build(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["last_check_build"]["manifest_write_count_at_check"], 3)
 
 
 class TestPromptContextUsage(unittest.TestCase):
