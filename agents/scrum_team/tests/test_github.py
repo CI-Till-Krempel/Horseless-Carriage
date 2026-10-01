@@ -1447,6 +1447,98 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         # Never reaches the merge step if the PR was never opened.
         mock_run.assert_called_with(["git", "checkout", "-B", "sprint-backlog/1"], cwd=unittest.mock.ANY, tool_context=tool_context)
 
+    @patch("agents.scrum_team.tools.github._run")
+    def test_refuses_while_a_must_priority_issue_sits_unaddressed(self, mock_run):
+        """GH issue (0.1.0-run42): _file_retro_items_as_issues (budget.py)
+        files retro/impediment findings as Must-priority Issues specifically
+        so they "can't be silently starved" - but nothing previously forced
+        Sprint Planning to ever pick one back up. A real run showed exactly
+        that: a dependency-pinning Issue filed in Sprint 1 sat at Draft,
+        unaddressed, through Sprints 2-5."""
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "product_backlog": [
+                {"id": "ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ISSUE-0002", result["message"])
+        self.assertIn("advance_story_stage", result["message"])
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_proceeds_once_the_must_issue_has_reached_ready(self, mock_run, mock_git_push, mock_gh_pr_create):
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": [
+                {"id": "ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_does_not_block_on_a_blocked_must_issue(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """A genuinely BLOCKED issue (raise_story_blocker) has its own
+        separate escalation path - this guardrail must not additionally
+        wedge Sprint Planning on something already flagged as blocked."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            # A separate Ready story satisfies the Ready-backlog-shortfall
+            # gate right below, so this test isolates the blocked-Must-Issue
+            # behavior specifically.
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"],
+                    "blocked": {"category": "product", "question": "which fix?"},
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_does_not_block_on_a_reprioritized_issue(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """set_priority(..., away from 'Must') is the explicit escape hatch
+        the error message offers - once used, this guardrail must stand
+        down for that item."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {"id": "ISSUE-0002", "type": "Issue", "priority": "Should", "stages_completed": ["Draft"]},
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
 
 class TestMarkPrReadyForReview(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._run")

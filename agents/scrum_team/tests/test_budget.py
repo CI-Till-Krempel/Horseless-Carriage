@@ -71,6 +71,7 @@ class TestBudgetTools(unittest.TestCase):
         tool_context.state["budget_reset_since_last_sprint_start"] = False
         tool_context.state["critical_halt_notified"] = True
         tool_context.state["sprint_report_safety_net_fired"] = True
+        tool_context.state["sprint_report_path"] = "specs/reports/SPRINT-REPORT-004.md"
 
         reset_sprint_budget(tool_context=tool_context)
 
@@ -79,6 +80,7 @@ class TestBudgetTools(unittest.TestCase):
         self.assertTrue(tool_context.state["budget_reset_since_last_sprint_start"])
         self.assertFalse(tool_context.state["critical_halt_notified"])
         self.assertFalse(tool_context.state["sprint_report_safety_net_fired"])
+        self.assertEqual(tool_context.state["sprint_report_path"], "", "a new sprint must allocate its own fresh report number, not reuse the previous sprint's")
 
     def test_sprint_budget_reset_state_delta_returns_independent_copies(self):
         """Two calls must not share the same nested dict - a caller
@@ -198,6 +200,31 @@ class TestBudgetTools(unittest.TestCase):
         tool_context.state["kpi_update_count"] = 1
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
         self.assertIn("Process Overhead: 15.0%", report["report"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-999.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_reuses_this_sprints_already_allocated_path(self, mock_write_file, mock_next_path, mock_getenv):
+        """GH issue (0.1.0-run42): if render_fallback_sprint_report already
+        fired earlier this sprint (e.g. a transient grace-exhaustion halt
+        the sprint then recovered from) and recorded a numbered path, this
+        real report must land on that SAME file, not burn a fresh one -
+        otherwise the sprint ends up with two committed report files
+        (fallback + real) for what should be one."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["sprint_report_path"] = "specs/reports/SPRINT-REPORT-002.md"
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        mock_next_path.assert_not_called()
+        self.assertEqual(report["path"], "specs/reports/SPRINT-REPORT-002.md")
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/SPRINT-REPORT-002.md", written_paths)
+        self.assertNotIn("specs/reports/SPRINT-REPORT-999.md", written_paths)
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
@@ -1203,6 +1230,42 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         # not re-triggered here for content that already existed.
         written_paths = [c.args[0] for c in mock_write_file.call_args_list]
         self.assertIn("specs/reports/SPRINT-REPORT-LATEST.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-002.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reusing_a_real_report_does_not_burn_a_new_report_number(self, mock_write_file, mock_next_path):
+        """GH issue (0.1.0-run42): create_release_pr calls this
+        unconditionally to land the report on develop before opening the
+        PR - even when create_sprint_report already succeeded this sprint.
+        Without reusing the already-allocated path, every single sprint
+        wrote a second, duplicate numbered file with identical content,
+        turning a 5-sprint run into 12+ SPRINT-REPORT-NNN.md files."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        real_report = "# Sprint Review Report\n\nEverything shipped, authored for real by Product Owner.\n"
+        tool_context.state["sprint_report"] = real_report
+        tool_context.state["sprint_report_path"] = "specs/reports/SPRINT-REPORT-001.md"
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        mock_next_path.assert_not_called()
+        self.assertEqual(result["path"], "specs/reports/SPRINT-REPORT-001.md")
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/SPRINT-REPORT-001.md", written_paths)
+        self.assertNotIn("specs/reports/SPRINT-REPORT-002.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_first_call_this_sprint_allocates_and_records_a_fresh_path(self, mock_write_file, mock_next_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open"}]
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        mock_next_path.assert_called_once()
+        self.assertEqual(tool_context.state["sprint_report_path"], "specs/reports/SPRINT-REPORT-001.md")
+        self.assertEqual(result["path"], "specs/reports/SPRINT-REPORT-001.md")
 
     @patch.dict(os.environ, {}, clear=False)
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-003.md")

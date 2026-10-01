@@ -109,12 +109,24 @@ def _collect_repo_snapshot(repo_path: Path) -> dict:
 
 
 def _sprint_metrics_table(manifest: dict) -> str:
+    """Stories Planned counts items newly added to sprint_backlog THIS
+    sprint (diffed against the previous sprint's sprint_backlog keys, same
+    approach as _kpi_time_series - see that function's own docstring for
+    why a raw len() here is wrong). sprint_backlog is never reset between
+    sprints, so a raw len() would just report the run's whole accumulated
+    scope so far, flat and identical, on every single row once initial
+    planning committed it all - exactly what a real run (0.1.0-run42)
+    showed: "6" on every one of its 5 sprint rows."""
     rows = ["| Sprint | Tokens Used | Stories Planned | Sprint Report? | PR Merges (after) |",
             "|---|---|---|---|---|"]
+    prev_backlog_keys = set()
     for sprint in manifest.get("sprints", []):
         n = sprint.get("sprint_number")
         tokens = (sprint.get("token_usage") or {}).get("total", "n/a")
-        planned = len(sprint.get("sprint_backlog") or [])
+        backlog = sprint.get("sprint_backlog") or []
+        backlog_keys = {_backlog_item_key(item, i) for i, item in enumerate(backlog)}
+        planned = len(backlog_keys - prev_backlog_keys)
+        prev_backlog_keys = backlog_keys
         has_report = "yes" if sprint.get("sprint_report") else "no"
         merges = [m for m in manifest.get("pr_merges", []) if m.get("after_sprint") == n]
         merged_count = sum(1 for m in merges if m.get("merged"))
@@ -134,9 +146,31 @@ _ACCEPTED_STAGE = "Accepted"
 _IMPLEMENTED_STAGE = "Implemented"
 
 
+def _backlog_item_key(item: dict, index: int):
+    """id-else-title fallback (same pattern as budget.py's blocked-stories
+    collection), further falling back to `index` (this item's position in
+    its sprint_backlog list) so two distinct items that both lack an id
+    AND a title don't collapse into the same dedup key and undercount -
+    real backlog items always get an id via upsert_backlog_item, but
+    nothing here should silently miscount if a caller's data doesn't."""
+    return item.get("id") or item.get("title") or f"__index_{index}"
+
+
 def _kpi_time_series(manifest: dict) -> dict:
     """Returns {kpi_name: [(sprint_number, value), ...]} - one list per KPI,
-    containing only the sprints that actually have a value for it."""
+    containing only the sprints that actually have a value for it.
+
+    sprint_backlog is NOT reset between sprints (it's the run's whole
+    selected scope, accumulating stage progress sprint over sprint) - so a
+    raw per-sprint count of "items with stage X completed" is a running
+    total across the whole run, not that sprint's own throughput. A real
+    run (0.1.0-run42) showed exactly this: Velocity/Stories implemented
+    read 1, 3, 5, 6, 6 - monotonically non-decreasing, because sprint 3's
+    "5" still counted sprint 1 and 2's already-accepted items too. Diffing
+    each sprint's set of items-at-stage-X against the previous sprint's set
+    (by item key, not just the total count) gives the actual per-sprint
+    delta - how many items newly reached that stage THIS sprint - which is
+    what "velocity" means everywhere else this term is used."""
     series = {
         "Velocity (items accepted)": [],
         "Issues fixed": [],
@@ -146,25 +180,35 @@ def _kpi_time_series(manifest: dict) -> dict:
         "Quality (defect escape rate)": [],
         "Test Coverage": [],
     }
+    prev_accepted_keys = set()
+    prev_issue_accepted_keys = set()
+    prev_implemented_keys = set()
     for sprint in manifest.get("sprints", []):
         n = sprint.get("sprint_number")
         backlog = sprint.get("sprint_backlog") or []
 
-        accepted = sum(1 for item in backlog if _ACCEPTED_STAGE in (item.get("stages_completed") or []))
-        issues_fixed = sum(
-            1 for item in backlog
+        accepted_keys = {
+            _backlog_item_key(item, i) for i, item in enumerate(backlog)
+            if _ACCEPTED_STAGE in (item.get("stages_completed") or [])
+        }
+        issue_accepted_keys = {
+            _backlog_item_key(item, i) for i, item in enumerate(backlog)
             if item.get("type") == "Issue" and _ACCEPTED_STAGE in (item.get("stages_completed") or [])
-        )
-        stories_implemented = sum(
-            1 for item in backlog
+        }
+        implemented_keys = {
+            _backlog_item_key(item, i) for i, item in enumerate(backlog)
             if item.get("type") != "Issue" and _IMPLEMENTED_STAGE in (item.get("stages_completed") or [])
-        )
+        }
         scenarios = sum(len(item.get("acceptance_criteria") or []) for item in backlog)
 
-        series["Velocity (items accepted)"].append((n, accepted))
-        series["Issues fixed"].append((n, issues_fixed))
-        series["Stories implemented"].append((n, stories_implemented))
+        series["Velocity (items accepted)"].append((n, len(accepted_keys - prev_accepted_keys)))
+        series["Issues fixed"].append((n, len(issue_accepted_keys - prev_issue_accepted_keys)))
+        series["Stories implemented"].append((n, len(implemented_keys - prev_implemented_keys)))
         series["Testplan scenarios"].append((n, scenarios))
+
+        prev_accepted_keys = accepted_keys
+        prev_issue_accepted_keys = issue_accepted_keys
+        prev_implemented_keys = implemented_keys
 
         kpis = sprint.get("sprint_report_kpis") or {}
         say_do = (kpis.get("team_effectiveness") or {}).get("say_do_ratio")

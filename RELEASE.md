@@ -313,6 +313,40 @@ every sprint. On success the baseline is updated to the new total. The rejection
 caller (Product Owner) exactly what's missing and to transfer to Scrum Master first - turning a
 skippable prompt instruction into a hand-off the tooling itself forces.
 
+### Filed retro/impediment Issues must actually get planned
+
+`_file_retro_items_as_issues` (`agents/scrum_team/tools/budget.py`, GH issue #164) files every
+retro action/impediment as a real, Must-priority Issue in `product_backlog` - but a real eval run
+(0.1.0-run42) showed that alone wasn't enough: a dependency-pinning Issue filed in Sprint 1 sat at
+Draft, unaddressed, through Sprints 2-5, while every later sprint's retro just filed more Issues on
+top. `create_sprint_backlog_pr` (`agents/scrum_team/tools/github.py`) now mechanically refuses to
+open a sprint's backlog PR while any non-blocked Must-priority Issue is still sitting below Ready -
+the same choke-point pattern as the Ready-backlog-shortfall check right next to it - with the
+rejection message naming exactly which Issue IDs and what to do (`advance_story_stage(..., "Ready")`,
+or `set_priority` away from `"Must"` if it turns out not to warrant that).
+
+### Sprint report numbering (duplicate files)
+
+A 5-sprint eval run (0.1.0-run42) produced 12+ numbered `specs/reports/SPRINT-REPORT-NNN.md` files
+instead of 5: `create_release_pr` unconditionally calls `render_fallback_sprint_report` to land the
+report on `develop` before opening the release PR (regardless of whether `create_sprint_report`
+already succeeded that sprint), and that function always allocated a *fresh* sequential number even
+when only reusing an already-existing report string. `state.sprint_report_path` now records the
+numbered path the sprint has already allocated (set by both `create_sprint_report` and
+`render_fallback_sprint_report`, cleared each sprint via `sprint_budget_reset_state_delta`) - a
+repeat call within the same sprint reuses that path instead of burning a new number.
+
+### KPI trends report per-sprint deltas, not cumulative totals
+
+`_kpi_time_series`/`_sprint_metrics_table` (`agents/scrum_team/scripts/run_eval_analysis.py`) read
+each sprint's `sprint_backlog` snapshot - which is never reset between sprints, so it accumulates
+stage progress across the *whole run*. A raw per-sprint count of "items with stage X completed" was
+therefore a running total, not that sprint's own throughput: a real run's Velocity/Stories-implemented
+KPIs read 1, 3, 5, 6, 6 - monotonically non-decreasing, since sprint 3's "5" still counted sprint 1
+and 2's already-accepted items too, hiding the run's actual (tapering-off) velocity. Both functions
+now diff each sprint's set of items-at-stage-X (by item ID/title) against the previous sprint's set,
+reporting how many items newly reached that stage *this* sprint.
+
 ### Human interaction levels
 
 `record_human_approval`'s two gates (`advance_story_stage(..., "Implemented")` and
