@@ -72,6 +72,7 @@ class TestBudgetTools(unittest.TestCase):
         tool_context.state["critical_halt_notified"] = True
         tool_context.state["sprint_report_safety_net_fired"] = True
         tool_context.state["sprint_report_path"] = "specs/reports/SPRINT-REPORT-004.md"
+        tool_context.state["transcript_path"] = "specs/reports/TRANSCRIPT-004.md"
 
         reset_sprint_budget(tool_context=tool_context)
 
@@ -81,6 +82,7 @@ class TestBudgetTools(unittest.TestCase):
         self.assertFalse(tool_context.state["critical_halt_notified"])
         self.assertFalse(tool_context.state["sprint_report_safety_net_fired"])
         self.assertEqual(tool_context.state["sprint_report_path"], "", "a new sprint must allocate its own fresh report number, not reuse the previous sprint's")
+        self.assertEqual(tool_context.state["transcript_path"], "", "a new sprint must allocate its own fresh transcript number, not reuse the previous sprint's")
 
     def test_sprint_budget_reset_state_delta_returns_independent_copies(self):
         """Two calls must not share the same nested dict - a caller
@@ -1136,6 +1138,39 @@ class TestWriteConversationTranscript(unittest.TestCase):
         written_paths = [c.args[0] for c in mock_write_file.call_args_list]
         self.assertIn(result["path"], written_paths)
         self.assertIn(result["latest_path"], written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_transcript_path", return_value="specs/reports/TRANSCRIPT-999.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reuses_this_sprints_already_allocated_path(self, mock_write_file, mock_next_path):
+        """GH issue #345 (same bug as #341's sprint_report_path fix):
+        called unconditionally from both create_sprint_report and
+        create_release_pr - without reuse, a single sprint wrote two
+        separate numbered TRANSCRIPT-*.md files for what should be one."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript_path"] = "specs/reports/TRANSCRIPT-001.md"
+        tool_context.state["transcript"] = [{"agent_name": "DevTeam", "role": "model", "content": "hi"}]
+
+        result = _write_conversation_transcript(tool_context)
+
+        mock_next_path.assert_not_called()
+        self.assertEqual(result["path"], "specs/reports/TRANSCRIPT-001.md")
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/TRANSCRIPT-001.md", written_paths)
+        self.assertNotIn("specs/reports/TRANSCRIPT-999.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_transcript_path", return_value="specs/reports/TRANSCRIPT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_first_call_this_sprint_allocates_and_records_a_fresh_path(self, mock_write_file, mock_next_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript"] = [{"agent_name": "DevTeam", "role": "model", "content": "hi"}]
+
+        result = _write_conversation_transcript(tool_context)
+
+        mock_next_path.assert_called_once()
+        self.assertEqual(tool_context.state["transcript_path"], "specs/reports/TRANSCRIPT-001.md")
+        self.assertEqual(result["path"], "specs/reports/TRANSCRIPT-001.md")
 
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_handles_empty_transcript(self, mock_write_file):
