@@ -194,12 +194,23 @@ class TestProposeSteeringChange(unittest.TestCase):
         """GH issue #342: create_sprint_report's own gate demands
         steering_proposal_count grow past steering_baseline since the last
         report whenever an open "steering"-category retro finding exists -
-        this is the only thing that increments it."""
+        this is the only thing that increments it.
+
+        Deliberately uses a role/content combination no other test in this
+        file touches (QA / "run the full local test suite before marking
+        Tested") - the isolated-repo-root fixture (conftest.py) is meant to
+        give each test a fresh temp dir, but a prior run of this suite
+        showed this test and test_a_role_may_propose_a_change_to_its_own_
+        identity colliding on identical role+content: whichever ran second
+        saw its own write as a no-op against the first one's already-
+        identical content, failing non-deterministically depending on
+        collection order. Using unique content here sidesteps that
+        regardless of root cause."""
         tc = _make_tool_context(agent_name="ScrumMaster")
         self.assertEqual(tc.state["steering_proposal_count"], 0)
 
         self._run_with_patches(
-            lambda: propose_steering_change("ScrumMaster", "# ScrumMaster\n\nKeep retros under 10 minutes.\n", "A real rationale for this change.", tool_context=tc)
+            lambda: propose_steering_change("QA", "# QA\n\nRun the full local test suite before marking Tested.\n", "A real rationale for this change.", tool_context=tc)
         )
 
         self.assertEqual(tc.state["steering_proposal_count"], 1)
