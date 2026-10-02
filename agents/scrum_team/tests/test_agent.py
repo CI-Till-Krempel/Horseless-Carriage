@@ -1051,6 +1051,95 @@ class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
         self.assertEqual(interactions[0]["kind"], "stalled")
 
 
+class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #344): advance_story_stage already refuses
+    to mark a story Implemented without a real write_file since the last
+    successful Implemented transition - but nothing previously caught the
+    opposite: DevTeam writing the real implementation, then transferring
+    away without ever calling advance_story_stage("Implemented") for it.
+    """
+
+    def _tool_context_with_story(self):
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [{
+            "id": "US-0001",
+            "title": "Add login flow",
+            "type": "User Story",
+            "stages_completed": ["Draft", "Ready"],
+        }]
+        return tool_context
+
+    def test_blocks_devteam_transferring_away_with_unadvanced_source_writes(self):
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = self._tool_context_with_story()
+        tool_context.state["sprint_files_touched"] = ["app.py"]
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0001", result["message"])
+        self.assertIn("Implemented", result["message"])
+
+    def test_does_not_block_when_nothing_new_was_written_since_last_implemented(self):
+        """source_touch_count <= dev_touch_baseline - the story most
+        recently reached Implemented for real, nothing untracked since."""
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = self._tool_context_with_story()
+        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["dev_touch_baseline"] = 1
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+
+        self.assertIsNone(result)
+
+    def test_only_applies_to_devteam(self):
+        """The same untracked-writes signal for a different role must not
+        trip this - only DevTeam owns the Implemented transition."""
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = self._tool_context_with_story()
+        tool_context.agent_name = "Architect"
+        tool_context.state["sprint_files_touched"] = ["app.py"]
+
+        result = log_tool_invocation_callback(tool, {"agent_name": "ProductOwner"}, tool_context)
+
+        self.assertIsNone(result)
+
+    def test_nudge_does_not_repeat_for_an_immediate_retry_of_the_same_transfer(self):
+        """A reminder DevTeam has already seen once must not become a
+        permanent deadlock - an immediate retry with no new write_file in
+        between must be let through."""
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = self._tool_context_with_story()
+        tool_context.state["sprint_files_touched"] = ["app.py"]
+
+        first = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+        second = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+
+    def test_nudge_fires_again_after_further_new_writes(self):
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = self._tool_context_with_story()
+        tool_context.state["sprint_files_touched"] = ["app.py"]
+
+        first = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+        self.assertIsNotNone(first)
+        second = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+        self.assertIsNone(second)
+
+        # More real source work happens...
+        tool_context.state["sprint_files_touched"] = ["app.py", "templates/index.html"]
+        third = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
+
+        self.assertIsNotNone(third)
+        self.assertEqual(third["status"], "error")
+
+
 class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #191): a real eval run hit a three-agent

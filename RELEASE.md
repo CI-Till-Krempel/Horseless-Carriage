@@ -428,6 +428,28 @@ This is scoped to the eval harness's own driver loop - it's the only place in th
 calls `runner.run_async` directly. An interactive/production run goes through ADK's own runner
 (e.g. the ADK web server), which this fix does not touch.
 
+### Forgotten-implementation nudge (DevTeam transferring away before advancing the stage)
+
+`advance_story_stage`'s Implemented gate already refuses to let a story reach Implemented without a
+real `write_file` since the last successful Implemented transition
+(`dev_touch_baseline`/`sprint_files_touched`) - but nothing previously caught the opposite: DevTeam
+writing the real implementation, then transferring away (to Architect, QA, back to the Orchestrator,
+...) without ever calling `advance_story_stage(..., "Implemented")` for it. A story whose code is
+actually done but whose stage silently stays at Ready/earlier blocks that story - and, via the
+one-story-at-a-time ordering gate, every lower-priority story behind it - from ever reaching Accepted,
+with no mechanical signal anything is wrong (GH issue #344).
+
+`_detect_unadvanced_implementation` (`agents/scrum_team/agent.py`) hooks into
+`log_tool_invocation_callback`'s existing `transfer_to_agent` interception point (alongside the
+self-transfer and loop-breaker checks already there): when DevTeam transfers to a genuinely different
+role while `source_touch_count` (the same signal `advance_story_stage`'s own gate tracks) has grown
+past both `dev_touch_baseline` *and* a new `unadvanced_write_nudge_baseline`, the transfer is blocked
+with a reminder naming the story in progress (`_current_story_in_progress`). The nudge baseline
+snapshots the current touch count on firing, so an immediate retry of the same transfer (no new
+`write_file` in between) is let through - DevTeam may have a real reason to transfer before finishing
+(e.g. a design question for Architect mid-story), and a reminder it has already seen once must not
+become a permanent deadlock. Further new `write_file` activity re-arms the nudge.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

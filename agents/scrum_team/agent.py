@@ -246,6 +246,7 @@ from . import tui
 from .helpers import (
     get_process_overhead_percentage,
     is_story_done,
+    is_source_file,
     get_interaction_level,
     STORY_STAGES,
     get_env_with_deprecated_fallback,
@@ -1911,6 +1912,65 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
 REPEATED_CALL_LOOP_THRESHOLD = 3
 
 
+def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str, target_agent: str) -> Optional[Dict[str, Any]]:
+    """
+    GH issue #344: advance_story_stage already refuses to mark a story
+    Implemented without a real write_file since the last successful
+    Implemented transition (dev_touch_baseline/sprint_files_touched, see
+    that function) - but nothing previously caught the opposite: DevTeam
+    writing the real implementation, then transferring away (to Architect,
+    QA, back to the Orchestrator, ...) without ever calling
+    advance_story_stage("Implemented") for it. A story whose code is
+    actually done but whose stage silently stays at Ready/earlier blocks
+    that story - and, via the one-story-at-a-time ordering gate, every
+    lower-priority story behind it - from ever reaching Accepted, with no
+    mechanical signal anything is wrong.
+
+    Reuses the exact same source_touch_count/dev_touch_baseline signal
+    advance_story_stage's own gate already tracks - "more source files
+    touched than were touched as of the last successful Implemented" -
+    rather than inventing a second, parallel notion of "real work
+    happened". Fires only for DevTeam transferring to a genuinely
+    different role (not a self-transfer, already handled separately).
+
+    Nudges once per new increment of untracked work, not forever: once
+    fired, `unadvanced_write_nudge_baseline` snapshots the current touch
+    count, so an immediate retry of the SAME transfer (no new write_file in
+    between) is let through - DevTeam may have a real reason to transfer
+    before finishing (e.g. a design question for Architect mid-story), and
+    a reminder it has already seen once must not become a permanent
+    deadlock. Further new write_file activity re-arms the nudge.
+    """
+    if agent_name != "DevTeam" or target_agent == "DevTeam":
+        return None
+
+    s = tool_context.state
+    touched = s.get("sprint_files_touched", []) or []
+    source_touch_count = sum(1 for f in touched if is_source_file(f))
+    dev_touch_baseline = s.get("dev_touch_baseline", 0)
+    nudge_baseline = s.get("unadvanced_write_nudge_baseline", 0)
+    if source_touch_count <= dev_touch_baseline or source_touch_count <= nudge_baseline:
+        return None
+
+    s["unadvanced_write_nudge_baseline"] = source_touch_count
+
+    from .tools.requirements import _current_story_in_progress
+    story = _current_story_in_progress(s.get("product_backlog", []) or [])
+    story_ref = f"'{story.get('id') or story.get('title')}'" if story else "the story you were working on"
+    return {
+        "status": "error",
+        "message": (
+            f"Before transferring away: real source code has been written (write_file) since the "
+            f"last story reached Implemented, but no advance_story_stage call has marked {story_ref} "
+            "Implemented yet. If the implementation is actually done, call "
+            "advance_story_stage(title_or_id, \"Implemented\") now, before transferring. If you "
+            "genuinely need to transfer first (e.g. a design question for Architect) and the story "
+            "really isn't done yet, call transfer_to_agent again - this reminder will not repeat "
+            "until further new code is written."
+        ),
+    }
+
+
 def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_name: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Sibling to _detect_transfer_loop, for every OTHER tool: breaks an agent
@@ -2115,6 +2175,10 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
                 )
                 print(f"⚠️ [{agent_name}] blocked self-transfer (agent_name={target_agent})", file=sys.stderr)
                 return {"status": "error", "message": msg}
+            unadvanced_result = _detect_unadvanced_implementation(tool_context, agent_name, target_agent)
+            if unadvanced_result is not None:
+                print(f"⚠️ [{agent_name}] blocked transfer - unadvanced implementation (-> {target_agent})", file=sys.stderr)
+                return unadvanced_result
     else:
         # Any non-transfer tool call is real progress against the
         # transfer-loop breaker - reset that streak so it only fires on
