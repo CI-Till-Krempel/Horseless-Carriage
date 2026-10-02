@@ -853,6 +853,7 @@ class TestStartFeatureBranch(unittest.TestCase):
             "repo": {"default_branch": "main", "develop_branch": "develop"},
             "sprint_number": 1,
             "sprint_backlog_pr_sprint": 1,
+            "product_backlog": [{"id": "US-1", "title": "Add Login!"}],
         }
 
         result = start_feature_branch("US-1", "Add Login!", tool_context=tool_context)
@@ -881,7 +882,7 @@ class TestStartFeatureBranch(unittest.TestCase):
         mock_git_push.return_value = {"status": "ok", "branch": "feature/US-2-a-messy-slug-here"}
         mock_gh_pr_create.return_value = {"status": "ok"}
         tool_context = MagicMock()
-        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1}
+        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1, "product_backlog": [{"id": "US-2", "title": "A Messy Slug!! Here??"}]}
 
         result = start_feature_branch("US-2", "A Messy Slug!! Here??", tool_context=tool_context)
 
@@ -894,7 +895,7 @@ class TestStartFeatureBranch(unittest.TestCase):
     def test_start_feature_branch_reports_error_when_develop_checkout_fails(self, mock_run):
         mock_run.return_value = {"status": "error", "stderr": "no such ref"}
         tool_context = MagicMock()
-        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1}
+        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1, "product_backlog": [{"id": "US-3", "title": "broken"}]}
 
         result = start_feature_branch("US-3", "broken", tool_context=tool_context)
 
@@ -927,13 +928,108 @@ class TestStartFeatureBranch(unittest.TestCase):
         mock_integrate.return_value = {"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]}
         mock_git_push.return_value = {"status": "ok", "branch": "feature/US-4-resume-work"}
         tool_context = MagicMock()
-        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1}
+        tool_context.state = {"sprint_number": 1, "sprint_backlog_pr_sprint": 1, "product_backlog": [{"id": "US-4", "title": "Resume Work"}]}
 
         result = start_feature_branch("US-4", "Resume Work", tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
         mock_integrate.assert_called_once()
         self.assertEqual(mock_run.call_count, 4)
+
+
+class TestStartFeatureBranchOrderingGate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #358): advance_story_stage already
+    refuses to let a story reach Implemented-onward before the
+    higher-priority story immediately ahead of it has reached Accepted -
+    but nothing stopped the real work (start_feature_branch) from starting
+    on a lower-priority story first. Mirrors that same ordering gate here,
+    one step earlier, at the point work actually begins.
+    """
+
+    def _base_state(self, product_backlog):
+        return {
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "product_backlog": product_backlog,
+        }
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_refuses_to_start_a_lower_priority_story_first(self, mock_run, mock_git_push, mock_gh_pr_create):
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([
+            {"id": "US-0001", "title": "First", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0002", "title": "Second", "stages_completed": ["Draft", "Ready"]},
+        ])
+
+        result = start_feature_branch("US-0002", "second-story", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0001", result["message"])
+        self.assertIn("must reach Accepted first", result["message"])
+        mock_git_push.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_allows_starting_once_the_preceding_story_is_accepted(self, mock_run, mock_git_push, mock_gh_pr_create):
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0002-second-story"}
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([
+            {"id": "US-0001", "title": "First", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            {"id": "US-0002", "title": "Second", "stages_completed": ["Draft", "Ready"]},
+        ])
+
+        result = start_feature_branch("US-0002", "second-story", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_skips_a_blocked_predecessor(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """A BLOCKED story shouldn't also freeze every lower-priority story
+        behind it - the team is meant to move on while it waits."""
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0002-second-story"}
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([
+            {
+                "id": "US-0001", "title": "First", "stages_completed": ["Draft", "Ready"],
+                "blocked": {"category": "technical", "question": "which approach?"},
+            },
+            {"id": "US-0002", "title": "Second", "stages_completed": ["Draft", "Ready"]},
+        ])
+
+        result = start_feature_branch("US-0002", "second-story", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_refuses_when_story_is_not_in_product_backlog(self, mock_run):
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([])
+
+        result = start_feature_branch("US-9999", "untracked-story", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("product_backlog", result["message"])
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_first_story_in_backlog_has_no_predecessor(self, mock_run, mock_git_push, mock_gh_pr_create):
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0001-first-story"}
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([
+            {"id": "US-0001", "title": "First", "stages_completed": ["Draft", "Ready"]},
+        ])
+
+        result = start_feature_branch("US-0001", "first-story", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
 
 
 class TestReleasePrStillOpen(unittest.TestCase):
