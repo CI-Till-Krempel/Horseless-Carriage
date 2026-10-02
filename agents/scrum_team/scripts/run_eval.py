@@ -383,6 +383,25 @@ def _blocked_stories(sprint_result: dict) -> dict:
     return blocked
 
 
+def _unresolved_high_priority_general_blocker(sprint_result: dict) -> Optional[dict]:
+    """
+    GH issue #342: a "human"-category retro/impediment finding
+    (add_retro_action/add_impediment's category param) raised with
+    priority="high" is, by definition, something genuinely outside the
+    team's own authority to resolve - this scripted, unattended harness has
+    no human to actually act on it (same reasoning as
+    _sprint_needs_human_this_harness_cannot_provide's "needs_human" case
+    for story-level blockers, just not tied to any one story). Continuing
+    to burn further sprints' budget on work that can't resolve a
+    high-priority human-only blocker is the same wasted-budget bet #336
+    already stops for story-level blockers.
+    """
+    for entry in sprint_result.get("general_blockers") or []:
+        if entry.get("priority") == "high" and not entry.get("resolved"):
+            return entry
+    return None
+
+
 def _sprint_needs_human_this_harness_cannot_provide(sprint_result: dict, previously_blocked_ids: set) -> Optional[tuple]:
     """
     GH issue #336: a real eval run (0.1.0-run39) had a story get BLOCKED by
@@ -594,6 +613,14 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # actually got to run this sprint (cheap-model/budget-constrained
         # sprints sometimes don't) - None otherwise, not a fabricated value.
         "sprint_report_kpis": session.state.get("sprint_report_kpis"),
+        # GH issue #342: "human"-category retro/impediment findings
+        # (add_retro_action/add_impediment's category param) - not tied to
+        # any one story, unlike product_backlog/sprint_backlog's own
+        # `blocked` fields, so captured separately here for
+        # run_eval_analysis.py's Blockers section and this harness's own
+        # stop-early check (_sprint_needs_human_this_harness_cannot_provide)
+        # right below.
+        "general_blockers": session.state.get("general_blockers"),
         "stop_reason": stop_reason,
         # Set by _notify_critical_halt (agent.py) whenever
         # check_cost_budget_callback halts this sprint on a token/USD
@@ -716,6 +743,19 @@ async def _main_async(args: argparse.Namespace) -> dict:
                 "cleanly via the grace allowance - continuing ---",
                 file=sys.stderr,
             )
+
+        general_blocker = _unresolved_high_priority_general_blocker(sprint_result)
+        if general_blocker:
+            print(
+                f"--- sprint {sprint_number}/{args.sprints}: a high-priority human-only retro finding "
+                f"is unresolved ({general_blocker.get('description')!r}) - this scripted harness has no "
+                "human to act on it. Continuing would just burn further sprints' budget - stopping run ---",
+                file=sys.stderr,
+            )
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = "human_blocker_unresolved"
+            manifest["general_blocker"] = general_blocker
+            break
 
         blocker = _sprint_needs_human_this_harness_cannot_provide(sprint_result, previously_blocked_ids)
         if blocker:

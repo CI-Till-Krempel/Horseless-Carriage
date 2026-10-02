@@ -56,3 +56,19 @@ class ScrumState(BaseModel):
     blocking_interactions: List[Dict[str, Any]] = Field(default_factory=list)
     orchestrator_stall_count: int = 0
     overclaim_rejection_counts: Dict[str, int] = Field(default_factory=dict)
+    # GH issue #342: retro-item triage - add_retro_action/add_impediment
+    # now require a category ("technical"/"steering"/"human"). A "human"
+    # category entry becomes a general_blockers record here (not tied to
+    # any one story, unlike raise_story_blocker) - surfaced in the eval
+    # report's Blockers section regardless of story association, and (if
+    # high priority) able to stop an eval run the same way a BLOCKED
+    # story's own stop reasons already do (see run_eval.py).
+    general_blockers: List[Dict[str, Any]] = Field(default_factory=list)
+    # steering_proposal_count only increases via a real, successful
+    # propose_steering_change call (tools/workflow.py) - compared against
+    # steering_baseline by create_sprint_report's own gate, same
+    # "must be NEW since last report" pattern as retro_baseline/kpi_baseline,
+    # so a "steering"-category retro finding can't just be logged and
+    # forgotten the way GH issue #342 found every retro finding was.
+    steering_proposal_count: int = 0
+    steering_baseline: int = 0

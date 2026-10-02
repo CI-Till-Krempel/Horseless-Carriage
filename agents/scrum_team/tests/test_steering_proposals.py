@@ -133,6 +133,9 @@ class TestProposeSteeringChange(unittest.TestCase):
         )
         self.assertEqual(result["status"], "ok")
         self.assertFalse(result["proposed"])
+        # GH issue #342: a no-op must not count as a real proposal
+        # satisfying create_sprint_report's steering gate.
+        self.assertEqual(tc.state["steering_proposal_count"], 0)
 
     def test_successful_proposal_writes_file_pushes_and_opens_draft_pr(self):
         from agents.scrum_team.tools import base
@@ -186,6 +189,20 @@ class TestProposeSteeringChange(unittest.TestCase):
         )
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["proposed"])
+
+    def test_successful_proposal_bumps_the_steering_proposal_count(self):
+        """GH issue #342: create_sprint_report's own gate demands
+        steering_proposal_count grow past steering_baseline since the last
+        report whenever an open "steering"-category retro finding exists -
+        this is the only thing that increments it."""
+        tc = _make_tool_context(agent_name="ScrumMaster")
+        self.assertEqual(tc.state["steering_proposal_count"], 0)
+
+        self._run_with_patches(
+            lambda: propose_steering_change("ScrumMaster", "# ScrumMaster\n\nKeep retros under 10 minutes.\n", "A real rationale for this change.", tool_context=tc)
+        )
+
+        self.assertEqual(tc.state["steering_proposal_count"], 1)
 
     def test_checkout_develop_failure_returns_error_without_writing(self):
         from agents.scrum_team.tools import base

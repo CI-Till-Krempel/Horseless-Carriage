@@ -58,6 +58,9 @@ REPO_STATE_KEYS = [
     "blocking_interactions",
     "budget_reset_since_last_sprint_start",
     "overclaim_rejection_counts",
+    "general_blockers",
+    "steering_proposal_count",
+    "steering_baseline",
 ]
 # Deliberately excluded from the above: github_token, github_app,
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
@@ -174,6 +177,9 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("kpi_update_count", 0)
     s.setdefault("kpi_baseline", 0)
     s.setdefault("overclaim_rejection_counts", {})
+    s.setdefault("general_blockers", [])
+    s.setdefault("steering_proposal_count", 0)
+    s.setdefault("steering_baseline", 0)
     s.setdefault("backlog_scope_complete", False)
     s.setdefault("human_approvals", [])
     s.setdefault("sprint_approval_baseline", 0)
@@ -582,9 +588,66 @@ def log_decision(title: str, decision: str, rationale: str, owner: str, tool_con
     _ = save_state_to_repo(tool_context)
     return {"status": "ok", "decision": entry}
 
-def add_impediment(description: str, owner: str, tool_context=None) -> Dict[str, Any]:
+# GH issue #342: a retro finding must be triaged into exactly one of these -
+# a technical task the team can fix itself (filed as a plannable Issue, see
+# _file_retro_items_as_issues in budget.py), a steering change (how a role
+# behaves/is prompted - requires a propose_steering_change call, see
+# create_sprint_report's own gate), or something genuinely outside the
+# team's own authority (raised as a general_blockers entry below, not tied
+# to any one story). Before this, every retro/impediment finding was
+# auto-filed as a Must-priority Issue uniformly, regardless of what kind of
+# gap it actually was - correct for the first kind, wrong for the other two.
+_RETRO_CATEGORIES = ("technical", "steering", "human")
+_RETRO_PRIORITIES = ("normal", "high")
+
+
+def _file_general_blocker_if_human(category: str, priority: str, text: str, owner: str, tool_context) -> None:
+    """
+    A "human" category retro finding is something genuinely outside the
+    team's own authority to resolve - raised immediately as a
+    general_blockers entry (not story-scoped, unlike raise_story_blocker)
+    so it's visible right away, not just funneled into the same Issue
+    pipeline as a technical task nobody on the team can actually act on.
+    Always records a blocking_interaction too, same "absolutely necessary
+    human feedback" visibility raise_story_blocker already gives story-level
+    blockers (GH issue #53). Best-effort: a notification failure here must
+    never turn an already-logged retro/impediment entry into an error.
+    """
+    if category != "human":
+        return
+    from .notifications import record_blocking_interaction
+
+    s = tool_context.state
+    agent_name = getattr(tool_context, "agent_name", None)
+    entry = {
+        "description": text.strip(),
+        "owner": owner.strip(),
+        "priority": priority,
+        "raised_by": agent_name or "unknown",
+        "resolved": False,
+    }
+    s["general_blockers"] = list(s.get("general_blockers", [])) + [entry]
+    try:
+        record_blocking_interaction(
+            "general_blocker",
+            f"Human-only retro finding ({priority} priority): {text.strip()}",
+            detail=f"Raised by {agent_name or 'unknown'}. Not tied to any one story - see state.general_blockers.",
+            tool_context=tool_context,
+        )
+    except Exception:
+        pass
+
+
+def add_impediment(description: str, owner: str, category: str, priority: str = "normal", tool_context=None) -> Dict[str, Any]:
     """
     Add an impediment to impediment_log.
+
+    `category` (GH issue #342, MANDATORY): "technical" (a real gap the team
+    can fix - gets filed as a plannable Issue), "steering" (a role-behavior
+    gap - requires a propose_steering_change call before the sprint report
+    can close), or "human" (genuinely outside the team's own authority -
+    immediately raised as a general_blockers entry, escalated to the human
+    if `priority="high"`). See _RETRO_CATEGORIES' own comment above.
     """
     if is_low_quality_retro_text(description):
         return {
@@ -595,15 +658,33 @@ def add_impediment(description: str, owner: str, tool_context=None) -> Dict[str,
                 "blocked the process this sprint."
             ),
         }
+    if category not in _RETRO_CATEGORIES:
+        return {
+            "status": "error",
+            "message": f"category must be one of {list(_RETRO_CATEGORIES)}, not {category!r}.",
+        }
+    if priority not in _RETRO_PRIORITIES:
+        return {
+            "status": "error",
+            "message": f"priority must be one of {list(_RETRO_PRIORITIES)}, not {priority!r}.",
+        }
     s = tool_context.state
-    imp = {"description": description.strip(), "owner": owner.strip(), "status": "open"}
+    imp = {"description": description.strip(), "owner": owner.strip(), "status": "open", "category": category}
     s["impediment_log"] = list(s.get("impediment_log", [])) + [imp]
+    _file_general_blocker_if_human(category, priority, description, owner, tool_context)
     _ = save_state_to_repo(tool_context)
     return {"status": "ok", "impediment": imp}
 
-def add_retro_action(action: str, owner: str, success_metric: str, tool_context=None) -> Dict[str, Any]:
+def add_retro_action(action: str, owner: str, success_metric: str, category: str, priority: str = "normal", tool_context=None) -> Dict[str, Any]:
     """
     Add an action item from retrospectives.
+
+    `category` (GH issue #342, MANDATORY): "technical" (a real gap the team
+    can fix - gets filed as a plannable Issue), "steering" (a role-behavior
+    gap - requires a propose_steering_change call before the sprint report
+    can close), or "human" (genuinely outside the team's own authority -
+    immediately raised as a general_blockers entry, escalated to the human
+    if `priority="high"`). See _RETRO_CATEGORIES' own comment above.
     """
     if is_low_quality_retro_text(action) or is_low_quality_retro_text(success_metric):
         return {
@@ -615,14 +696,26 @@ def add_retro_action(action: str, owner: str, success_metric: str, tool_context=
                 "formality to unblock create_sprint_report."
             ),
         }
+    if category not in _RETRO_CATEGORIES:
+        return {
+            "status": "error",
+            "message": f"category must be one of {list(_RETRO_CATEGORIES)}, not {category!r}.",
+        }
+    if priority not in _RETRO_PRIORITIES:
+        return {
+            "status": "error",
+            "message": f"priority must be one of {list(_RETRO_PRIORITIES)}, not {priority!r}.",
+        }
     s = tool_context.state
     entry = {
         "action": action.strip(),
         "owner": owner.strip(),
         "success_metric": success_metric.strip(),
         "status": "open",
+        "category": category,
     }
     s["retro_actions"] = list(s.get("retro_actions", [])) + [entry]
+    _file_general_blocker_if_human(category, priority, action, owner, tool_context)
     _ = save_state_to_repo(tool_context)
     return {"status": "ok", "retro_action": entry}
 
