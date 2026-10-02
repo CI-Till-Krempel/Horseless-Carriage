@@ -165,6 +165,34 @@ def _priority_rank(item: Dict[str, Any]) -> int:
     return _PRIORITY_RANK.get(item.get("priority"), _PRIORITY_RANK["Must"])
 
 
+def _depends_on_cycle(backlog: List[Dict[str, Any]], item_id: str, depends_on: List[str]) -> bool:
+    """GH issue #343: True if saving `item_id`'s depends_on as `depends_on`
+    would create a cycle in the backlog's whole dependency graph (not just
+    a direct self-reference) - e.g. A depends on B, B depends on C, C
+    depends on A. Caught here, at write time, rather than only discovered
+    later as a permanent deadlock when advance_story_stage's own hard
+    dependency gate refuses every item in the cycle forever."""
+    graph = {x.get("id"): list(x.get("depends_on") or []) for x in backlog if x.get("id")}
+    graph[item_id] = list(depends_on)
+    visiting: set = set()
+    visited: set = set()
+
+    def has_cycle(node) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        for dep in graph.get(node) or []:
+            if has_cycle(dep):
+                return True
+        visiting.discard(node)
+        visited.add(node)
+        return False
+
+    return has_cycle(item_id)
+
+
 def _resort_backlog_by_priority(s: Dict[str, Any]) -> None:
     """Stable-sorts product_backlog by MoSCoW rank in place - stable so
     items sharing a priority keep their existing relative order."""
@@ -609,6 +637,28 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
 
     if not item_id and not title:
         return {"status": "error", "message": "Backlog item needs at least 'id' or 'title'."}
+
+    # GH issue #343: validate depends_on before it's ever saved - a cycle
+    # (direct self-reference, or transitive: A depends on B depends on A)
+    # would otherwise only surface later as a permanent deadlock, once
+    # advance_story_stage's own dependency gate refuses every item in the
+    # cycle forever with no way out short of manually editing state.
+    depends_on = item.get("depends_on")
+    if depends_on is not None:
+        if not isinstance(depends_on, list) or not all(isinstance(d, str) for d in depends_on):
+            return {"status": "error", "message": "'depends_on' must be a list of backlog item ID strings."}
+        if item_id in depends_on:
+            return {"status": "error", "message": f"'{item_id}' cannot depend on itself."}
+        if _depends_on_cycle(backlog, item_id, depends_on):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot save this dependency - '{item_id}' depending on {depends_on} would create "
+                    "a cycle in the backlog's dependency graph (one of them transitively depends back "
+                    f"on '{item_id}'). Dependencies must form a strict order, not a loop - check which "
+                    "item's own depends_on list is wrong."
+                ),
+            }
 
     def matches(x: Dict[str, Any]) -> bool:
         return (item_id and x.get("id") == item_id) or (title and x.get("title") == title)
@@ -1356,6 +1406,35 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
                     "Development happens one story at a time, top to bottom, in backlog priority "
                     "order - Draft/Ready grooming may run ahead of it."
+                ),
+            }
+        # GH issue #343: same "actual DEVELOPMENT, not Draft/Ready grooming"
+        # scoping as the preceding-story check right above - an item can be
+        # groomed to Ready with an unmet depends_on (Product Owner still
+        # needs to be able to queue work up ahead of time), but real
+        # implementation work must not start on it until every item it
+        # depends on has actually reached Accepted.
+        depends_on = product_item.get("depends_on") or sprint_item.get("depends_on") or []
+        unmet = []
+        for dep_id in depends_on:
+            dep_product = next((x for x in product_backlog if x.get("id") == dep_id), None)
+            if dep_product is None:
+                # Unknown/removed dependency id - a data-integrity problem
+                # for upsert_story/upsert_issue to fix, not an ordering
+                # block this gate can usefully enforce.
+                continue
+            dep_sprint = next((x for x in sprint_backlog if x.get("id") == dep_id), {})
+            if "Accepted" not in _story_stages_completed(dep_product, dep_sprint):
+                unmet.append(dep_id)
+        if unmet:
+            plural = len(unmet) > 1
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot advance '{story_id}' to {stage} - it depends on {unmet}, which "
+                    f"{'have' if plural else 'has'} not reached Accepted yet (see its depends_on). "
+                    "Resolve the dependency first (or correct depends_on via upsert_story/upsert_issue "
+                    "if it no longer actually applies) before retrying."
                 ),
             }
 

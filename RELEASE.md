@@ -302,6 +302,24 @@ tier, unlike Retrospective Actions/Impediments below) listing every story still 
 sprint closes, so whoever reads the report can give feedback/guidance on it before the next sprint
 starts.
 
+### Structured backlog dependencies (`depends_on`)
+
+Dependencies between stories/issues were previously just an optional free-text field nothing read
+mechanically - priority ordering was only ever as correct as whatever a cheap model remembered to do
+by hand (GH issue #343). `upsert_story`/`upsert_issue` now accept a real `depends_on: [story_id, ...]`
+list. `advance_story_stage` refuses to let an item start real development (Implemented onward - same
+"actual DEVELOPMENT, not Draft/Ready grooming" scoping as the one-story-at-a-time ordering check right
+above, so Product Owner can still queue dependent work up ahead of time) while any `depends_on` item
+hasn't reached Accepted yet, naming the exact unmet dependency. An unknown/removed dependency id is
+treated as a data-integrity problem for Product Owner to fix, not an ordering block, so a stale id
+can't deadlock a story forever.
+
+Saving a `depends_on` edge that would create a cycle (a direct self-reference, or transitively - A
+depends on B depends on C depends on A) is refused at write time (`upsert_backlog_item`), via a DFS
+over the whole backlog's dependency graph - caught here rather than only discovered later as a
+permanent mutual deadlock once `advance_story_stage`'s own gate refuses every item in the cycle
+forever.
+
 ### Sprint retrospective enforcement
 
 `create_sprint_report` (`agents/scrum_team/tools/budget.py`) mechanically refuses to write a
