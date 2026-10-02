@@ -131,6 +131,10 @@ def sprint_budget_reset_state_delta() -> Dict[str, Any]:
         # here so a later sprint's first report call still allocates its own
         # fresh number.
         "sprint_report_path": "",
+        # GH issue #345: mirrors sprint_report_path immediately above, for
+        # TRANSCRIPT-NNN.md's own numbered-path reuse (see
+        # _write_conversation_transcript).
+        "transcript_path": "",
         # GH issue #220: the 75%/90% budget-warning gate (see
         # _maybe_inject_budget_warning, agent.py) - cleared so a new sprint's
         # own approach to the ceiling warns again, rather than staying
@@ -633,10 +637,18 @@ def _write_conversation_transcript(tool_context=None) -> Dict[str, Any]:
                 lines.append(f"\n{content}\n")
 
     report = "".join(lines)
-    numbered_path = _next_transcript_path(tool_context)
+    # GH issue #345 (same bug as #341's sprint_report_path fix): this is
+    # called unconditionally from both create_sprint_report and
+    # create_release_pr's "land the report on develop" step - without
+    # reusing this sprint's already-allocated path, a 5-sprint run wrote 10
+    # numbered TRANSCRIPT-*.md files instead of 5. The content is still
+    # re-rendered fresh every call (transcript keeps growing through the
+    # sprint), only the destination file path is reused.
+    numbered_path = s.get("transcript_path") or _next_transcript_path(tool_context)
     write_file(numbered_path, report, overwrite=True, tool_context=tool_context)
     latest_path = "specs/reports/TRANSCRIPT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
+    s["transcript_path"] = numbered_path
 
     return {"status": "ok", "path": numbered_path, "latest_path": latest_path, "entries": len(transcript)}
 

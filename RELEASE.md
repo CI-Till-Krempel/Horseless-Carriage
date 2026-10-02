@@ -336,6 +336,11 @@ numbered path the sprint has already allocated (set by both `create_sprint_repor
 `render_fallback_sprint_report`, cleared each sprint via `sprint_budget_reset_state_delta`) - a
 repeat call within the same sprint reuses that path instead of burning a new number.
 
+`_write_conversation_transcript` had the exact same bug (GH issue #345), also called unconditionally
+from both `create_sprint_report` and `create_release_pr` - a 5-sprint run (0.1.0-run43) produced 10
+numbered `TRANSCRIPT-NNN.md` files instead of 5. `state.transcript_path` mirrors `sprint_report_path`
+for this function, same reuse-within-the-sprint fix.
+
 ### KPI trends report per-sprint deltas, not cumulative totals
 
 `_kpi_time_series`/`_sprint_metrics_table` (`agents/scrum_team/scripts/run_eval_analysis.py`) read
