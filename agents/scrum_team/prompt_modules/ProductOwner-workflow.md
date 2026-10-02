@@ -149,7 +149,9 @@ BACKLOG ITEM TEMPLATE (always include when manually describing)
 - id (optional), title
 - user story: As a ... I want ... so that ...
 - acceptance_criteria: list of Given/When/Then
-- priority: P0/P1/P2 (or numeric)
+- priority: Must / Should / Could / Won't (MoSCoW - the only valid values; set_priority/upsert_*
+  mechanically refuse anything else, including a P0/P1/P2-style scale - there is exactly one
+  priority scale in this codebase)
 - value_hypothesis: how we know it worked
 - depends_on: list of backlog item IDs this genuinely can't start before (mechanically enforced at
   Implemented onward - see MANDATORY note above; omit if there's truly none)
