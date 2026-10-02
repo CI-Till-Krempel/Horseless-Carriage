@@ -347,6 +347,20 @@ and 2's already-accepted items too, hiding the run's actual (tapering-off) veloc
 now diff each sprint's set of items-at-stage-X (by item ID/title) against the previous sprint's set,
 reporting how many items newly reached that stage *this* sprint.
 
+### KPI "no data" message distinguishes never-called from called-but-null
+
+`_render_kpi_graphs` (`agents/scrum_team/scripts/run_eval_analysis.py`) rendered one generic "never
+computed... not called in any sprint" message whenever a KPI's time series was empty - but an empty
+series has two different causes: `calculate_kpis`/`update_sprint_report` genuinely never ran this
+run, or it ran every sprint and correctly reported `None` for one specific sub-metric with its own
+explanatory `*_note` (e.g. `defect_escape_rate_note: "not available - no defect/bug-lifecycle
+tracking exists yet"`, `tools/quality.py`). A real run (0.1.0-run43) showed the report falsely
+claiming QualityGuardian "was not called in any sprint" for defect escape rate, while the same run's
+Say-Do Ratio - sourced from the exact same `calculate_kpis` calls - had real values for 4 of 5
+sprints. `_kpi_unavailable_message` now checks each sprint's `sprint_report_kpis` for the specific
+`*_note` field before falling back to the generic message, so the report states the real,
+more-useful reason instead of misrepresenting the team's process.
+
 ### Human interaction levels
 
 `record_human_approval`'s two gates (`advance_story_stage(..., "Implemented")` and

@@ -156,6 +156,34 @@ class TestRenderKpiGraphs:
 
         assert "### Say-Do Ratio" in rendered
         assert "No data available for this run" in rendered
+        assert "never computed" in rendered
+
+    def test_kpi_called_but_null_reports_the_specific_note_not_never_called(self):
+        """GH issue #347: a real run (0.1.0-run43) showed calculate_kpis
+        running every sprint and correctly returning
+        defect_escape_rate=None with its own explanatory note, but the
+        report claimed it "was not called in any sprint" - factually wrong,
+        and disprovable by the same run's own Say-Do Ratio data (sourced
+        from the exact same calculate_kpis calls)."""
+        kpis = {
+            "team_effectiveness": {"say_do_ratio": 1.0},
+            "result_quality": {
+                "defect_escape_rate": None,
+                "defect_escape_rate_note": "not available - no defect/bug-lifecycle tracking exists yet",
+            },
+        }
+        manifest = {"sprints": [_sprint(1, kpis=kpis), _sprint(2, kpis=kpis)]}
+
+        rendered = _render_kpi_graphs(manifest)
+
+        section_start = rendered.index("### Quality (defect escape rate)")
+        section_end = rendered.index("### Test Coverage")
+        section = rendered[section_start:section_end]
+        assert "not available - no defect/bug-lifecycle tracking exists yet" in section
+        assert "never computed" not in section
+        assert "was not called in any sprint" not in section
+        # Say-Do Ratio itself DID have data - still rendered as a real chart, unaffected.
+        assert "line [1, 1]" in rendered
 
 
 def test_render_report_includes_kpi_trends_section():
