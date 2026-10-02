@@ -311,6 +311,16 @@ tier, unlike Retrospective Actions/Impediments below) listing every story still 
 sprint closes, so whoever reads the report can give feedback/guidance on it before the next sprint
 starts.
 
+### One-at-a-time ordering also gates the start of work, not just stage completion (GH issue #358)
+
+`advance_story_stage`'s one-story-at-a-time ordering gate only ever refused a story reaching
+Implemented-onward before the higher-priority story ahead of it reached Accepted - nothing stopped
+`start_feature_branch` (the real work - writing code, opening a PR) from starting on a lower-priority
+story first, wasting effort if the higher-priority one later needs rework or gets blocked.
+`start_feature_branch` now runs the exact same `_preceding_story` check (same BLOCKED-predecessor
+skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
+work actually begins, not just when a stage transition is claimed.
+
 ### Structured backlog dependencies (`depends_on`)
 
 Dependencies between stories/issues were previously just an optional free-text field nothing read
