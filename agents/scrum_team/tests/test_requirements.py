@@ -692,6 +692,7 @@ class TestRecordAcceptanceCheck(unittest.TestCase):
         self.assertIn("no other story", result["message"])
 
 
+@patch("agents.scrum_team.tools.github.gh_pr_comment", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestDenyReview(unittest.TestCase):
@@ -706,7 +707,7 @@ class TestDenyReview(unittest.TestCase):
 
     _VALID_REASON = "The pagination logic off-by-one errors on the last page - fix the loop bound."
 
-    def test_architect_denies_reviewed_with_concrete_reason(self, mock_save, mock_md):
+    def test_architect_denies_reviewed_with_concrete_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -716,58 +717,58 @@ class TestDenyReview(unittest.TestCase):
             self.assertEqual(denial["reason"], self._VALID_REASON)
             self.assertEqual(denial["by"], "Architect")
 
-    def test_qa_denies_tested_with_concrete_reason(self, mock_save, mock_md):
+    def test_qa_denies_tested_with_concrete_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         result = deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Tested")
 
-    def test_product_owner_denies_accepted_with_concrete_reason(self, mock_save, mock_md):
+    def test_product_owner_denies_accepted_with_concrete_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
         result = deny_review("US-0001", "Accepted", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Accepted")
 
-    def test_rejects_empty_reason(self, mock_save, mock_md):
+    def test_rejects_empty_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = deny_review("US-0001", "Reviewed", "", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertNotIn("review_denial", tc.state["product_backlog"][0])
 
-    def test_rejects_too_short_reason(self, mock_save, mock_md):
+    def test_rejects_too_short_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = deny_review("US-0001", "Reviewed", "bad code", tool_context=tc)
         self.assertEqual(result["status"], "error")
 
-    def test_rejects_generic_reason(self, mock_save, mock_md):
+    def test_rejects_generic_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         for generic in ("not good", "denied", "needs work", "does not meet criteria"):
             with self.subTest(generic=generic):
                 result = deny_review("US-0001", "Tested", generic, tool_context=tc)
                 self.assertEqual(result["status"], "error")
 
-    def test_rejects_placeholder_reason(self, mock_save, mock_md):
+    def test_rejects_placeholder_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
         result = deny_review("US-0001", "Accepted", "<describe what's wrong here>", tool_context=tc)
         self.assertEqual(result["status"], "error")
 
-    def test_rejects_wrong_role(self, mock_save, mock_md):
+    def test_rejects_wrong_role(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("DevTeam", ["Ready", "Implemented"])
         result = deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("Architect", result["message"])
 
-    def test_rejects_non_deniable_stage(self, mock_save, mock_md):
+    def test_rejects_non_deniable_stage(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("ProductOwner", [])
         result = deny_review("US-0001", "Draft", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "error")
 
-    def test_unknown_story_errors(self, mock_save, mock_md):
+    def test_unknown_story_errors(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = deny_review("US-9999", "Reviewed", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "error")
 
-    def test_advancing_past_denied_stage_clears_the_denial(self, mock_save, mock_md):
+    def test_advancing_past_denied_stage_clears_the_denial(self, mock_save, mock_md, mock_pr_comment):
         """A resolved denial shouldn't linger as stale feedback once the
         story actually advances past the stage it was denied at."""
         tc = _tool_context("Architect", ["Ready", "Implemented"])
@@ -782,14 +783,14 @@ class TestDenyReview(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 
-    def test_denying_a_different_stage_does_not_clear_an_unrelated_denial(self, mock_save, mock_md):
+    def test_denying_a_different_stage_does_not_clear_an_unrelated_denial(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
         # Some other, unrelated progress happens (e.g. re-review not yet done) -
         # the denial must survive until the SAME stage actually advances.
         self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Reviewed")
 
-    def test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md):
+    def test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md, mock_pr_comment):
         """
         Acceptance Criteria (ISSUE-0044): the Reviewed/Tested gate's own
         evidence check is sprint-wide (pr_review_calls), not scoped to one
@@ -823,7 +824,7 @@ class TestDenyReview(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 
-    def test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md):
+    def test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md, mock_pr_comment):
         """Same ISSUE-0044 fix, QA/Tested side."""
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         tc.state["pr_review_calls"] = {"QA": 1}
@@ -849,7 +850,7 @@ class TestDenyReview(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 
-    def test_accepted_denial_blocks_advance_even_if_already_checked_once(self, mock_save, mock_md):
+    def test_accepted_denial_blocks_advance_even_if_already_checked_once(self, mock_save, mock_md, mock_pr_comment):
         """Same ISSUE-0044 fix, Accepted/record_acceptance_check side
         (ISSUE-0043): a denial must require a genuinely NEW
         record_acceptance_check call, not just reuse of the check that led
@@ -875,6 +876,36 @@ class TestDenyReview(unittest.TestCase):
             result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+    def test_denial_posts_a_pr_comment_with_the_reason(self, mock_save, mock_md, mock_pr_comment):
+        """GH issue #346: a real eval run showed QA posting "Approved for
+        Tested stage" PR comments immediately alongside a deny_review call
+        denying that exact same attempt - the only GitHub-visible trail said
+        the opposite of what actually happened, since the denial reason
+        only ever reached the story's own Markdown file. Posting it from
+        deny_review itself guarantees the PR reflects the real outcome."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        result = deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_pr_comment.assert_called_once()
+        posted_body = mock_pr_comment.call_args.args[0] if mock_pr_comment.call_args.args else mock_pr_comment.call_args.kwargs["body"]
+        self.assertIn("US-0001", posted_body)
+        self.assertIn("Tested", posted_body)
+        self.assertIn(self._VALID_REASON, posted_body)
+        self.assertEqual(result["pr_comment"], {"status": "ok"})
+
+    def test_denial_still_succeeds_if_the_pr_comment_post_fails(self, mock_save, mock_md, mock_pr_comment):
+        """Best-effort, same as every other side-notification in this
+        codebase - a comment-post failure must not turn an already-recorded
+        denial into an error."""
+        mock_pr_comment.return_value = {"status": "error", "message": "no open PR for this branch"}
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        result = deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["reason"], self._VALID_REASON)
+        self.assertEqual(result["pr_comment"]["status"], "error")
 
 
 class TestDenyReviewSurfacesInStoryMarkdown(unittest.TestCase):
