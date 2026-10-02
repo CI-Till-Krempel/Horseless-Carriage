@@ -1848,6 +1848,25 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
     merged_item = {**product_item, **sprint_item, **update, "id": story_id, "title": title}
     story_md_result = _update_story_markdown(merged_item, tool_context)
 
+    # GH issue #346: a real eval run showed QA posting "Approved for Tested
+    # stage" PR comments immediately alongside - sometimes right before,
+    # sometimes right after - a deny_review call denying that exact same
+    # review attempt. The denial reason was already mechanically written to
+    # the story's own Markdown file above, but never reached the PR itself,
+    # which is the one place a human reviewing the PR would actually look -
+    # so the only GitHub-visible trail said the opposite of what happened.
+    # Posting it here, from the denial itself, guarantees it reaches the PR
+    # every time rather than depending on a separate, independent free-text
+    # gh_pr_comment call the model might get wrong or skip. Best-effort,
+    # same as every other side-notification in this codebase (e.g.
+    # _notify_critical_halt) - a comment-post failure (no open PR yet, gh
+    # auth hiccup) must not turn an already-recorded denial into an error.
+    from .github import gh_pr_comment
+    pr_comment_result = gh_pr_comment(
+        f"⚠️ Review denied at {stage} for '{story_id}': {reason.strip()}",
+        tool_context=tool_context,
+    )
+
     return {
         "status": "ok",
         "story_id": story_id,
@@ -1858,6 +1877,7 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
             "(read_doc) for DevTeam's next steps."
         ),
         "story_markdown": story_md_result,
+        "pr_comment": pr_comment_result,
     }
 
 

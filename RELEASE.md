@@ -243,6 +243,15 @@ for - so it's mechanically visible and actionable, not just something said once 
 conversation turn. Cleared automatically by `advance_story_stage` once the story actually advances
 past the stage it was denied at, so a resolved denial doesn't linger as stale feedback.
 
+**The denial also posts to the PR itself (GH issue #346).** A real eval run showed QA posting
+"Approved for Tested stage" `gh_pr_comment`s immediately alongside `deny_review` calls denying that
+exact same attempt - the denial reason only ever reached the story's Markdown file before this, never
+the PR, so the only GitHub-visible trail said the opposite of what actually happened. `deny_review`
+now posts a `gh_pr_comment` itself, generated from the denial's own reason, instead of relying on a
+separate free-text call the model might get wrong or skip - best-effort, same as every other side
+notification in this codebase (a comment-post failure doesn't turn an already-recorded denial into an
+error).
+
 **Accepted has its own evidence gate (ISSUE-0043).** Unlike Reviewed/Tested, Product Owner doesn't
 leave PR reviews, so there was nothing for Accepted's gate to check at all - any role could
 previously call `advance_story_stage(id, "Accepted")` on assertion alone.
