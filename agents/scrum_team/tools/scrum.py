@@ -48,6 +48,7 @@ REPO_STATE_KEYS = [
     "sprint_approval_baseline",
     "release_approval_baseline",
     "dev_touch_baseline",
+    "unadvanced_write_nudge_baseline",
     "sprint_files_touched",
     "last_check_build",
     "pr_review_calls",
@@ -179,6 +180,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("sprint_approval_baseline", 0)
     s.setdefault("release_approval_baseline", 0)
     s.setdefault("dev_touch_baseline", 0)
+    s.setdefault("unadvanced_write_nudge_baseline", 0)
     # GH issue #119: previously only dev_touch_baseline was persisted
     # (REPO_STATE_KEYS), not the running sprint_files_touched list it's
     # compared against - after any state reload mid-sprint (a restart, a

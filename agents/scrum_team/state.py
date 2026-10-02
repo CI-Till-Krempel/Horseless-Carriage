@@ -46,6 +46,15 @@ class ScrumState(BaseModel):
     sprint_approval_baseline: int = 0
     release_approval_baseline: int = 0
     dev_touch_baseline: int = 0
+    # GH issue #344: mirrors dev_touch_baseline for
+    # _detect_unadvanced_implementation (agent.py) - the touch-count
+    # snapshot taken the last time DevTeam was nudged for transferring away
+    # with un-advanced implementation work, so the same reminder doesn't
+    # repeat forever once DevTeam has already seen it. No leading
+    # underscore - Pydantic treats underscore-prefixed fields as private
+    # attributes, excluded from model_dump(), which would silently break
+    # persistence to .hc/state.json.
+    unadvanced_write_nudge_baseline: int = 0
     last_check_build: Optional[Dict[str, Any]] = None
     dependency_manifest_write_count: int = 0
     pr_review_calls: Dict[str, int] = Field(default_factory=dict)
