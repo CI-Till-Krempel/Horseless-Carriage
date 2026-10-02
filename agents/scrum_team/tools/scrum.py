@@ -62,6 +62,7 @@ REPO_STATE_KEYS = [
     "general_blockers",
     "steering_proposal_count",
     "steering_baseline",
+    "blocked_story_ids_as_of_last_report",
 ]
 # Deliberately excluded from the above: github_token, github_app,
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
@@ -180,6 +181,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("overclaim_rejection_counts", {})
     s.setdefault("general_blockers", [])
     s.setdefault("steering_proposal_count", 0)
+    s.setdefault("blocked_story_ids_as_of_last_report", [])
     s.setdefault("steering_baseline", 0)
     s.setdefault("backlog_scope_complete", False)
     s.setdefault("human_approvals", [])

@@ -683,6 +683,25 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
     if missing_msg:
         return {"status": "error", "message": missing_msg}
 
+    # GH issue #359: a story cannot be resolved in reasonable effort gets
+    # marked BLOCKED with a specific reason (raise_story_blocker) - work on
+    # it should stop there until the reason is actually resolved
+    # (resolve_story_blocker), not continue regardless. advance_story_stage
+    # already refuses every further stage transition while `blocked` is
+    # set; nothing previously stopped the real work (this call) from
+    # starting/continuing on it anyway.
+    for item in state.get("product_backlog", []) or []:
+        if (item.get("id") == story_id or item.get("title") == story_id) and item.get("blocked"):
+            blocked = item["blocked"]
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot start work on '{story_id}' - it is BLOCKED ({blocked.get('category')}): "
+                    f"{blocked.get('question')}. Call resolve_story_blocker('{story_id}', resolution) "
+                    "once this has been answered, then retry."
+                ),
+            }
+
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)
     branch = f"feature/{story_id}-{_slugify(slug)}"
