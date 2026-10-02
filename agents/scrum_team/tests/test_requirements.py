@@ -574,6 +574,124 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestDependsOnGate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #343): a story/issue whose depends_on
+    list names another backlog item not yet Accepted must be mechanically
+    refused when it would start real development (Implemented onward) -
+    same "actual DEVELOPMENT, not Draft/Ready grooming" scoping as the
+    one-story-at-a-time ordering gate (TestOneStoryAtATimeOrdering above).
+    """
+
+    def _context_with_dependency(self, depends_on_stages):
+        """US-0001 (depends_on=["US-0002"]) listed FIRST in product_backlog
+        - so _preceding_story returns None for it, isolating this gate's
+        own check from the unrelated one-story-at-a-time ordering gate."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        dependent = _base_story(["Draft", "Ready"])
+        dependent["id"] = "US-0001"
+        dependent["depends_on"] = ["US-0002"]
+        dependency = _base_story(["Draft"] + list(depends_on_stages))
+        dependency["id"] = "US-0002"
+        dependency["title"] = "The dependency"
+
+        tc.state["product_backlog"] = [dependent, dependency]
+        tc.state["sprint_backlog"] = [dict(dependent), dict(dependency)]
+        tc.agent_name = "DevTeam"
+        tc.state["sprint_number"] = 1
+        tc.state["sprint_backlog_pr_sprint"] = 1
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        return tc
+
+    def test_blocks_implemented_while_dependency_not_yet_accepted(self, mock_save, mock_md, mock_roadmap):
+        tc = self._context_with_dependency(["Ready", "Implemented", "Reviewed", "Tested"])
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0002", result["message"])
+        self.assertIn("depends on", result["message"])
+
+    def test_does_not_block_ready_while_dependency_not_yet_accepted(self, mock_save, mock_md, mock_roadmap):
+        """Draft/Ready grooming is exempt - Product Owner must be able to
+        queue work up ahead of time even with an unmet dependency."""
+        tc = self._context_with_dependency([])
+        tc.agent_name = "ProductOwner"
+        result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_allows_implemented_once_dependency_is_accepted(self, mock_save, mock_md, mock_roadmap):
+        tc = self._context_with_dependency(["Ready", "Implemented", "Reviewed", "Tested", "Accepted"])
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_unknown_dependency_id_does_not_block_forever(self, mock_save, mock_md, mock_roadmap):
+        """A removed/typo'd dependency id is a data-integrity problem for
+        upsert_story/upsert_issue to fix, not an ordering block this gate
+        can usefully enforce - must not deadlock the story forever."""
+        tc = self._context_with_dependency([])
+        tc.state["product_backlog"][0]["depends_on"] = ["US-9999"]
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+
+class TestDependsOnCycleDetection(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #343): a depends_on edge that would
+    create a cycle (direct self-reference, or transitive: A -> B -> C -> A)
+    must be refused at write time - caught here, not discovered later as a
+    permanent mutual deadlock in advance_story_stage's dependency gate.
+    """
+
+    def _tc_with_backlog(self, backlog):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = backlog
+        return tc
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_rejects_direct_self_dependency(self, mock_save):
+        tc = self._tc_with_backlog([{"id": "US-0001", "title": "A"}])
+        result = upsert_story({"id": "US-0001", "depends_on": ["US-0001"]}, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("cannot depend on itself", result["message"])
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_rejects_transitive_cycle(self, mock_save):
+        tc = self._tc_with_backlog([
+            {"id": "US-0001", "title": "A", "depends_on": ["US-0002"]},
+            {"id": "US-0002", "title": "B", "depends_on": ["US-0003"]},
+            {"id": "US-0003", "title": "C"},
+        ])
+        # US-0003 depending back on US-0001 closes the loop A -> B -> C -> A.
+        result = upsert_story({"id": "US-0003", "depends_on": ["US-0001"]}, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("cycle", result["message"])
+        # The rejected edge must never have been saved.
+        self.assertEqual(tc.state["product_backlog"][2].get("depends_on"), None)
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_accepts_a_real_non_cyclical_chain(self, mock_save, mock_md):
+        tc = self._tc_with_backlog([
+            {"id": "US-0001", "title": "A"},
+            {"id": "US-0002", "title": "B", "depends_on": ["US-0001"]},
+        ])
+        result = upsert_story({"id": "US-0003", "title": "C", "depends_on": ["US-0002"]}, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_depends_on_must_be_a_list_of_strings(self, mock_save):
+        tc = self._tc_with_backlog([{"id": "US-0001", "title": "A"}])
+        result = upsert_story({"id": "US-0001", "depends_on": "US-0002"}, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("list", result["message"])
+
+
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestDraftStage(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #94): Draft is a real, ordered STORY_STAGES
