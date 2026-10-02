@@ -227,6 +227,46 @@ def _format_kpi_value(value) -> str:
     return f"{value:g}" if isinstance(value, float) else str(value)
 
 
+# GH issue #347: which (parent dict, note key) inside a sprint's
+# sprint_report_kpis payload explains an empty series for each of the 3 KPIs
+# sourced from calculate_kpis (tools/quality.py) - used only to distinguish
+# "calculate_kpis never ran this run at all" from "it ran every sprint, but
+# this specific sub-metric has no underlying data source yet", which
+# calculate_kpis already reports honestly via its own *_note field in that
+# same payload. Confusing the two misrepresented a real run (0.1.0-run43):
+# the report claimed QualityGuardian "was not called in any sprint" for
+# defect escape rate, while the same run's Say-Do Ratio - sourced from the
+# exact same calculate_kpis calls - had real values for 4 of 5 sprints.
+_KPI_NOTE_LOCATIONS = {
+    "Say-Do Ratio": ("team_effectiveness", "say_do_ratio_note"),
+    "Quality (defect escape rate)": ("result_quality", "defect_escape_rate_note"),
+    "Test Coverage": ("maintainability", "test_coverage_note"),
+}
+
+
+def _kpi_unavailable_message(manifest: dict, name: str) -> str:
+    """Why `name`'s series ended up empty in _kpi_time_series - see
+    _KPI_NOTE_LOCATIONS' own comment for the exact distinction this draws."""
+    location = _KPI_NOTE_LOCATIONS.get(name)
+    if location:
+        parent_key, note_key = location
+        for sprint in manifest.get("sprints", []):
+            kpis = sprint.get("sprint_report_kpis") or {}
+            if not kpis:
+                continue
+            note = (kpis.get(parent_key) or {}).get(note_key)
+            if note:
+                return (
+                    f"No data available for this run - {note} (QualityGuardian's "
+                    "calculate_kpis did run this run, this specific metric just has no "
+                    "data source yet)."
+                )
+    return (
+        "No data available for this run - never computed (QualityGuardian's "
+        "calculate_kpis/update_sprint_report was not called in any sprint)."
+    )
+
+
 def _render_kpi_graphs(manifest: dict) -> str:
     """Renders one mermaid xychart-beta line graph per KPI (GitHub renders
     mermaid natively in Markdown) plus a combined table, so the trend is
@@ -261,8 +301,7 @@ def _render_kpi_graphs(manifest: dict) -> str:
             lines += [
                 f"### {name}",
                 "",
-                "No data available for this run - never computed (QualityGuardian's "
-                "calculate_kpis/update_sprint_report was not called in any sprint).",
+                _kpi_unavailable_message(manifest, name),
                 "",
             ]
             continue
