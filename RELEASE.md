@@ -311,6 +311,26 @@ tier, unlike Retrospective Actions/Impediments below) listing every story still 
 sprint closes, so whoever reads the report can give feedback/guidance on it before the next sprint
 starts.
 
+### One canonical priority scale, mechanically enforced (GH issue #355)
+
+There was no single, enforced priority scale - `_PRIORITY_RANK`/`_priority_rank` (the sort the whole
+backlog ordering gate depends on) only ever understood MoSCoW (`Must`/`Should`/`Could`/`Won't`), but
+`ProductOwner-workflow.md`'s own BACKLOG ITEM TEMPLATE told Product Owner to use a completely
+different scale ("priority: P0/P1/P2 (or numeric)"), and `set_priority`/`upsert_backlog_item`
+performed zero validation on the value. A real eval run used `"P0"`/`"P2"`/`"Must"` interchangeably
+across different items - since `"P0"`/`"P2"` aren't real MoSCoW values, `_priority_rank`'s own
+fallback silently ranked them as `"Must"` (the highest priority), the *opposite* of what a `"P2"`
+(intended low, per the very scale the prompt taught) was meant to convey.
+
+MoSCoW stays the one canonical scale (it's already what the sort mechanism is built around - no
+migration needed). `set_priority` and `upsert_backlog_item` (so `upsert_story`/`upsert_epic`/
+`upsert_issue`, and `plan_backlog_item` which delegates to `set_priority`) now refuse any `priority`
+outside `{"Must", "Should", "Could", "Won't"}` outright, naming the valid values. `_priority_rank`'s
+existing "no priority set at all defaults to `Must`'s rank" behavior is deliberately left unchanged -
+that's a different, already-justified case (a story nobody has explicitly deprioritized shouldn't be
+silently pushed to the back of the queue) from a value someone explicitly tried to set using the
+wrong scale, which validation now prevents from ever being saved in the first place.
+
 ### Structured backlog dependencies (`depends_on`)
 
 Dependencies between stories/issues were previously just an optional free-text field nothing read

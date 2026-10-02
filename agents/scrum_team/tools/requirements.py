@@ -160,9 +160,28 @@ def _is_concrete_denial_reason(reason: str) -> bool:
 # silently pushed to the back of the queue.
 _PRIORITY_RANK = {"Must": 0, "Should": 1, "Could": 2, "Won't": 3}
 
+# GH issue #355: the one, canonical priority scale - MoSCoW, since it's
+# already what _PRIORITY_RANK/the whole backlog-sort mechanism is built
+# around. Enforced at write time (set_priority/upsert_backlog_item below)
+# so a different scale (a real eval run mixed "P0"/"P2" in alongside
+# "Must") can never reach _priority_rank's own lookup in the first place -
+# that lookup's "unrecognized value silently ranks as Must (highest)"
+# fallback was only ever meant to cover a genuinely *unset* priority (see
+# the comment above _PRIORITY_RANK), not a mistyped/wrong-scale one.
+VALID_PRIORITIES = tuple(_PRIORITY_RANK.keys())
+
 
 def _priority_rank(item: Dict[str, Any]) -> int:
     return _PRIORITY_RANK.get(item.get("priority"), _PRIORITY_RANK["Must"])
+
+
+def _validate_priority(priority: str) -> str | None:
+    """None if `priority` is a valid MoSCoW value, else an error message
+    naming the valid ones - shared by set_priority and upsert_backlog_item
+    so neither can drift out of sync with the other on what's accepted."""
+    if priority not in VALID_PRIORITIES:
+        return f"priority must be one of {list(VALID_PRIORITIES)} (MoSCoW), not {priority!r}."
+    return None
 
 
 def _depends_on_cycle(backlog: List[Dict[str, Any]], item_id: str, depends_on: List[str]) -> bool:
@@ -621,6 +640,15 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
             ),
         }
 
+    # GH issue #355: same validation as set_priority - a priority set
+    # directly here (upsert_story/upsert_epic/upsert_issue) must use the
+    # one canonical MoSCoW scale too, not a different one that would
+    # silently misrank via _priority_rank's fallback.
+    if "priority" in item:
+        error = _validate_priority(item["priority"])
+        if error:
+            return {"status": "error", "message": error}
+
     s = tool_context.state
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))
     item_id = item.get("id")
@@ -762,7 +790,19 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
     (_preceding_story, which reads backlog order as priority order) actually
     reflects the change - a story newly marked "Must" now really does jump
     ahead of the lower-priority stories still blocking it.
+
+    GH issue #355: `priority` is validated against VALID_PRIORITIES - a
+    real eval run used "P0"/"P2" interchangeably with "Must" across
+    different items, and since those aren't real MoSCoW values,
+    _priority_rank's lookup silently ranked them as if "Must" (the highest
+    priority) regardless of what was actually intended. There is exactly
+    one priority scale in this codebase (MoSCoW); this refuses anything
+    else outright rather than silently misranking it.
     """
+    error = _validate_priority(priority)
+    if error:
+        return {"status": "error", "message": error}
+
     from .scrum import save_state_to_repo
     s = tool_context.state
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))

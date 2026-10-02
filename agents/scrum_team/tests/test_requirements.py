@@ -1432,7 +1432,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
     def test_unknown_item_priority_failure_propagates(self, mock_save):
         tc = self._tool_context()
-        result = plan_backlog_item("does-not-exist", priority="High", tool_context=tc)
+        result = plan_backlog_item("does-not-exist", priority="Must", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("not found", result["message"].lower())
 
@@ -1441,7 +1441,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     def test_roadmap_failure_propagates_even_when_priority_succeeds(self, mock_save, mock_update_roadmap):
         mock_update_roadmap.return_value = {"status": "error", "message": "ROADMAP.md not found and could not be seeded."}
         tc = self._tool_context()
-        result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
+        result = plan_backlog_item("US-0001", priority="Must", version="v0.2", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("ROADMAP.md", result["message"])
         # The priority update itself succeeded and should still be reported.
@@ -1451,7 +1451,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
     def test_all_sub_calls_succeeding_reports_ok(self, mock_save, mock_update_roadmap):
         tc = self._tool_context()
-        result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
+        result = plan_backlog_item("US-0001", priority="Must", version="v0.2", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
 
@@ -1516,6 +1516,63 @@ class TestPriorityAffectsBacklogOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         ids = [x["id"] for x in tc.state["product_backlog"]]
         self.assertEqual(ids, ["US-0002", "US-0001"])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_set_priority_rejects_a_non_moscow_value(self, mock_save, mock_md):
+        """GH issue #355: a real eval run used "P0"/"P2" interchangeably
+        with "Must" across different items - since those aren't real
+        MoSCoW values, _priority_rank's lookup silently ranked them as if
+        "Must" (highest priority), the opposite of what a "P2" (intended
+        low) was meant to convey. There is exactly one priority scale."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        for bogus in ("P0", "P1", "P2", "High", "1", ""):
+            with self.subTest(priority=bogus):
+                result = set_priority("US-0001", bogus, tool_context=tc)
+                self.assertEqual(result["status"], "error")
+                self.assertIn("Must", result["message"])
+                # The rejected value must never have been saved.
+                self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_set_priority_accepts_every_real_moscow_value(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        for real in ("Must", "Should", "Could", "Won't"):
+            with self.subTest(priority=real):
+                result = set_priority("US-0001", real, tool_context=tc)
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(tc.state["product_backlog"][0]["priority"], real)
+
+    def test_upsert_backlog_item_rejects_a_non_moscow_priority(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+
+        result = upsert_backlog_item({"id": "US-0001", "title": "First", "priority": "P0"}, tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Must", result["message"])
+        self.assertEqual(tc.state["product_backlog"], [])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_plan_backlog_item_propagates_the_priority_rejection(self, mock_save, mock_md):
+        """plan_backlog_item delegates to set_priority - its own validation
+        must be inherited, not bypassed via this alternate entry point."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        result = plan_backlog_item("US-0001", priority="P0", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
 
 
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
