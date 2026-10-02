@@ -15,6 +15,7 @@ from agents.scrum_team.scripts.run_eval_analysis import (
     _render_kpi_graphs,
     _render_report,
     _collect_blockers,
+    _collect_general_blockers,
     _render_blockers_section,
     _render_stopped_early_callout,
 )
@@ -203,12 +204,13 @@ def test_render_report_includes_kpi_trends_section():
     assert "## KPI Trends" in report
 
 
-def _sprint_with_backlog(number, product_backlog=None, sprint_backlog=None):
+def _sprint_with_backlog(number, product_backlog=None, sprint_backlog=None, general_blockers=None):
     return {
         "sprint_number": number,
         "product_backlog": product_backlog or [],
         "sprint_backlog": sprint_backlog or [],
         "sprint_report_kpis": None,
+        "general_blockers": general_blockers or [],
     }
 
 
@@ -249,6 +251,24 @@ class TestCollectBlockers:
         assert _collect_blockers(manifest) == []
 
 
+class TestCollectGeneralBlockers:
+    """GH issue #342: unresolved "human"-category retro/impediment findings
+    (add_retro_action/add_impediment's category param) - not tied to any
+    one story, unlike _collect_blockers above."""
+
+    def test_empty_with_no_sprints(self):
+        assert _collect_general_blockers({"sprints": []}) == []
+
+    def test_finds_unresolved_general_blockers_in_the_last_sprint(self):
+        manifest = {"sprints": [_sprint_with_backlog(1, general_blockers=[
+            {"description": "Need a product decision", "priority": "high", "resolved": False, "raised_by": "ScrumMaster"},
+            {"description": "Already handled", "priority": "normal", "resolved": True, "raised_by": "ScrumMaster"},
+        ])]}
+        result = _collect_general_blockers(manifest)
+        assert len(result) == 1
+        assert result[0]["description"] == "Need a product decision"
+
+
 class TestRenderBlockersSection:
     def test_no_blockers_message_when_nothing_is_blocked(self):
         manifest = {"sprints": [_sprint_with_backlog(1)]}
@@ -268,6 +288,21 @@ class TestRenderBlockersSection:
         assert "US-0001" in rendered
         assert "which color?" in rendered
         assert "ProductOwner" in rendered
+
+    def test_lists_general_blockers_alongside_story_blockers(self):
+        manifest = {
+            "sprints": [
+                _sprint_with_backlog(
+                    1,
+                    product_backlog=[{"id": "US-0001", "blocked": {"category": "technical", "question": "why?", "raised_by": "Architect"}}],
+                    general_blockers=[{"description": "Need a product decision on auth provider", "priority": "high", "resolved": False, "raised_by": "ScrumMaster"}],
+                ),
+            ]
+        }
+        rendered = "\n".join(_render_blockers_section(manifest))
+        assert "US-0001" in rendered
+        assert "Need a product decision on auth provider" in rendered
+        assert "high priority" in rendered
 
 
 class TestRenderStoppedEarlyCallout:
@@ -305,6 +340,21 @@ class TestRenderStoppedEarlyCallout:
         rendered = "\n".join(_render_stopped_early_callout(manifest))
         assert "2" in rendered
         assert "RateLimitError" in rendered
+
+    def test_surfaces_the_general_blocker_when_present(self):
+        """GH issue #342: a high-priority 'human'-category retro finding
+        stopping the run must be as visible as a BLOCKED story's own stop
+        reasons already are."""
+        manifest = {
+            "stopped_early": True,
+            "stop_reason": "human_blocker_unresolved",
+            "sprints_requested": 5,
+            "sprints": [1],
+            "general_blocker": {"description": "Need a product decision on auth provider", "priority": "high", "resolved": False, "raised_by": "ScrumMaster"},
+        }
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "human_blocker_unresolved" in rendered
+        assert "Need a product decision on auth provider" in rendered
 
 
 def test_render_report_includes_stopped_early_callout_and_blockers_section():

@@ -230,8 +230,17 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
         draft=True,
         tool_context=tool_context,
     )
+    ok = pr_res.get("status") == "ok"
+    if ok and tool_context and getattr(tool_context, "state", None):
+        # GH issue #342: create_sprint_report's own gate demands a *fresh*
+        # proposal (steering_proposal_count past steering_baseline) since
+        # the last report whenever an open "steering"-category retro
+        # finding exists - mirrors retro_baseline/kpi_baseline exactly, so
+        # a steering gap can't just be logged once and never actually acted
+        # on, the same failure this whole category-triage design fixes.
+        tool_context.state["steering_proposal_count"] = tool_context.state.get("steering_proposal_count", 0) + 1
     return {
-        "status": "ok" if pr_res.get("status") == "ok" else "error",
+        "status": "ok" if ok else "error",
         "proposed": True,
         "role": role,
         "branch": actual_branch,

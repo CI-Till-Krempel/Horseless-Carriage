@@ -612,6 +612,61 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_open_steering_finding_with_no_fresh_proposal(self, mock_write_file, mock_getenv):
+        """GH issue #342: an open "steering"-category retro finding demands
+        a fresh propose_steering_change call since the last report, mirroring
+        the retro/KPI gates right above - without this, a steering finding
+        could be logged once and never actually acted on."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "QA keeps skipping local test runs", "owner": "SM", "status": "open", "category": "steering"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_steering_change", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_succeeds_once_steering_change_is_proposed(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "QA keeps skipping local test runs", "owner": "SM", "status": "open", "category": "steering"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["steering_proposal_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["steering_baseline"], 1)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_not_blocked_by_steering_gate_without_a_steering_finding(self, mock_write_file, mock_getenv):
+        """A purely "technical"-category retro action must not trip the
+        steering gate at all."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Fix the flaky coverage setup", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_renders_kpi_dashboard(self, mock_write_file, mock_getenv):
         """Acceptance Criteria (ISSUE-0046): the KPI dashboard was computed
         and stored (sprint_report_kpis) but never actually rendered anywhere
@@ -1406,6 +1461,41 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
 
         self.assertEqual(filed, [])
         self.assertEqual(tool_context.state["product_backlog"], [])
+
+    def test_only_files_technical_category_items(self):
+        """GH issue #342: a "steering"/"human" finding isn't a code task the
+        team can plan into a sprint - filing it as an Issue here would just
+        be a different flavor of the same "never actually acted on"
+        failure this function exists to prevent."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Fix the flaky coverage setup", "owner": "SM", "status": "open", "category": "technical"},
+            {"action": "QA keeps skipping local test runs", "owner": "SM", "status": "open", "category": "steering"},
+        ]
+        tool_context.state["impediment_log"] = [
+            {"description": "Need a product decision on auth provider", "owner": "SM", "status": "open", "category": "human"},
+        ]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(filed), 1)
+        self.assertTrue(tool_context.state["retro_actions"][0]["issue_id"])
+        self.assertNotIn("issue_id", tool_context.state["retro_actions"][1])
+        self.assertNotIn("issue_id", tool_context.state["impediment_log"][0])
+
+    def test_missing_category_defaults_to_technical(self):
+        """Backward compatibility: data logged before this triage existed
+        has no category field at all - must still get filed as before."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "pre-existing retro item", "owner": "SM", "status": "open"}]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(filed), 1)
 
 
 class TestCreateSprintReportFilesRetroItems(unittest.TestCase):

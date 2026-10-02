@@ -199,7 +199,7 @@ class TestScrumTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        add_impediment("This is an impediment", "ScrumMaster", tool_context=tool_context)
+        add_impediment("This is an impediment", "ScrumMaster", category="technical", tool_context=tool_context)
         self.assertEqual(tool_context.state["impediment_log"][0]["description"], "This is an impediment")
 
     def test_add_retro_action(self):
@@ -209,7 +209,7 @@ class TestScrumTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        add_retro_action("Improve testing", "ScrumMaster", "CI passes", tool_context=tool_context)
+        add_retro_action("Improve testing", "ScrumMaster", "CI passes", category="technical", tool_context=tool_context)
         self.assertEqual(tool_context.state["retro_actions"][0]["action"], "Improve testing")
 
     def test_add_impediment_rejects_generic_placeholder_text(self):
@@ -219,7 +219,7 @@ class TestScrumTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        result = add_impediment("stuff", "ScrumMaster", tool_context=tool_context)
+        result = add_impediment("stuff", "ScrumMaster", category="technical", tool_context=tool_context)
         self.assertEqual(result["status"], "error")
         self.assertEqual(tool_context.state["impediment_log"], [])
 
@@ -227,9 +227,50 @@ class TestScrumTools(unittest.TestCase):
         """Acceptance Criteria (ISSUE-0009): same guard for retro actions."""
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        result = add_retro_action("communicate better", "ScrumMaster", "n/a", tool_context=tool_context)
+        result = add_retro_action("communicate better", "ScrumMaster", "n/a", category="technical", tool_context=tool_context)
         self.assertEqual(result["status"], "error")
         self.assertEqual(tool_context.state["retro_actions"], [])
+
+    def test_add_impediment_rejects_unknown_category(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_impediment("A real concrete impediment", "ScrumMaster", category="bogus", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("category", result["message"])
+
+    def test_add_retro_action_rejects_unknown_priority(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action(
+            "Improve testing", "ScrumMaster", "CI passes", category="technical", priority="urgent", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("priority", result["message"])
+
+    def test_steering_category_does_not_raise_a_general_blocker(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        add_retro_action("QA keeps skipping local test runs", "QA", "0 skipped test runs", category="steering", tool_context=tool_context)
+        self.assertEqual(tool_context.state["general_blockers"], [])
+
+    def test_human_category_raises_a_general_blocker(self):
+        """GH issue #342: a 'human' category finding is genuinely outside
+        the team's own authority - immediately raised as a general_blockers
+        entry, not tied to any one story."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.agent_name = "ScrumMaster"
+        add_impediment(
+            "Need a product decision on which auth provider to standardize on",
+            "ProductOwner", category="human", priority="high", tool_context=tool_context,
+        )
+        self.assertEqual(len(tool_context.state["general_blockers"]), 1)
+        blocker = tool_context.state["general_blockers"][0]
+        self.assertEqual(blocker["priority"], "high")
+        self.assertFalse(blocker["resolved"])
+        self.assertEqual(blocker["raised_by"], "ScrumMaster")
+        self.assertEqual(len(tool_context.state["blocking_interactions"]), 1)
+        self.assertEqual(tool_context.state["blocking_interactions"][0]["kind"], "general_blocker")
 
     def test_record_human_approval(self):
         """

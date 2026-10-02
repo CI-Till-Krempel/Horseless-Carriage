@@ -14,6 +14,7 @@ from agents.scrum_team.scripts.run_eval import (
     _sprint_should_abort_run,
     _blocked_stories,
     _sprint_needs_human_this_harness_cannot_provide,
+    _unresolved_high_priority_general_blocker,
 )
 from agents.scrum_team.tools.budget import sprint_budget_reset_state_delta
 
@@ -185,6 +186,37 @@ class TestBlockedStories:
 
     def test_handles_missing_product_backlog(self):
         assert _blocked_stories({}) == {}
+
+
+class TestUnresolvedHighPriorityGeneralBlocker:
+    """
+    Acceptance Criteria (GH issue #342): a "human"-category retro/impediment
+    finding raised with priority="high" is, by definition, something
+    genuinely outside the team's own authority to resolve - this scripted,
+    unattended harness has no human to act on it, so the run should stop
+    rather than burn further sprints' budget, same reasoning as
+    _sprint_needs_human_this_harness_cannot_provide's "needs_human" case.
+    """
+
+    def test_none_when_no_general_blockers(self):
+        assert _unresolved_high_priority_general_blocker({}) is None
+
+    def test_none_when_only_normal_priority(self):
+        sprint_result = {"general_blockers": [{"description": "x", "priority": "normal", "resolved": False}]}
+        assert _unresolved_high_priority_general_blocker(sprint_result) is None
+
+    def test_none_when_high_priority_already_resolved(self):
+        sprint_result = {"general_blockers": [{"description": "x", "priority": "high", "resolved": True}]}
+        assert _unresolved_high_priority_general_blocker(sprint_result) is None
+
+    def test_finds_an_unresolved_high_priority_blocker(self):
+        sprint_result = {"general_blockers": [
+            {"description": "normal one", "priority": "normal", "resolved": False},
+            {"description": "the real one", "priority": "high", "resolved": False},
+        ]}
+        result = _unresolved_high_priority_general_blocker(sprint_result)
+        assert result is not None
+        assert result["description"] == "the real one"
 
 
 @patch.dict(os.environ, {}, clear=False)

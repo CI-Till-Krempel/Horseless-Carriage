@@ -413,6 +413,7 @@ _STOP_REASON_EXPLANATIONS = {
     "crashed": "the run crashed with an unhandled exception",
     "blocked_needs_human": "a BLOCKED story's category escalates straight to a human this scripted driver has no way to provide",
     "blocked_unresolved_across_sprint": "a BLOCKED story was still unresolved after a full sprint's own budget to fix it",
+    "human_blocker_unresolved": "a high-priority 'human'-category retro finding is unresolved and this scripted driver has no human to act on it",
 }
 
 
@@ -450,6 +451,12 @@ def _render_stopped_early_callout(manifest: dict) -> list:
             f"{blocked.get('question', '(no question recorded)')} "
             f"(raised by {blocked.get('raised_by', 'unknown')})"
         )
+    general_blocker = manifest.get("general_blocker")
+    if general_blocker:
+        lines.append(
+            f"- Human-only retro finding: {general_blocker.get('description', '(no description recorded)')} "
+            f"(raised by {general_blocker.get('raised_by', 'unknown')})"
+        )
     lines.append("")
     return lines
 
@@ -484,10 +491,27 @@ def _collect_blockers(manifest: dict) -> list:
     return blockers
 
 
+def _collect_general_blockers(manifest: dict) -> list:
+    """
+    GH issue #342: unresolved "human"-category retro/impediment findings
+    (add_retro_action/add_impediment's category param) as of the LAST
+    completed sprint - not tied to any one story, unlike _collect_blockers
+    above, so a general finding (e.g. "we need a decision on which auth
+    provider to standardize on") still surfaces here even when nothing in
+    product_backlog/sprint_backlog itself is BLOCKED. Returns the list of
+    general_blockers dicts that are still unresolved.
+    """
+    sprints = manifest.get("sprints", [])
+    if not sprints:
+        return []
+    return [e for e in (sprints[-1].get("general_blockers") or []) if not e.get("resolved")]
+
+
 def _render_blockers_section(manifest: dict) -> list:
     blockers = _collect_blockers(manifest)
+    general_blockers = _collect_general_blockers(manifest)
     lines = ["## Blockers", ""]
-    if not blockers:
+    if not blockers and not general_blockers:
         lines.append("No stories are blocked as of the last completed sprint.")
         lines.append("")
         return lines
@@ -496,6 +520,12 @@ def _render_blockers_section(manifest: dict) -> list:
             f"- **{story_id}** ({title}) - {blocked.get('category', 'unknown')}: "
             f"{blocked.get('question', '(no question recorded)')} "
             f"(raised by {blocked.get('raised_by', 'unknown')})"
+        )
+    for entry in general_blockers:
+        lines.append(
+            f"- **(not tied to a specific story)** - human, {entry.get('priority', 'normal')} priority: "
+            f"{entry.get('description', '(no description recorded)')} "
+            f"(raised by {entry.get('raised_by', 'unknown')})"
         )
     lines.append("")
     return lines

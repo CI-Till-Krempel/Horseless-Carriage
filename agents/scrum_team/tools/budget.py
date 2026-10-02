@@ -671,6 +671,15 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
     other level (no human review step in that loop), it's auto-prioritized
     "Must" so it can't be silently starved the way the reported failure
     was.
+
+    GH issue #342: only files entries categorized "technical" (see
+    add_retro_action/add_impediment's own `category` param) - a
+    "steering"/"human" finding isn't a code task the team can plan into a
+    sprint, so filing it as an Issue here would just be a different flavor
+    of the same "never actually acted on" failure this function exists to
+    prevent, just for the wrong kind of finding. A missing category (data
+    from before this triage existed) defaults to "technical", preserving
+    the old behavior for pre-existing entries.
     """
     from .requirements import upsert_issue, set_priority
 
@@ -679,6 +688,8 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
         collection = list(tool_context.state.get(collection_name, []))
         for entry in collection:
             if entry.get("issue_id"):
+                continue
+            if entry.get("category", "technical") != "technical":
                 continue
             text = (entry.get(text_field) or "").strip()
             if not text:
@@ -897,6 +908,32 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                 "last sprint report. Transfer to QualityGuardian to call calculate_kpis() then "
                 "update_sprint_report(kpis=...) with that returned dict first, then transfer back "
                 "and retry create_sprint_report. This is mandatory, not optional."
+            ),
+        }
+
+    # GH issue #342: if an open "steering"-category retro finding exists
+    # (a role-behavior gap, not a code task - see add_retro_action/
+    # add_impediment's category param), demand a *fresh*
+    # propose_steering_change call since the last sprint report, same
+    # "must be NEW since last time" pattern as retro_baseline/kpi_baseline
+    # right above. Without this, a steering finding could be logged once
+    # and never actually acted on - exactly the failure this whole
+    # category-triage design exists to fix for "technical" findings via
+    # _file_retro_items_as_issues; this is the equivalent backstop for
+    # "steering" findings, which that function deliberately no longer files
+    # as Issues at all.
+    has_open_steering_finding = any(
+        e.get("category") == "steering" and e.get("status", "open") == "open"
+        for e in list(retro) + list(impediments)
+    )
+    if has_open_steering_finding and s.get("steering_proposal_count", 0) <= s.get("steering_baseline", 0):
+        return {
+            "status": "error",
+            "message": (
+                "Cannot close the sprint report: an open 'steering'-category retro finding exists "
+                "with no fresh propose_steering_change call since the last sprint report. Transfer "
+                "to Scrum Master to call propose_steering_change(role, new_content, rationale) for "
+                "it first, then retry create_sprint_report. This is mandatory, not optional."
             ),
         }
 
@@ -1283,6 +1320,9 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # passing forever on the same old entries.
     s["retro_baseline"] = process_signals
     s["kpi_baseline"] = s.get("kpi_update_count", 0)
+    # GH issue #342: same snapshot pattern - freezes the count that
+    # satisfied this sprint's steering-finding gate (if it fired at all).
+    s["steering_baseline"] = s.get("steering_proposal_count", 0)
     # GH issue #246: same snapshot pattern as retro_baseline/kpi_baseline
     # right above - freezes the count that satisfied this sprint's QA
     # "Tested" gate (if it fired at all) so next sprint's gate demands a

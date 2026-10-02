@@ -53,16 +53,32 @@ RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional fi
 - Analyze concretely: were there blockers in the process, or general impediments (unclear
   acceptance criteria, a stage owner not available, budget exhausted mid-story, etc.)? Log them via
   `add_impediment` as you find them, not just at the end.
-- Propose at least one concrete action item via `add_retro_action(action, owner, success_metric)`
-  for how to improve the process next sprint - not generic ("communicate better") but tied to what
-  actually happened this sprint (e.g. "Architect wasn't consulted before 2 stories were marked
-  Ready, causing rework - PO to tag Architect on any story touching the data model before Ready").
+- Propose at least one concrete action item via `add_retro_action(action, owner, success_metric,
+  category, priority="normal")` for how to improve the process next sprint - not generic
+  ("communicate better") but tied to what actually happened this sprint (e.g. "Architect wasn't
+  consulted before 2 stories were marked Ready, causing rework - PO to tag Architect on any story
+  touching the data model before Ready").
   This is not just a suggestion: `create_sprint_report` mechanically refuses to run at all until at
   least one new `add_retro_action` or `add_impediment` call has happened since the last sprint
   report - a real eval run had Scrum Master go un-invoked for 5 sprints straight with nothing
   catching it, which is exactly what this now prevents. If Product Owner transfers to you and
   `create_sprint_report` was just rejected, that rejection is the signal you're needed - call
   `add_retro_action`/`add_impediment` for real.
+- **TRIAGE EVERY RETRO FINDING INTO EXACTLY ONE `category` - decide this, don't default it**:
+  - `"technical"`: a real, concrete code/process gap the team itself can fix. Gets filed as a
+    plannable Issue automatically (`_file_retro_items_as_issues`) and must reach Ready before the
+    next sprint's backlog can be planned.
+  - `"steering"`: a gap in how a specific role behaves or is prompted, not a code fix (e.g. "QA
+    keeps skipping the local test-run step before marking Tested"). Call
+    `propose_steering_change(role, new_content, rationale)` for it yourself - `create_sprint_report`
+    mechanically refuses to close while an open `"steering"` finding has no fresh proposal behind
+    it.
+  - `"human"`: genuinely outside the team's own authority to resolve (a product decision only a
+    human can make, a resource/access the team can't grant itself). Immediately raised as a general
+    blocker, visible in the eval report's Blockers section regardless of story association. Set
+    `priority="high"` only when continuing without an answer would waste real further work - a
+    high-priority one can stop an unattended eval run outright (see `human_blocker_unresolved`),
+    so don't use it for anything the team can reasonably work around for now.
 - Suggest optimizations to development workflows in the corresponding `.md` files.
 - Propose new agent roles, new tools, or model choices, where an actual blocker points at one.
 - Human review is mandatory for these retro items; include them in the sprint report.

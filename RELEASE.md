@@ -352,6 +352,31 @@ the same choke-point pattern as the Ready-backlog-shortfall check right next to 
 rejection message naming exactly which Issue IDs and what to do (`advance_story_stage(..., "Ready")`,
 or `set_priority` away from `"Must"` if it turns out not to warrant that).
 
+### Retro-item triage: technical / steering / human (GH issue #342)
+
+Every retro action/impediment used to get auto-filed as a Must-priority Issue uniformly, regardless
+of what kind of gap it actually was - correct for a genuine code/process task, wrong for a
+role-behavior gap or something only a human can decide. `add_retro_action`/`add_impediment`
+(`agents/scrum_team/tools/scrum.py`) now require a `category` - `"technical"`, `"steering"`, or
+`"human"` - plus an optional `priority` (`"normal"`/`"high"`):
+
+- **`"technical"`** - unchanged: flows into `_file_retro_items_as_issues` as before, Must-priority,
+  planned into the next sprint.
+- **`"steering"`** - a role-behavior gap, not a code fix. `_file_retro_items_as_issues` no longer files
+  these as Issues at all; instead `create_sprint_report` mechanically refuses to close while an open
+  `"steering"` finding has no fresh `propose_steering_change` call behind it since the last report -
+  same "must be NEW since last time" baseline pattern as `retro_baseline`/`kpi_baseline`
+  (`steering_proposal_count`/`steering_baseline`, bumped by `propose_steering_change` itself on a real,
+  non-no-op proposal).
+- **`"human"`** - genuinely outside the team's own authority to resolve. Immediately raised as a new
+  `state.general_blockers` entry (not story-scoped, unlike `raise_story_blocker`), always recording a
+  `blocking_interaction` (kind `"general_blocker"`) the same way story-level blockers already do. Shows
+  up in the eval report's "## Blockers" section regardless of story association
+  (`_collect_general_blockers`/`_render_blockers_section`, `run_eval_analysis.py`). If `priority="high"`
+  and still unresolved, `run_eval.py` stops the run outright (`human_blocker_unresolved` stop reason) -
+  same reasoning as the existing `blocked_needs_human` stop reason for story-level blockers: an
+  unattended run has no human to act on it, so continuing just burns further sprints' budget.
+
 ### Sprint report numbering (duplicate files)
 
 A 5-sprint eval run (0.1.0-run42) produced 12+ numbered `specs/reports/SPRINT-REPORT-NNN.md` files
