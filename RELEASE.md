@@ -381,12 +381,18 @@ of Draft-but-unplanned ones.
 
 The actual fix: `_preceding_story` still blocks on an Issue exactly like any other unfinished item -
 but when the ordering gate's own refusal message (`advance_story_stage`, `start_feature_branch`) names
-an Issue specifically as the blocker, it now also names the reprioritization escape hatch explicitly:
-*"If '\<id\>' is a process finding that doesn't actually warrant blocking priority, consider
-set_priority('\<id\>', ...) to something other than 'Must' - otherwise, actually advance it through
-the pipeline like any other item."* This keeps the real pressure intact (an abstract Must-priority
-finding genuinely should force a decision - resolve it for real, or explicitly admit it doesn't
-deserve Must) while cutting the wasted turns it took to discover that decision was available at all.
+an Issue specifically as the blocker, it now also names the reprioritization escape hatch. **Resolving
+it for real is the lead instruction, not reprioritizing it away** (second round of review feedback):
+*"'\<id\>' is an auto-filed process finding - resolve it for real (advance it through Implemented ->
+Reviewed -> Tested -> Accepted like any other item) rather than reaching for set_priority('\<id\>',
+...) to dodge it. Only reprioritize away from 'Must' if, on genuine reflection, it turns out this
+finding never actually warranted blocking priority - not because resolving it is inconvenient right
+now."* A cheap model under budget pressure reaches for whichever option reads easiest - leading with
+"just deprioritize it" would turn this gate into a convenient dodge for every inconvenient finding,
+defeating the entire point of auto-filing these as Must-priority in the first place (GH #164).
+Reprioritization stays available (a real eval run showed Product Owner use it correctly), but only
+framed as the narrow exception for a finding that genuinely doesn't warrant blocking priority, not a
+shortcut around doing the work.
 
 ### Blocked-story discipline (GH issue #359)
 

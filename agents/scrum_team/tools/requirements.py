@@ -1524,15 +1524,24 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
         if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
             preceding_ref = preceding.get('id') or preceding.get('title')
             # GH issue #368: when the blocker is an Issue (an auto-filed
-            # retro/impediment finding, not a feature story), name the
-            # reprioritization escape hatch explicitly - an abstract process
-            # finding that can't be concretely implemented should be
-            # reprioritized away from Must, not left to gridlock real work
-            # indefinitely while nobody realizes that's an option.
+            # retro/impediment finding, not a feature story), name BOTH
+            # paths explicitly - but resolving it for real is the lead
+            # instruction, not reprioritizing it away. A cheap model under
+            # budget pressure will reach for whichever option reads easiest;
+            # leading with "just deprioritize it" would turn this gate into
+            # a convenient dodge for every inconvenient finding, defeating
+            # the entire point of auto-filing these as Must-priority in the
+            # first place (GH #164). Reprioritization stays available - a
+            # real eval run showed Product Owner use it correctly - but only
+            # framed as the narrow exception for a finding that genuinely
+            # doesn't warrant blocking priority, not a shortcut around doing
+            # the work.
             escape_hatch = (
-                f" If '{preceding_ref}' is a process finding that doesn't actually warrant blocking "
-                f"priority, consider set_priority('{preceding_ref}', ...) to something other than "
-                "'Must' - otherwise, actually advance it through the pipeline like any other item."
+                f" '{preceding_ref}' is an auto-filed process finding - resolve it for real (advance "
+                "it through Implemented -> Reviewed -> Tested -> Accepted like any other item) rather "
+                f"than reaching for set_priority('{preceding_ref}', ...) to dodge it. Only reprioritize "
+                "away from 'Must' if, on genuine reflection, it turns out this finding never actually "
+                "warranted blocking priority - not because resolving it is inconvenient right now."
             ) if preceding.get("type") == "Issue" else ""
             return {
                 "status": "error",

@@ -587,8 +587,12 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("ISSUE-0001", result["message"])
         self.assertIn("must reach Accepted first", result["message"])
+        self.assertIn("resolve it for real", result["message"])
         self.assertIn("set_priority('ISSUE-0001'", result["message"])
-        self.assertIn("warrant blocking priority", result["message"])
+        self.assertIn("warranted blocking priority", result["message"])
+        # "Resolve it for real" must be the lead instruction, named before
+        # the reprioritization escape hatch - not the other way around.
+        self.assertLess(result["message"].index("resolve it for real"), result["message"].index("set_priority"))
 
     def test_sprint_only_story_without_product_backlog_entry_is_refused(self, mock_save, mock_md, mock_roadmap):
         """
