@@ -633,6 +633,29 @@ This is scoped to the eval harness's own driver loop - it's the only place in th
 calls `runner.run_async` directly. An interactive/production run goes through ADK's own runner
 (e.g. the ADK web server), which this fix does not touch.
 
+### Transfer-rotation breaker no longer permanently deadlocks a run (GH issue #367)
+
+The rotation-based transfer-loop breaker (`_transfer_rotation_count`, GH issue #191) used to **pin**
+its counter at `TRANSFER_ROTATION_THRESHOLD` once it fired, rather than resetting it to 0 the way the
+pair-based breaker (`_transfer_loop`) already does. Since every subsequent `transfer_to_agent` call -
+to *any* target, by *any* agent - is refused for as long as the counter sits at/above threshold, and
+the only reset path is a non-transfer tool call succeeding (which first requires reaching a role
+capable of making one, which first requires a transfer succeeding), this pin was unrecoverable: a real
+eval run (0.1.0-run45) hit it during the mandatory budget-exhaustion SPRINT CLOSE SEQUENCE's own
+correct, system-instructed hand-off chain (not a genuine stuck rotation) and the whole run never
+reached ScrumMaster/QualityGuardian/ProductOwner again for the rest of its sprints.
+
+Two related bugs, both in `_detect_transfer_loop` (`agents/scrum_team/agent.py`):
+1. The rotation counter now **resets to 0 once it fires**, instead of pinning at the threshold - it
+   still breaks an actively-spinning rotation in the moment (its actual job), without permanently
+   banning every future hand-off for the rest of the run. A genuinely recurring rotation simply trips
+   it again, which is correct.
+2. The pair breaker (`_transfer_loop`) firing now **also resets the rotation counter**, since that
+   streak's hops were otherwise inherited by the independent rotation budget too - run45's exact
+   failure was 3 wasted pair-ping-pong hops (broken by the pair breaker) immediately followed by a
+   legitimate 3-hop close-sequence chain, with the two sums (3 + 3) landing exactly on
+   `TRANSFER_ROTATION_THRESHOLD` (6) on the chain's own correct final hop.
+
 ### Forgotten-implementation nudge (DevTeam transferring away before advancing the stage)
 
 `advance_story_stage`'s Implemented gate already refuses to let a story reach Implemented without a
