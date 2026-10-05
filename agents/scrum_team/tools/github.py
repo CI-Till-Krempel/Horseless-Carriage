@@ -712,6 +712,25 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
             ),
         }
 
+    # GH issue #359: a story cannot be resolved in reasonable effort gets
+    # marked BLOCKED with a specific reason (raise_story_blocker) - work on
+    # it should stop there until the reason is actually resolved
+    # (resolve_story_blocker), not continue regardless. advance_story_stage
+    # already refuses every further stage transition while `blocked` is
+    # set; nothing previously stopped the real work (this call) from
+    # starting/continuing on it anyway.
+    for item in product_backlog:
+        if (item.get("id") == story_id or item.get("title") == story_id) and item.get("blocked"):
+            blocked = item["blocked"]
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot start work on '{story_id}' - it is BLOCKED ({blocked.get('category')}): "
+                    f"{blocked.get('question')}. Call resolve_story_blocker('{story_id}', resolution) "
+                    "once this has been answered, then retry."
+                ),
+            }
+
     # GH issue #357: the Sprint Backlog PR merging isn't by itself proof the
     # team actually weighed in on it - Product Owner proposes the priority/
     # sequencing, but Architect/DevTeam/QA each need to have left real

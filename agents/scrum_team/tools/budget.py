@@ -866,6 +866,18 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
     latest_path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
     s["sprint_report_path"] = numbered_path
+    # GH issue #359: same snapshot create_sprint_report takes on a clean
+    # close - a budget-exhausted sprint doesn't get a free pass from ever
+    # needing to discuss a still-unresolved blocker, it just defers the
+    # requirement to the next sprint's real create_sprint_report call.
+    blocked_now = []
+    for collection in (s.get("product_backlog", []) or [], s.get("sprint_backlog", []) or []):
+        for item in collection:
+            if item.get("blocked"):
+                story_id = item.get("id") or item.get("title")
+                if story_id and story_id not in blocked_now:
+                    blocked_now.append(story_id)
+    s["blocked_story_ids_as_of_last_report"] = blocked_now
     return {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
 
 
@@ -948,6 +960,44 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                 "with no fresh propose_steering_change call since the last sprint report. Transfer "
                 "to Scrum Master to call propose_steering_change(role, new_content, rationale) for "
                 "it first, then retry create_sprint_report. This is mandatory, not optional."
+            ),
+        }
+
+    # GH issue #359: a story still BLOCKED now, that was ALSO already
+    # BLOCKED as of the last report (i.e. genuinely unresolved across a
+    # full sprint, not just raised this sprint), must actually be discussed
+    # in the retro - not just silently re-noted in the report's own "Open
+    # Questions for Stakeholder" section again. Mirrors
+    # _sprint_needs_human_this_harness_cannot_provide's "unresolved_across_
+    # sprint" reasoning (run_eval.py, GH issue #336), enforced here in the
+    # product code itself rather than only in the eval harness's stop-early
+    # check. A mention anywhere in retro_actions/impediment_log's full text
+    # history is enough - this isn't demanding a brand-new entry every
+    # single sprint a hard blocker remains genuinely unresolved, just that
+    # it was actually raised as a topic, not silently skipped.
+    currently_blocked_ids = []
+    for collection in (s.get("product_backlog", []) or [], s.get("sprint_backlog", []) or []):
+        for item in collection:
+            if item.get("blocked"):
+                story_id = item.get("id") or item.get("title")
+                if story_id and story_id not in currently_blocked_ids:
+                    currently_blocked_ids.append(story_id)
+    previously_blocked_ids = set(s.get("blocked_story_ids_as_of_last_report", []))
+    unresolved_across_sprint = [sid for sid in currently_blocked_ids if sid in previously_blocked_ids]
+    all_retro_text = " ".join(
+        str(e.get("action") or e.get("description") or "") for e in list(retro) + list(impediments)
+    )
+    undiscussed = [sid for sid in unresolved_across_sprint if sid not in all_retro_text]
+    if undiscussed:
+        plural = len(undiscussed) > 1
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot close the sprint report: {', '.join(undiscussed)} - still BLOCKED since "
+                f"before this sprint - {'have' if plural else 'has'} not been discussed in the "
+                "retrospective. Transfer to Scrum Master to log a retro action or impediment "
+                f"(add_retro_action/add_impediment) explicitly addressing {'them' if plural else 'it'} "
+                "before retrying create_sprint_report. This is mandatory, not optional."
             ),
         }
 
@@ -1343,6 +1393,18 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # GH issue #342: same snapshot pattern - freezes the count that
     # satisfied this sprint's steering-finding gate (if it fired at all).
     s["steering_baseline"] = s.get("steering_proposal_count", 0)
+    # GH issue #359: snapshot which stories are BLOCKED as of this
+    # successful close, so next report's gate can tell "blocked before
+    # this sprint started, still blocked now" (genuinely unresolved across
+    # a full sprint) apart from "just raised this sprint".
+    blocked_now = []
+    for collection in (s.get("product_backlog", []) or [], s.get("sprint_backlog", []) or []):
+        for item in collection:
+            if item.get("blocked"):
+                story_id = item.get("id") or item.get("title")
+                if story_id and story_id not in blocked_now:
+                    blocked_now.append(story_id)
+    s["blocked_story_ids_as_of_last_report"] = blocked_now
     # GH issue #246: same snapshot pattern as retro_baseline/kpi_baseline
     # right above - freezes the count that satisfied this sprint's QA
     # "Tested" gate (if it fired at all) so next sprint's gate demands a
