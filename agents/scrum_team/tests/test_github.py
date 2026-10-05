@@ -1032,6 +1032,71 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
 
 
+class TestStartFeatureBranchBlockedStoryGate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #359): a story marked BLOCKED
+    (raise_story_blocker) must not have real work started/continued on it
+    until the blocking reason is actually resolved (resolve_story_blocker) -
+    advance_story_stage already refuses every further stage transition
+    while `blocked` is set, but nothing previously stopped the real work
+    (this call) from starting/continuing on it anyway.
+    """
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_refuses_to_start_work_on_a_blocked_story(self, mock_run):
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "product_backlog": [{
+                "id": "US-0001", "title": "Add login",
+                "blocked": {"category": "technical", "question": "which auth library?", "raised_by": "DevTeam"},
+            }],
+        }
+
+        result = start_feature_branch("US-0001", "add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("BLOCKED", result["message"])
+        self.assertIn("which auth library?", result["message"])
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_allows_starting_once_unblocked(self, mock_run, mock_git_push, mock_gh_pr_create):
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0001-add-login"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "product_backlog": [{"id": "US-0001", "title": "Add login", "blocked": None}],
+        }
+
+        result = start_feature_branch("US-0001", "add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_a_blocked_different_story_does_not_affect_this_one(self, mock_run, mock_git_push, mock_gh_pr_create):
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0002-add-logout"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "product_backlog": [
+                {"id": "US-0001", "title": "Add login", "blocked": {"category": "technical", "question": "why?"}},
+                {"id": "US-0002", "title": "Add logout"},
+            ],
+        }
+
+        result = start_feature_branch("US-0002", "add-logout", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+
 class TestReleasePrStillOpen(unittest.TestCase):
     """
     Acceptance Criteria: a real incident planned an entire new sprint while

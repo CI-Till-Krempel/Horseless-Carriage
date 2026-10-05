@@ -311,6 +311,44 @@ tier, unlike Retrospective Actions/Impediments below) listing every story still 
 sprint closes, so whoever reads the report can give feedback/guidance on it before the next sprint
 starts.
 
+### One canonical priority scale, mechanically enforced (GH issue #355)
+
+There was no single, enforced priority scale - `_PRIORITY_RANK`/`_priority_rank` (the sort the whole
+backlog ordering gate depends on) only ever understood MoSCoW (`Must`/`Should`/`Could`/`Won't`), but
+`ProductOwner-workflow.md`'s own BACKLOG ITEM TEMPLATE told Product Owner to use a completely
+different scale ("priority: P0/P1/P2 (or numeric)"), and `set_priority`/`upsert_backlog_item`
+performed zero validation on the value. A real eval run used `"P0"`/`"P2"`/`"Must"` interchangeably
+across different items - since `"P0"`/`"P2"` aren't real MoSCoW values, `_priority_rank`'s own
+fallback silently ranked them as `"Must"` (the highest priority), the *opposite* of what a `"P2"`
+(intended low, per the very scale the prompt taught) was meant to convey.
+
+MoSCoW stays the one canonical scale (it's already what the sort mechanism is built around). `set_priority`
+and `upsert_backlog_item` (so `upsert_story`/`upsert_epic`/`upsert_issue`, and `plan_backlog_item` which
+delegates to `set_priority`) now refuse any `priority` outside `{"Must", "Should", "Could", "Won't"}`
+outright, naming the valid values. `_priority_rank`'s existing "no priority set at all defaults to
+`Must`'s rank" behavior is deliberately left unchanged - that's a different, already-justified case (a
+story nobody has explicitly deprioritized shouldn't be silently pushed to the back of the queue) from a
+value someone explicitly tried to set using the wrong scale, which validation now prevents from ever
+being saved in the first place.
+
+**Migrating existing data** (PR review follow-up): validation on *new* writes does nothing about a
+`priority` value already sitting in an existing repo's `specs/stories/*.md`/`specs/requirements/ISSUE-
+*.md` files from before this was enforced - the old BACKLOG ITEM TEMPLATE literally taught "P0/P1/P2 (or
+numeric)". `sync_stories_from_markdown` (`agents/scrum_team/tools/requirements.py`) now self-heals this
+on every sync: `_migrated_priority` maps a recognized legacy value to its MoSCoW equivalent (`P0`→`Must`,
+`P1`→`Should`, `P2`→`Could`, `P3`→`Won't`; `High`/`Medium`/`Low` likewise; a merely-miscased already-valid
+value like `"must"` is corrected to canonical casing), falling back to `"Must"` for anything else
+unrecognized - the same fallback `_priority_rank` itself already used, so this never makes an item rank
+*worse* than it already silently did. `_rewrite_priority_line` then surgically replaces just the
+`- Priority:` line in the file on disk (not a full regeneration via `_update_story_markdown`, which would
+silently drop any Notes/Test Approach/owner/tasks content `_parse_story_markdown` never round-trips back
+into state at all) - so the fix is durable, not just a one-session in-memory correction the very next
+sync would otherwise re-derive and then forget again. Idempotent: a file whose value is already valid is
+never rewritten. Retro findings that get auto-filed as Issues (`_file_retro_items_as_issues`) are covered
+the same way once filed, since a filed Issue is just another `specs/requirements/ISSUE-*.md` file this
+same sync already scans - `add_retro_action`/`add_impediment`'s own `priority` field (`"normal"`/`"high"`)
+is a separate, unrelated escalation scale that was never part of MoSCoW and needs no migration.
+
 ### One-at-a-time ordering also gates the start of work, not just stage completion (GH issue #358)
 
 `advance_story_stage`'s one-story-at-a-time ordering gate only ever refused a story reaching
@@ -320,6 +358,26 @@ story first, wasting effort if the higher-priority one later needs rework or get
 `start_feature_branch` now runs the exact same `_preceding_story` check (same BLOCKED-predecessor
 skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
 work actually begins, not just when a stage transition is claimed.
+
+### Blocked-story discipline (GH issue #359)
+
+Two gaps in how BLOCKED stories (`raise_story_blocker`/`resolve_story_blocker`) were handled, beyond
+the existing "a BLOCKED story can't advance its own stage" enforcement:
+
+1. **Real work could still start/continue on a BLOCKED story.** `advance_story_stage` already refused
+   every further stage transition while `blocked` was set, but nothing stopped `start_feature_branch`
+   from opening a branch and writing code for it anyway - wasted effort by definition, since the open
+   question blocking it hasn't been answered. `start_feature_branch` now refuses outright on the
+   target story's own `blocked` field (not just its predecessor's, see the ordering section above),
+   naming the open question and directing to `resolve_story_blocker`.
+2. **A blocker left unresolved across a full sprint wasn't mechanically surfaced to the retro.** A
+   story still BLOCKED now, that was ALSO already BLOCKED as of the *last* sprint report (genuinely
+   stuck across a full sprint, not just raised this sprint), is tracked via a new
+   `blocked_story_ids_as_of_last_report` snapshot (updated by both `create_sprint_report` and
+   `render_fallback_sprint_report` on every close). `create_sprint_report` now refuses to close while
+   any such story isn't mentioned anywhere in this sprint's `retro_actions`/`impediment_log` text -
+   the retro is where the team decides what happens next (escalate harder, reprioritize around it,
+   accept the delay), not silence.
 
 ### Structured backlog dependencies (`depends_on`)
 

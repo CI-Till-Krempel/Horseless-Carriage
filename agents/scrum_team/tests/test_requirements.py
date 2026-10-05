@@ -10,6 +10,7 @@ from agents.scrum_team.tools.requirements import (
     set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
     raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
     update_roadmap, _strip_story_block_from_other_versions,
+    sync_stories_from_markdown, _migrated_priority,
 )
 
 
@@ -1432,7 +1433,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
     def test_unknown_item_priority_failure_propagates(self, mock_save):
         tc = self._tool_context()
-        result = plan_backlog_item("does-not-exist", priority="High", tool_context=tc)
+        result = plan_backlog_item("does-not-exist", priority="Must", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("not found", result["message"].lower())
 
@@ -1441,7 +1442,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     def test_roadmap_failure_propagates_even_when_priority_succeeds(self, mock_save, mock_update_roadmap):
         mock_update_roadmap.return_value = {"status": "error", "message": "ROADMAP.md not found and could not be seeded."}
         tc = self._tool_context()
-        result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
+        result = plan_backlog_item("US-0001", priority="Must", version="v0.2", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("ROADMAP.md", result["message"])
         # The priority update itself succeeded and should still be reported.
@@ -1451,7 +1452,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
     def test_all_sub_calls_succeeding_reports_ok(self, mock_save, mock_update_roadmap):
         tc = self._tool_context()
-        result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
+        result = plan_backlog_item("US-0001", priority="Must", version="v0.2", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
 
@@ -1516,6 +1517,158 @@ class TestPriorityAffectsBacklogOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         ids = [x["id"] for x in tc.state["product_backlog"]]
         self.assertEqual(ids, ["US-0002", "US-0001"])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_set_priority_rejects_a_non_moscow_value(self, mock_save, mock_md):
+        """GH issue #355: a real eval run used "P0"/"P2" interchangeably
+        with "Must" across different items - since those aren't real
+        MoSCoW values, _priority_rank's lookup silently ranked them as if
+        "Must" (highest priority), the opposite of what a "P2" (intended
+        low) was meant to convey. There is exactly one priority scale."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        for bogus in ("P0", "P1", "P2", "High", "1", ""):
+            with self.subTest(priority=bogus):
+                result = set_priority("US-0001", bogus, tool_context=tc)
+                self.assertEqual(result["status"], "error")
+                self.assertIn("Must", result["message"])
+                # The rejected value must never have been saved.
+                self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_set_priority_accepts_every_real_moscow_value(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        for real in ("Must", "Should", "Could", "Won't"):
+            with self.subTest(priority=real):
+                result = set_priority("US-0001", real, tool_context=tc)
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(tc.state["product_backlog"][0]["priority"], real)
+
+    def test_upsert_backlog_item_rejects_a_non_moscow_priority(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+
+        result = upsert_backlog_item({"id": "US-0001", "title": "First", "priority": "P0"}, tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Must", result["message"])
+        self.assertEqual(tc.state["product_backlog"], [])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_plan_backlog_item_propagates_the_priority_rejection(self, mock_save, mock_md):
+        """plan_backlog_item delegates to set_priority - its own validation
+        must be inherited, not bypassed via this alternate entry point."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        result = plan_backlog_item("US-0001", priority="P0", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
+
+
+class TestMigratedPriority(unittest.TestCase):
+    """GH issue #355 (migration follow-up, PR review comment): a repo's
+    existing stories/issues may predate the MoSCoW-only enforcement and
+    still carry a pre-MoSCoW value - _migrated_priority decides what (if
+    anything) a given raw value should be rewritten to."""
+
+    def test_already_valid_values_are_left_alone(self):
+        for valid in ("Must", "Should", "Could", "Won't"):
+            with self.subTest(priority=valid):
+                self.assertIsNone(_migrated_priority(valid))
+
+    def test_unset_or_blank_is_left_alone(self):
+        self.assertIsNone(_migrated_priority(None))
+        self.assertIsNone(_migrated_priority(""))
+        self.assertIsNone(_migrated_priority("   "))
+
+    def test_miscased_valid_value_is_corrected(self):
+        self.assertEqual(_migrated_priority("must"), "Must")
+        self.assertEqual(_migrated_priority("SHOULD"), "Should")
+        self.assertEqual(_migrated_priority("wont"), "Won't")
+
+    def test_legacy_pN_scale_maps_to_moscow(self):
+        self.assertEqual(_migrated_priority("P0"), "Must")
+        self.assertEqual(_migrated_priority("p1"), "Should")
+        self.assertEqual(_migrated_priority("P2"), "Could")
+        self.assertEqual(_migrated_priority("P3"), "Won't")
+
+    def test_legacy_word_scale_maps_to_moscow(self):
+        self.assertEqual(_migrated_priority("High"), "Must")
+        self.assertEqual(_migrated_priority("Medium"), "Should")
+        self.assertEqual(_migrated_priority("low"), "Could")
+
+    def test_unrecognized_value_falls_back_to_must(self):
+        """Same fallback _priority_rank itself already uses for an
+        unrecognized value - this never makes an item rank worse than it
+        already silently did."""
+        self.assertEqual(_migrated_priority("some-custom-scheme"), "Must")
+
+
+class TestSyncStoriesFromMarkdownMigratesLegacyPriority(unittest.TestCase):
+    """GH issue #355 (migration follow-up): sync_stories_from_markdown
+    self-heals a pre-MoSCoW priority value found in an existing story/issue
+    file, surgically rewriting just that one line so the fix survives past
+    this session - not just an in-memory correction that the very next
+    sync would silently re-derive and then forget again."""
+
+    def _write_story(self, stories_dir, filename, priority, extra_notes=""):
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        (stories_dir / filename).write_text(
+            "# User Story\n\n"
+            "- Story ID: US-0001\n"
+            "- Title: Add login\n"
+            "- Status: Ready\n"
+            f"- Priority: {priority}\n\n"
+            "## As a user, I want to log in, so that I can access my account.\n\n"
+            "## Acceptance Criteria\n- Given valid credentials, when I submit, then I'm logged in\n"
+            + extra_notes,
+            encoding="utf-8",
+        )
+
+    def test_rewrites_a_legacy_priority_value_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            stories_dir = repo_root / "specs" / "stories"
+            self._write_story(stories_dir, "US-0001-Add-login.md", "P0", extra_notes="\n## Notes\n- A custom note that must survive.\n")
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=repo_root):
+                tc = MagicMock()
+                tc.state = {"product_backlog": [], "sprint_backlog": []}
+                result = sync_stories_from_markdown(tool_context=tc)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
+            written = (stories_dir / "US-0001-Add-login.md").read_text(encoding="utf-8")
+            self.assertIn("- Priority: Must", written)
+            self.assertNotIn("P0", written)
+            # Nothing else in the file was touched.
+            self.assertIn("A custom note that must survive.", written)
+
+    def test_does_not_rewrite_a_file_whose_priority_is_already_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            stories_dir = repo_root / "specs" / "stories"
+            self._write_story(stories_dir, "US-0001-Add-login.md", "Should")
+            fp = stories_dir / "US-0001-Add-login.md"
+            original_mtime = fp.stat().st_mtime
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=repo_root), \
+                 patch("agents.scrum_team.tools.requirements._rewrite_priority_line") as mock_rewrite:
+                tc = MagicMock()
+                tc.state = {"product_backlog": [], "sprint_backlog": []}
+                sync_stories_from_markdown(tool_context=tc)
+
+            mock_rewrite.assert_not_called()
+            self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
 
 
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})

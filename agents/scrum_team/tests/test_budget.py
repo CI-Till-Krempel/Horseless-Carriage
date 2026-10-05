@@ -695,6 +695,94 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_a_blocker_unresolved_across_a_full_sprint_with_no_retro_mention(self, mock_write_file, mock_getenv):
+        """GH issue #359: a story still BLOCKED now, that was ALSO already
+        BLOCKED as of the last report, must actually be discussed in the
+        retro - not just silently re-noted in the report's own "Open
+        Questions for Stakeholder" section again."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Improve CI pipeline speed", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["blocked_story_ids_as_of_last_report"] = ["US-0003"]
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0003", "title": "Add login", "blocked": {"category": "technical", "question": "which auth library?"}},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0003", result["message"])
+        self.assertIn("retrospective", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_succeeds_once_the_blocker_is_mentioned_in_retro(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Still waiting on US-0003's auth library decision - escalating to Architect", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["blocked_story_ids_as_of_last_report"] = ["US-0003"]
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0003", "title": "Add login", "blocked": {"category": "technical", "question": "which auth library?"}},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("US-0003", tool_context.state["blocked_story_ids_as_of_last_report"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_not_blocked_by_a_story_only_just_blocked_this_sprint(self, mock_write_file, mock_getenv):
+        """Not previously blocked (empty blocked_story_ids_as_of_last_report)
+        - raised this sprint for the first time - must not trip this gate;
+        the existing "Open Questions for Stakeholder" section already
+        surfaces a freshly-raised blocker without demanding retro discussion
+        the very same sprint it was raised."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Improve CI pipeline speed", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0003", "title": "Add login", "blocked": {"category": "technical", "question": "which auth library?"}},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_snapshots_currently_blocked_ids_on_success(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Improve CI pipeline speed", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0004", "title": "Add logout", "blocked": {"category": "technical", "question": "why?"}},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["blocked_story_ids_as_of_last_report"], ["US-0004"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_renders_kpi_dashboard(self, mock_write_file, mock_getenv):
         """Acceptance Criteria (ISSUE-0046): the KPI dashboard was computed
         and stored (sprint_report_kpis) but never actually rendered anywhere
@@ -1349,6 +1437,23 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
 
         self.assertIn("Category: steering", result["report"])
         self.assertIn("Category: human", result["report"])
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_snapshots_currently_blocked_ids_even_on_a_fallback_close(self, mock_write_file, mock_next_path):
+        """GH issue #359: a budget-exhausted sprint doesn't get a free pass
+        from ever needing to discuss a still-unresolved blocker - it just
+        defers the requirement to the next sprint's real create_sprint_report
+        call, which needs an accurate snapshot to do that."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Add login", "blocked": {"category": "technical", "question": "which auth library?"}},
+        ]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["blocked_story_ids_as_of_last_report"], ["US-0001"])
 
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-002.md")
     @patch("agents.scrum_team.tools.docs.write_file")

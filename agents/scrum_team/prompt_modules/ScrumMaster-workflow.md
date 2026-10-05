@@ -53,6 +53,14 @@ RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional fi
 - Analyze concretely: were there blockers in the process, or general impediments (unclear
   acceptance criteria, a stage owner not available, budget exhausted mid-story, etc.)? Log them via
   `add_impediment` as you find them, not just at the end.
+- **If any story is still BLOCKED and was ALSO already BLOCKED as of the last sprint report**
+  (genuinely unresolved across a full sprint, not just raised this sprint) - this must actually be
+  discussed, not just left for the report's own "Open Questions for Stakeholder" section to note
+  again. Log an `add_retro_action`/`add_impediment` mentioning it by ID - `create_sprint_report`
+  mechanically refuses to close otherwise. A story cannot be resolved in reasonable effort should
+  already be BLOCKED with a specific reason (`raise_story_blocker`) - if the reason is still
+  unresolved by sprint's end, the retro is where the team decides what happens next (escalate harder,
+  reprioritize around it, accept the delay), not silence.
 - Propose at least one concrete action item via `add_retro_action(action, owner, success_metric,
   category, priority="normal")` for how to improve the process next sprint - not generic
   ("communicate better") but tied to what actually happened this sprint (e.g. "Architect wasn't

@@ -89,3 +89,11 @@ class ScrumState(BaseModel):
     # need to audit the proposal later, since the PR body itself may be
     # lost once the PR merges/closes.
     steering_proposals: List[Dict[str, Any]] = Field(default_factory=list)
+    # GH issue #359: snapshot of which stories were BLOCKED as of the last
+    # successful create_sprint_report/render_fallback_sprint_report close -
+    # compared against who's still blocked now to find a story that's been
+    # stuck across a FULL sprint (not just raised this sprint), which
+    # create_sprint_report's own gate then requires the retro to actually
+    # discuss, not just silently let the report's "Open Questions for
+    # Stakeholder" section note it exists again.
+    blocked_story_ids_as_of_last_report: List[str] = Field(default_factory=list)
