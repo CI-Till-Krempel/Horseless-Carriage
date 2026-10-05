@@ -1215,7 +1215,21 @@ class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_rotation_breaker_keeps_refusing_further_transfers_once_tripped(self):
+    def test_rotation_breaker_resets_after_tripping_instead_of_permanently_blocking(self):
+        """
+        Acceptance Criteria (GH issue #367): a real eval run (0.1.0-run45)
+        showed this counter PINNED at the threshold once it fired, refusing
+        every further transfer_to_agent call - to literally any target, by
+        any agent - for the rest of the run. The only reset path is a
+        non-transfer tool call succeeding, but the pin itself refuses every
+        transfer, so no role could ever be reached to make one. This fired
+        on the mandatory budget-exhaustion SPRINT CLOSE SEQUENCE's own
+        correct, system-instructed hand-off chain (not a genuine stuck
+        rotation) and permanently deadlocked the run - ScrumMaster/
+        QualityGuardian/ProductOwner were never reached again. Once broken,
+        the counter must reset to 0: still breaking the rotation in the
+        moment, but not banning every future hand-off.
+        """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
@@ -1227,16 +1241,72 @@ class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
         hops = (cycle * agent_module.TRANSFER_ROTATION_THRESHOLD)[: agent_module.TRANSFER_ROTATION_THRESHOLD]
         self._rotate(tool_context, hops)
 
-        # A further transfer attempt - even to a role not previously
-        # involved in the rotation - must still be refused until a real
-        # tool call actually happens.
+        # A fresh, never-before-tried target right after tripping must be
+        # allowed through - the rotation already broke once; it must not
+        # also ban every future hand-off for the rest of the run.
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context.agent_name = "ScrumOrchestrator"
         result = log_tool_invocation_callback(tool, {"agent_name": "DevTeam"}, tool_context)
 
+        self.assertIsNone(result)
+
+    def test_rotation_breaker_still_fires_again_if_the_same_pattern_resumes(self):
+        """A genuinely recurring rotation - not just one single lap - must
+        still be caught again after a reset, not evade detection forever
+        just because it already tripped once."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        cycle = [
+            ("ScrumOrchestrator", "ProductOwner"),
+            ("ProductOwner", "ScrumMaster"),
+            ("ScrumMaster", "ScrumOrchestrator"),
+        ]
+        hops = (cycle * agent_module.TRANSFER_ROTATION_THRESHOLD)[: agent_module.TRANSFER_ROTATION_THRESHOLD]
+        self._rotate(tool_context, hops)
+
+        result = self._rotate(tool_context, hops)
+
         self.assertIsNotNone(result)
         self.assertEqual(result["status"], "error")
         self.assertIn("TRANSFER LOOP DETECTED", result["message"])
+
+    def test_a_broken_pair_streak_does_not_also_count_toward_the_rotation_budget(self):
+        """
+        Acceptance Criteria (GH issue #367): a real eval run showed the pair
+        breaker's own TRANSFER_LOOP_THRESHOLD hops get inherited by the
+        separate rotation counter - a legitimate, system-mandated hand-off
+        chain immediately following a broken pair ping-pong then tripped the
+        rotation breaker on its own correct hops (3 wasted pair-ping-pong
+        hops + 3 legitimate chain hops = TRANSFER_ROTATION_THRESHOLD),
+        permanently blocking every further transfer for the rest of the
+        run. The pair breaker firing must reset the rotation counter too,
+        so a legitimate chain of fresh targets right afterward isn't
+        penalized for the pair's own already-handled waste.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+
+        def hop(from_agent, to_agent):
+            tool_context.agent_name = from_agent
+            return log_tool_invocation_callback(tool, {"agent_name": to_agent}, tool_context)
+
+        # 3 pair ping-pong hops - the 3rd is refused by the pair breaker.
+        self.assertIsNone(hop("DevTeam", "QA"))
+        self.assertIsNone(hop("QA", "DevTeam"))
+        pair_break_result = hop("DevTeam", "QA")
+        self.assertEqual(pair_break_result["status"], "error")
+        self.assertIn("handed off to each other", pair_break_result["message"])
+
+        # A legitimate chain to 3 fresh, never-before-tried targets right
+        # after - must not be refused, since the pair's own already-handled
+        # waste shouldn't also count against the independent rotation
+        # budget (TRANSFER_ROTATION_THRESHOLD is 6 - without this fix,
+        # 3 inherited + 3 fresh hits it exactly on the chain's own 3rd hop).
+        self.assertIsNone(hop("QA", "ScrumMaster"))
+        self.assertIsNone(hop("ScrumMaster", "QualityGuardian"))
+        self.assertIsNone(hop("QualityGuardian", "ProductOwner"))
 
     def test_a_read_only_status_call_once_per_lap_does_not_evade_the_breaker(self):
         """
