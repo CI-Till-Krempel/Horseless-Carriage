@@ -1270,12 +1270,13 @@ class TestWriteConversationTranscript(unittest.TestCase):
 
 class TestRenderFallbackSprintReport(unittest.TestCase):
     """
-    Acceptance Criteria: render_fallback_sprint_report is the deterministic,
-    non-LLM stand-in _ensure_sprint_report_on_final_halt_once (agent.py)
-    calls when the sprint budget runs out before Product Owner ever
-    successfully calls the real create_sprint_report - it must render
-    something real from state alone (no summary/accomplishments text to
-    author), and it must never clobber an already-real report.
+    Acceptance Criteria: render_fallback_sprint_report is the mechanically-
+    rendered counterpart _ensure_sprint_report_on_final_halt_once (agent.py)
+    calls when the sprint budget runs out before Product Owner ever gets a
+    turn to call create_sprint_report - a sprint ending this way is normal,
+    expected behavior, not a failure. It must render something real from
+    state alone (no summary/accomplishments text to author), and it must
+    never clobber a report Product Owner already authored.
     """
 
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
@@ -1293,7 +1294,7 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         result = render_fallback_sprint_report(tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
-        self.assertIn("Automatically Generated Fallback Report", result["report"])
+        self.assertIn("Mechanically-Rendered Report", result["report"])
         self.assertIn("US-0001", result["report"])
         self.assertNotIn("EP-0001", result["report"], "epics are not stories - must not appear in Story Status")
         self.assertIn("improve X", result["report"])
@@ -1314,7 +1315,7 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         result = render_fallback_sprint_report(tool_context=tool_context)
 
         self.assertEqual(result["report"], real_report)
-        self.assertNotIn("Automatically Generated Fallback Report", result["report"])
+        self.assertNotIn("Mechanically-Rendered Report", result["report"])
         # Re-written to disk (in case the real one was never committed), but
         # the pending-release bookkeeping is create_sprint_report's own job,
         # not re-triggered here for content that already existed.
