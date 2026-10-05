@@ -187,10 +187,10 @@ class TestScrumTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        story = {"id": "ST-1", "title": "New Story", "status": "new", "priority": "medium"}
+        story = {"id": "ST-1", "title": "New Story", "status": "new", "priority": "Should"}
         tool_context.state["product_backlog"] = [story]
-        set_priority("ST-1", "high", tool_context=tool_context)
-        self.assertEqual(tool_context.state["product_backlog"][0]["priority"], "high")
+        set_priority("ST-1", "Must", tool_context=tool_context)
+        self.assertEqual(tool_context.state["product_backlog"][0]["priority"], "Must")
 
     def test_add_impediment(self):
         """
