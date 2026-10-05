@@ -58,6 +58,7 @@ REPO_STATE_KEYS = [
     "architect_review_baseline",
     "qa_review_baseline",
     "qa_tested_baseline",
+    "sprint_backlog_engagement_baseline",
     "sprint_report_pending_release",
     "blocking_interactions",
     "budget_reset_since_last_sprint_start",
@@ -208,6 +209,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("architect_review_baseline", 0)
     s.setdefault("qa_review_baseline", 0)
     s.setdefault("qa_tested_baseline", 0)
+    s.setdefault("sprint_backlog_engagement_baseline", {})
     s.setdefault("sprint_report_pending_release", False)
     s.setdefault("blocking_interactions", [])
     s.setdefault("orchestrator_stall_count", 0)

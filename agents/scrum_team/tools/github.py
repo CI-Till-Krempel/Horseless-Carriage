@@ -731,6 +731,33 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
                 ),
             }
 
+    # GH issue #357: the Sprint Backlog PR merging isn't by itself proof the
+    # team actually weighed in on it - Product Owner proposes the priority/
+    # sequencing, but Architect/DevTeam/QA each need to have left real
+    # feedback (gh_pr_comment/gh_pr_review) on it before implementation
+    # starts, not just rubber-stamp it by starting work. Reuses the same
+    # pr_review_calls counter the Reviewed/Tested stage gates already rely
+    # on, compared against the baseline snapshotted when this sprint's
+    # backlog PR first merged (see create_sprint_backlog_pr above).
+    pr_calls = state.get("pr_review_calls", {}) or {}
+    engagement_baseline = state.get("sprint_backlog_engagement_baseline", {}) or {}
+    missing_roles = [
+        role for role in ("Architect", "DevTeam", "QA")
+        if pr_calls.get(role, 0) <= engagement_baseline.get(role, 0)
+    ]
+    if missing_roles:
+        plural = len(missing_roles) > 1
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot start work on '{story_id}' - {', '.join(missing_roles)} "
+                f"{'have' if plural else 'has'} not yet left a gh_pr_comment/gh_pr_review on this "
+                "sprint's Sprint Backlog PR. The team gives feedback and commits to the backlog "
+                "Product Owner proposed before implementation begins - have each missing role leave "
+                "real feedback (even an explicit sign-off) on it first."
+            ),
+        }
+
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)
     branch = f"feature/{story_id}-{_slugify(slug)}"
@@ -984,6 +1011,17 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
         # Only set once the merge actually succeeded - this is exactly what
         # sprint_backlog_pr_missing (agents/scrum_team/helpers.py) checks
         # before letting Dev Team start any story this sprint.
+        if tool_context.state.get("sprint_backlog_pr_sprint") != sprint_number:
+            # GH issue #357: snapshot pr_review_calls the first time THIS
+            # sprint's Sprint Backlog PR merges. start_feature_branch then
+            # requires each of Architect/DevTeam/QA's count to grow past
+            # this baseline before implementation can begin - at this point
+            # in the sprint, this PR is the only one that could possibly
+            # exist yet, so a role's gh_pr_comment/gh_pr_review call is
+            # necessarily real engagement with it.
+            tool_context.state["sprint_backlog_engagement_baseline"] = dict(
+                tool_context.state.get("pr_review_calls", {}) or {}
+            )
         tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
         from .scrum import save_state_to_repo
         save_state_to_repo(tool_context)

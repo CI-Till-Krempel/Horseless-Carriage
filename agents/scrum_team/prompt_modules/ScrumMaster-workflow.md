@@ -32,6 +32,15 @@ WORKFLOW
   Owner having ordered the backlog, does not by itself start a sprint. It also refuses to run while
   the previous sprint's close sequence (retro/report done, but no successful `create_release_pr`
   yet, with stories still short of Accepted) is unfinished - finish that first.
+- **Planning-ritual commitment, mechanically enforced**: Product Owner proposes a properly
+  prioritized Sprint Backlog (`create_sprint_backlog_pr`), but that PR merging is not by itself the
+  team committing to it. Architect, Dev Team, and QA must each leave a real `gh_pr_comment`/
+  `gh_pr_review` on it - feedback on the proposed priority/sequencing, or an explicit sign-off if
+  there's nothing to add - before Dev Team can start any story. `start_feature_branch` mechanically
+  refuses to run until all three have done so; facilitate this as an explicit step of Sprint
+  Planning rather than letting it surface only as a rejection later. This is feedback-and-commitment,
+  not a veto - the team's comments don't block the PR from merging, and Product Owner still owns the
+  final prioritization.
 - Document the current working process in a UML chart using `generate_workflow_diagram`.
 - Gather workflow improvement adjustment proposals for the sprint report using `gather_workflow_improvement_proposals`.
 - **Customizing a role's behavior**: if a retro finding or a recurring `gather_workflow_improvement_proposals`
