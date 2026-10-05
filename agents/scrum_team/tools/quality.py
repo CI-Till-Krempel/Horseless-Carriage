@@ -1,12 +1,14 @@
 # agents/scrum_team/tools/quality.py
+import ast
 import json
 import os
 import re
 import requests
 import litellm
+from pathlib import Path
 from ..state import ScrumState
 from ..prompts import ROLE_NAMES, ROLE_PROMPT_TEXT
-from typing import Dict, Any
+from typing import Dict, Any, List
 from .base import _configured_repo_root, _run, _coerce_dict_arg
 
 # A real eval run had QualityGuardian retry update_sprint_report ~15 times in
@@ -233,6 +235,77 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
         "tests_failed": failed + errored,
         "note": note,
     }
+
+
+def _is_trivial_test_body(node) -> bool:
+    """
+    GH issue #370: True if a test function's body carries no real
+    assertion at all - just `pass`, a bare docstring, `assert True`, or a
+    tautological `assert <literal> == <same literal>`. A real eval run
+    showed DevTeam hedge a genuinely flaky real test suite by also writing
+    separate stub test files alongside it with exactly this shape, so
+    check_build's pass/fail count always had *something* passing - these
+    functions verify nothing, but silently inflate the count the same way a
+    real test's pass does.
+
+    Deliberately a narrow, explicit heuristic (false positives are fine -
+    this only ever produces a non-blocking warning, never a refusal; false
+    negatives just mean the nudge doesn't fire) rather than deeper static
+    analysis - a test with a fixture argument, multiple statements, or any
+    non-tautological assertion is never flagged, even if it turns out to be
+    weak in some other way.
+    """
+    body = list(node.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        body = body[1:]  # a leading docstring doesn't itself make a test non-trivial
+    if not body:
+        return True
+    if len(body) != 1:
+        return False
+    stmt = body[0]
+    if isinstance(stmt, ast.Pass):
+        return True
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
+        return True
+    if not isinstance(stmt, ast.Assert):
+        return False
+    test = stmt.test
+    if isinstance(test, ast.Constant) and test.value is True:
+        return True
+    if (
+        isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)
+        and isinstance(test.left, ast.Constant) and isinstance(test.comparators[0], ast.Constant)
+        and test.left.value == test.comparators[0].value
+    ):
+        return True
+    return False
+
+
+def detect_stubbed_tests(repo_root) -> List[Dict[str, str]]:
+    """
+    Scans test_*.py/*_test.py files under repo_root (pytest's own default
+    discovery convention) for suspiciously trivial test functions - see
+    _is_trivial_test_body. Returns a list of {"file": <relative path>,
+    "function": <name>} for each one found; empty if none. Best-effort: a
+    file that fails to parse is simply skipped, not an error.
+    """
+    repo_root = Path(repo_root)
+    findings: List[Dict[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in _LANGUAGE_SKIP_DIRS and not d.startswith(".")]
+        for fname in filenames:
+            if not fname.endswith(".py") or not (fname.startswith("test_") or fname.endswith("_test.py")):
+                continue
+            fp = Path(dirpath) / fname
+            try:
+                tree = ast.parse(fp.read_text(encoding="utf-8", errors="replace"))
+            except (SyntaxError, OSError, ValueError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                    if _is_trivial_test_body(node):
+                        findings.append({"file": str(fp.relative_to(repo_root)), "function": node.name})
+    return findings
 
 
 def _detect_primary_language(repo_root) -> str:

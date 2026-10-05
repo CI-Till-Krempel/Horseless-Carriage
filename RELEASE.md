@@ -527,6 +527,24 @@ resolution is often only known in a later sprint, so the full running history is
 durable record, and avoids inventing new cross-file-synced per-sprint counters alongside the existing
 (and previously bug-prone, see #345's own history above) `retro_baseline` mechanism.
 
+### Non-blocking nudge for stubbed "assert True" tests (GH issue #370)
+
+`check_build`/the Tested-stage gate (`advance_story_stage`) only ever counted pass/fail totals from
+the real test suite run - it never inspected what a test actually asserts. A real eval run (0.1.0-
+run45) showed DevTeam hedge a genuinely flaky real test suite by also writing separate dummy test
+files alongside it each sprint (literally `def test_dummy(): assert True`), so the pass count always
+had *something* passing regardless of whether the real functionality was actually verified.
+
+`detect_stubbed_tests` (`agents/scrum_team/tools/quality.py`) scans `test_*.py`/`*_test.py` files
+(pytest's own discovery convention) for a test function whose body is just `pass`, a bare docstring,
+`assert True`, or a tautological `assert <literal> == <same literal>` - no other real assertions or
+fixture usage. The Tested-stage gate now calls this right after a story's test suite genuinely passes,
+and surfaces a non-blocking `warning` on the result naming the file/function if any are found - it
+never refuses the transition (a real, intentional placeholder has legitimate uses too, and false
+positives here are harmless; false negatives just mean the nudge doesn't fire). Deliberately a narrow,
+explicit AST heuristic rather than deeper static analysis, matching #354's own risk tolerance for this
+category of nudge.
+
 ### KPI trends report per-sprint deltas, not cumulative totals
 
 `_kpi_time_series`/`_sprint_metrics_table` (`agents/scrum_team/scripts/run_eval_analysis.py`) read

@@ -1548,6 +1548,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     source_touch_count = None
     architect_review_count = None
     qa_review_count = None
+    stub_test_warning = None
     if stage == "Implemented":
         # Belt-and-suspenders alongside start_feature_branch's own check
         # (agents/scrum_team/tools/github.py) - covers spike stories, which
@@ -1764,6 +1765,23 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "retrying."
                 ),
             })
+        # GH issue #370: a non-blocking nudge, not a gate - a real eval run
+        # showed DevTeam hedge a genuinely flaky real test suite by also
+        # writing separate stub test functions (assert True-style) that
+        # always pass, silently inflating the pass count above without
+        # actually verifying anything. A real, intentional placeholder for
+        # not-yet-implemented coverage has legitimate uses too, so this only
+        # ever warns - it never refuses the Tested transition on its own.
+        from .quality import detect_stubbed_tests
+        stub_findings = detect_stubbed_tests(_configured_repo_root(tool_context))
+        if stub_findings:
+            named = ", ".join(f"{f['file']}::{f['function']}" for f in stub_findings[:5])
+            stub_test_warning = (
+                f"{len(stub_findings)} test function(s) look like trivial stubs ({named}) - a body of "
+                "just 'assert True'/'pass' with no other assertions. These still count toward the "
+                "pass total above without actually verifying anything - if a real test is flaky, fix "
+                "it rather than hedging with a stub alongside it."
+            )
     elif stage == "Accepted":
         # ISSUE-0043: Accepted previously had no evidence gate at all - any
         # role could call advance_story_stage(id, "Accepted") on assertion
@@ -1840,7 +1858,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     # reporting success while specs/ROADMAP.md stays stale is exactly the
     # failure mode this whole mechanism exists to close.
     synced = story_md_result.get("status") == "ok" and roadmap_result.get("status") == "ok"
-    return {
+    result = {
         "status": "ok" if synced else "error",
         "message": None if synced else (
             f"'{story_id}' is recorded as {stage} in state, but syncing specs/ROADMAP.md and/or "
@@ -1853,6 +1871,9 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
         "story_markdown": story_md_result,
         "roadmap_sync": roadmap_result,
     }
+    if stub_test_warning:
+        result["warning"] = stub_test_warning
+    return result
 
 
 def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None) -> Dict[str, Any]:
