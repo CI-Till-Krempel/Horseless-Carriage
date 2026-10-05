@@ -679,6 +679,16 @@ This is feedback-and-commitment, not a veto: the team's comments don't block the
 Product Owner still owns the final prioritization - only the *start of implementation* is gated on the
 team having actually engaged with it.
 
+**Prompt clarification follow-up (GH issue #369)**: a real eval run showed DevTeam correctly identify
+that QA needed to act to satisfy this gate, but with no way to tell QA that via `transfer_to_agent`
+(no payload beyond a target name), QA transferred back instead - a ping-pong the pair loop-breaker had
+to step in and break. DevTeam then tried calling `gh_pr_comment` itself, worded as QA's own sign-off -
+this does nothing, since `gh_pr_comment`/`gh_pr_review` always attribute to the *actual calling
+agent's* role, never to whatever the text claims. `DevTeam-workflow.md`/`QA-workflow.md`/`Architect-
+workflow.md` now say this explicitly: there's no way to post "as" another role, so don't try - and if
+transferred to specifically because this gate named you as still missing, the expected response is to
+immediately leave your own comment, not transfer further.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
