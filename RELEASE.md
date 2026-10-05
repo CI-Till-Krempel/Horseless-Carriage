@@ -765,6 +765,24 @@ workflow.md` now say this explicitly: there's no way to post "as" another role, 
 transferred to specifically because this gate named you as still missing, the expected response is to
 immediately leave your own comment, not transfer further.
 
+### Reading back PR comments/reviews (`gh_pr_comments`)
+
+`gh_pr_comment`/`gh_pr_review` only ever write - there was no way for any role to read back what
+another role (or it itself) had already said on a PR, only whether the mechanical team-engagement gate
+above considers them to have commented *at all*. A real eval run showed DevTeam unable to tell whether
+Architect/QA had already left feedback worth reading, and separately try (and fail) to satisfy QA's own
+missing-engagement requirement by posting a comment itself worded as QA's sign-off - `gh_pr_comment`
+attributes by the real calling agent, never by what the text claims, so a role had no way to even
+*verify* that before assuming it worked.
+
+`gh_pr_comments(pr_id=None)` (`agents/scrum_team/tools/github.py`) reads back `gh pr view`'s own
+`comments`/`reviews` JSON - each entry's author, body, and timestamp, in chronological order. Since
+every comment this codebase posts is prefixed with the posting role's own name (`**Architect:**`,
+`**QA:**`, ...) regardless of the underlying shared GitHub account, that prefix - not the raw GitHub
+username - is how a caller tells who said what. Added to DevTeam/QA/Architect/ScrumMaster's tool lists
+(the same roles that already have `gh_pr_comment`/`gh_pr_review`), with prompt guidance to check it
+before assuming nothing has happened yet, or before repeating feedback another role already gave.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

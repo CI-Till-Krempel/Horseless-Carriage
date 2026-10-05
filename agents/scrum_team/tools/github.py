@@ -1424,6 +1424,61 @@ def _record_pr_review_call(tool_context) -> None:
     calls[agent_name] = calls.get(agent_name, 0) + 1
     tool_context.state["pr_review_calls"] = calls
 
+def gh_pr_comments(pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Reads back the comments and reviews already left on a Pull Request -
+    the read counterpart to gh_pr_comment/gh_pr_review, which only ever
+    write. Every comment this codebase posts is prefixed with the posting
+    role's own name (`**Architect:**`, `**QA:**`, ...) regardless of the
+    underlying GitHub account they all share, so that prefix - not the raw
+    GitHub username - is how a caller tells who said what.
+
+    Without this, a role has no way to see what another role actually said
+    on a PR - only whether the mechanical team-engagement gate (GH #357)
+    considers them to have commented at all. A real eval run showed DevTeam
+    unable to tell whether QA/Architect had already left feedback worth
+    reading before deciding whether to repeat work or wait, and separately
+    tried (and failed) to satisfy QA's own missing-engagement requirement
+    by posting a comment itself worded as QA's sign-off - gh_pr_comment
+    attributes by the real calling agent, never by what the text claims,
+    so this is also how a role can *verify* that before assuming it worked.
+
+    - pr_id: optional PR number, URL, or branch. If None, uses current branch.
+    Returns `comments` (general PR conversation) and `reviews` (formal
+    gh_pr_review submissions), each as a list of {author, body, created_at}
+    in chronological order - empty lists, not an error, if none exist yet.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    cmd = ["gh", "pr", "view"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd += ["--json", "comments,reviews"]
+    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    if r.get("status") != "ok":
+        return r
+    try:
+        data = json.loads(r.get("stdout") or "{}")
+    except ValueError:
+        return {"status": "error", "message": "Could not parse gh pr view output.", "details": r}
+    comments = [
+        {
+            "author": (c.get("author") or {}).get("login"),
+            "body": c.get("body"),
+            "created_at": c.get("createdAt"),
+        }
+        for c in data.get("comments", []) or []
+    ]
+    reviews = [
+        {
+            "author": (rv.get("author") or {}).get("login"),
+            "state": rv.get("state"),
+            "body": rv.get("body"),
+            "submitted_at": rv.get("submittedAt"),
+        }
+        for rv in data.get("reviews", []) or []
+    ]
+    return {"status": "ok", "comments": comments, "reviews": reviews}
+
 def gh_pr_comment(body: str, pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
     """
     Add a comment to a Pull Request.

@@ -8,6 +8,7 @@ from agents.scrum_team.tools.github import (
     gh_pr_status,
     gh_pr_checks,
     gh_pr_comment,
+    gh_pr_comments,
     gh_pr_review,
     gh_release_create,
     git_push,
@@ -164,6 +165,92 @@ class TestGitHubTools(unittest.TestCase):
             cwd=unittest.mock.ANY,
             tool_context=tool_context,
         )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_comments_reads_back_comments_and_reviews(self, mock_run):
+        """
+        Acceptance Criteria (user observation): agents had no way to read
+        what another role already said on a PR, only whether the mechanical
+        team-engagement gate (GH #357) considers them to have commented at
+        all. gh_pr_comments is the read counterpart to gh_pr_comment/
+        gh_pr_review.
+        """
+        import json
+        mock_run.return_value = {
+            "status": "ok",
+            "stdout": json.dumps({
+                "comments": [
+                    {"author": {"login": "bot-account"}, "body": "**Architect:** LGTM.", "createdAt": "2026-10-01T00:00:00Z"},
+                ],
+                "reviews": [
+                    {"author": {"login": "bot-account"}, "state": "APPROVED", "body": "**QA:** Approved.", "submittedAt": "2026-10-01T00:05:00Z"},
+                ],
+            }),
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = gh_pr_comments(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_run.assert_called_with(
+            ["gh", "pr", "view", "--json", "comments,reviews"],
+            cwd=unittest.mock.ANY,
+            tool_context=tool_context,
+        )
+        self.assertEqual(len(result["comments"]), 1)
+        self.assertEqual(result["comments"][0]["body"], "**Architect:** LGTM.")
+        self.assertEqual(len(result["reviews"]), 1)
+        self.assertEqual(result["reviews"][0]["body"], "**QA:** Approved.")
+        self.assertEqual(result["reviews"][0]["state"], "APPROVED")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_comments_passes_through_an_explicit_pr_id(self, mock_run):
+        import json
+        mock_run.return_value = {"status": "ok", "stdout": json.dumps({"comments": [], "reviews": []})}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        gh_pr_comments(pr_id=42, tool_context=tool_context)
+
+        mock_run.assert_called_with(
+            ["gh", "pr", "view", "42", "--json", "comments,reviews"],
+            cwd=unittest.mock.ANY,
+            tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_comments_empty_when_none_exist_yet(self, mock_run):
+        import json
+        mock_run.return_value = {"status": "ok", "stdout": json.dumps({"comments": [], "reviews": []})}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = gh_pr_comments(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["comments"], [])
+        self.assertEqual(result["reviews"], [])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_comments_propagates_a_command_failure(self, mock_run):
+        mock_run.return_value = {"status": "error", "stderr": "no pull requests found"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = gh_pr_comments(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_comments_handles_unparseable_output(self, mock_run):
+        mock_run.return_value = {"status": "ok", "stdout": "not json"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = gh_pr_comments(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
 
     @patch("agents.scrum_team.tools.github._run")
     def test_gh_release_create(self, mock_run):

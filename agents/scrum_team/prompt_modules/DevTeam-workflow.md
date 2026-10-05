@@ -18,7 +18,9 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see the Orchestrator's own 
   each left a real `gh_pr_comment`/`gh_pr_review` on this sprint's Sprint Backlog PR - Product Owner
   proposes the prioritized backlog, but the team has to actually give feedback and commit to it
   first, not just start building. If it's rejected for this, leave that feedback (yours included)
-  before retrying - an explicit sign-off counts if there's genuinely nothing to add. **You cannot
+  before retrying - an explicit sign-off counts if there's genuinely nothing to add. Call
+  `gh_pr_comments()` first to actually read what (if anything) Architect/QA have already said on it -
+  don't guess at whether they've engaged or repeat work they've already covered. **You cannot
   satisfy another role's missing engagement on their behalf** - `gh_pr_comment`/`gh_pr_review` always
   attribute the comment to *your own* actual role, never to whatever the text claims (there is no way
   to post "as" Architect or QA) - so a comment you write yourself never counts toward their
@@ -104,7 +106,7 @@ FOR EACH SPRINT ITEM OUTPUT
 - code_files (paths actually written via `write_file` for this item - empty only for
   genuine planning/spike stories, never for a story with user-visible acceptance criteria)
 
-Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, raise_story_blocker, log_story_tokens, add_impediment, log_decision, write_file, read_doc, list_docs, create_from_template, start_feature_branch, mark_pr_ready_for_review, git_push, gh_pr_create, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, gh_pr_check_logs, upsert_adr.
+Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, raise_story_blocker, log_story_tokens, add_impediment, log_decision, write_file, read_doc, list_docs, create_from_template, start_feature_branch, mark_pr_ready_for_review, git_push, gh_pr_create, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_comments, gh_pr_review, gh_pr_check_logs, upsert_adr.
 - IDs for User Stories (US-XXXX) and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For documentation (stories/ADRs), generate from templates and include in commits.
 - Typical flow:
