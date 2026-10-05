@@ -359,6 +359,26 @@ story first, wasting effort if the higher-priority one later needs rework or get
 skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
 work actually begins, not just when a stage transition is claimed.
 
+### Blocked-story discipline (GH issue #359)
+
+Two gaps in how BLOCKED stories (`raise_story_blocker`/`resolve_story_blocker`) were handled, beyond
+the existing "a BLOCKED story can't advance its own stage" enforcement:
+
+1. **Real work could still start/continue on a BLOCKED story.** `advance_story_stage` already refused
+   every further stage transition while `blocked` was set, but nothing stopped `start_feature_branch`
+   from opening a branch and writing code for it anyway - wasted effort by definition, since the open
+   question blocking it hasn't been answered. `start_feature_branch` now refuses outright on the
+   target story's own `blocked` field (not just its predecessor's, see the ordering section above),
+   naming the open question and directing to `resolve_story_blocker`.
+2. **A blocker left unresolved across a full sprint wasn't mechanically surfaced to the retro.** A
+   story still BLOCKED now, that was ALSO already BLOCKED as of the *last* sprint report (genuinely
+   stuck across a full sprint, not just raised this sprint), is tracked via a new
+   `blocked_story_ids_as_of_last_report` snapshot (updated by both `create_sprint_report` and
+   `render_fallback_sprint_report` on every close). `create_sprint_report` now refuses to close while
+   any such story isn't mentioned anywhere in this sprint's `retro_actions`/`impediment_log` text -
+   the retro is where the team decides what happens next (escalate harder, reprioritize around it,
+   accept the delay), not silence.
+
 ### Structured backlog dependencies (`depends_on`)
 
 Dependencies between stories/issues were previously just an optional free-text field nothing read
