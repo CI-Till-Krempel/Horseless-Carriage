@@ -1828,12 +1828,25 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     ping-pong would have (that stays the fast path), and stays well clear
     of legitimate short routing chains (Orchestrator handing off to a
     specialist, who immediately hands off again) while still breaking a
-    3+-agent rotation in well under one eval case's call budget. Like
-    _broken_transfer_pairs above, once this fires the counter is pinned at
-    the threshold (not reset to 0) so it keeps refusing every further
-    transfer_to_agent call - regardless of target - until a real tool call
-    actually happens; a rotation that already burned this many hops with no
-    progress isn't a pattern worth letting restart from zero.
+    3+-agent rotation in well under one eval case's call budget.
+
+    GH issue #367: this counter resets to 0 once it fires - NOT pinned at
+    the threshold the way an earlier version of this function did. A real
+    eval run showed pinning it causes a permanent, session-wide deadlock:
+    the only way to ever clear the pin is a non-transfer tool call
+    succeeding, but the pin itself refuses every transfer_to_agent call -
+    to literally any target, by any agent - so no role can ever be reached
+    to make one. This fired on the mandatory budget-exhaustion SPRINT CLOSE
+    SEQUENCE's own correct, system-instructed hand-off chain (not a genuine
+    stuck rotation) and then no agent could transfer to anyone for the rest
+    of the run. Resetting to 0 still breaks an actively-spinning rotation
+    in the moment (this function's actual job) without permanently banning
+    every future hand-off; a genuinely recurring rotation simply trips this
+    again, which is correct. Also reset here when the *pair* breaker fires
+    (the `count >= TRANSFER_LOOP_THRESHOLD` branch below) - that streak's
+    hops would otherwise double-count against this independent budget too,
+    which is exactly how the run45 deadlock's rotation count reached
+    threshold one pair-break-and-3-hop-chain sooner than it should have.
     """
     state = tool_context.state
     pair = tuple(sorted((from_agent, to_agent)))
@@ -1860,6 +1873,9 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     if count >= TRANSFER_LOOP_THRESHOLD:
         state["_transfer_loop"] = {"pair": None, "count": 0}
         state["_broken_transfer_pairs"] = broken_pairs + [list(pair)]
+        # GH issue #367: this streak's hops must not also count against the
+        # independent rotation budget - see this function's own docstring.
+        state["_transfer_rotation_count"] = 0
         hop_count = count
         msg = (
             f"🔁 [TRANSFER LOOP DETECTED] {from_agent} and {to_agent} have handed off to each other "
@@ -1868,7 +1884,10 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
             "you're both routing around), or explain the blocker instead of handing off again."
         )
     else:
-        state["_transfer_rotation_count"] = TRANSFER_ROTATION_THRESHOLD
+        # GH issue #367: reset to 0, not pinned at the threshold - see this
+        # function's own docstring for why pinning causes a permanent,
+        # unrecoverable deadlock.
+        state["_transfer_rotation_count"] = 0
         hop_count = rotation_count
         msg = (
             f"🔁 [TRANSFER LOOP DETECTED] {rotation_count} transfer_to_agent hops in a row with no "

@@ -20,7 +20,13 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see the Orchestrator's own 
   first, not just start building. If it's rejected for this, leave that feedback (yours included)
   before retrying - an explicit sign-off counts if there's genuinely nothing to add. Call
   `gh_pr_comments()` first to actually read what (if anything) Architect/QA have already said on it -
-  don't guess at whether they've engaged or repeat work they've already covered.
+  don't guess at whether they've engaged or repeat work they've already covered. **You cannot
+  satisfy another role's missing engagement on their behalf** - `gh_pr_comment`/`gh_pr_review` always
+  attribute the comment to *your own* actual role, never to whatever the text claims (there is no way
+  to post "as" Architect or QA) - so a comment you write yourself never counts toward their
+  requirement, no matter how it's worded. If the rejection names a role that isn't you,
+  `transfer_to_agent` specifically to that named role so they can leave their own comment - don't
+  transfer back and forth hoping they'll realize it themselves.
 - Once you've written the real, working source files (`write_file`), pushed them, opened the PR,
   and CI is passing, call `advance_story_stage(title_or_id, "Implemented")`. This updates
   `specs/ROADMAP.md`'s checkbox for this story automatically - there's no separate roadmap step.

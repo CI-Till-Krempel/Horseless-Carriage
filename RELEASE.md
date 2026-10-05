@@ -359,6 +359,41 @@ story first, wasting effort if the higher-priority one later needs rework or get
 skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
 work actually begins, not just when a stage transition is claimed.
 
+### One-at-a-time ordering gate: an Issue still blocks, but now names the reprioritization escape hatch (GH issue #368)
+
+A real eval run (0.1.0-run45) showed two abstract process findings - "ensure robust test isolation",
+"US-0001 tests experienced test isolation/fixture failures" - auto-filed as Must-priority Issues
+(`_file_retro_items_as_issues`, GH #164), sitting ahead of a real feature story in `product_backlog`
+order, and mechanically blocking all unrelated feature work behind them via the one-story-at-a-time
+ordering gate (GH #358) until *they* reached Accepted - something an abstract process reminder often
+has no concrete way to do. Product Owner found the correct escape hatch this run
+(`set_priority(..., "Won't")` on both, once it was clear neither genuinely warranted blocking
+priority), but only after real trial and error against the gate's own refusals.
+
+**An earlier version of this fix exempted Issues from the ordering gate entirely - reconsidered and
+reverted** (PR review feedback): exempting them removed the *only* mechanical pressure that was
+actually pushing a Ready Must-priority Issue all the way to Accepted. GH #164's own enforcement
+(`create_sprint_backlog_pr`'s Must-priority gate) only ever demands an Issue reach *Ready*, never
+Accepted - once Ready, that gate is satisfied permanently, even if the Issue then sits completely
+untouched forever. Removing ordering's pressure too would have recreated #164's original "never
+actually acted on" failure one stage later in the pipeline, just for Ready-but-stalled Issues instead
+of Draft-but-unplanned ones.
+
+The actual fix: `_preceding_story` still blocks on an Issue exactly like any other unfinished item -
+but when the ordering gate's own refusal message (`advance_story_stage`, `start_feature_branch`) names
+an Issue specifically as the blocker, it now also names the reprioritization escape hatch. **Resolving
+it for real is the lead instruction, not reprioritizing it away** (second round of review feedback):
+*"'\<id\>' is an auto-filed process finding - resolve it for real (advance it through Implemented ->
+Reviewed -> Tested -> Accepted like any other item) rather than reaching for set_priority('\<id\>',
+...) to dodge it. Only reprioritize away from 'Must' if, on genuine reflection, it turns out this
+finding never actually warranted blocking priority - not because resolving it is inconvenient right
+now."* A cheap model under budget pressure reaches for whichever option reads easiest - leading with
+"just deprioritize it" would turn this gate into a convenient dodge for every inconvenient finding,
+defeating the entire point of auto-filing these as Must-priority in the first place (GH #164).
+Reprioritization stays available (a real eval run showed Product Owner use it correctly), but only
+framed as the narrow exception for a finding that genuinely doesn't warrant blocking priority, not a
+shortcut around doing the work.
+
 ### Blocked-story discipline (GH issue #359)
 
 Two gaps in how BLOCKED stories (`raise_story_blocker`/`resolve_story_blocker`) were handled, beyond
@@ -527,6 +562,24 @@ resolution is often only known in a later sprint, so the full running history is
 durable record, and avoids inventing new cross-file-synced per-sprint counters alongside the existing
 (and previously bug-prone, see #345's own history above) `retro_baseline` mechanism.
 
+### Non-blocking nudge for stubbed "assert True" tests (GH issue #370)
+
+`check_build`/the Tested-stage gate (`advance_story_stage`) only ever counted pass/fail totals from
+the real test suite run - it never inspected what a test actually asserts. A real eval run (0.1.0-
+run45) showed DevTeam hedge a genuinely flaky real test suite by also writing separate dummy test
+files alongside it each sprint (literally `def test_dummy(): assert True`), so the pass count always
+had *something* passing regardless of whether the real functionality was actually verified.
+
+`detect_stubbed_tests` (`agents/scrum_team/tools/quality.py`) scans `test_*.py`/`*_test.py` files
+(pytest's own discovery convention) for a test function whose body is just `pass`, a bare docstring,
+`assert True`, or a tautological `assert <literal> == <same literal>` - no other real assertions or
+fixture usage. The Tested-stage gate now calls this right after a story's test suite genuinely passes,
+and surfaces a non-blocking `warning` on the result naming the file/function if any are found - it
+never refuses the transition (a real, intentional placeholder has legitimate uses too, and false
+positives here are harmless; false negatives just mean the nudge doesn't fire). Deliberately a narrow,
+explicit AST heuristic rather than deeper static analysis, matching #354's own risk tolerance for this
+category of nudge.
+
 ### KPI trends report per-sprint deltas, not cumulative totals
 
 `_kpi_time_series`/`_sprint_metrics_table` (`agents/scrum_team/scripts/run_eval_analysis.py`) read
@@ -633,6 +686,29 @@ This is scoped to the eval harness's own driver loop - it's the only place in th
 calls `runner.run_async` directly. An interactive/production run goes through ADK's own runner
 (e.g. the ADK web server), which this fix does not touch.
 
+### Transfer-rotation breaker no longer permanently deadlocks a run (GH issue #367)
+
+The rotation-based transfer-loop breaker (`_transfer_rotation_count`, GH issue #191) used to **pin**
+its counter at `TRANSFER_ROTATION_THRESHOLD` once it fired, rather than resetting it to 0 the way the
+pair-based breaker (`_transfer_loop`) already does. Since every subsequent `transfer_to_agent` call -
+to *any* target, by *any* agent - is refused for as long as the counter sits at/above threshold, and
+the only reset path is a non-transfer tool call succeeding (which first requires reaching a role
+capable of making one, which first requires a transfer succeeding), this pin was unrecoverable: a real
+eval run (0.1.0-run45) hit it during the mandatory budget-exhaustion SPRINT CLOSE SEQUENCE's own
+correct, system-instructed hand-off chain (not a genuine stuck rotation) and the whole run never
+reached ScrumMaster/QualityGuardian/ProductOwner again for the rest of its sprints.
+
+Two related bugs, both in `_detect_transfer_loop` (`agents/scrum_team/agent.py`):
+1. The rotation counter now **resets to 0 once it fires**, instead of pinning at the threshold - it
+   still breaks an actively-spinning rotation in the moment (its actual job), without permanently
+   banning every future hand-off for the rest of the run. A genuinely recurring rotation simply trips
+   it again, which is correct.
+2. The pair breaker (`_transfer_loop`) firing now **also resets the rotation counter**, since that
+   streak's hops were otherwise inherited by the independent rotation budget too - run45's exact
+   failure was 3 wasted pair-ping-pong hops (broken by the pair breaker) immediately followed by a
+   legitimate 3-hop close-sequence chain, with the two sums (3 + 3) landing exactly on
+   `TRANSFER_ROTATION_THRESHOLD` (6) on the chain's own correct final hop.
+
 ### Forgotten-implementation nudge (DevTeam transferring away before advancing the stage)
 
 `advance_story_stage`'s Implemented gate already refuses to let a story reach Implemented without a
@@ -678,6 +754,16 @@ isn't silently forgotten.
 This is feedback-and-commitment, not a veto: the team's comments don't block the PR from merging, and
 Product Owner still owns the final prioritization - only the *start of implementation* is gated on the
 team having actually engaged with it.
+
+**Prompt clarification follow-up (GH issue #369)**: a real eval run showed DevTeam correctly identify
+that QA needed to act to satisfy this gate, but with no way to tell QA that via `transfer_to_agent`
+(no payload beyond a target name), QA transferred back instead - a ping-pong the pair loop-breaker had
+to step in and break. DevTeam then tried calling `gh_pr_comment` itself, worded as QA's own sign-off -
+this does nothing, since `gh_pr_comment`/`gh_pr_review` always attribute to the *actual calling
+agent's* role, never to whatever the text claims. `DevTeam-workflow.md`/`QA-workflow.md`/`Architect-
+workflow.md` now say this explicitly: there's no way to post "as" another role, so don't try - and if
+transferred to specifically because this gate named you as still missing, the expected response is to
+immediately leave your own comment, not transfer further.
 
 ### Reading back PR comments/reviews (`gh_pr_comments`)
 
