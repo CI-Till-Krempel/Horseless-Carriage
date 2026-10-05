@@ -582,9 +582,10 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
     exhausted (the one case that function doesn't redirect to
     ProductOwner for another attempt) - not on the very first halt any
     role hits, which may just hand off to a still-has-grace ProductOwner
-    who goes on to author the real report. Firing this any earlier would
-    risk committing this degraded stand-in and then never updating it once
-    - and if - the real one succeeds moments later during grace.
+    who goes on to author a report themselves. Firing this any earlier
+    would risk committing this state-rendered report and then never
+    updating it if Product Owner's own create_sprint_report succeeds
+    moments later during grace.
 
     Best-effort, same as its sibling: any failure here must not prevent
     the caller from still returning its own canned budget-exceeded
@@ -745,8 +746,8 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
         # unambiguous "no more turns for anyone this sprint" moment - see
         # _ensure_sprint_report_on_final_halt_once's own docstring for why
         # firing any earlier (e.g. the non-grace branch above) would risk
-        # committing a degraded fallback report and then never updating it
-        # even if the real one goes on to succeed during grace.
+        # committing this state-rendered report and then never updating it
+        # if Product Owner's own report goes on to succeed during grace.
         _ensure_sprint_report_on_final_halt_once(callback_context)
     return LlmResponse(
         content=types.Content(role="model", parts=parts),

@@ -272,6 +272,53 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(len(tool_context.state["blocking_interactions"]), 1)
         self.assertEqual(tool_context.state["blocking_interactions"][0]["kind"], "general_blocker")
 
+    def test_technical_finding_that_reads_like_role_behavior_gets_a_warning(self):
+        """GH issue #354: a non-blocking nudge when a "technical" finding's
+        text matches role-behavior/process-discipline signal phrases."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action(
+            "Keep feature branches synchronized with develop to prevent integration delays",
+            "DevTeam", "No stale branches at sprint end", category="technical", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("steering", result["warning"])
+
+    def test_technical_finding_with_no_signal_gets_no_warning(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action("Improve testing", "ScrumMaster", "CI passes", category="technical", tool_context=tool_context)
+        self.assertNotIn("warning", result)
+
+    def test_steering_category_never_gets_the_technical_nudge(self):
+        """The nudge only applies to category="technical" - a finding
+        already correctly categorized "steering" has nothing to warn about."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action(
+            "Keep feature branches synchronized with develop to prevent integration delays",
+            "DevTeam", "No stale branches at sprint end", category="steering", tool_context=tool_context,
+        )
+        self.assertNotIn("warning", result)
+
+    def test_impediment_recurring_from_an_earlier_sprint_gets_a_stronger_warning(self):
+        """GH issue #354: a "technical" finding sharing real substance with
+        an earlier sprint's still-unresolved "technical" finding is flagged
+        even when its own text doesn't match the role-behavior phrase list."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["impediment_log"] = [
+            {"description": "Dependency pinning keeps lagging behind upstream security releases",
+             "owner": "Architect", "status": "open", "category": "technical", "sprint_number": 1},
+        ]
+        tool_context.state["sprint_number"] = 3
+        result = add_impediment(
+            "Dependency pinning still lags behind upstream security releases again this sprint",
+            "Architect", category="technical", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("sprint 1", result["warning"])
+
     def test_record_human_approval(self):
         """
         Acceptance Criteria (ISSUE-0001): a human approval event is recorded
