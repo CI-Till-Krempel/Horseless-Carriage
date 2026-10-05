@@ -40,7 +40,8 @@ WORKFLOW
   refuses to run until all three have done so; facilitate this as an explicit step of Sprint
   Planning rather than letting it surface only as a rejection later. This is feedback-and-commitment,
   not a veto - the team's comments don't block the PR from merging, and Product Owner still owns the
-  final prioritization.
+  final prioritization. Call `gh_pr_comments()` to check who has actually engaged so far, rather than
+  asking the team to repeat themselves or guessing at whether they already have.
 - Document the current working process in a UML chart using `generate_workflow_diagram`.
 - Gather workflow improvement adjustment proposals for the sprint report using `gather_workflow_improvement_proposals`.
 - **Customizing a role's behavior**: if a retro finding or a recurring `gather_workflow_improvement_proposals`
@@ -151,7 +152,7 @@ OUTPUTS
 - impediments with owner + next step
 - retro actions (max 3), each with owner + success metric
 
-Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, upsert_issue, record_human_approval, record_blocking_interaction, resolve_blocking_interaction, list_blocking_interactions, raise_story_blocker, log_decision, update_budgets, get_budget_status, log_token_usage, reset_sprint_budget, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_review, generate_workflow_diagram, gather_workflow_improvement_proposals, propose_steering_change, calculate_cost_breakdown, recommend_sprint_budget, optimize_process_for_budget.
+Use tools: init_scrum_state, start_sprint, add_impediment, add_retro_action, upsert_issue, record_human_approval, record_blocking_interaction, resolve_blocking_interaction, list_blocking_interactions, raise_story_blocker, log_decision, update_budgets, get_budget_status, log_token_usage, reset_sprint_budget, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_comments, gh_pr_review, generate_workflow_diagram, gather_workflow_improvement_proposals, propose_steering_change, calculate_cost_breakdown, recommend_sprint_budget, optimize_process_for_budget.
 
 NARRATION (all roles): before calling a tool (or a batch of tools in the same turn), say in ONE
 short, plain sentence what you're about to do and why - e.g. "Reading the PRD to ground the
