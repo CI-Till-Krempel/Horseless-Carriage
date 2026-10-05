@@ -393,6 +393,21 @@ from both `create_sprint_report` and `create_release_pr` - a 5-sprint run (0.1.0
 numbered `TRANSCRIPT-NNN.md` files instead of 5. `state.transcript_path` mirrors `sprint_report_path`
 for this function, same reuse-within-the-sprint fix.
 
+### Budget exhaustion mid-sprint is a normal sprint ending, not a failure
+
+`render_fallback_sprint_report`'s rendered banner used to read "⚠️ Automatically Generated Fallback
+Report... before Product Owner could author and close the **real** sprint report" - language (and
+matching code comments: "degraded stand-in", "visibly degraded") that framed a sprint ending because
+the team used its full token/USD budget on actual implementation work as an exceptional failure
+rather than the expected, normal way a sprint can close. Mechanically, nothing was ever wrong here:
+`_ensure_sprint_report_on_final_halt_once` (`agents/scrum_team/agent.py`) only ever commits
+`specs/` + `.hc/state.json` (via `integrate_open_changes`, itself scoped to exactly those paths) to
+`develop` - it never touches, merges, or integrates any open `feature/*` branch, and never changes a
+story's stage. Unfinished feature branches are correctly left exactly as they are, to be picked up
+again next sprint. The banner and surrounding comments now describe this as what it is: a report
+rendered mechanically from logged state (because there's no LLM turn left to author a narrative one
+with) rather than a "fake" report standing in for a "real" one.
+
 ### KPI trends report per-sprint deltas, not cumulative totals
 
 `_kpi_time_series`/`_sprint_metrics_table` (`agents/scrum_team/scripts/run_eval_analysis.py`) read
