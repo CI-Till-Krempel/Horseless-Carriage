@@ -239,6 +239,18 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
         # a steering gap can't just be logged once and never actually acted
         # on, the same failure this whole category-triage design fixes.
         tool_context.state["steering_proposal_count"] = tool_context.state.get("steering_proposal_count", 0) + 1
+        # GH issue #356: a durable, structured record of this proposal -
+        # rendered into specs/reports/STEERING-NNN.md alongside the sprint
+        # report, since the PR body itself may be lost once the PR
+        # merges/closes.
+        tool_context.state["steering_proposals"] = list(tool_context.state.get("steering_proposals", [])) + [{
+            "role": role,
+            "proposed_by": agent_name or "an agent",
+            "rationale": rationale.strip(),
+            "new_content": new_content,
+            "pr_url": (pr_res.get("stdout") or "").strip(),
+            "branch": actual_branch,
+        }]
     return {
         "status": "ok" if ok else "error",
         "proposed": True,

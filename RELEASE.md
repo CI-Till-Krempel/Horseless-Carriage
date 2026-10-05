@@ -500,6 +500,33 @@ again next sprint. The banner and surrounding comments now describe this as what
 rendered mechanically from logged state (because there's no LLM turn left to author a narrative one
 with) rather than a "fake" report standing in for a "real" one.
 
+### Templates for retro items and steering proposals, documented alongside the reports (GH issue #356)
+
+Retro actions, impediments, and steering proposals previously had no durable artifact of their own -
+just in-memory state, a terse one-line bullet in the sprint report (`category` not even rendered
+there, see #354), and for a steering finding, a `propose_steering_change` PR body that could be lost
+once the PR merges/closes. New templates, modeled on `spec-templates/requirements/TEMPLATE-ISSUE.md`:
+`spec-templates/reports/TEMPLATE-RETRO-ITEM.md` and `TEMPLATE-STEERING-PROPOSAL.md`.
+
+`create_sprint_report`/`render_fallback_sprint_report` now also render `specs/reports/RETRO-NNN.md`
+(every time, from `_render_retro_doc`) and `specs/reports/STEERING-NNN.md` (only once at least one
+`propose_steering_change` call has actually succeeded, from `_render_steering_doc` - no empty file
+otherwise), alongside the existing `SPRINT-REPORT-NNN.md`/`TRANSCRIPT-NNN.md` pair - same numbered-
+path-reuse-within-a-sprint pattern (`state.retro_doc_path`/`steering_doc_path`, cleared each sprint
+via `sprint_budget_reset_state_delta`), shared between both call sites via `_write_retro_and_steering_
+docs` so they can't drift apart the way `sprint_report_path`'s own bug (above) once did.
+`propose_steering_change` (`agents/scrum_team/tools/workflow.py`) now records a structured entry
+(`state.steering_proposals` - role, rationale, proposed content, PR link) on every successful call,
+since nothing previously retained this once the PR itself did.
+
+**Design decision on the issue's own open question** (one file per sprint vs. one per item): per-
+sprint, for consistency with `SPRINT-REPORT-NNN.md`/`TRANSCRIPT-NNN.md`'s existing convention - but
+with content accumulated across the *whole run to date* (same scope as the sprint report's own terse
+Retrospective Actions/Impediments sections already use), not sprint-isolated: a finding's eventual
+resolution is often only known in a later sprint, so the full running history is the more useful
+durable record, and avoids inventing new cross-file-synced per-sprint counters alongside the existing
+(and previously bug-prone, see #345's own history above) `retro_baseline` mechanism.
+
 ### KPI trends report per-sprint deltas, not cumulative totals
 
 `_kpi_time_series`/`_sprint_metrics_table` (`agents/scrum_team/scripts/run_eval_analysis.py`) read

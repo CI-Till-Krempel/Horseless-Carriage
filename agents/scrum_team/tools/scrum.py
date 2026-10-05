@@ -65,6 +65,7 @@ REPO_STATE_KEYS = [
     "general_blockers",
     "steering_proposal_count",
     "steering_baseline",
+    "steering_proposals",
     "blocked_story_ids_as_of_last_report",
 ]
 # Deliberately excluded from the above: github_token, github_app,
@@ -186,6 +187,7 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("steering_proposal_count", 0)
     s.setdefault("blocked_story_ids_as_of_last_report", [])
     s.setdefault("steering_baseline", 0)
+    s.setdefault("steering_proposals", [])
     s.setdefault("backlog_scope_complete", False)
     s.setdefault("human_approvals", [])
     s.setdefault("sprint_approval_baseline", 0)

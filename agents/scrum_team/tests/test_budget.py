@@ -20,6 +20,8 @@ from agents.scrum_team.tools.budget import (
     _file_retro_items_as_issues,
     estimate_sprint_capacity,
     sprint_capacity_advisory,
+    _render_retro_doc,
+    _render_steering_doc,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -1525,6 +1527,119 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         result = render_fallback_sprint_report(tool_context=tool_context)
 
         self.assertIn("SAFETY WARNING", result["report"])
+
+    @patch("agents.scrum_team.tools.budget._next_retro_doc_path", return_value="specs/reports/RETRO-001.md")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_always_writes_the_retro_doc_but_not_the_steering_doc_when_empty(self, mock_write_file, mock_next_report_path, mock_next_retro_path):
+        """GH issue #356: RETRO-NNN.md is written every time regardless;
+        STEERING-NNN.md is only written once a real proposal exists."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open", "category": "technical"}]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/RETRO-001.md", written_paths)
+        self.assertFalse(any(p.startswith("specs/reports/STEERING-") for p in written_paths))
+        self.assertEqual(tool_context.state["retro_doc_path"], "specs/reports/RETRO-001.md")
+
+    @patch("agents.scrum_team.tools.budget._next_steering_doc_path", return_value="specs/reports/STEERING-001.md")
+    @patch("agents.scrum_team.tools.budget._next_retro_doc_path", return_value="specs/reports/RETRO-001.md")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_writes_the_steering_doc_once_a_proposal_exists(self, mock_write_file, mock_next_report_path, mock_next_retro_path, mock_next_steering_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open", "category": "technical"}]
+        tool_context.state["steering_proposals"] = [{
+            "role": "QA", "proposed_by": "ScrumMaster", "rationale": "QA keeps skipping local test runs.",
+            "new_content": "# QA\n\nRun the full local test suite before marking Tested.\n",
+            "pr_url": "https://github.com/example/example/pull/42", "branch": "steering/qa-identity-20261001000000",
+        }]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/STEERING-001.md", written_paths)
+        self.assertEqual(tool_context.state["steering_doc_path"], "specs/reports/STEERING-001.md")
+        steering_call = next(c for c in mock_write_file.call_args_list if c.args[0] == "specs/reports/STEERING-001.md")
+        self.assertIn("QA", steering_call.args[1])
+        self.assertIn("https://github.com/example/example/pull/42", steering_call.args[1])
+
+    @patch("agents.scrum_team.tools.budget._next_retro_doc_path", return_value="specs/reports/RETRO-002.md")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-002.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reuses_the_retro_doc_path_already_allocated_this_sprint(self, mock_write_file, mock_next_report_path, mock_next_retro_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_doc_path"] = "specs/reports/RETRO-001.md"
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open", "category": "technical"}]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/RETRO-001.md", written_paths)
+        mock_next_retro_path.assert_not_called()
+
+
+class TestRenderRetroDoc(unittest.TestCase):
+    """GH issue #356: TEMPLATE-RETRO-ITEM.md's structure, rendered from
+    state - a durable, full-detail record alongside the terse one-liners in
+    the sprint report itself."""
+
+    def test_empty_state_renders_a_plain_no_data_message(self):
+        self.assertIn("No retro actions or impediments logged yet", _render_retro_doc({}))
+
+    def test_renders_retro_action_detail(self):
+        s = {
+            "retro_actions": [{
+                "action": "Keep feature branches synchronized with develop",
+                "owner": "DevTeam", "status": "open", "category": "steering",
+                "success_metric": "No stale branches at sprint end", "issue_id": "ISSUE-0012",
+            }],
+            "impediment_log": [],
+        }
+        doc = _render_retro_doc(s)
+        self.assertIn("Keep feature branches synchronized with develop", doc)
+        self.assertIn("Category: steering", doc)
+        self.assertIn("Owner: DevTeam", doc)
+        self.assertIn("No stale branches at sprint end", doc)
+        self.assertIn("ISSUE-0012", doc)
+
+    def test_renders_impediment_detail(self):
+        s = {
+            "retro_actions": [],
+            "impediment_log": [{
+                "description": "Need a product decision on auth provider",
+                "owner": "ProductOwner", "status": "open", "category": "human",
+            }],
+        }
+        doc = _render_retro_doc(s)
+        self.assertIn("Need a product decision on auth provider", doc)
+        self.assertIn("Category: human", doc)
+
+
+class TestRenderSteeringDoc(unittest.TestCase):
+    """GH issue #356: TEMPLATE-STEERING-PROPOSAL.md's structure - no file
+    should be written when nothing has been proposed yet."""
+
+    def test_no_proposals_renders_nothing(self):
+        self.assertIsNone(_render_steering_doc({}))
+
+    def test_renders_proposal_detail(self):
+        s = {"steering_proposals": [{
+            "role": "QA", "proposed_by": "ScrumMaster",
+            "rationale": "QA keeps skipping local test runs.",
+            "new_content": "# QA\n\nRun the full local test suite before marking Tested.\n",
+            "pr_url": "https://github.com/example/example/pull/42",
+        }]}
+        doc = _render_steering_doc(s)
+        self.assertIn("QA", doc)
+        self.assertIn("QA keeps skipping local test runs.", doc)
+        self.assertIn("https://github.com/example/example/pull/42", doc)
+        self.assertIn("Run the full local test suite before marking Tested.", doc)
 
 
 class TestFileRetroItemsAsIssues(unittest.TestCase):

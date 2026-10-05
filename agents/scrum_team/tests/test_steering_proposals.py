@@ -215,6 +215,25 @@ class TestProposeSteeringChange(unittest.TestCase):
 
         self.assertEqual(tc.state["steering_proposal_count"], 1)
 
+    def test_successful_proposal_is_recorded_for_steering_doc_rendering(self):
+        """GH issue #356: a durable, structured record (role/rationale/PR
+        link/content) survives beyond the PR body itself, for rendering
+        into specs/reports/STEERING-NNN.md."""
+        tc = _make_tool_context(agent_name="Architect")
+        new_content = "# Architect\n\nFlag any schema change touching more than one service.\n"
+
+        self._run_with_patches(
+            lambda: propose_steering_change("Architect", new_content, "A real rationale for this change.", tool_context=tc)
+        )
+
+        self.assertEqual(len(tc.state["steering_proposals"]), 1)
+        proposal = tc.state["steering_proposals"][0]
+        self.assertEqual(proposal["role"], "Architect")
+        self.assertEqual(proposal["proposed_by"], "Architect")
+        self.assertEqual(proposal["new_content"], new_content)
+        self.assertIn("rationale", proposal)
+        self.assertIn("pr_url", proposal)
+
     def test_checkout_develop_failure_returns_error_without_writing(self):
         from agents.scrum_team.tools import base
 
