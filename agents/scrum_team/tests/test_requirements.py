@@ -10,6 +10,7 @@ from agents.scrum_team.tools.requirements import (
     set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
     raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
     update_roadmap, _strip_story_block_from_other_versions,
+    sync_stories_from_markdown, _migrated_priority,
 )
 
 
@@ -1573,6 +1574,101 @@ class TestPriorityAffectsBacklogOrdering(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
+
+
+class TestMigratedPriority(unittest.TestCase):
+    """GH issue #355 (migration follow-up, PR review comment): a repo's
+    existing stories/issues may predate the MoSCoW-only enforcement and
+    still carry a pre-MoSCoW value - _migrated_priority decides what (if
+    anything) a given raw value should be rewritten to."""
+
+    def test_already_valid_values_are_left_alone(self):
+        for valid in ("Must", "Should", "Could", "Won't"):
+            with self.subTest(priority=valid):
+                self.assertIsNone(_migrated_priority(valid))
+
+    def test_unset_or_blank_is_left_alone(self):
+        self.assertIsNone(_migrated_priority(None))
+        self.assertIsNone(_migrated_priority(""))
+        self.assertIsNone(_migrated_priority("   "))
+
+    def test_miscased_valid_value_is_corrected(self):
+        self.assertEqual(_migrated_priority("must"), "Must")
+        self.assertEqual(_migrated_priority("SHOULD"), "Should")
+        self.assertEqual(_migrated_priority("wont"), "Won't")
+
+    def test_legacy_pN_scale_maps_to_moscow(self):
+        self.assertEqual(_migrated_priority("P0"), "Must")
+        self.assertEqual(_migrated_priority("p1"), "Should")
+        self.assertEqual(_migrated_priority("P2"), "Could")
+        self.assertEqual(_migrated_priority("P3"), "Won't")
+
+    def test_legacy_word_scale_maps_to_moscow(self):
+        self.assertEqual(_migrated_priority("High"), "Must")
+        self.assertEqual(_migrated_priority("Medium"), "Should")
+        self.assertEqual(_migrated_priority("low"), "Could")
+
+    def test_unrecognized_value_falls_back_to_must(self):
+        """Same fallback _priority_rank itself already uses for an
+        unrecognized value - this never makes an item rank worse than it
+        already silently did."""
+        self.assertEqual(_migrated_priority("some-custom-scheme"), "Must")
+
+
+class TestSyncStoriesFromMarkdownMigratesLegacyPriority(unittest.TestCase):
+    """GH issue #355 (migration follow-up): sync_stories_from_markdown
+    self-heals a pre-MoSCoW priority value found in an existing story/issue
+    file, surgically rewriting just that one line so the fix survives past
+    this session - not just an in-memory correction that the very next
+    sync would silently re-derive and then forget again."""
+
+    def _write_story(self, stories_dir, filename, priority, extra_notes=""):
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        (stories_dir / filename).write_text(
+            "# User Story\n\n"
+            "- Story ID: US-0001\n"
+            "- Title: Add login\n"
+            "- Status: Ready\n"
+            f"- Priority: {priority}\n\n"
+            "## As a user, I want to log in, so that I can access my account.\n\n"
+            "## Acceptance Criteria\n- Given valid credentials, when I submit, then I'm logged in\n"
+            + extra_notes,
+            encoding="utf-8",
+        )
+
+    def test_rewrites_a_legacy_priority_value_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            stories_dir = repo_root / "specs" / "stories"
+            self._write_story(stories_dir, "US-0001-Add-login.md", "P0", extra_notes="\n## Notes\n- A custom note that must survive.\n")
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=repo_root):
+                tc = MagicMock()
+                tc.state = {"product_backlog": [], "sprint_backlog": []}
+                result = sync_stories_from_markdown(tool_context=tc)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
+            written = (stories_dir / "US-0001-Add-login.md").read_text(encoding="utf-8")
+            self.assertIn("- Priority: Must", written)
+            self.assertNotIn("P0", written)
+            # Nothing else in the file was touched.
+            self.assertIn("A custom note that must survive.", written)
+
+    def test_does_not_rewrite_a_file_whose_priority_is_already_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            stories_dir = repo_root / "specs" / "stories"
+            self._write_story(stories_dir, "US-0001-Add-login.md", "Should")
+            fp = stories_dir / "US-0001-Add-login.md"
+            original_mtime = fp.stat().st_mtime
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=repo_root), \
+                 patch("agents.scrum_team.tools.requirements._rewrite_priority_line") as mock_rewrite:
+                tc = MagicMock()
+                tc.state = {"product_backlog": [], "sprint_backlog": []}
+                sync_stories_from_markdown(tool_context=tc)
+
+            mock_rewrite.assert_not_called()
+            self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
 
 
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})

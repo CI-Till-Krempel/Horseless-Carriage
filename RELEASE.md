@@ -322,14 +322,32 @@ across different items - since `"P0"`/`"P2"` aren't real MoSCoW values, `_priori
 fallback silently ranked them as `"Must"` (the highest priority), the *opposite* of what a `"P2"`
 (intended low, per the very scale the prompt taught) was meant to convey.
 
-MoSCoW stays the one canonical scale (it's already what the sort mechanism is built around - no
-migration needed). `set_priority` and `upsert_backlog_item` (so `upsert_story`/`upsert_epic`/
-`upsert_issue`, and `plan_backlog_item` which delegates to `set_priority`) now refuse any `priority`
-outside `{"Must", "Should", "Could", "Won't"}` outright, naming the valid values. `_priority_rank`'s
-existing "no priority set at all defaults to `Must`'s rank" behavior is deliberately left unchanged -
-that's a different, already-justified case (a story nobody has explicitly deprioritized shouldn't be
-silently pushed to the back of the queue) from a value someone explicitly tried to set using the
-wrong scale, which validation now prevents from ever being saved in the first place.
+MoSCoW stays the one canonical scale (it's already what the sort mechanism is built around). `set_priority`
+and `upsert_backlog_item` (so `upsert_story`/`upsert_epic`/`upsert_issue`, and `plan_backlog_item` which
+delegates to `set_priority`) now refuse any `priority` outside `{"Must", "Should", "Could", "Won't"}`
+outright, naming the valid values. `_priority_rank`'s existing "no priority set at all defaults to
+`Must`'s rank" behavior is deliberately left unchanged - that's a different, already-justified case (a
+story nobody has explicitly deprioritized shouldn't be silently pushed to the back of the queue) from a
+value someone explicitly tried to set using the wrong scale, which validation now prevents from ever
+being saved in the first place.
+
+**Migrating existing data** (PR review follow-up): validation on *new* writes does nothing about a
+`priority` value already sitting in an existing repo's `specs/stories/*.md`/`specs/requirements/ISSUE-
+*.md` files from before this was enforced - the old BACKLOG ITEM TEMPLATE literally taught "P0/P1/P2 (or
+numeric)". `sync_stories_from_markdown` (`agents/scrum_team/tools/requirements.py`) now self-heals this
+on every sync: `_migrated_priority` maps a recognized legacy value to its MoSCoW equivalent (`P0`→`Must`,
+`P1`→`Should`, `P2`→`Could`, `P3`→`Won't`; `High`/`Medium`/`Low` likewise; a merely-miscased already-valid
+value like `"must"` is corrected to canonical casing), falling back to `"Must"` for anything else
+unrecognized - the same fallback `_priority_rank` itself already used, so this never makes an item rank
+*worse* than it already silently did. `_rewrite_priority_line` then surgically replaces just the
+`- Priority:` line in the file on disk (not a full regeneration via `_update_story_markdown`, which would
+silently drop any Notes/Test Approach/owner/tasks content `_parse_story_markdown` never round-trips back
+into state at all) - so the fix is durable, not just a one-session in-memory correction the very next
+sync would otherwise re-derive and then forget again. Idempotent: a file whose value is already valid is
+never rewritten. Retro findings that get auto-filed as Issues (`_file_retro_items_as_issues`) are covered
+the same way once filed, since a filed Issue is just another `specs/requirements/ISSUE-*.md` file this
+same sync already scans - `add_retro_action`/`add_impediment`'s own `priority` field (`"normal"`/`"high"`)
+is a separate, unrelated escalation scale that was never part of MoSCoW and needs no migration.
 
 ### One-at-a-time ordering also gates the start of work, not just stage completion (GH issue #358)
 

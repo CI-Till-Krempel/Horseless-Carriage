@@ -184,6 +184,58 @@ def _validate_priority(priority: str) -> str | None:
     return None
 
 
+# GH issue #355 (migration follow-up, PR review comment): a repo's
+# specs/stories/*.md or specs/requirements/ISSUE-*.md files may predate this
+# mechanical enforcement and still carry a pre-MoSCoW value in their own
+# "- Priority:" line - the old BACKLOG ITEM TEMPLATE literally taught
+# "P0/P1/P2 (or numeric)" before this fix. set_priority/upsert_backlog_item
+# refuse a *new* invalid write, but do nothing about data already on disk.
+_LEGACY_PRIORITY_MAP = {
+    "p0": "Must", "p1": "Should", "p2": "Could", "p3": "Won't",
+    "0": "Must", "1": "Should", "2": "Could", "3": "Won't",
+    "high": "Must", "medium": "Should", "low": "Could",
+}
+
+
+def _migrated_priority(raw_priority: Any) -> str | None:
+    """None if `raw_priority` is already a valid, correctly-cased MoSCoW
+    value (nothing to migrate) or isn't set at all (a genuinely unprioritized
+    item is a different, intentional case - see _priority_rank's own
+    comment - and is left alone). Otherwise the MoSCoW value it should be
+    rewritten to: a recognized legacy scale maps to its MoSCoW equivalent, a
+    merely-miscased already-valid value ("must") is corrected to canonical
+    casing, and anything else unrecognized falls back to "Must" - the same
+    fallback _priority_rank itself already uses for an unrecognized value,
+    so this never makes an item rank *worse* than it already silently did."""
+    if not isinstance(raw_priority, str) or not raw_priority.strip():
+        return None
+    normalized = raw_priority.strip().lower().replace("'", "")
+    for valid in VALID_PRIORITIES:
+        if normalized == valid.lower().replace("'", ""):
+            return None if raw_priority == valid else valid
+    return _LEGACY_PRIORITY_MAP.get(normalized, "Must")
+
+
+def _rewrite_priority_line(fp: Path, new_priority: str) -> None:
+    """Surgically replaces just the '- Priority: ...' line in an existing
+    story/issue markdown file in place - unlike _update_story_markdown
+    (which regenerates the whole file from the item dict and would silently
+    drop Notes/Test Approach/owner/tasks content _parse_story_markdown
+    never round-trips back into state at all), this touches nothing else in
+    the file."""
+    try:
+        content = fp.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    lines = content.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.strip().startswith("- Priority:"):
+            newline = "\n" if line.endswith("\n") else ""
+            lines[i] = f"- Priority: {new_priority}{newline}"
+            fp.write_text("".join(lines), encoding="utf-8")
+            return
+
+
 def _depends_on_cycle(backlog: List[Dict[str, Any]], item_id: str, depends_on: List[str]) -> bool:
     """GH issue #343: True if saving `item_id`'s depends_on as `depends_on`
     would create a cycle in the backlog's whole dependency graph (not just
@@ -893,6 +945,15 @@ def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
         story_data = _parse_story_markdown(content)
         if not story_data.get("title"):
              continue
+        # GH issue #355 (migration follow-up): self-heal a pre-MoSCoW
+        # priority value left over from before this was mechanically
+        # enforced - see _migrated_priority's own docstring. Runs on every
+        # sync but is a no-op once a file's value is already valid, so this
+        # never re-touches a file twice.
+        migrated_priority = _migrated_priority(story_data.get("priority"))
+        if migrated_priority is not None:
+            story_data["priority"] = migrated_priority
+            _rewrite_priority_line(fp, migrated_priority)
         found_stories.append(story_data)
         match_idx = -1
         for i, item in enumerate(backlog):
