@@ -14,6 +14,11 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see the Orchestrator's own 
   story - this branches `feature/<story_id>-<slug>` off `develop` and opens it as a draft PR back
   into `develop`. Every write/push for this story happens on that same feature branch, never
   directly on `develop`.
+- `start_feature_branch` also mechanically refuses to run until Architect, Dev Team, and QA have
+  each left a real `gh_pr_comment`/`gh_pr_review` on this sprint's Sprint Backlog PR - Product Owner
+  proposes the prioritized backlog, but the team has to actually give feedback and commit to it
+  first, not just start building. If it's rejected for this, leave that feedback (yours included)
+  before retrying - an explicit sign-off counts if there's genuinely nothing to add.
 - Once you've written the real, working source files (`write_file`), pushed them, opened the PR,
   and CI is passing, call `advance_story_stage(title_or_id, "Implemented")`. This updates
   `specs/ROADMAP.md`'s checkbox for this story automatically - there's no separate roadmap step.

@@ -521,6 +521,30 @@ snapshots the current touch count on firing, so an immediate retry of the same t
 (e.g. a design question for Architect mid-story), and a reminder it has already seen once must not
 become a permanent deadlock. Further new `write_file` activity re-arms the nudge.
 
+### Sprint backlog requires real team engagement before implementation starts (GH issue #357)
+
+Product Owner proposes the Sprint Backlog (`create_sprint_backlog_pr`), but that PR merging was
+never, by itself, proof the rest of the team actually weighed in on the proposed priority/sequencing
+- Dev Team could start implementing the moment it merged. The user's explicit requirement: "The team
+gives feedback and finally approves it and commits to it in the planning ritual. Before this is clear
+no implementation work should be started."
+
+`start_feature_branch` now mechanically refuses to run until Architect, Dev Team, and QA have each
+left a real `gh_pr_comment`/`gh_pr_review` on *this sprint's* Sprint Backlog PR - reusing the
+`pr_review_calls` per-role counter the Reviewed/Tested stage gates already track, no new tracking
+mechanism needed. The counter accumulates across the whole run rather than resetting per sprint, so a
+fresh `sprint_backlog_engagement_baseline` is snapshotted from it the moment this sprint's Sprint
+Backlog PR first merges (`create_sprint_backlog_pr`) - the gate then requires each role's count to
+have grown past that baseline, not just be nonzero historically. At that point in the sprint this PR
+is the only one that could possibly exist yet (no feature branches are open), so any role's review
+call is necessarily real engagement with it. A second `create_sprint_backlog_pr` call the same sprint
+(Product Owner adding more stories) doesn't re-snapshot the baseline, so engagement already given
+isn't silently forgotten.
+
+This is feedback-and-commitment, not a veto: the team's comments don't block the PR from merging, and
+Product Owner still owns the final prioritization - only the *start of implementation* is gated on the
+team having actually engaged with it.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

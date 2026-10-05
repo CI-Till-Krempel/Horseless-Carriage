@@ -147,6 +147,17 @@ class TestSprintBacklogPrGate(unittest.TestCase):
         self.assertTrue(publish["merged"])
         self.assertEqual(tc.state["sprint_backlog_pr_sprint"], 1)
 
+        # GH issue #357: the backlog PR merging isn't by itself the team's
+        # commitment to it - Architect/DevTeam/QA each need to have left
+        # real feedback on it first, so start_feature_branch still refuses
+        # until that's recorded too.
+        _as(tc, "DevTeam")
+        still_blocked = start_feature_branch(story_id, "add-login", tool_context=tc)
+        self.assertEqual(still_blocked["status"], "error")
+        self.assertIn("Architect", still_blocked["message"])
+
+        tc.state["pr_review_calls"] = {"Architect": 1, "DevTeam": 1, "QA": 1}
+
         _as(tc, "DevTeam")
         result = start_feature_branch(story_id, "add-login", tool_context=tc)
         self.assertEqual(result["status"], "ok")

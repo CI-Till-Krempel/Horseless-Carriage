@@ -45,7 +45,7 @@ from agents.scrum_team.tools.budget import log_story_tokens
 from agents.scrum_team.tools.scrum import start_sprint
 from agents.scrum_team.tools.github import (
     start_feature_branch, git_push, mark_pr_ready_for_review,
-    gh_pr_review, merge_story_pr, create_sprint_backlog_pr,
+    gh_pr_comment, gh_pr_review, merge_story_pr, create_sprint_backlog_pr,
 )
 from agents.scrum_team.tools.quality import check_build
 
@@ -133,6 +133,12 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
             self.assertEqual(start_sprint("Ship this story end to end", tool_context=tc)["status"], "ok")
         _as(tc, "ProductOwner")
         self.assertEqual(create_sprint_backlog_pr(tool_context=tc)["status"], "ok")
+        # GH issue #357: start_feature_branch also mechanically requires
+        # Architect/DevTeam/QA to have each left real feedback on this
+        # sprint's Sprint Backlog PR before Dev Team can start any story.
+        for role in ("Architect", "DevTeam", "QA"):
+            _as(tc, role)
+            self.assertEqual(gh_pr_comment("Looks good, committing to this plan.", tool_context=tc)["status"], "ok")
 
     def _draft_to_ready(self, tc, story_id):
         self.assertEqual(advance_story_stage(story_id, "Draft", tool_context=tc)["status"], "ok")

@@ -60,6 +60,12 @@ class ScrumState(BaseModel):
     pr_review_calls: Dict[str, int] = Field(default_factory=dict)
     architect_review_baseline: int = 0
     qa_review_baseline: int = 0
+    # GH issue #357: snapshot of pr_review_calls taken the first time each
+    # sprint's Sprint Backlog PR merges. start_feature_branch requires
+    # Architect/DevTeam/QA's counts to each have grown past this baseline -
+    # real team feedback/commitment on the backlog Product Owner proposed,
+    # before implementation starts.
+    sprint_backlog_engagement_baseline: Dict[str, int] = Field(default_factory=dict)
     qa_tested_baseline: int = 0
     sprint_report_pending_release: bool = False
     blocking_interactions: List[Dict[str, Any]] = Field(default_factory=list)
