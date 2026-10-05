@@ -1258,19 +1258,34 @@ NOT_IN_PRODUCT_BACKLOG = object()
 
 def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title: str):
     """
-    The nearest non-BLOCKED User Story before story_id/title in
+    The nearest non-BLOCKED, non-Issue User Story before story_id/title in
     product_backlog order - backlog order is priority order (see
-    RELEASE.md "Story workflow"). Epics are skipped: they aren't advanced
-    through the STORY_STAGES pipeline themselves, so they shouldn't block a
-    real story behind them.
+    RELEASE.md "Story workflow"). Epics are excluded from the list entirely
+    (not just skipped when scanning backward): they aren't advanced through
+    the STORY_STAGES pipeline themselves, so they shouldn't block a real
+    story behind them, and can never themselves be the thing being checked.
 
-    A BLOCKED predecessor (see raise_story_blocker) is skipped too, not
-    just Epics - a story stuck on an unresolved question shouldn't also
-    freeze every lower-priority story behind it; the team is meant to move
-    on to the next one while it waits (see RELEASE.md "Blocked stories").
-    The blocked story itself stays exactly where it is in product_backlog -
-    only the ordering *check* looks past it, so its priority position is
-    preserved for whenever it's resolved.
+    A BLOCKED predecessor (see raise_story_blocker) is skipped when
+    scanning backward, not excluded from the list - a story stuck on an
+    unresolved question shouldn't also freeze every lower-priority story
+    behind it; the team is meant to move on to the next one while it waits
+    (see RELEASE.md "Blocked stories"). The blocked story itself stays
+    exactly where it is in product_backlog - only the ordering *check*
+    looks past it, so its priority position is preserved for whenever it's
+    resolved.
+
+    GH issue #368: an Issue (type == "Issue", e.g. a retro/impediment
+    finding auto-filed via _file_retro_items_as_issues, GH #164) is skipped
+    the same way a BLOCKED predecessor is - present in the list (so it can
+    still be looked up as story_id/title itself, and a genuine data-
+    integrity "not in product_backlog at all" check still works for it),
+    but never counted as a blocking predecessor for anything else. Issues
+    already get their own dedicated enforcement (the Must-priority planning
+    gate in create_sprint_backlog_pr) independent of story ordering - an
+    abstract process finding like "improve test isolation" often has no
+    concrete way to reach Accepted, and gating unrelated feature work on it
+    reaching Accepted anyway is not what this ordering gate's own "one
+    *story* at a time" intent was ever about.
 
     Returns NOT_IN_PRODUCT_BACKLOG (not None) if story_id/title isn't in
     product_backlog at all - callers must treat that as "ordering can't be
@@ -1284,8 +1299,10 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     if idx is None:
         return NOT_IN_PRODUCT_BACKLOG
     for j in range(idx - 1, -1, -1):
-        if not stories_only[j].get("blocked"):
-            return stories_only[j]
+        candidate = stories_only[j]
+        if candidate.get("blocked") or candidate.get("type") == "Issue":
+            continue
+        return candidate
     return None
 
 

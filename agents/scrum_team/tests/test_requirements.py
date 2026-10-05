@@ -555,6 +555,30 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
+    def test_a_preceding_issue_does_not_block_advancement(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (GH issue #368): an auto-filed retro/impediment
+        Issue (_file_retro_items_as_issues, GH #164) sitting ahead of a real
+        story in product_backlog order must not gate that story's own
+        ordering check the way a real, unfinished Story does - a real eval
+        run (0.1.0-run45) showed two abstract "fix test isolation" Issues
+        gridlock all unrelated feature work behind them this way. Issues
+        already get their own dedicated Must-priority planning enforcement
+        (create_sprint_backlog_pr), independent of this ordering gate.
+        """
+        tc = self._two_story_context("DevTeam", ["Ready"])
+        tc.state["product_backlog"].insert(0, {
+            "id": "ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue",
+            "priority": "Must", "stages_completed": ["Draft"],
+        })
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+
     def test_sprint_only_story_without_product_backlog_entry_is_refused(self, mock_save, mock_md, mock_roadmap):
         """
         The actual bug: US-0002 exists only in sprint_backlog (no matching

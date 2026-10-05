@@ -359,6 +359,29 @@ story first, wasting effort if the higher-priority one later needs rework or get
 skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
 work actually begins, not just when a stage transition is claimed.
 
+### One-at-a-time ordering skips auto-filed Issues too, not just Epics (GH issue #368)
+
+`_preceding_story` already excluded Epics from the ordering check (they aren't advanced through the
+STORY_STAGES pipeline themselves, so they shouldn't block a real story behind them) - but not Issues
+(`type == "Issue"`), including ones auto-filed from a retro/impediment finding
+(`_file_retro_items_as_issues`, GH #164) specifically so they "can't be silently starved." Combining
+the two: a real eval run (0.1.0-run45) showed two abstract process findings - "ensure robust test
+isolation", "US-0001 tests experienced test isolation/fixture failures" - auto-filed as Must-priority
+Issues, sitting ahead of a real feature story in `product_backlog` order, and mechanically blocking
+all unrelated feature work behind them until *they* reached Accepted - something an abstract process
+reminder like that often has no concrete way to do. Product Owner found the escape hatch this run
+(`set_priority(..., "Won't")` on both), but only after real trial and error against the gate's own
+refusals.
+
+`_preceding_story` now skips `type == "Issue"` predecessors the same way it already skips a BLOCKED
+one when scanning backward for the nearest real blocker - present in the list (so it can still be
+looked up as the thing being checked, and the "not in `product_backlog` at all" data-integrity check
+still works for it), just never counted as a blocking predecessor for anything else. This doesn't
+weaken GH #164's own enforcement at all - the Must-priority planning gate (`create_sprint_backlog_pr`
+refusing to open a sprint backlog while one sits below Ready) is untouched, still forcing it into
+Ready every sprint - it only removes the newer, stricter "must reach Accepted before anything else can
+even start" requirement that ordering was never meant to carry for a process Issue in the first place.
+
 ### Blocked-story discipline (GH issue #359)
 
 Two gaps in how BLOCKED stories (`raise_story_blocker`/`resolve_story_blocker`) were handled, beyond

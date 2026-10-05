@@ -1040,6 +1040,28 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_skips_a_preceding_issue(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """
+        Acceptance Criteria (GH issue #368): an auto-filed retro/impediment
+        Issue sitting ahead of a real story must not gate start_feature_
+        branch the way a real, unfinished Story does - a real eval run
+        (0.1.0-run45) showed two abstract "fix test isolation" Issues
+        gridlock all unrelated feature work behind them this way.
+        """
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0002-second-story"}
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([
+            {"id": "ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+            {"id": "US-0002", "title": "Second", "stages_completed": ["Draft", "Ready"]},
+        ])
+
+        result = start_feature_branch("US-0002", "second-story", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     def test_first_story_in_backlog_has_no_predecessor(self, mock_run, mock_git_push, mock_gh_pr_create):
         mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0001-first-story"}
         tool_context = MagicMock()
