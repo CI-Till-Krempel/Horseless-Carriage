@@ -6,7 +6,10 @@ from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _hc_version, _run
 from .migrations import migrate_state
-from ..helpers import blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked, get_env_with_deprecated_fallback
+from ..helpers import (
+    blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked, get_env_with_deprecated_fallback,
+    looks_like_role_behavior_finding, recurring_technical_finding_sprint,
+)
 
 DEFAULT_DOD = [
     "Code reviewed",
@@ -605,6 +608,43 @@ _RETRO_CATEGORIES = ("technical", "steering", "human")
 _RETRO_PRIORITIES = ("normal", "high")
 
 
+def _technical_category_nudge(text: str, existing_entries, sprint_number, text_field: str) -> str | None:
+    """
+    GH issue #354: a "technical" finding whose text reads like a role-
+    behavior/process-discipline gap, or that recurs (shares significant
+    keywords with) an earlier sprint's unresolved "technical" finding of
+    the same kind - either is a signal prompt-only guidance alone wasn't
+    enough to get the model to act on (see this module's own docstring
+    link). Returns a non-blocking warning string to surface on the ADD
+    call's own response, or None if neither signal fires.
+    """
+    recurs_since_sprint = recurring_technical_finding_sprint(existing_entries, text, sprint_number, text_field)
+    behavior_signal = looks_like_role_behavior_finding(text)
+    if recurs_since_sprint is not None and behavior_signal:
+        return (
+            f"This reads like a role-behavior/process-discipline finding, and a similar one was "
+            f"already logged as 'technical' back in sprint {recurs_since_sprint} with no resolution "
+            "since - if a specific role should act differently going forward, this is exactly what "
+            "category='steering' plus a propose_steering_change call is for, not another one-off "
+            "'technical' Issue nobody will ever close."
+        )
+    if recurs_since_sprint is not None:
+        return (
+            f"A similar finding was already logged as 'technical' back in sprint {recurs_since_sprint} "
+            "with no resolution since - if this keeps recurring because of how a role behaves rather "
+            "than a one-time code task, consider category='steering' and a propose_steering_change "
+            "call instead."
+        )
+    if behavior_signal:
+        return (
+            "This reads like a role-behavior finding, not a one-time code task - if a specific role "
+            "should act differently going forward, consider category='steering' and a "
+            "propose_steering_change call instead, or category='human' if this is genuinely outside "
+            "the team's own authority to fix."
+        )
+    return None
+
+
 def _file_general_blocker_if_human(category: str, priority: str, text: str, owner: str, tool_context) -> None:
     """
     A "human" category retro finding is something genuinely outside the
@@ -673,11 +713,21 @@ def add_impediment(description: str, owner: str, category: str, priority: str = 
             "message": f"priority must be one of {list(_RETRO_PRIORITIES)}, not {priority!r}.",
         }
     s = tool_context.state
-    imp = {"description": description.strip(), "owner": owner.strip(), "status": "open", "category": category}
+    sprint_number = s.get("sprint_number", 0)
+    imp = {
+        "description": description.strip(), "owner": owner.strip(), "status": "open", "category": category,
+        "sprint_number": sprint_number,
+    }
+    warning = None
+    if category == "technical":
+        warning = _technical_category_nudge(description, s.get("impediment_log", []), sprint_number, "description")
     s["impediment_log"] = list(s.get("impediment_log", [])) + [imp]
     _file_general_blocker_if_human(category, priority, description, owner, tool_context)
     _ = save_state_to_repo(tool_context)
-    return {"status": "ok", "impediment": imp}
+    result = {"status": "ok", "impediment": imp}
+    if warning:
+        result["warning"] = warning
+    return result
 
 def add_retro_action(action: str, owner: str, success_metric: str, category: str, priority: str = "normal", tool_context=None) -> Dict[str, Any]:
     """
@@ -711,17 +761,25 @@ def add_retro_action(action: str, owner: str, success_metric: str, category: str
             "message": f"priority must be one of {list(_RETRO_PRIORITIES)}, not {priority!r}.",
         }
     s = tool_context.state
+    sprint_number = s.get("sprint_number", 0)
     entry = {
         "action": action.strip(),
         "owner": owner.strip(),
         "success_metric": success_metric.strip(),
         "status": "open",
         "category": category,
+        "sprint_number": sprint_number,
     }
+    warning = None
+    if category == "technical":
+        warning = _technical_category_nudge(action, s.get("retro_actions", []), sprint_number, "action")
     s["retro_actions"] = list(s.get("retro_actions", [])) + [entry]
     _file_general_blocker_if_human(category, priority, action, owner, tool_context)
     _ = save_state_to_repo(tool_context)
-    return {"status": "ok", "retro_action": entry}
+    result = {"status": "ok", "retro_action": entry}
+    if warning:
+        result["warning"] = warning
+    return result
 
 _APPROVAL_TYPES = ("sprint", "release", "budget")
 

@@ -87,6 +87,12 @@ RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional fi
     `priority="high"` only when continuing without an answer would waste real further work - a
     high-priority one can stop an unattended eval run outright (see `human_blocker_unresolved`),
     so don't use it for anything the team can reasonably work around for now.
+  - **If `add_retro_action`/`add_impediment` returns a `warning` field, read it before moving on**
+    (GH issue #354) - it fires on a `"technical"` finding that either reads like a role-behavior/
+    process-discipline gap, or shares real substance with an earlier sprint's still-unresolved
+    `"technical"` finding of the same kind. Neither blocks the call, but both are a real signal
+    `category="technical"` was the wrong default - reconsider `"steering"` (with a
+    `propose_steering_change` call) before treating the finding as closed.
 - Suggest optimizations to development workflows in the corresponding `.md` files.
 - Propose new agent roles, new tools, or model choices, where an actual blocker points at one.
 - Human review is mandatory for these retro items; include them in the sprint report.

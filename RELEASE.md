@@ -311,6 +311,16 @@ tier, unlike Retrospective Actions/Impediments below) listing every story still 
 sprint closes, so whoever reads the report can give feedback/guidance on it before the next sprint
 starts.
 
+### One-at-a-time ordering also gates the start of work, not just stage completion (GH issue #358)
+
+`advance_story_stage`'s one-story-at-a-time ordering gate only ever refused a story reaching
+Implemented-onward before the higher-priority story ahead of it reached Accepted - nothing stopped
+`start_feature_branch` (the real work - writing code, opening a PR) from starting on a lower-priority
+story first, wasting effort if the higher-priority one later needs rework or gets blocked.
+`start_feature_branch` now runs the exact same `_preceding_story` check (same BLOCKED-predecessor
+skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
+work actually begins, not just when a stage transition is claimed.
+
 ### Blocked-story discipline (GH issue #359)
 
 Two gaps in how BLOCKED stories (`raise_story_blocker`/`resolve_story_blocker`) were handled, beyond
@@ -397,6 +407,30 @@ role-behavior gap or something only a human can decide. `add_retro_action`/`add_
   same reasoning as the existing `blocked_needs_human` stop reason for story-level blockers: an
   unattended run has no human to act on it, so continuing just burns further sprints' budget.
 
+### Mechanical nudge toward the steering/human retro categories (GH issue #354)
+
+A real eval run after #342 shipped showed the model never once chose `"steering"` or `"human"` across
+all 5 sprints - every retro finding, including textbook role-behavior gaps ("Maintain rigorous story
+sequencing...", "Keep feature branches synchronized..."), was categorized `"technical"` and silently
+dropped into the backlog as an unfixable code task. Prompt-only guidance on what each category means
+wasn't enough to get it actually used - the same lesson this codebase has hit repeatedly elsewhere.
+
+`add_retro_action`/`add_impediment` (`agents/scrum_team/tools/scrum.py`) now return a non-blocking
+`warning` field when a `"technical"` finding matches either signal (`agents/scrum_team/helpers.py`):
+
+- **Heuristic re-classification**: the text matches a small set of role-behavior/process-discipline
+  signal phrases (`looks_like_role_behavior_finding` - "discipline", "synchronized", "in strict
+  sequence", a role name, etc.) rather than describing a one-time code task.
+- **Recurrence escalation**: the text shares real substance (keyword overlap) with an earlier sprint's
+  still-unresolved `"technical"` finding of the same kind (`recurring_technical_finding_sprint`) - the
+  same finding keeps getting logged without ever being escalated to a steering change.
+
+Neither blocks the call - a real code-task finding that happens to match must still succeed - but both
+are visible enough on the tool's own response, and `ScrumMaster-workflow.md`'s triage guidance now
+tells Scrum Master to read and act on a `warning` before moving on. `category` is also now rendered in
+both `create_sprint_report` and `render_fallback_sprint_report`'s retro/impediment sections (previously
+invisible even there), so a human reviewing the report can audit classification choices directly.
+
 ### Sprint report numbering (duplicate files)
 
 A 5-sprint eval run (0.1.0-run42) produced 12+ numbered `specs/reports/SPRINT-REPORT-NNN.md` files
@@ -412,6 +446,21 @@ repeat call within the same sprint reuses that path instead of burning a new num
 from both `create_sprint_report` and `create_release_pr` - a 5-sprint run (0.1.0-run43) produced 10
 numbered `TRANSCRIPT-NNN.md` files instead of 5. `state.transcript_path` mirrors `sprint_report_path`
 for this function, same reuse-within-the-sprint fix.
+
+### Budget exhaustion mid-sprint is a normal sprint ending, not a failure
+
+`render_fallback_sprint_report`'s rendered banner used to read "⚠️ Automatically Generated Fallback
+Report... before Product Owner could author and close the **real** sprint report" - language (and
+matching code comments: "degraded stand-in", "visibly degraded") that framed a sprint ending because
+the team used its full token/USD budget on actual implementation work as an exceptional failure
+rather than the expected, normal way a sprint can close. Mechanically, nothing was ever wrong here:
+`_ensure_sprint_report_on_final_halt_once` (`agents/scrum_team/agent.py`) only ever commits
+`specs/` + `.hc/state.json` (via `integrate_open_changes`, itself scoped to exactly those paths) to
+`develop` - it never touches, merges, or integrates any open `feature/*` branch, and never changes a
+story's stage. Unfinished feature branches are correctly left exactly as they are, to be picked up
+again next sprint. The banner and surrounding comments now describe this as what it is: a report
+rendered mechanically from logged state (because there's no LLM turn left to author a narrative one
+with) rather than a "fake" report standing in for a "real" one.
 
 ### KPI trends report per-sprint deltas, not cumulative totals
 

@@ -683,6 +683,35 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
     if missing_msg:
         return {"status": "error", "message": missing_msg}
 
+    # GH issue #358: advance_story_stage already refuses to let a story
+    # reach Implemented-onward before the higher-priority story immediately
+    # ahead of it (in product_backlog order, skipping BLOCKED predecessors)
+    # has reached Accepted - but nothing stopped the real WORK (this call)
+    # from starting on a lower-priority story first, wasting effort if the
+    # higher-priority one later needs rework or gets blocked. Mirrors that
+    # same gate here, one step earlier, at the point work actually begins.
+    from .requirements import _preceding_story, _story_stages_completed, NOT_IN_PRODUCT_BACKLOG
+    product_backlog = state.get("product_backlog", []) or []
+    preceding = _preceding_story(product_backlog, story_id, story_id)
+    if preceding is NOT_IN_PRODUCT_BACKLOG:
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot start work on '{story_id}' - it isn't in product_backlog, so its priority "
+                "order relative to other stories can't be verified. Add it via "
+                "plan_backlog_item/upsert_story first."
+            ),
+        }
+    if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot start work on '{story_id}' - the higher-priority story "
+                f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
+                "Development happens one story at a time, top to bottom, in backlog priority order."
+            ),
+        }
+
     # GH issue #359: a story cannot be resolved in reasonable effort gets
     # marked BLOCKED with a specific reason (raise_story_blocker) - work on
     # it should stop there until the reason is actually resolved
@@ -690,7 +719,7 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
     # already refuses every further stage transition while `blocked` is
     # set; nothing previously stopped the real work (this call) from
     # starting/continuing on it anyway.
-    for item in state.get("product_backlog", []) or []:
+    for item in product_backlog:
         if (item.get("id") == story_id or item.get("title") == story_id) and item.get("blocked"):
             blocked = item["blocked"]
             return {

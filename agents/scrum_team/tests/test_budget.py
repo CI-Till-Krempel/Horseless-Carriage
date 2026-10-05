@@ -353,6 +353,32 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_renders_retro_and_impediment_category(self, mock_write_file, mock_getenv):
+        """GH issue #354: category was previously invisible in the sprint
+        report even though it drives real mechanical consequences (Issue
+        auto-filing, the steering-proposal gate) - a human reviewing the
+        report should be able to audit the classification directly."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            # status "resolved" (not "open") so the open-steering-finding gate
+            # (which requires a fresh propose_steering_change) doesn't trip -
+            # this test is only about rendering, not that other gate.
+            {"action": "QA keeps skipping local test runs", "owner": "QA", "status": "resolved", "category": "steering"},
+        ]
+        tool_context.state["impediment_log"] = [
+            {"description": "Need a product decision on auth provider", "owner": "ProductOwner", "status": "open", "category": "human"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertIn("Category: steering", report)
+        self.assertIn("Category: human", report)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_does_not_fabricate_unknown_hc_version(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (release process edge case): an unrecorded
@@ -1358,12 +1384,13 @@ class TestWriteConversationTranscript(unittest.TestCase):
 
 class TestRenderFallbackSprintReport(unittest.TestCase):
     """
-    Acceptance Criteria: render_fallback_sprint_report is the deterministic,
-    non-LLM stand-in _ensure_sprint_report_on_final_halt_once (agent.py)
-    calls when the sprint budget runs out before Product Owner ever
-    successfully calls the real create_sprint_report - it must render
-    something real from state alone (no summary/accomplishments text to
-    author), and it must never clobber an already-real report.
+    Acceptance Criteria: render_fallback_sprint_report is the mechanically-
+    rendered counterpart _ensure_sprint_report_on_final_halt_once (agent.py)
+    calls when the sprint budget runs out before Product Owner ever gets a
+    turn to call create_sprint_report - a sprint ending this way is normal,
+    expected behavior, not a failure. It must render something real from
+    state alone (no summary/accomplishments text to author), and it must
+    never clobber a report Product Owner already authored.
     """
 
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
@@ -1381,7 +1408,7 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         result = render_fallback_sprint_report(tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
-        self.assertIn("Automatically Generated Fallback Report", result["report"])
+        self.assertIn("Mechanically-Rendered Report", result["report"])
         self.assertIn("US-0001", result["report"])
         self.assertNotIn("EP-0001", result["report"], "epics are not stories - must not appear in Story Status")
         self.assertIn("improve X", result["report"])
@@ -1390,6 +1417,24 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         written_paths = [c.args[0] for c in mock_write_file.call_args_list]
         self.assertIn("specs/reports/SPRINT-REPORT-001.md", written_paths)
         self.assertIn("specs/reports/SPRINT-REPORT-LATEST.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_renders_retro_and_impediment_category(self, mock_write_file, mock_next_path):
+        """GH issue #354: category was previously invisible here too."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "QA keeps skipping local test runs", "owner": "QA", "status": "open", "category": "steering"},
+        ]
+        tool_context.state["impediment_log"] = [
+            {"description": "Need a product decision on auth provider", "owner": "ProductOwner", "status": "open", "category": "human"},
+        ]
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertIn("Category: steering", result["report"])
+        self.assertIn("Category: human", result["report"])
 
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
     @patch("agents.scrum_team.tools.docs.write_file")
@@ -1419,7 +1464,7 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         result = render_fallback_sprint_report(tool_context=tool_context)
 
         self.assertEqual(result["report"], real_report)
-        self.assertNotIn("Automatically Generated Fallback Report", result["report"])
+        self.assertNotIn("Mechanically-Rendered Report", result["report"])
         # Re-written to disk (in case the real one was never committed), but
         # the pending-release bookkeeping is create_sprint_report's own job,
         # not re-triggered here for content that already existed.
