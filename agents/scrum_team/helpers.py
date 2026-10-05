@@ -2,6 +2,7 @@
 from __future__ import annotations
 import logging
 import os
+import re
 import sys
 
 logger = logging.getLogger(__name__)
@@ -333,6 +334,82 @@ def is_low_quality_retro_text(text) -> bool:
         return True
     cleaned = text.strip().lower().rstrip(".")
     return len(cleaned) < _MIN_RETRO_FIELD_LEN or cleaned in _GENERIC_RETRO_PHRASES
+
+
+# GH issue #354: a real eval run showed the model categorizing every single
+# retro finding as "technical" across 5 sprints straight - including ones
+# that, by #342's own prompt guidance, are textbook role-behavior/process-
+# discipline gaps ("Maintain rigorous story sequencing...", "Keep feature
+# branches synchronized..."). Prompt-only guidance on what "steering" means
+# wasn't enough to get it actually used - this is a non-blocking mechanical
+# nudge, not a new gate: a "technical" finding whose text matches these
+# signals still succeeds, just with a warning suggesting category="steering"
+# instead. False positives are fine (a real code task happening to mention
+# "sequence" must not be refused); false negatives just mean no nudge fires.
+_ROLE_BEHAVIOR_SIGNAL_PHRASES = (
+    "discipline", "synchronized", "in strict sequence", "in sequence",
+    "sequencing", "rigorous", "consistently", "going forward", "recurring",
+    "repeatedly", "every sprint", "each sprint", "adhere to", "stay in sync",
+)
+_ROLE_NAMES_FOR_BEHAVIOR_SIGNAL = (
+    "devteam", "dev team", "architect", "qa", "scrummaster", "scrum master",
+    "productowner", "product owner",
+)
+
+
+def looks_like_role_behavior_finding(text) -> bool:
+    """Heuristic (GH issue #354): does `text` read like a finding about how
+    a role/the team behaves or follows process, rather than a concrete
+    code/process task - see the module comment above this for why."""
+    if not isinstance(text, str):
+        return False
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in _ROLE_BEHAVIOR_SIGNAL_PHRASES):
+        return True
+    return any(role in lowered for role in _ROLE_NAMES_FOR_BEHAVIOR_SIGNAL)
+
+
+_MIN_SHARED_KEYWORDS_FOR_RECURRENCE = 2
+_RETRO_STOPWORDS = {
+    "that", "this", "with", "from", "have", "been", "were", "will", "into",
+    "before", "after", "during", "should", "would", "could", "about", "their",
+    "there", "these", "those", "ensure", "ensuring", "maintain", "maintaining",
+}
+
+
+_NON_ALNUM_RE_FOR_RETRO = re.compile(r"[^a-z0-9]+")
+
+
+def _retro_keywords(text: str) -> set:
+    words = _NON_ALNUM_RE_FOR_RETRO.sub(" ", (text or "").lower()).split()
+    return {w for w in words if len(w) >= 5 and w not in _RETRO_STOPWORDS}
+
+
+def recurring_technical_finding_sprint(existing_entries, new_text: str, new_sprint_number, text_field: str) -> int | None:
+    """
+    GH issue #354 (recurrence escalation): among `existing_entries` (prior
+    add_retro_action/add_impediment entries, each a dict with a category and
+    a sprint_number), returns the sprint_number of the most recent
+    STRICTLY-EARLIER-sprint "technical" entry whose text shares at least
+    `_MIN_SHARED_KEYWORDS_FOR_RECURRENCE` significant keywords with
+    `new_text` - i.e. the same kind of finding logged again without ever
+    being escalated to a steering change. None if nothing recurs.
+    """
+    new_keywords = _retro_keywords(new_text)
+    if len(new_keywords) < _MIN_SHARED_KEYWORDS_FOR_RECURRENCE:
+        return None
+    best_sprint = None
+    for entry in existing_entries or []:
+        if entry.get("category") != "technical":
+            continue
+        entry_sprint = entry.get("sprint_number")
+        if entry_sprint is None or entry_sprint >= new_sprint_number:
+            continue
+        existing_keywords = _retro_keywords(entry.get(text_field, ""))
+        if len(new_keywords & existing_keywords) >= _MIN_SHARED_KEYWORDS_FOR_RECURRENCE:
+            if best_sprint is None or entry_sprint > best_sprint:
+                best_sprint = entry_sprint
+    return best_sprint
 
 
 # --- BLOCKED stories (agents stuck on an unresolved question or loop) ---

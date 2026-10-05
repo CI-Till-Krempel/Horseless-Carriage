@@ -13,6 +13,8 @@ from agents.scrum_team.helpers import (
     ready_backlog_shortfall,
     closeout_grace_percent,
     closeout_remaining_work_fraction,
+    looks_like_role_behavior_finding,
+    recurring_technical_finding_sprint,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -237,6 +239,59 @@ class TestCloseoutGraceScaling(unittest.TestCase):
         state.sprint_report_pending_release = True
         with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "4"}, clear=True):
             self.assertEqual(closeout_grace_percent(state), 1.0)  # 4 * max(0.25, 0.25)
+
+
+class TestLooksLikeRoleBehaviorFinding(unittest.TestCase):
+    """GH issue #354: heuristic signal for a "technical" finding that
+    actually reads like a role-behavior/process-discipline gap."""
+
+    def test_flags_textbook_steering_candidates_from_the_real_eval_run(self):
+        for text in (
+            "Maintain rigorous story sequencing and ensure all planned stories have acceptance checks recorded promptly",
+            "Keep feature branches synchronized with develop to prevent integration delays",
+            "Ensure all lingering process issues and backlog requirements are completed in strict sequence before final wrap-up",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(looks_like_role_behavior_finding(text))
+
+    def test_does_not_flag_a_genuine_code_task(self):
+        self.assertFalse(looks_like_role_behavior_finding(
+            "Ensure test runner and dependencies are fully configured upfront in conftest.py/pytest.ini for new projects"
+        ))
+
+    def test_flags_a_finding_naming_a_role(self):
+        self.assertTrue(looks_like_role_behavior_finding("QA should run the full suite before marking Tested"))
+
+    def test_non_string_input_is_not_flagged(self):
+        self.assertFalse(looks_like_role_behavior_finding(None))
+
+
+class TestRecurringTechnicalFindingSprint(unittest.TestCase):
+    """GH issue #354: detects a "technical" finding recurring from an
+    earlier, still-unresolved sprint via keyword overlap."""
+
+    def test_no_recurrence_against_an_empty_history(self):
+        self.assertIsNone(recurring_technical_finding_sprint([], "Keep feature branches synchronized with develop", 2, "action"))
+
+    def test_detects_recurrence_from_an_earlier_sprint(self):
+        existing = [{"action": "Keep feature branches synchronized with develop to avoid drift", "category": "technical", "sprint_number": 1}]
+        result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 3, "action")
+        self.assertEqual(result, 1)
+
+    def test_does_not_match_the_same_sprint(self):
+        existing = [{"action": "Keep feature branches synchronized with develop to avoid drift", "category": "technical", "sprint_number": 2}]
+        result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 2, "action")
+        self.assertIsNone(result)
+
+    def test_ignores_non_technical_entries(self):
+        existing = [{"action": "Keep feature branches synchronized with develop to avoid drift", "category": "steering", "sprint_number": 1}]
+        result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 3, "action")
+        self.assertIsNone(result)
+
+    def test_unrelated_findings_do_not_match(self):
+        existing = [{"action": "Update the README with setup instructions", "category": "technical", "sprint_number": 1}]
+        result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 3, "action")
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

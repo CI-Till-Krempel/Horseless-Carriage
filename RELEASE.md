@@ -387,6 +387,30 @@ role-behavior gap or something only a human can decide. `add_retro_action`/`add_
   same reasoning as the existing `blocked_needs_human` stop reason for story-level blockers: an
   unattended run has no human to act on it, so continuing just burns further sprints' budget.
 
+### Mechanical nudge toward the steering/human retro categories (GH issue #354)
+
+A real eval run after #342 shipped showed the model never once chose `"steering"` or `"human"` across
+all 5 sprints - every retro finding, including textbook role-behavior gaps ("Maintain rigorous story
+sequencing...", "Keep feature branches synchronized..."), was categorized `"technical"` and silently
+dropped into the backlog as an unfixable code task. Prompt-only guidance on what each category means
+wasn't enough to get it actually used - the same lesson this codebase has hit repeatedly elsewhere.
+
+`add_retro_action`/`add_impediment` (`agents/scrum_team/tools/scrum.py`) now return a non-blocking
+`warning` field when a `"technical"` finding matches either signal (`agents/scrum_team/helpers.py`):
+
+- **Heuristic re-classification**: the text matches a small set of role-behavior/process-discipline
+  signal phrases (`looks_like_role_behavior_finding` - "discipline", "synchronized", "in strict
+  sequence", a role name, etc.) rather than describing a one-time code task.
+- **Recurrence escalation**: the text shares real substance (keyword overlap) with an earlier sprint's
+  still-unresolved `"technical"` finding of the same kind (`recurring_technical_finding_sprint`) - the
+  same finding keeps getting logged without ever being escalated to a steering change.
+
+Neither blocks the call - a real code-task finding that happens to match must still succeed - but both
+are visible enough on the tool's own response, and `ScrumMaster-workflow.md`'s triage guidance now
+tells Scrum Master to read and act on a `warning` before moving on. `category` is also now rendered in
+both `create_sprint_report` and `render_fallback_sprint_report`'s retro/impediment sections (previously
+invisible even there), so a human reviewing the report can audit classification choices directly.
+
 ### Sprint report numbering (duplicate files)
 
 A 5-sprint eval run (0.1.0-run42) produced 12+ numbered `specs/reports/SPRINT-REPORT-NNN.md` files
