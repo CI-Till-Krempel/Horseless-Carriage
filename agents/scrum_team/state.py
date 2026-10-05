@@ -81,3 +81,11 @@ class ScrumState(BaseModel):
     # forgotten the way GH issue #342 found every retro finding was.
     steering_proposal_count: int = 0
     steering_baseline: int = 0
+    # GH issue #356: a structured, durable record of every propose_steering_
+    # change call that has actually succeeded - rendered into
+    # specs/reports/STEERING-NNN.md alongside the sprint report. Distinct
+    # from steering_proposal_count above (a bare counter for the gate) -
+    # this holds the actual content (role/rationale/PR link) a human would
+    # need to audit the proposal later, since the PR body itself may be
+    # lost once the PR merges/closes.
+    steering_proposals: List[Dict[str, Any]] = Field(default_factory=list)

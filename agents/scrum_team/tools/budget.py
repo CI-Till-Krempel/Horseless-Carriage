@@ -135,6 +135,11 @@ def sprint_budget_reset_state_delta() -> Dict[str, Any]:
         # TRANSCRIPT-NNN.md's own numbered-path reuse (see
         # _write_conversation_transcript).
         "transcript_path": "",
+        # GH issue #356: mirrors sprint_report_path/transcript_path above,
+        # for RETRO-NNN.md/STEERING-NNN.md's own numbered-path reuse (see
+        # _render_retro_doc/_render_steering_doc).
+        "retro_doc_path": "",
+        "steering_doc_path": "",
         # GH issue #220: the 75%/90% budget-warning gate (see
         # _maybe_inject_budget_warning, agent.py) - cleared so a new sprint's
         # own approach to the ceiling warns again, rather than staying
@@ -580,6 +585,118 @@ def _next_transcript_path(tool_context) -> str:
     return f"specs/reports/TRANSCRIPT-{max_num + 1:03d}.md"
 
 
+_RETRO_DOC_NUM_PATTERN = re.compile(r"RETRO-(\d+)\.md$")
+
+
+def _next_retro_doc_path(tool_context) -> str:
+    """Mirrors _next_sprint_report_path, one sequence per artifact type."""
+    repo_root = _configured_repo_root(tool_context)
+    reports_dir = repo_root / "specs" / "reports"
+    max_num = 0
+    if reports_dir.exists():
+        for fp in reports_dir.glob("RETRO-*.md"):
+            m = _RETRO_DOC_NUM_PATTERN.match(fp.name)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+    return f"specs/reports/RETRO-{max_num + 1:03d}.md"
+
+
+_STEERING_DOC_NUM_PATTERN = re.compile(r"STEERING-(\d+)\.md$")
+
+
+def _next_steering_doc_path(tool_context) -> str:
+    """Mirrors _next_sprint_report_path, one sequence per artifact type."""
+    repo_root = _configured_repo_root(tool_context)
+    reports_dir = repo_root / "specs" / "reports"
+    max_num = 0
+    if reports_dir.exists():
+        for fp in reports_dir.glob("STEERING-*.md"):
+            m = _STEERING_DOC_NUM_PATTERN.match(fp.name)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+    return f"specs/reports/STEERING-{max_num + 1:03d}.md"
+
+
+def _render_retro_doc(s: Dict[str, Any]) -> str:
+    """
+    GH issue #356: TEMPLATE-RETRO-ITEM.md's structure, rendered for every
+    retro action/impediment logged so far (full detail - category, owner,
+    status, success metric, Issue/PR/blocker disposition once known) - a
+    durable record alongside the terse one-liners in the sprint report
+    itself. Cumulative across the whole run (same scope as the sprint
+    report's own terse sections), not sprint-scoped - a finding's eventual
+    resolution often isn't known until a later sprint, so the full history
+    is the more useful audit trail.
+    """
+    retro = s.get("retro_actions", []) or []
+    impediments = s.get("impediment_log", []) or []
+    lines = ["# Retro Items\n"]
+    if not retro and not impediments:
+        lines.append("No retro actions or impediments logged yet.\n")
+        return "".join(lines)
+    for action in retro:
+        lines.append(f"\n## {action.get('action', '(no action text)')}\n")
+        lines.append(f"- Kind: Retro Action\n")
+        lines.append(f"- Category: {action.get('category', 'unset')}\n")
+        lines.append(f"- Owner: {action.get('owner', 'unknown')}\n")
+        lines.append(f"- Status: {action.get('status', 'open')}\n")
+        if action.get("success_metric"):
+            lines.append(f"- Success Metric: {action['success_metric']}\n")
+        if action.get("issue_id"):
+            lines.append(f"- Filed As: {action['issue_id']}\n")
+    for imp in impediments:
+        lines.append(f"\n## {imp.get('description', '(no description)')}\n")
+        lines.append(f"- Kind: Impediment\n")
+        lines.append(f"- Category: {imp.get('category', 'unset')}\n")
+        lines.append(f"- Owner: {imp.get('owner', 'unknown')}\n")
+        lines.append(f"- Status: {imp.get('status', 'open')}\n")
+        if imp.get("issue_id"):
+            lines.append(f"- Filed As: {imp['issue_id']}\n")
+    return "".join(lines)
+
+
+def _render_steering_doc(s: Dict[str, Any]) -> str | None:
+    """
+    GH issue #356: TEMPLATE-STEERING-PROPOSAL.md's structure, rendered for
+    every propose_steering_change call that has succeeded so far. Returns
+    None (caller skips writing the file) if none have happened yet - no
+    empty STEERING-NNN.md file otherwise.
+    """
+    proposals = s.get("steering_proposals", []) or []
+    if not proposals:
+        return None
+    lines = ["# Steering Proposals\n"]
+    for proposal in proposals:
+        lines.append(f"\n## {proposal.get('role', 'unknown role')}\n")
+        lines.append(f"- Proposed By: {proposal.get('proposed_by', 'unknown')}\n")
+        lines.append(f"- Pull Request: {proposal.get('pr_url') or '(unavailable)'}\n")
+        lines.append(f"\n### Rationale\n{proposal.get('rationale', '(none recorded)')}\n")
+        lines.append(f"\n### Proposed Content\n```\n{proposal.get('new_content', '')}\n```\n")
+    return "".join(lines)
+
+
+def _write_retro_and_steering_docs(s: Dict[str, Any], tool_context) -> None:
+    """
+    GH issue #356: writes specs/reports/RETRO-NNN.md (always) and
+    STEERING-NNN.md (only if at least one steering proposal has happened)
+    alongside the sprint report itself - shared by create_sprint_report and
+    render_fallback_sprint_report so the two can't drift apart on this.
+    Reuses each doc's own numbered path within the sprint, same
+    duplicate-file-avoidance pattern as sprint_report_path/transcript_path.
+    """
+    from .docs import write_file
+
+    retro_path = s.get("retro_doc_path") or _next_retro_doc_path(tool_context)
+    write_file(retro_path, _render_retro_doc(s), overwrite=True, tool_context=tool_context)
+    s["retro_doc_path"] = retro_path
+
+    steering_doc = _render_steering_doc(s)
+    if steering_doc is not None:
+        steering_path = s.get("steering_doc_path") or _next_steering_doc_path(tool_context)
+        write_file(steering_path, steering_doc, overwrite=True, tool_context=tool_context)
+        s["steering_doc_path"] = steering_path
+
+
 def _write_conversation_transcript(tool_context=None) -> Dict[str, Any]:
     """
     Renders state.transcript - every agent's model turns
@@ -858,6 +975,7 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
     latest_path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
     s["sprint_report_path"] = numbered_path
+    _write_retro_and_steering_docs(s, tool_context)
     return {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
 
 
@@ -1326,6 +1444,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     latest_path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
     s["sprint_report_path"] = numbered_path
+    _write_retro_and_steering_docs(s, tool_context)
 
     # Snapshot the count that satisfied this sprint's requirement, so next
     # sprint's gate demands something *new* again rather than trivially
