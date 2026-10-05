@@ -1,7 +1,9 @@
 # agents/scrum_team/tests/test_quality.py
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.tools.quality import (
@@ -12,6 +14,7 @@ from agents.scrum_team.tools.quality import (
     _compute_code_complexity,
     _scan_security_vulnerabilities,
     _compute_say_do_ratio,
+    detect_stubbed_tests,
 )
 from agents.scrum_team.tools.budget import create_sprint_report
 from agents.scrum_team.state import ScrumState
@@ -787,6 +790,84 @@ class TestPromptContextUsage(unittest.TestCase):
             kpis = calculate_kpis(tool_context=tool_context)
 
         self.assertEqual(set(kpis["prompt_context_usage"].keys()), set(ROLE_NAMES))
+
+
+class TestDetectStubbedTests(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #370): check_build/the Tested gate
+    doesn't inspect what a test actually asserts - a real eval run showed
+    DevTeam hedge a genuinely flaky real test suite by also writing stub
+    test functions ('assert True'-style) alongside it, so the pass count
+    always has something passing regardless of whether real coverage
+    exists. detect_stubbed_tests flags these (non-blocking - see its own
+    docstring for why false positives are acceptable).
+    """
+
+    def _write(self, tmp, filename, content):
+        fp = Path(tmp) / filename
+        fp.write_text(content, encoding="utf-8")
+        return fp
+
+    def test_flags_assert_true_stub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_dummy():\n    assert True\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["function"], "test_dummy")
+        self.assertEqual(findings[0]["file"], "test_app.py")
+
+    def test_flags_bare_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_dummy():\n    pass\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(len(findings), 1)
+
+    def test_flags_tautological_assert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_dummy():\n    assert 1 == 1\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(len(findings), 1)
+
+    def test_flags_docstring_only_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_dummy():\n    '''placeholder'''\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(len(findings), 1)
+
+    def test_does_not_flag_a_real_assertion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_real():\n    result = 1 + 1\n    assert result == 2\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_does_not_flag_a_test_with_a_docstring_and_a_real_assertion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_real():\n    '''Covers the add route.'''\n    assert add(1, 2) == 3\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_does_not_flag_a_test_using_a_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_real(client):\n    response = client.get('/')\n    assert response.status_code == 200\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_ignores_non_test_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "app.py", "def test_dummy():\n    assert True\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_skips_a_file_that_fails_to_parse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_broken.py", "def test_dummy(:\n    assert True\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_no_test_files_at_all_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
 
 
 if __name__ == "__main__":

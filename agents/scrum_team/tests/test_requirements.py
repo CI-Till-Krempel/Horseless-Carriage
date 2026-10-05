@@ -355,9 +355,30 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
             return_value={"available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("warning", result)
+
+    def test_tested_surfaces_a_non_blocking_warning_for_stubbed_tests(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #370: detect_stubbed_tests finding a trivial 'assert
+        True'-style test must not block Tested - it's a nudge, not a gate -
+        but the result should still name it so a human reviewing the report
+        can tell real coverage from a hedge."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch(
+            "agents.scrum_team.tools.quality.detect_stubbed_tests",
+            return_value=[{"file": "tests/test_app.py", "function": "test_dummy"}],
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
+        self.assertIn("warning", result)
+        self.assertIn("test_app.py::test_dummy", result["warning"])
 
     def test_accepted_requires_a_recorded_acceptance_check(self, mock_save, mock_md, mock_roadmap):
         """Acceptance Criteria (ISSUE-0043): Accepted previously had no
