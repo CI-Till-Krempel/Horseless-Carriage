@@ -825,13 +825,19 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
         report += "\n## Retrospective Actions Logged So Far\n"
         if retro:
             for action in retro:
-                report += f"- {action.get('action')} (Owner: {action.get('owner')}, Status: {action.get('status')})\n"
+                report += (
+                    f"- {action.get('action')} (Owner: {action.get('owner')}, Status: {action.get('status')}, "
+                    f"Category: {action.get('category', 'unset')})\n"
+                )
         else:
             report += "None logged before the budget ran out.\n"
         report += "\n## Impediments Logged So Far\n"
         if impediments:
             for imp in impediments:
-                report += f"- {imp.get('description')} (Owner: {imp.get('owner')}, Status: {imp.get('status')})\n"
+                report += (
+                    f"- {imp.get('description')} (Owner: {imp.get('owner')}, Status: {imp.get('status')}, "
+                    f"Category: {imp.get('category', 'unset')})\n"
+                )
         else:
             report += "None logged before the budget ran out.\n"
 
@@ -1161,7 +1167,10 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         if retro:
             for action in retro:
                 issue_note = f", filed as {action['issue_id']}" if action.get("issue_id") else ""
-                report += f"- {action['action']} (Owner: {action['owner']}, Status: {action['status']}{issue_note})\n"
+                report += (
+                    f"- {action['action']} (Owner: {action['owner']}, Status: {action['status']}, "
+                    f"Category: {action.get('category', 'unset')}{issue_note})\n"
+                )
         else:
             # This branch is now only reachable when the mandatory gate above
             # was satisfied by a *new impediment* instead of a retro action -
@@ -1174,7 +1183,10 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         if impediments:
             for imp in impediments:
                 issue_note = f", filed as {imp['issue_id']}" if imp.get("issue_id") else ""
-                report += f"- {imp['description']} (Owner: {imp['owner']}, Status: {imp['status']}{issue_note})\n"
+                report += (
+                    f"- {imp['description']} (Owner: {imp['owner']}, Status: {imp['status']}, "
+                    f"Category: {imp.get('category', 'unset')}{issue_note})\n"
+                )
         else:
             report += "No impediments logged.\n"
     else:
