@@ -359,6 +359,41 @@ story first, wasting effort if the higher-priority one later needs rework or get
 skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
 work actually begins, not just when a stage transition is claimed.
 
+### One-at-a-time ordering gate: an Issue still blocks, but now names the reprioritization escape hatch (GH issue #368)
+
+A real eval run (0.1.0-run45) showed two abstract process findings - "ensure robust test isolation",
+"US-0001 tests experienced test isolation/fixture failures" - auto-filed as Must-priority Issues
+(`_file_retro_items_as_issues`, GH #164), sitting ahead of a real feature story in `product_backlog`
+order, and mechanically blocking all unrelated feature work behind them via the one-story-at-a-time
+ordering gate (GH #358) until *they* reached Accepted - something an abstract process reminder often
+has no concrete way to do. Product Owner found the correct escape hatch this run
+(`set_priority(..., "Won't")` on both, once it was clear neither genuinely warranted blocking
+priority), but only after real trial and error against the gate's own refusals.
+
+**An earlier version of this fix exempted Issues from the ordering gate entirely - reconsidered and
+reverted** (PR review feedback): exempting them removed the *only* mechanical pressure that was
+actually pushing a Ready Must-priority Issue all the way to Accepted. GH #164's own enforcement
+(`create_sprint_backlog_pr`'s Must-priority gate) only ever demands an Issue reach *Ready*, never
+Accepted - once Ready, that gate is satisfied permanently, even if the Issue then sits completely
+untouched forever. Removing ordering's pressure too would have recreated #164's original "never
+actually acted on" failure one stage later in the pipeline, just for Ready-but-stalled Issues instead
+of Draft-but-unplanned ones.
+
+The actual fix: `_preceding_story` still blocks on an Issue exactly like any other unfinished item -
+but when the ordering gate's own refusal message (`advance_story_stage`, `start_feature_branch`) names
+an Issue specifically as the blocker, it now also names the reprioritization escape hatch. **Resolving
+it for real is the lead instruction, not reprioritizing it away** (second round of review feedback):
+*"'\<id\>' is an auto-filed process finding - resolve it for real (advance it through Implemented ->
+Reviewed -> Tested -> Accepted like any other item) rather than reaching for set_priority('\<id\>',
+...) to dodge it. Only reprioritize away from 'Must' if, on genuine reflection, it turns out this
+finding never actually warranted blocking priority - not because resolving it is inconvenient right
+now."* A cheap model under budget pressure reaches for whichever option reads easiest - leading with
+"just deprioritize it" would turn this gate into a convenient dodge for every inconvenient finding,
+defeating the entire point of auto-filing these as Must-priority in the first place (GH #164).
+Reprioritization stays available (a real eval run showed Product Owner use it correctly), but only
+framed as the narrow exception for a finding that genuinely doesn't warrant blocking priority, not a
+shortcut around doing the work.
+
 ### Blocked-story discipline (GH issue #359)
 
 Two gaps in how BLOCKED stories (`raise_story_blocker`/`resolve_story_blocker`) were handled, beyond

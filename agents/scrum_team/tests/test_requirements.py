@@ -576,6 +576,45 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
+    def test_a_preceding_issue_still_blocks_advancement_but_names_the_escape_hatch(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (GH issue #368, reconsidered): an auto-filed
+        retro/impediment Issue (_file_retro_items_as_issues, GH #164)
+        sitting ahead of a real story in product_backlog order DOES still
+        gate that story's own ordering check - an earlier version of this
+        fix exempted Issues entirely, but that removed the only mechanical
+        pressure actually pushing a Ready Must-priority Issue all the way to
+        Accepted (GH #164's own enforcement, create_sprint_backlog_pr's
+        Must-priority gate, only ever demands it reach Ready, which is
+        permanently satisfied the moment it does - recreating #164's
+        original "never actually acted on" failure one stage later). A real
+        eval run (0.1.0-run45) did hit this gridlock, but Product Owner
+        escaped it the intended way (set_priority to something other than
+        Must, once it was clear the finding didn't warrant blocking
+        priority) - the refusal message now names that escape hatch
+        explicitly so it doesn't take real trial and error to find.
+        """
+        tc = self._two_story_context("DevTeam", ["Ready"])
+        tc.state["product_backlog"].insert(0, {
+            "id": "ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue",
+            "priority": "Must", "stages_completed": ["Draft"],
+        })
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ISSUE-0001", result["message"])
+        self.assertIn("must reach Accepted first", result["message"])
+        self.assertIn("resolve it for real", result["message"])
+        self.assertIn("set_priority('ISSUE-0001'", result["message"])
+        self.assertIn("warranted blocking priority", result["message"])
+        # "Resolve it for real" must be the lead instruction, named before
+        # the reprioritization escape hatch - not the other way around.
+        self.assertLess(result["message"].index("resolve it for real"), result["message"].index("set_priority"))
+
     def test_sprint_only_story_without_product_backlog_entry_is_refused(self, mock_save, mock_md, mock_roadmap):
         """
         The actual bug: US-0002 exists only in sprint_backlog (no matching

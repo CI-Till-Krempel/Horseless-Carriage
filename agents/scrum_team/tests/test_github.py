@@ -989,6 +989,9 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("US-0001", result["message"])
         self.assertIn("must reach Accepted first", result["message"])
+        # The set_priority escape hatch is only named when the blocker is an
+        # Issue (a process finding) - US-0001 here is a real Story.
+        self.assertNotIn("set_priority", result["message"])
         mock_git_push.assert_not_called()
 
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
@@ -1035,6 +1038,34 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("product_backlog", result["message"])
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_a_preceding_issue_still_blocks_but_names_the_escape_hatch(self, mock_run):
+        """
+        Acceptance Criteria (GH issue #368, reconsidered): an auto-filed
+        retro/impediment Issue sitting ahead of a real story DOES still
+        gate start_feature_branch - see _preceding_story's own docstring
+        for why exempting Issues removed the only pressure actually pushing
+        one to Accepted, not just Ready. The refusal message now names the
+        set_priority escape hatch explicitly.
+        """
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([
+            {"id": "ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+            {"id": "US-0002", "title": "Second", "stages_completed": ["Draft", "Ready"]},
+        ])
+
+        result = start_feature_branch("US-0002", "second-story", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ISSUE-0001", result["message"])
+        self.assertIn("resolve it for real", result["message"])
+        self.assertIn("set_priority('ISSUE-0001'", result["message"])
+        self.assertIn("warranted blocking priority", result["message"])
+        # "Resolve it for real" must be the lead instruction, named before
+        # the reprioritization escape hatch - not the other way around.
+        self.assertLess(result["message"].index("resolve it for real"), result["message"].index("set_priority"))
         mock_run.assert_not_called()
 
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})

@@ -1258,11 +1258,11 @@ NOT_IN_PRODUCT_BACKLOG = object()
 
 def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title: str):
     """
-    The nearest non-BLOCKED User Story before story_id/title in
-    product_backlog order - backlog order is priority order (see
-    RELEASE.md "Story workflow"). Epics are skipped: they aren't advanced
-    through the STORY_STAGES pipeline themselves, so they shouldn't block a
-    real story behind them.
+    The nearest non-BLOCKED item before story_id/title in product_backlog
+    order - backlog order is priority order (see RELEASE.md "Story
+    workflow"). Epics are skipped: they aren't advanced through the
+    STORY_STAGES pipeline themselves, so they shouldn't block a real story
+    behind them.
 
     A BLOCKED predecessor (see raise_story_blocker) is skipped too, not
     just Epics - a story stuck on an unresolved question shouldn't also
@@ -1271,6 +1271,28 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     The blocked story itself stays exactly where it is in product_backlog -
     only the ordering *check* looks past it, so its priority position is
     preserved for whenever it's resolved.
+
+    GH issue #368/#368-followup: an Issue (type == "Issue", e.g. a retro/
+    impediment finding auto-filed via _file_retro_items_as_issues, GH #164)
+    is deliberately NOT skipped here, even though an earlier version of
+    this function did exactly that. An Issue blocking ordering is the
+    mechanism that actually gets it resolved, not just planned: GH #164's
+    own enforcement (create_sprint_backlog_pr's Must-priority gate) only
+    ever demands an Issue reach Ready, never Accepted - once Ready, that
+    gate is satisfied permanently, even if the Issue then sits untouched
+    forever. Exempting Issues from ordering removed the *only* pressure
+    that was pushing a Ready Must-priority Issue all the way to Accepted,
+    recreating #164's original "never actually acted on" failure one stage
+    later in the pipeline. A real eval run (0.1.0-run45) did show this
+    gridlock on two abstract "fix test isolation" Issues ahead of a real
+    story - but Product Owner escaped it the intended way
+    (set_priority(..., "Won't") once it was clear neither genuinely
+    warranted blocking priority), which is the correct resolution: an
+    abstract process finding that can't be concretely implemented should be
+    explicitly reprioritized away from Must, not silently un-gated. See the
+    ordering gate's own refusal message (agents/scrum_team/tools/github.py,
+    requirements.py) for the explicit nudge toward that escape hatch when
+    the blocker is an Issue.
 
     Returns NOT_IN_PRODUCT_BACKLOG (not None) if story_id/title isn't in
     product_backlog at all - callers must treat that as "ordering can't be
@@ -1500,13 +1522,34 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     # above 1 permanently unsatisfiable.
     if target_idx >= STORY_STAGES.index("Implemented"):
         if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
+            preceding_ref = preceding.get('id') or preceding.get('title')
+            # GH issue #368: when the blocker is an Issue (an auto-filed
+            # retro/impediment finding, not a feature story), name BOTH
+            # paths explicitly - but resolving it for real is the lead
+            # instruction, not reprioritizing it away. A cheap model under
+            # budget pressure will reach for whichever option reads easiest;
+            # leading with "just deprioritize it" would turn this gate into
+            # a convenient dodge for every inconvenient finding, defeating
+            # the entire point of auto-filing these as Must-priority in the
+            # first place (GH #164). Reprioritization stays available - a
+            # real eval run showed Product Owner use it correctly - but only
+            # framed as the narrow exception for a finding that genuinely
+            # doesn't warrant blocking priority, not a shortcut around doing
+            # the work.
+            escape_hatch = (
+                f" '{preceding_ref}' is an auto-filed process finding - resolve it for real (advance "
+                "it through Implemented -> Reviewed -> Tested -> Accepted like any other item) rather "
+                f"than reaching for set_priority('{preceding_ref}', ...) to dodge it. Only reprioritize "
+                "away from 'Must' if, on genuine reflection, it turns out this finding never actually "
+                "warranted blocking priority - not because resolving it is inconvenient right now."
+            ) if preceding.get("type") == "Issue" else ""
             return {
                 "status": "error",
                 "message": (
                     f"Cannot advance '{story_id}' to {stage} - the higher-priority story "
-                    f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
+                    f"'{preceding_ref}' must reach Accepted first. "
                     "Development happens one story at a time, top to bottom, in backlog priority "
-                    "order - Draft/Ready grooming may run ahead of it."
+                    "order - Draft/Ready grooming may run ahead of it." + escape_hatch
                 ),
             }
         # GH issue #343: same "actual DEVELOPMENT, not Draft/Ready grooming"
