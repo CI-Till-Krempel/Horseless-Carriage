@@ -989,6 +989,9 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("US-0001", result["message"])
         self.assertIn("must reach Accepted first", result["message"])
+        # The set_priority escape hatch is only named when the blocker is an
+        # Issue (a process finding) - US-0001 here is a real Story.
+        self.assertNotIn("set_priority", result["message"])
         mock_git_push.assert_not_called()
 
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
@@ -1037,18 +1040,16 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         self.assertIn("product_backlog", result["message"])
         mock_run.assert_not_called()
 
-    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
-    @patch("agents.scrum_team.tools.github.git_push")
-    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
-    def test_skips_a_preceding_issue(self, mock_run, mock_git_push, mock_gh_pr_create):
+    @patch("agents.scrum_team.tools.github._run")
+    def test_a_preceding_issue_still_blocks_but_names_the_escape_hatch(self, mock_run):
         """
-        Acceptance Criteria (GH issue #368): an auto-filed retro/impediment
-        Issue sitting ahead of a real story must not gate start_feature_
-        branch the way a real, unfinished Story does - a real eval run
-        (0.1.0-run45) showed two abstract "fix test isolation" Issues
-        gridlock all unrelated feature work behind them this way.
+        Acceptance Criteria (GH issue #368, reconsidered): an auto-filed
+        retro/impediment Issue sitting ahead of a real story DOES still
+        gate start_feature_branch - see _preceding_story's own docstring
+        for why exempting Issues removed the only pressure actually pushing
+        one to Accepted, not just Ready. The refusal message now names the
+        set_priority escape hatch explicitly.
         """
-        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0002-second-story"}
         tool_context = MagicMock()
         tool_context.state = self._base_state([
             {"id": "ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
@@ -1057,7 +1058,11 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
 
         result = start_feature_branch("US-0002", "second-story", tool_context=tool_context)
 
-        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ISSUE-0001", result["message"])
+        self.assertIn("set_priority('ISSUE-0001'", result["message"])
+        self.assertIn("warrant blocking priority", result["message"])
+        mock_run.assert_not_called()
 
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
     @patch("agents.scrum_team.tools.github.git_push")

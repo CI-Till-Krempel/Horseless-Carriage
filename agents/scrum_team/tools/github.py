@@ -703,12 +703,22 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
             ),
         }
     if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
+        preceding_ref = preceding.get('id') or preceding.get('title')
+        # GH issue #368: when the blocker is an Issue (an auto-filed retro/
+        # impediment finding, not a feature story), name the
+        # reprioritization escape hatch explicitly - see _preceding_story's
+        # own docstring for why this matters more than it might seem to.
+        escape_hatch = (
+            f" If '{preceding_ref}' is a process finding that doesn't actually warrant blocking "
+            f"priority, consider set_priority('{preceding_ref}', ...) to something other than "
+            "'Must' - otherwise, actually advance it through the pipeline like any other item."
+        ) if preceding.get("type") == "Issue" else ""
         return {
             "status": "error",
             "message": (
                 f"Cannot start work on '{story_id}' - the higher-priority story "
-                f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
-                "Development happens one story at a time, top to bottom, in backlog priority order."
+                f"'{preceding_ref}' must reach Accepted first. "
+                "Development happens one story at a time, top to bottom, in backlog priority order." + escape_hatch
             ),
         }
 

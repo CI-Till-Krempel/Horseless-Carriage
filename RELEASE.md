@@ -359,28 +359,34 @@ story first, wasting effort if the higher-priority one later needs rework or get
 skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
 work actually begins, not just when a stage transition is claimed.
 
-### One-at-a-time ordering skips auto-filed Issues too, not just Epics (GH issue #368)
+### One-at-a-time ordering gate: an Issue still blocks, but now names the reprioritization escape hatch (GH issue #368)
 
-`_preceding_story` already excluded Epics from the ordering check (they aren't advanced through the
-STORY_STAGES pipeline themselves, so they shouldn't block a real story behind them) - but not Issues
-(`type == "Issue"`), including ones auto-filed from a retro/impediment finding
-(`_file_retro_items_as_issues`, GH #164) specifically so they "can't be silently starved." Combining
-the two: a real eval run (0.1.0-run45) showed two abstract process findings - "ensure robust test
-isolation", "US-0001 tests experienced test isolation/fixture failures" - auto-filed as Must-priority
-Issues, sitting ahead of a real feature story in `product_backlog` order, and mechanically blocking
-all unrelated feature work behind them until *they* reached Accepted - something an abstract process
-reminder like that often has no concrete way to do. Product Owner found the escape hatch this run
-(`set_priority(..., "Won't")` on both), but only after real trial and error against the gate's own
-refusals.
+A real eval run (0.1.0-run45) showed two abstract process findings - "ensure robust test isolation",
+"US-0001 tests experienced test isolation/fixture failures" - auto-filed as Must-priority Issues
+(`_file_retro_items_as_issues`, GH #164), sitting ahead of a real feature story in `product_backlog`
+order, and mechanically blocking all unrelated feature work behind them via the one-story-at-a-time
+ordering gate (GH #358) until *they* reached Accepted - something an abstract process reminder often
+has no concrete way to do. Product Owner found the correct escape hatch this run
+(`set_priority(..., "Won't")` on both, once it was clear neither genuinely warranted blocking
+priority), but only after real trial and error against the gate's own refusals.
 
-`_preceding_story` now skips `type == "Issue"` predecessors the same way it already skips a BLOCKED
-one when scanning backward for the nearest real blocker - present in the list (so it can still be
-looked up as the thing being checked, and the "not in `product_backlog` at all" data-integrity check
-still works for it), just never counted as a blocking predecessor for anything else. This doesn't
-weaken GH #164's own enforcement at all - the Must-priority planning gate (`create_sprint_backlog_pr`
-refusing to open a sprint backlog while one sits below Ready) is untouched, still forcing it into
-Ready every sprint - it only removes the newer, stricter "must reach Accepted before anything else can
-even start" requirement that ordering was never meant to carry for a process Issue in the first place.
+**An earlier version of this fix exempted Issues from the ordering gate entirely - reconsidered and
+reverted** (PR review feedback): exempting them removed the *only* mechanical pressure that was
+actually pushing a Ready Must-priority Issue all the way to Accepted. GH #164's own enforcement
+(`create_sprint_backlog_pr`'s Must-priority gate) only ever demands an Issue reach *Ready*, never
+Accepted - once Ready, that gate is satisfied permanently, even if the Issue then sits completely
+untouched forever. Removing ordering's pressure too would have recreated #164's original "never
+actually acted on" failure one stage later in the pipeline, just for Ready-but-stalled Issues instead
+of Draft-but-unplanned ones.
+
+The actual fix: `_preceding_story` still blocks on an Issue exactly like any other unfinished item -
+but when the ordering gate's own refusal message (`advance_story_stage`, `start_feature_branch`) names
+an Issue specifically as the blocker, it now also names the reprioritization escape hatch explicitly:
+*"If '\<id\>' is a process finding that doesn't actually warrant blocking priority, consider
+set_priority('\<id\>', ...) to something other than 'Must' - otherwise, actually advance it through
+the pipeline like any other item."* This keeps the real pressure intact (an abstract Must-priority
+finding genuinely should force a decision - resolve it for real, or explicitly admit it doesn't
+deserve Must) while cutting the wasted turns it took to discover that decision was available at all.
 
 ### Blocked-story discipline (GH issue #359)
 

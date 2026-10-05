@@ -1258,34 +1258,41 @@ NOT_IN_PRODUCT_BACKLOG = object()
 
 def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title: str):
     """
-    The nearest non-BLOCKED, non-Issue User Story before story_id/title in
-    product_backlog order - backlog order is priority order (see
-    RELEASE.md "Story workflow"). Epics are excluded from the list entirely
-    (not just skipped when scanning backward): they aren't advanced through
-    the STORY_STAGES pipeline themselves, so they shouldn't block a real
-    story behind them, and can never themselves be the thing being checked.
+    The nearest non-BLOCKED item before story_id/title in product_backlog
+    order - backlog order is priority order (see RELEASE.md "Story
+    workflow"). Epics are skipped: they aren't advanced through the
+    STORY_STAGES pipeline themselves, so they shouldn't block a real story
+    behind them.
 
-    A BLOCKED predecessor (see raise_story_blocker) is skipped when
-    scanning backward, not excluded from the list - a story stuck on an
-    unresolved question shouldn't also freeze every lower-priority story
-    behind it; the team is meant to move on to the next one while it waits
-    (see RELEASE.md "Blocked stories"). The blocked story itself stays
-    exactly where it is in product_backlog - only the ordering *check*
-    looks past it, so its priority position is preserved for whenever it's
-    resolved.
+    A BLOCKED predecessor (see raise_story_blocker) is skipped too, not
+    just Epics - a story stuck on an unresolved question shouldn't also
+    freeze every lower-priority story behind it; the team is meant to move
+    on to the next one while it waits (see RELEASE.md "Blocked stories").
+    The blocked story itself stays exactly where it is in product_backlog -
+    only the ordering *check* looks past it, so its priority position is
+    preserved for whenever it's resolved.
 
-    GH issue #368: an Issue (type == "Issue", e.g. a retro/impediment
-    finding auto-filed via _file_retro_items_as_issues, GH #164) is skipped
-    the same way a BLOCKED predecessor is - present in the list (so it can
-    still be looked up as story_id/title itself, and a genuine data-
-    integrity "not in product_backlog at all" check still works for it),
-    but never counted as a blocking predecessor for anything else. Issues
-    already get their own dedicated enforcement (the Must-priority planning
-    gate in create_sprint_backlog_pr) independent of story ordering - an
-    abstract process finding like "improve test isolation" often has no
-    concrete way to reach Accepted, and gating unrelated feature work on it
-    reaching Accepted anyway is not what this ordering gate's own "one
-    *story* at a time" intent was ever about.
+    GH issue #368/#368-followup: an Issue (type == "Issue", e.g. a retro/
+    impediment finding auto-filed via _file_retro_items_as_issues, GH #164)
+    is deliberately NOT skipped here, even though an earlier version of
+    this function did exactly that. An Issue blocking ordering is the
+    mechanism that actually gets it resolved, not just planned: GH #164's
+    own enforcement (create_sprint_backlog_pr's Must-priority gate) only
+    ever demands an Issue reach Ready, never Accepted - once Ready, that
+    gate is satisfied permanently, even if the Issue then sits untouched
+    forever. Exempting Issues from ordering removed the *only* pressure
+    that was pushing a Ready Must-priority Issue all the way to Accepted,
+    recreating #164's original "never actually acted on" failure one stage
+    later in the pipeline. A real eval run (0.1.0-run45) did show this
+    gridlock on two abstract "fix test isolation" Issues ahead of a real
+    story - but Product Owner escaped it the intended way
+    (set_priority(..., "Won't") once it was clear neither genuinely
+    warranted blocking priority), which is the correct resolution: an
+    abstract process finding that can't be concretely implemented should be
+    explicitly reprioritized away from Must, not silently un-gated. See the
+    ordering gate's own refusal message (agents/scrum_team/tools/github.py,
+    requirements.py) for the explicit nudge toward that escape hatch when
+    the blocker is an Issue.
 
     Returns NOT_IN_PRODUCT_BACKLOG (not None) if story_id/title isn't in
     product_backlog at all - callers must treat that as "ordering can't be
@@ -1299,10 +1306,8 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     if idx is None:
         return NOT_IN_PRODUCT_BACKLOG
     for j in range(idx - 1, -1, -1):
-        candidate = stories_only[j]
-        if candidate.get("blocked") or candidate.get("type") == "Issue":
-            continue
-        return candidate
+        if not stories_only[j].get("blocked"):
+            return stories_only[j]
     return None
 
 
@@ -1517,13 +1522,25 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     # above 1 permanently unsatisfiable.
     if target_idx >= STORY_STAGES.index("Implemented"):
         if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
+            preceding_ref = preceding.get('id') or preceding.get('title')
+            # GH issue #368: when the blocker is an Issue (an auto-filed
+            # retro/impediment finding, not a feature story), name the
+            # reprioritization escape hatch explicitly - an abstract process
+            # finding that can't be concretely implemented should be
+            # reprioritized away from Must, not left to gridlock real work
+            # indefinitely while nobody realizes that's an option.
+            escape_hatch = (
+                f" If '{preceding_ref}' is a process finding that doesn't actually warrant blocking "
+                f"priority, consider set_priority('{preceding_ref}', ...) to something other than "
+                "'Must' - otherwise, actually advance it through the pipeline like any other item."
+            ) if preceding.get("type") == "Issue" else ""
             return {
                 "status": "error",
                 "message": (
                     f"Cannot advance '{story_id}' to {stage} - the higher-priority story "
-                    f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
+                    f"'{preceding_ref}' must reach Accepted first. "
                     "Development happens one story at a time, top to bottom, in backlog priority "
-                    "order - Draft/Ready grooming may run ahead of it."
+                    "order - Draft/Ready grooming may run ahead of it." + escape_hatch
                 ),
             }
         # GH issue #343: same "actual DEVELOPMENT, not Draft/Ready grooming"
