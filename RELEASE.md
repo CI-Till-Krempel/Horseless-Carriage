@@ -311,6 +311,16 @@ tier, unlike Retrospective Actions/Impediments below) listing every story still 
 sprint closes, so whoever reads the report can give feedback/guidance on it before the next sprint
 starts.
 
+### One-at-a-time ordering also gates the start of work, not just stage completion (GH issue #358)
+
+`advance_story_stage`'s one-story-at-a-time ordering gate only ever refused a story reaching
+Implemented-onward before the higher-priority story ahead of it reached Accepted - nothing stopped
+`start_feature_branch` (the real work - writing code, opening a PR) from starting on a lower-priority
+story first, wasting effort if the higher-priority one later needs rework or gets blocked.
+`start_feature_branch` now runs the exact same `_preceding_story` check (same BLOCKED-predecessor
+skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
+work actually begins, not just when a stage transition is claimed.
+
 ### Structured backlog dependencies (`depends_on`)
 
 Dependencies between stories/issues were previously just an optional free-text field nothing read
@@ -416,6 +426,21 @@ repeat call within the same sprint reuses that path instead of burning a new num
 from both `create_sprint_report` and `create_release_pr` - a 5-sprint run (0.1.0-run43) produced 10
 numbered `TRANSCRIPT-NNN.md` files instead of 5. `state.transcript_path` mirrors `sprint_report_path`
 for this function, same reuse-within-the-sprint fix.
+
+### Budget exhaustion mid-sprint is a normal sprint ending, not a failure
+
+`render_fallback_sprint_report`'s rendered banner used to read "⚠️ Automatically Generated Fallback
+Report... before Product Owner could author and close the **real** sprint report" - language (and
+matching code comments: "degraded stand-in", "visibly degraded") that framed a sprint ending because
+the team used its full token/USD budget on actual implementation work as an exceptional failure
+rather than the expected, normal way a sprint can close. Mechanically, nothing was ever wrong here:
+`_ensure_sprint_report_on_final_halt_once` (`agents/scrum_team/agent.py`) only ever commits
+`specs/` + `.hc/state.json` (via `integrate_open_changes`, itself scoped to exactly those paths) to
+`develop` - it never touches, merges, or integrates any open `feature/*` branch, and never changes a
+story's stage. Unfinished feature branches are correctly left exactly as they are, to be picked up
+again next sprint. The banner and surrounding comments now describe this as what it is: a report
+rendered mechanically from logged state (because there's no LLM turn left to author a narrative one
+with) rather than a "fake" report standing in for a "real" one.
 
 ### Templates for retro items and steering proposals, documented alongside the reports (GH issue #356)
 
