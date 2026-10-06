@@ -54,6 +54,8 @@ REPO_STATE_KEYS = [
     "unadvanced_write_nudge_baseline",
     "sprint_files_touched",
     "last_check_build",
+    "last_pr_checks",
+    "git_push_count",
     "pr_review_calls",
     "architect_review_baseline",
     "qa_review_baseline",
@@ -205,6 +207,8 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     # sprint.
     s.setdefault("sprint_files_touched", [])
     s.setdefault("last_check_build", None)
+    s.setdefault("last_pr_checks", None)
+    s.setdefault("git_push_count", 0)
     s.setdefault("pr_review_calls", {})
     s.setdefault("architect_review_baseline", 0)
     s.setdefault("qa_review_baseline", 0)
