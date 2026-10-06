@@ -800,6 +800,23 @@ the real one still counts as real dev progress toward the Implemented-stage touc
 Added to DevTeam's and Architect's tool lists (the two roles that already have `write_file`), with
 prompt guidance in `DevTeam-workflow.md` to reach for it instead of narrating a no-op removal.
 
+### KPIs sourced from the wrong backlog field, and stories never actually planned into a sprint (GH issue #378)
+
+A real eval run (0.1.0-run47) showed Velocity/Issues-fixed/Stories-implemented flat at 0 across all
+5 sprints despite real stage progress happening (several stories reached Accepted). Two compounding
+causes: `run_eval_analysis.py`'s `_kpi_time_series` read `sprint_backlog`, which stayed `[]` the
+entire run because DevTeam never called `plan_sprint_backlog_item` a single time - nothing
+mechanically required it before starting real work. `advance_story_stage` only ever writes stage
+progress into `sprint_backlog` if the story was already planned into it; it always writes to
+`product_backlog` (the authoritative superset) regardless, which is where the real progress was
+sitting the whole time, unread.
+
+Fixed both sides: `_kpi_time_series` now sources from `product_backlog`. `start_feature_branch`
+(`agents/scrum_team/tools/github.py`) now mechanically refuses to start work on a story that hasn't
+been planned into the current sprint via `plan_sprint_backlog_item` first - so the sprint backlog
+(and everything sourced from it, like "Stories Planned" in the per-sprint table) actually reflects
+what the team committed to, not just what got silently implemented without ever being planned.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

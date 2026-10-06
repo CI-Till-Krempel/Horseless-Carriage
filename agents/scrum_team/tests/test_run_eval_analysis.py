@@ -53,7 +53,12 @@ def test_render_report_defaults_hc_commit_to_unknown_when_absent():
 def _sprint(number, backlog=None, kpis=None):
     return {
         "sprint_number": number,
-        "sprint_backlog": backlog or [],
+        # GH issue #378: _kpi_time_series sources from product_backlog (the
+        # authoritative superset), not sprint_backlog (only populated if a
+        # story was explicitly planned into the sprint via
+        # plan_sprint_backlog_item, which a real run went an entire 5
+        # sprints without ever calling even once).
+        "product_backlog": backlog or [],
         "sprint_report_kpis": kpis,
     }
 
@@ -91,6 +96,25 @@ class TestKpiTimeSeries:
 
         series = _kpi_time_series(manifest)
 
+        assert series["Stories implemented"] == [(1, 1)]
+
+    def test_reads_product_backlog_even_when_sprint_backlog_was_never_planned(self):
+        """GH issue #378 regression: a real run (0.1.0-run47) never called
+        plan_sprint_backlog_item, leaving sprint_backlog permanently [] while
+        product_backlog recorded real Accepted/Implemented progress - the
+        KPIs must reflect that real progress, not a sprint_backlog that was
+        never populated in the first place."""
+        backlog = [_story(["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"])]
+        manifest = {"sprints": [{
+            "sprint_number": 1,
+            "product_backlog": backlog,
+            "sprint_backlog": [],
+            "sprint_report_kpis": None,
+        }]}
+
+        series = _kpi_time_series(manifest)
+
+        assert series["Velocity (items accepted)"] == [(1, 1)]
         assert series["Stories implemented"] == [(1, 1)]
 
     def test_sprint_report_kpis_missing_omits_the_data_point(self):
