@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from agents.scrum_team.tools.docs import (
     read_doc,
     write_file,
+    delete_file,
     upsert_prd,
     upsert_srs,
     upsert_adr,
@@ -122,6 +123,33 @@ class TestSprintFilesTouched(unittest.TestCase):
     def test_write_file_does_not_increment_for_unrelated_files(self):
         write_file("notes/foo.md", "content", tool_context=self.tool_context)
         self.assertEqual(self.tool_context.state.get("dependency_manifest_write_count", 0), 0)
+
+    def test_delete_file_removes_it_from_disk(self):
+        write_file("tests/test_todo_unit.py", "broken import", tool_context=self.tool_context)
+        result = delete_file("tests/test_todo_unit.py", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse((self.repo_root / "tests/test_todo_unit.py").exists())
+
+    def test_delete_file_records_touched_path(self):
+        write_file("tests/test_todo_unit.py", "broken import", tool_context=self.tool_context)
+        delete_file("tests/test_todo_unit.py", tool_context=self.tool_context)
+        self.assertIn("tests/test_todo_unit.py", self.tool_context.state["sprint_files_touched"])
+
+    def test_delete_file_errors_on_a_path_that_does_not_exist(self):
+        result = delete_file("tests/nope.py", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("does not exist", result["message"])
+
+    def test_delete_file_refuses_a_directory(self):
+        (self.repo_root / "tests").mkdir(parents=True, exist_ok=True)
+        result = delete_file("tests", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("directory", result["message"])
+
+    def test_delete_file_refuses_a_path_outside_the_repo_root(self):
+        result = delete_file("../outside.py", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("outside the repository root", result["message"])
 
     def test_upsert_prd_records_touched_path(self):
         upsert_prd("This is a PRD.", "test.md", tool_context=self.tool_context)

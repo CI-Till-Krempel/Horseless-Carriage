@@ -783,6 +783,23 @@ username - is how a caller tells who said what. Added to DevTeam/QA/Architect/Sc
 (the same roles that already have `gh_pr_comment`/`gh_pr_review`), with prompt guidance to check it
 before assuming nothing has happened yet, or before repeating feedback another role already gave.
 
+### DevTeam/Architect can actually delete a file they created by mistake (GH issue #376)
+
+`write_file` only ever writes or overwrites - there was no tool anywhere that removed a file from
+disk. A real eval run (0.1.0-run46) had DevTeam write a test file with a wrong import
+(`tests/test_todo_unit.py`), then narrate "removing" it rather than actually deleting it - the
+broken file sat on disk, failing `check_build`'s pytest collection identically on every later
+attempt, which permanently blocked that one story at Tested. Because of the (correctly-working)
+one-story-at-a-time ordering gate, every other story was then starved behind it for the rest of
+the run - 0 stories completed across all 5 sprints, from this one missing capability.
+
+`delete_file(path)` (`agents/scrum_team/tools/docs.py`) actually unlinks a repo-relative file
+(same repo-root containment check as `write_file`; errors clearly on a path that doesn't exist or
+is a directory) and records it via `_record_touched_file`, so removing a broken file to unblock
+the real one still counts as real dev progress toward the Implemented-stage touch-count gate.
+Added to DevTeam's and Architect's tool lists (the two roles that already have `write_file`), with
+prompt guidance in `DevTeam-workflow.md` to reach for it instead of narrating a no-op removal.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
