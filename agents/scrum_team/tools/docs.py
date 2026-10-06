@@ -77,6 +77,40 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def delete_file(path: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Delete a repository-relative file that was created by mistake.
+
+    GH issue #376: write_file only ever writes or overwrites - it never
+    removes a file from disk. A real eval run (0.1.0-run46) had DevTeam
+    write a test file with a wrong import, then narrate "removing" it, but
+    there was no tool that actually did that - the broken file sat on disk
+    forever, failing pytest collection identically on every subsequent
+    check_build, which permanently blocked the one story it belonged to
+    (and, via the one-story-at-a-time ordering gate, every story behind it)
+    for the rest of the run.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    abs_path = (repo_root / path).resolve()
+
+    if not str(abs_path).startswith(str(repo_root.resolve())):
+        return {"status": "error", "message": f"Path '{path}' is outside the repository root."}
+
+    if not abs_path.exists():
+        return {"status": "error", "message": f"File does not exist: {path}"}
+    if abs_path.is_dir():
+        return {
+            "status": "error",
+            "message": f"'{path}' is a directory, not a file - delete_file only removes a single file.",
+        }
+
+    try:
+        abs_path.unlink()
+        _record_touched_file(path, tool_context)
+        return {"status": "ok", "path": str(abs_path)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 def read_doc(path: str, tool_context=None) -> Dict[str, Any]:
     """
     Read any file within the /spec-templates folder of the main project or the /specs folder of the state repo.

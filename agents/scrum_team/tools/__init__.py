@@ -55,6 +55,7 @@ from .github import (
 )
 from .docs import (
     write_file,
+    delete_file,
     read_doc,
     list_docs,
     upsert_prd,
