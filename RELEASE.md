@@ -800,6 +800,40 @@ the real one still counts as real dev progress toward the Implemented-stage touc
 Added to DevTeam's and Architect's tool lists (the two roles that already have `write_file`), with
 prompt guidance in `DevTeam-workflow.md` to reach for it instead of narrating a no-op removal.
 
+### Sprint-close honesty, and a real release PR even when the budget runs out (GH issue #379)
+
+A real eval run (0.1.0-run47) had the per-sprint report table claim "Sprint Report? yes" for all 5
+sprints, and 4 of 5 sprints merged no release PR at all - both traced to the same cause: the
+budget-exhaustion safety net (`_ensure_sprint_report_on_final_halt`, agent.py) already guaranteed a
+sprint report always exists, but never tried to release it, so Product Owner's own
+`create_release_pr` simply never got a turn to run on those 4 sprints. The per-sprint table also
+couldn't tell that fallback stub apart from a real Product-Owner-authored report, reporting "yes"
+either way.
+
+Two fixes: the safety net now also attempts `create_release_pr` itself, best-effort, right after
+committing the fallback report - if this interaction level requires a fresh pre-release approval
+that isn't available mechanically, or develop/main are already in sync, it just errors harmlessly
+and `sprint_report_pending_release` stays set for a later sprint to clear, exactly as before.
+Separately, `run_eval_analysis.py`'s per-sprint table now reads "fallback" instead of "yes" when the
+report is this mechanically-rendered stub (detected via its own fixed heading), so the distinction
+is visible instead of hidden.
+
+### Sprint Backlog PR no longer races other tools for whichever pending writes land first (GH issue #379)
+
+The same run also showed sprint-backlog and story-spec PRs opening with no actual roadmap/story
+edits in them. Root cause: `create_sprint_backlog_pr` committed via `git add -A`, sweeping up
+*every* pending write in the shared checkout - including another story's not-yet-committed spec
+file `upsert_story` had already written to disk - and merged it into `develop` before the later,
+deliberately-scoped `create_story_spec_pr` ever got a chance to claim it, leaving that PR empty.
+`git_push`'s own `--allow-empty` fallback (a deliberate fix for a different, earlier bug - see
+ISSUE-0050/0.1.0-run34) meant even a sprint with genuinely nothing new yet still silently
+opened/merged a content-free "Sprint Backlog" PR.
+
+`create_sprint_backlog_pr` now calls `integrate_open_changes` (scoped to `specs/`+`.hc/` only - the
+same pattern `create_release_pr` already uses for exactly this reason) instead of `git add -A`, and
+refuses outright with a clear message if there's genuinely no new planning output to publish,
+instead of leaning on git_push's generic empty-commit fallback.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

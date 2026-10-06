@@ -108,6 +108,17 @@ def _collect_repo_snapshot(repo_path: Path) -> dict:
     }
 
 
+# GH issue #379: render_fallback_sprint_report (tools/budget.py) stamps
+# every mechanically-rendered report with this exact heading - the one
+# reliable way to tell "Product Owner's own create_sprint_report actually
+# ran" apart from "the budget ran out and the safety net rendered a stub
+# from whatever was logged so far". A real run (0.1.0-run47) had the
+# report table claim "Sprint Report? yes" for all 5 sprints even though 4
+# of them were this fallback stub, hiding exactly the distinction a reader
+# of this table would want.
+_FALLBACK_REPORT_MARKER = "## Mechanically-Rendered Report (Budget Used in Full)"
+
+
 def _sprint_metrics_table(manifest: dict) -> str:
     """Stories Planned counts items newly added to sprint_backlog THIS
     sprint (diffed against the previous sprint's sprint_backlog keys, same
@@ -127,7 +138,13 @@ def _sprint_metrics_table(manifest: dict) -> str:
         backlog_keys = {_backlog_item_key(item, i) for i, item in enumerate(backlog)}
         planned = len(backlog_keys - prev_backlog_keys)
         prev_backlog_keys = backlog_keys
-        has_report = "yes" if sprint.get("sprint_report") else "no"
+        report_text = sprint.get("sprint_report")
+        if not report_text:
+            has_report = "no"
+        elif _FALLBACK_REPORT_MARKER in report_text:
+            has_report = "fallback"
+        else:
+            has_report = "yes"
         merges = [m for m in manifest.get("pr_merges", []) if m.get("after_sprint") == n]
         merged_count = sum(1 for m in merges if m.get("merged"))
         rows.append(f"| {n} | {tokens} | {planned} | {has_report} | {merged_count}/{len(merges)} |")
