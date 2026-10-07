@@ -75,6 +75,20 @@ class _FakeGhRuns:
                 branch = cmd[cmd.index("--head") + 1]
                 self.pr_states.setdefault(branch, "OPEN")
             return {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
+        # GH issue #379: create_sprint_backlog_pr now calls
+        # integrate_open_changes (scoped to specs/+.hc/, instead of the
+        # blast-radius "git add -A" it used before) before pushing - that
+        # function's "is there anything new to integrate" check reads real
+        # `git status --porcelain`/`git diff --cached --name-only` stdout,
+        # which this blanket mock otherwise always returns empty for
+        # regardless of the real files this test suite's own upsert_story/
+        # upsert_prd/update_roadmap calls genuinely wrote to disk - every
+        # test in this file does real planning writes before ever reaching
+        # create_sprint_backlog_pr, so report real content consistently.
+        if cmd and cmd[:2] == ["git", "status"]:
+            return {"status": "ok", "returncode": 0, "stdout": "M specs/ROADMAP.md\n", "stderr": ""}
+        if cmd and cmd[:4] == ["git", "diff", "--cached", "--name-only"]:
+            return {"status": "ok", "returncode": 0, "stdout": "specs/ROADMAP.md\n", "stderr": ""}
         return {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
 
 
