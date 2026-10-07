@@ -20,12 +20,14 @@ from agents.scrum_team.tools.github import (
     create_sprint_backlog_pr,
     mark_pr_ready_for_review,
     merge_story_pr,
+    resolve_feature_branch_conflicts,
     integrate_open_changes,
     _checkout_develop_or_recover,
     _checkout_with_auto_integrate,
     _preserve_local_only_develop_commits,
     release_pr_still_open,
 )
+import agents.scrum_team.tools.github as _github_module
 from agents.scrum_team.state import ScrumState
 
 
@@ -2208,6 +2210,156 @@ class TestMergeStoryPr(unittest.TestCase):
         mock_run.assert_called_once_with(
             ["gh", "pr", "merge", "--merge"], cwd=unittest.mock.ANY, tool_context=tool_context,
         )
+
+
+class TestResolveFeatureBranchConflicts(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #382): a real eval run showed a story's
+    feature-branch PR go "not mergeable" (merge_story_pr) - DevTeam was
+    transferred to "resolve merge conflicts" 5 times, but git_push (its
+    only repair tool) only ever re-fetches/re-pushes the SAME branch, never
+    runs git merge/rebase against develop. resolve_feature_branch_conflicts
+    is the real fix: it actually merges develop in, and when that produces
+    real conflicts, hands DevTeam each conflicted file's raw content to fix
+    via write_file.
+    """
+
+    def _base_run(self, extra=None):
+        extra = extra or {}
+
+        def _fake_run(cmd, cwd=None, tool_context=None, timeout=None, env_overrides=None):
+            key = tuple(cmd)
+            if key in extra:
+                return extra[key]
+            return {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
+
+        return _fake_run
+
+    def test_refuses_without_an_active_feature_branch(self):
+        tool_context = MagicMock()
+        tool_context.state = {"active_feature_branches": {}}
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("start_feature_branch", result["message"])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_reports_error_when_checkout_fails(self, mock_run):
+        mock_run.return_value = {"status": "error", "stderr": "no such branch"}
+        tool_context = MagicMock()
+        tool_context.state = {"active_feature_branches": {"US-0001": "feature/US-0001-add-login"}}
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("feature/US-0001-add-login", result["message"])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_already_up_to_date_reports_nothing_to_resolve(self, mock_run):
+        mock_run.side_effect = self._base_run({
+            ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): {"status": "error", "returncode": 1},
+            ("git", "merge", "origin/develop", "--no-commit", "--no-ff"): {
+                "status": "ok", "returncode": 0, "stdout": "Already up to date.", "stderr": "",
+            },
+        })
+        tool_context = MagicMock()
+        tool_context.state = {"active_feature_branches": {"US-0001": "feature/US-0001-add-login"}}
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["merged"])
+
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_clean_merge_with_no_conflicts_commits_and_pushes(self, mock_run, mock_git_push):
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0001-add-login"}
+        mock_run.side_effect = self._base_run({
+            ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): {"status": "error", "returncode": 1},
+            ("git", "merge", "origin/develop", "--no-commit", "--no-ff"): {
+                "status": "ok", "returncode": 0, "stdout": "Automatic merge went well.", "stderr": "",
+            },
+            ("git", "diff", "--name-only", "--diff-filter=U"): {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""},
+        })
+        tool_context = MagicMock()
+        tool_context.state = {"active_feature_branches": {"US-0001": "feature/US-0001-add-login"}}
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["merged"])
+        mock_git_push.assert_called_once_with(
+            branch="feature/US-0001-add-login", commit_message="merge: resolve conflicts with develop",
+            add_all=False, tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_real_conflicts_return_each_files_raw_marked_content(self, mock_run):
+        repo_root = _github_module._configured_repo_root(MagicMock(state={}))
+        conflicted_path = repo_root / "app.py"
+        conflicted_content = "<<<<<<< HEAD\nold code\n=======\nnew code\n>>>>>>> develop\n"
+        conflicted_path.write_text(conflicted_content, encoding="utf-8")
+
+        mock_run.side_effect = self._base_run({
+            ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): {"status": "error", "returncode": 1},
+            ("git", "merge", "origin/develop", "--no-commit", "--no-ff"): {
+                "status": "error", "returncode": 1, "stdout": "CONFLICT (content): Merge conflict in app.py", "stderr": "",
+            },
+            ("git", "diff", "--name-only", "--diff-filter=U"): {"status": "ok", "returncode": 0, "stdout": "app.py\n", "stderr": ""},
+        })
+        tool_context = MagicMock()
+        tool_context.state = {"active_feature_branches": {"US-0001": "feature/US-0001-add-login"}}
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "conflict")
+        self.assertEqual(result["conflicted_files"]["app.py"], conflicted_content)
+
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_resumed_merge_with_all_files_resolved_commits_and_pushes(self, mock_run, mock_git_push):
+        """Second call, after DevTeam used write_file to replace the
+        conflict-marked content with a real resolution - no markers left,
+        so this should stage, commit, and push instead of reporting
+        another conflict."""
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0001-add-login"}
+        repo_root = _github_module._configured_repo_root(MagicMock(state={}))
+        (repo_root / "app.py").write_text("resolved code\n", encoding="utf-8")
+
+        mock_run.side_effect = self._base_run({
+            ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): {"status": "ok", "returncode": 0},
+            ("git", "diff", "--name-only", "--diff-filter=U"): {"status": "ok", "returncode": 0, "stdout": "app.py\n", "stderr": ""},
+        })
+        tool_context = MagicMock()
+        tool_context.state = {"active_feature_branches": {"US-0001": "feature/US-0001-add-login"}}
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["merged"])
+        mock_git_push.assert_called_once()
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_resumed_merge_with_some_files_still_unresolved_reports_conflict_again(self, mock_run):
+        repo_root = _github_module._configured_repo_root(MagicMock(state={}))
+        still_conflicted = "<<<<<<< HEAD\nold\n=======\nnew\n>>>>>>> develop\n"
+        (repo_root / "app.py").write_text(still_conflicted, encoding="utf-8")
+        (repo_root / "views.py").write_text("resolved\n", encoding="utf-8")
+
+        mock_run.side_effect = self._base_run({
+            ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): {"status": "ok", "returncode": 0},
+            ("git", "diff", "--name-only", "--diff-filter=U"): {
+                "status": "ok", "returncode": 0, "stdout": "app.py\nviews.py\n", "stderr": "",
+            },
+        })
+        tool_context = MagicMock()
+        tool_context.state = {"active_feature_branches": {"US-0001": "feature/US-0001-add-login"}}
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "conflict")
+        self.assertEqual(list(result["conflicted_files"].keys()), ["app.py"])
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict
 from .base import _configured_repo_root, _run, _default_push_branch, _develop_branch_name, _with_eval_branch_prefix, _with_eval_title_prefix
 from ..helpers import (
@@ -1268,6 +1269,138 @@ def merge_story_pr(pr_id: str | int | None = None, admin: bool = False, tool_con
         # recovery path (it already handles that case safely).
         _run(["git", "merge", "--ff-only", f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
     return result
+
+_CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
+
+
+def resolve_feature_branch_conflicts(story_id: str, tool_context=None) -> Dict[str, Any]:
+    """
+    GH issue #382: a real eval run showed a story's feature-branch PR go
+    "not mergeable" (merge_story_pr) because it had diverged from develop -
+    DevTeam was transferred to "resolve merge conflicts" 5 times in a row,
+    but git_push (its only repair tool) only ever re-fetches/re-pushes the
+    SAME branch; it never actually runs `git merge`/rebase against develop.
+    Every retry hit the identical error, and the team eventually gave up and
+    recreated the PR from scratch - only survivable because that story's
+    diff happened to be small enough to cheaply redo.
+
+    Merges the current `develop` into story_id's active feature branch
+    (active_feature_branches[story_id], set by start_feature_branch) to
+    resolve exactly that failure:
+    - No real conflict (clean merge, or already up to date): commits
+      (if anything to commit) and pushes immediately - retry merge_story_pr.
+    - Real conflicts: returns each conflicted file's current on-disk content
+      (with git's own <<<<<<</=======/>>>>>>> markers) so DevTeam can
+      resolve them via write_file, then call this again - it detects which
+      files still contain marker lines (not yet actually resolved) versus
+      which are clean now, stages+commits+pushes once none remain, and
+      reports the still-unresolved ones again otherwise. Safe to call
+      repeatedly as resolution progresses one file at a time.
+    """
+    state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
+    branch = (state.get("active_feature_branches") or {}).get(story_id)
+    if not branch:
+        return {
+            "status": "error",
+            "message": (
+                f"No active feature branch recorded for '{story_id}' - call start_feature_branch "
+                "first, or check the story_id is correct."
+            ),
+        }
+
+    repo_root = str(_configured_repo_root(tool_context))
+    develop = _develop_branch_name(tool_context)
+
+    checkout, auto_integrated = _checkout_with_auto_integrate(
+        ["git", "checkout", branch], repo_root, tool_context=tool_context
+    )
+    if checkout.get("status") == "error":
+        return {
+            "status": "error",
+            "message": f"Could not check out '{branch}': {checkout.get('stderr') or checkout.get('message')}",
+            "auto_integrated": auto_integrated,
+        }
+
+    merge_in_progress = _run(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=repo_root, tool_context=tool_context
+    ).get("returncode") == 0
+
+    if not merge_in_progress:
+        _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
+        merge_res = _run(
+            ["git", "merge", f"origin/{develop}", "--no-commit", "--no-ff"],
+            cwd=repo_root, tool_context=tool_context,
+        )
+        if "up to date" in (merge_res.get("stdout") or "").lower() and merge_res.get("status") == "ok":
+            return {
+                "status": "ok",
+                "merged": False,
+                "message": f"'{branch}' is already up to date with '{develop}' - nothing to resolve.",
+            }
+
+    conflicted = _run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_root, tool_context=tool_context
+    )
+    conflicted_paths = [p for p in (conflicted.get("stdout") or "").splitlines() if p.strip()]
+
+    if not conflicted_paths:
+        # A clean merge pending commit (--no-commit above), or a previously
+        # in-progress merge whose last conflicted file was just resolved.
+        _run(["git", "add", "-A"], cwd=repo_root, tool_context=tool_context)
+        commit_res = _run(
+            ["git", "commit", "--no-edit"], cwd=repo_root, tool_context=tool_context
+        )
+        if commit_res.get("status") != "ok" and "nothing to commit" not in (commit_res.get("stdout") or "").lower():
+            return {"status": "error", "message": "Merge resolved but commit failed.", "commit": commit_res}
+        push_res = git_push(branch=branch, commit_message=f"merge: resolve conflicts with {develop}", add_all=False, tool_context=tool_context)
+        if push_res.get("status") != "ok":
+            return {"status": "error", "message": "Merge resolved and committed, but push failed.", "push": push_res}
+        return {
+            "status": "ok",
+            "merged": True,
+            "message": f"Merged '{develop}' into '{branch}' and pushed - retry merge_story_pr.",
+        }
+
+    unresolved = {}
+    for rel_path in conflicted_paths:
+        abs_path = (Path(repo_root) / rel_path).resolve()
+        try:
+            content = abs_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            unresolved[rel_path] = f"(could not read file: {e})"
+            continue
+        if any(marker in content for marker in _CONFLICT_MARKERS):
+            unresolved[rel_path] = content
+        else:
+            # Already rewritten (by a prior write_file call) with no marker
+            # lines left - stage it now so it doesn't show as conflicted
+            # the next time this is called.
+            _run(["git", "add", "--", rel_path], cwd=repo_root, tool_context=tool_context)
+
+    if unresolved:
+        return {
+            "status": "conflict",
+            "conflicted_files": unresolved,
+            "message": (
+                f"{len(unresolved)} file(s) still have real conflict markers - resolve each via "
+                "write_file (replacing the <<<<<<</=======/>>>>>>> sections with the real, correct "
+                "content), then call resolve_feature_branch_conflicts again."
+            ),
+        }
+
+    # Every previously-conflicted file is now staged with no markers left.
+    commit_res = _run(["git", "commit", "--no-edit"], cwd=repo_root, tool_context=tool_context)
+    if commit_res.get("status") != "ok":
+        return {"status": "error", "message": "All conflicts resolved but commit failed.", "commit": commit_res}
+    push_res = git_push(branch=branch, commit_message=f"merge: resolve conflicts with {develop}", add_all=False, tool_context=tool_context)
+    if push_res.get("status") != "ok":
+        return {"status": "error", "message": "Conflicts resolved and committed, but push failed.", "push": push_res}
+    return {
+        "status": "ok",
+        "merged": True,
+        "message": f"All conflicts resolved, merged '{develop}' into '{branch}', and pushed - retry merge_story_pr.",
+    }
+
 
 def gh_pr_status(tool_context=None) -> Dict[str, Any]:
     """

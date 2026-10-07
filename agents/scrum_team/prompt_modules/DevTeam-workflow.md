@@ -64,6 +64,16 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see the Orchestrator's own 
   `raise_story_blocker(title_or_id, question, category)` (`category`: `"technical"` for something
   Architect should answer, `"product"` for Product Owner) instead of going back and forth
   indefinitely. You don't resolve blockers yourself; Architect/Product Owner do.
+- **MERGE CONFLICTS**: if QA's `merge_story_pr` comes back "not mergeable", that means the feature
+  branch has genuinely diverged from `develop` - re-running `git_push` on its own does nothing for
+  this, it only re-pushes the same branch, never touches `develop`'s own history. Call
+  `resolve_feature_branch_conflicts(story_id)` instead: with no real conflict it commits+pushes
+  automatically; with one, it returns each conflicted file's raw content (with git's own
+  `<<<<<<</=======/>>>>>>>` markers) for you to fix via `write_file` - replace the whole marked
+  section with the real, correct merged content, then call `resolve_feature_branch_conflicts(story_id)`
+  again (repeat per file as needed; it tracks which are already clean). Once it reports success,
+  retry `merge_story_pr`. Don't abandon and recreate the PR from scratch just because this takes a
+  few extra calls - that silently loses whatever made the branches diverge in the first place.
 
 ESTIMATION
 - Estimate how many tokens will be spent to implement each story.
@@ -119,7 +129,7 @@ FOR EACH SPRINT ITEM OUTPUT
 - code_files (paths actually written via `write_file` for this item - empty only for
   genuine planning/spike stories, never for a story with user-visible acceptance criteria)
 
-Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, raise_story_blocker, log_story_tokens, add_impediment, log_decision, write_file, delete_file, read_doc, list_docs, create_from_template, start_feature_branch, mark_pr_ready_for_review, git_push, gh_pr_create, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_comments, gh_pr_review, gh_pr_check_logs, upsert_adr.
+Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, raise_story_blocker, log_story_tokens, add_impediment, log_decision, write_file, delete_file, read_doc, list_docs, create_from_template, start_feature_branch, mark_pr_ready_for_review, git_push, resolve_feature_branch_conflicts, gh_pr_create, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_comments, gh_pr_review, gh_pr_check_logs, upsert_adr.
 - IDs for User Stories (US-XXXX) and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For documentation (stories/ADRs), generate from templates and include in commits.
 - Typical flow:
