@@ -32,7 +32,7 @@ from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
     upsert_story, set_priority, advance_story_stage,
 )
-from agents.scrum_team.tools.scrum import start_sprint, record_human_approval
+from agents.scrum_team.tools.scrum import start_sprint, record_human_approval, plan_sprint_backlog_item
 from agents.scrum_team.tools.github import (
     start_feature_branch, create_sprint_backlog_pr, create_story_spec_pr,
 )
@@ -146,6 +146,14 @@ class TestSprintBacklogPrGate(unittest.TestCase):
         self.assertEqual(publish["status"], "ok")
         self.assertTrue(publish["merged"])
         self.assertEqual(tc.state["sprint_backlog_pr_sprint"], 1)
+
+        # GH issue #378: start_feature_branch also refuses a story that was
+        # never planned into this sprint's sprint_backlog - plan it in so
+        # this test stays focused on the engagement gate below.
+        _as(tc, "DevTeam")
+        self.assertEqual(
+            plan_sprint_backlog_item(story_id, {"estimate": 5}, tool_context=tc)["status"], "ok"
+        )
 
         # GH issue #357: the backlog PR merging isn't by itself the team's
         # commitment to it - Architect/DevTeam/QA each need to have left
