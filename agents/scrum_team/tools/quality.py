@@ -548,11 +548,16 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     from the sprint's own committed-vs-accepted backlog (GH eval run39).
 
     commitment_reliability/customer_satisfaction/defect_escape_rate remain
-    placeholders - no principled way to compute them exists in this system
-    yet (no separate estimate-accuracy tracking, human satisfaction survey,
-    or defect/bug-lifecycle data). defect_escape_rate is reported
-    unavailable rather than replaced with a different but equally fabricated
-    number - see its own note below.
+    unavailable - no principled way to compute them exists in this system yet
+    (no separate estimate-accuracy tracking, human satisfaction survey, or
+    defect/bug-lifecycle data). GH issue #389: commitment_reliability/
+    customer_satisfaction used to be hardcoded to 1.0/4.5 - plausible-looking
+    fake numbers presented as real measurements in every sprint report,
+    contradicting this exact docstring's own admission that no real
+    computation exists. All three now consistently report unavailable
+    (None + an explanatory note) rather than a fabricated constant - the
+    same "never fabricate, report unavailable" rule already applied to
+    maintainability/security below.
     """
     coverage_result = _execute_test_suite_coverage(tool_context)
     complexity_result = _compute_code_complexity(tool_context)
@@ -581,7 +586,13 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
 
     team_effectiveness = {
         "say_do_ratio": say_do_result["say_do_ratio"],
-        "commitment_reliability": 1.0,
+        # GH issue #389: previously hardcoded to 1.0 - no estimate-accuracy
+        # tracking exists in this system to compute a real reliability score
+        # from, so this was always a fabricated constant, never a
+        # measurement. Reported unavailable instead, same rule as
+        # defect_escape_rate below.
+        "commitment_reliability": None,
+        "commitment_reliability_note": "not available - no estimate-accuracy tracking exists yet",
     }
     if say_do_result["note"]:
         team_effectiveness["say_do_ratio_note"] = say_do_result["note"]
@@ -597,7 +608,11 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
             # below).
             "defect_escape_rate": None,
             "defect_escape_rate_note": "not available - no defect/bug-lifecycle tracking exists yet",
-            "customer_satisfaction": 4.5,
+            # GH issue #389: previously hardcoded to 4.5 - no human
+            # satisfaction survey or equivalent signal exists in this system,
+            # so this was always a fabricated constant too.
+            "customer_satisfaction": None,
+            "customer_satisfaction_note": "not available - no user/customer satisfaction survey exists yet",
         },
         "maintainability": maintainability,
         "security": security,

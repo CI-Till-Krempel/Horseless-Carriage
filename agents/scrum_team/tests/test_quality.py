@@ -693,6 +693,24 @@ class TestComputeSayDoRatio(unittest.TestCase):
         self.assertIsNone(kpis["result_quality"]["defect_escape_rate"])
         self.assertIn("not available", kpis["result_quality"]["defect_escape_rate_note"])
 
+    def test_calculate_kpis_reports_customer_satisfaction_and_commitment_reliability_as_unavailable_not_fabricated(self):
+        """GH issue #389: these two used to be hardcoded to 4.5/1.0 - a
+        plausible-looking fake number presented as a real measurement in
+        every sprint report, despite this exact function's own docstring
+        admitting no principled way to compute either exists. Same fix as
+        defect_escape_rate (GH eval run39): honest 'not available', not a
+        different fabricated constant."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        with patch("agents.scrum_team.tools.quality._run", return_value=_TOOL_NOT_INSTALLED), \
+             patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={}), \
+             patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="unknown"):
+            kpis = calculate_kpis(tool_context=tool_context)
+        self.assertIsNone(kpis["result_quality"]["customer_satisfaction"])
+        self.assertIn("not available", kpis["result_quality"]["customer_satisfaction_note"])
+        self.assertIsNone(kpis["team_effectiveness"]["commitment_reliability"])
+        self.assertIn("not available", kpis["team_effectiveness"]["commitment_reliability_note"])
+
 
 class TestPromptContextUsage(unittest.TestCase):
     """
