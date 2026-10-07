@@ -909,6 +909,37 @@ commit, push) only once none remain. Safe to call repeatedly as resolution progr
 time. Added to DevTeam's tool list, with `DevTeam-workflow.md` guidance pointing here instead of the
 "recreate the PR from scratch" workaround the team had converged on.
 
+### advance_story_stage pushes its own state/roadmap update - a local-only commit was silently getting lost (GH issue #388)
+
+A real eval run (0.1.0-run48) showed US-0001's `stages_completed` silently regress between sprints -
+`Tested` and `Accepted` vanished from both `product_backlog` and `sprint_backlog` between sprint 1's
+close and sprint 2's start. This single regression explained the entire rest of that run: the
+one-story-at-a-time ordering gate then correctly refused every later story ("the higher-priority story
+'US-0001' must reach Accepted first"), even though it genuinely had been - zero feature-branch PRs
+opened for sprints 2-5, every auto-filed retro Issue froze permanently at Ready, and the sprint-2
+"QA/ScrumOrchestrator transfer loop" the eval report flagged was the #367 breaker working correctly on a
+team that had nothing left to do.
+
+Root cause: `save_state_to_repo`'s own docstring admits `_checkpoint_state_commit` is a "purely local
+safety net" - it commits `.hc/state.json` onto whatever branch happens to be checked out at that exact
+moment, and never pushes. `advance_story_stage` calls this after every stage transition, but nothing
+pushed that commit anywhere, and a sprint routinely switches checked-out branches multiple times
+(feature branch -> `develop` via `merge_story_pr`, a new feature branch for the next story, ...) - a
+local-only commit left behind on a branch that's later abandoned is simply gone.
+
+`advance_story_stage` now pushes its own commit (state + `specs/ROADMAP.md` + the story/issue markdown
+file) as part of the same atomic call, instead of relying on a separate `git_push` the calling role has
+to remember: `Implemented`/`Reviewed`/`Tested` push to the story's active feature branch (so the update
+rides into `develop` as part of the very next `merge_story_pr`), `Accepted` pushes straight to `develop`
+(the merge has already landed by then). `Draft`/`Ready` are deliberately left alone - those are Product
+Owner's own planning-doc edits, already covered by `create_sprint_backlog_pr`'s own commit+push sweep.
+If the push itself fails, the call now reports `"status": "error"` instead of silently succeeding -
+that silent-drift is exactly the failure mode this closes.
+
+A larger follow-up (GH issue #391, not implemented here) would fold the required PR review/comment and
+QA's `merge_story_pr` into the stage-advancement call itself too, so each role's gate decision is a
+single atomic tool call start to finish.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
