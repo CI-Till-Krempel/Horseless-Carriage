@@ -168,6 +168,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["specs/stories/US-0001-Add-real-feature.md"]
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         justification = "Already implemented as part of US-0000's app.py edit in commit abc123."
 
         result = advance_story_stage(
@@ -191,11 +192,49 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["app/main.py"]
         tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["dev_touch_baseline"], 1)
 
+    def test_implemented_requires_gh_pr_checks_to_have_been_called(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("gh_pr_checks", result["message"])
+
+    def test_implemented_rejects_a_failing_gh_pr_checks_result(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": False, "git_push_count_at_check": 0}
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("not passing", result["message"])
+
+    def test_implemented_rejects_a_stale_gh_pr_checks_result_after_a_later_push(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #380: a feature-branch push after the last passing
+        gh_pr_checks() result could easily have broken what that result
+        actually verified - the result on file must be fresher than the
+        latest push, not just passing at some point in the past."""
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
+        tc.state["git_push_count"] = 1
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("stale", result["message"])
+
     def test_implemented_spike_story_bypasses_file_write_gate(self, mock_save, mock_md, mock_roadmap):
+        """A spike has no code/PR at all - also exempt from the gh_pr_checks
+        gate below, not just the source-file-write gate (no last_pr_checks
+        set here at all, confirming that)."""
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["product_backlog"][0]["spike"] = True
         tc.state["sprint_backlog"][0]["spike"] = True
@@ -213,6 +252,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             tc = _tool_context("DevTeam", ["Ready"])
             tc.state["sprint_files_touched"] = ["app/main.py"]
             tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+            tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
 
             tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
             result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
@@ -229,6 +269,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             tc = _tool_context("DevTeam", ["Ready"])
             tc.state["sprint_files_touched"] = ["app/main.py"]
             tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+            tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
             result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
             self.assertEqual(result["status"], "ok")
 
@@ -564,6 +605,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["app/main.py"]
         tc.state["story_estimates"] = {"US-0002": {"estimate": 10, "actual": 5}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         tc.agent_name = "DevTeam"
         result = advance_story_stage("US-0002", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -573,6 +615,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["app/main.py"]
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
@@ -665,6 +708,7 @@ class TestDependsOnGate(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["app/main.py"]
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         return tc
 
     def test_blocks_implemented_while_dependency_not_yet_accepted(self, mock_save, mock_md, mock_roadmap):
