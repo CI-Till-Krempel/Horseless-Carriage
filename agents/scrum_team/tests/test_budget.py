@@ -956,6 +956,42 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_renders_unavailable_kpis_honestly(self, mock_write_file, mock_getenv):
+        """GH issue #389: commitment_reliability/customer_satisfaction used
+        to be hardcoded fake numbers (1.0/4.5), always rendered as if real.
+        Now that calculate_kpis reports them as None + a note, the report
+        must render the same 'not available (<note>)' fallback already used
+        for test_coverage/code_complexity/vulnerability_scan, not silently
+        omit the line."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["sprint_report_kpis"] = {
+            "team_effectiveness": {
+                "say_do_ratio": 0.8,
+                "commitment_reliability": None,
+                "commitment_reliability_note": "not available - no estimate-accuracy tracking exists yet",
+            },
+            "result_quality": {
+                "defect_escape_rate": None,
+                "defect_escape_rate_note": "not available - no defect/bug-lifecycle tracking exists yet",
+                "customer_satisfaction": None,
+                "customer_satisfaction_note": "not available - no user/customer satisfaction survey exists yet",
+            },
+            "maintainability": {"test_coverage_available": True, "test_coverage": 0.9, "tests_run": 10, "tests_failed": 0},
+            "security": {"vulnerability_scan_available": True, "vulnerability_scan_results": {"critical": 0}},
+        }
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertIn("Commitment Reliability: not available (not available - no estimate-accuracy tracking exists yet)", report)
+        self.assertIn("Defect Escape Rate: not available (not available - no defect/bug-lifecycle tracking exists yet)", report)
+        self.assertIn("Customer Satisfaction: not available (not available - no user/customer satisfaction survey exists yet)", report)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_renders_per_agent_prompt_context_usage(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (real PR review comment): the percentage of a
