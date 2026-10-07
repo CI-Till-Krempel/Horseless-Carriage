@@ -712,6 +712,29 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
                 "plan_backlog_item/upsert_story first."
             ),
         }
+
+    # GH issue #378: advance_story_stage only ever records stage progress
+    # into sprint_backlog if the story was already planned into it via
+    # plan_sprint_backlog_item - a real run (0.1.0-run47) never called that
+    # tool a single time across 5 whole sprints, so sprint_backlog stayed []
+    # all run, every "Stories Planned" count read 0, and the KPIs sourced
+    # from it (now fixed to read product_backlog instead, see
+    # run_eval_analysis.py's _kpi_time_series) had nothing to show for real
+    # work that was genuinely happening. Planning the story into the sprint
+    # is also what gives this sprint's own backlog a record of estimate vs.
+    # actual effort (log_story_tokens) - skipping it isn't just a reporting
+    # gap, it's work nobody ever actually committed the sprint to.
+    sprint_backlog = state.get("sprint_backlog", []) or []
+    if not any(item.get("id") == story_id or item.get("title") == story_id for item in sprint_backlog):
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot start work on '{story_id}' - it hasn't been planned into this sprint yet. "
+                f"Call plan_sprint_backlog_item('{story_id}', plan) first (estimate, approach, etc.) "
+                "so the sprint backlog actually reflects what the team committed to, then retry."
+            ),
+        }
+
     if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
         preceding_ref = preceding.get('id') or preceding.get('title')
         # GH issue #368: when the blocker is an Issue (an auto-filed retro/

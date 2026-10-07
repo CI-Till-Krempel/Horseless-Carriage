@@ -160,9 +160,22 @@ def _kpi_time_series(manifest: dict) -> dict:
     """Returns {kpi_name: [(sprint_number, value), ...]} - one list per KPI,
     containing only the sprints that actually have a value for it.
 
-    sprint_backlog is NOT reset between sprints (it's the run's whole
-    selected scope, accumulating stage progress sprint over sprint) - so a
-    raw per-sprint count of "items with stage X completed" is a running
+    GH issue #378: sourced from product_backlog, not sprint_backlog.
+    advance_story_stage (requirements.py) only ever writes stages_completed
+    into sprint_backlog if the story was already planned into it via
+    plan_sprint_backlog_item first - a real run (0.1.0-run47) never called
+    plan_sprint_backlog_item a single time across 5 whole sprints, so
+    sprint_backlog stayed [] all run and every KPI sourced from it read a
+    flat 0 despite real stage progress (several stories reaching Accepted)
+    recorded in product_backlog the whole time. product_backlog is the
+    authoritative superset (see run_eval.py's _blocked_stories docstring for
+    the same distinction) - advance_story_stage always writes stage
+    progress there regardless of whether the story was ever planned into a
+    sprint_backlog at all.
+
+    product_backlog is NOT reset between sprints either (it's the run's
+    whole selected scope, accumulating stage progress sprint over sprint) -
+    so a raw per-sprint count of "items with stage X completed" is a running
     total across the whole run, not that sprint's own throughput. A real
     run (0.1.0-run42) showed exactly this: Velocity/Stories implemented
     read 1, 3, 5, 6, 6 - monotonically non-decreasing, because sprint 3's
@@ -185,7 +198,7 @@ def _kpi_time_series(manifest: dict) -> dict:
     prev_implemented_keys = set()
     for sprint in manifest.get("sprints", []):
         n = sprint.get("sprint_number")
-        backlog = sprint.get("sprint_backlog") or []
+        backlog = sprint.get("product_backlog") or []
 
         accepted_keys = {
             _backlog_item_key(item, i) for i, item in enumerate(backlog)
