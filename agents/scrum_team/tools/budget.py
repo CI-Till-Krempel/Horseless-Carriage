@@ -1022,6 +1022,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     Generate a management summary report for the current sprint.
     """
     from .docs import write_file
+    from .scrum import save_state_to_repo
     s = tool_context.state
     budgets = s.get("budgets", {})
     usage = s.get("token_usage", {"total": 0})
@@ -1623,6 +1624,30 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # hasn't necessarily gone out yet - advance_story_stage's Implemented
     # gate refuses further story work until create_release_pr clears this.
     s["sprint_report_pending_release"] = True
+
+    # GH issue #397: every baseline bump above (retro_baseline/kpi_baseline/
+    # steering_baseline/accepted_count_baseline/qa_tested_baseline/
+    # sprint_report_pending_release) previously only ever landed in the live
+    # in-memory session state - this function never persisted them, unlike
+    # nearly every other state-mutating tool (advance_story_stage,
+    # reset_sprint_budget, log_story_tokens, ...). A real eval run (0.1.0-
+    # run50) showed the exact failure this causes: if an EARLIER
+    # create_sprint_report attempt was rejected (e.g. the overclaim gate)
+    # and the team went on to do more real work to fix it,
+    # advance_story_stage's own save_state_to_repo calls would commit a
+    # stale .hc/state.json snapshot - baselines still at their pre-close
+    # values, but retro_actions/kpi_update_count already past them. The very
+    # next init_scrum_state() call (it reloads state.json unconditionally
+    # whenever present, and runs at the start of every sprint) then
+    # clobbered the correctly-advanced in-memory baselines with that stale
+    # snapshot, resurrecting a false "sprint_report_step_active" condition
+    # (see helpers.py) that mechanically locked Scrum Master out of every
+    # tool except transfer_to_agent - with nothing for Product Owner to do
+    # in response, the two bounced transfer_to_agent back and forth until
+    # the loop breaker tripped. Saving here, at the exact moment these
+    # fields change, means disk can never again drift behind memory for
+    # them.
+    save_state_to_repo(tool_context)
 
     result = {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
     if accepted_count <= accepted_count_baseline_before:

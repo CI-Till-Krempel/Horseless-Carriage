@@ -1614,6 +1614,22 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         if required_approval and release_approvals is not None:
             state["release_approval_baseline"] = release_approvals
         state["sprint_report_pending_release"] = False
+        # GH issue #397: this (and create_sprint_report's own baseline
+        # bumps) previously only ever landed in the live in-memory session
+        # state - neither function persisted it, unlike nearly every other
+        # state-mutating tool. A stale .hc/state.json left over from a
+        # mid-sprint save (e.g. advance_story_stage, after an earlier
+        # rejected create_sprint_report attempt) could then get reloaded by
+        # a later init_scrum_state() call - it runs unconditionally
+        # whenever the file exists, including at the start of every sprint
+        # - clobbering the correctly-cleared sprint_report_pending_release
+        # with a stale True/False mismatch and resurrecting a false
+        # sprint_report_step_active() condition (helpers.py) that locked
+        # Scrum Master out of every tool but transfer_to_agent, bouncing
+        # with Product Owner until the loop breaker tripped (0.1.0-run50).
+        if tool_context and getattr(tool_context, "state", None):
+            from .scrum import save_state_to_repo
+            save_state_to_repo(tool_context)
     return {
         "status": "ok" if ok else "error",
         "fetch": fetch_res,
