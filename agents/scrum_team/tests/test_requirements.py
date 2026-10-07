@@ -433,7 +433,10 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
     def test_accepted_succeeds_once_acceptance_check_is_recorded(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
         record_acceptance_check("US-0001", "Verified all AC met.", tool_context=tc)
-        result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "develop"}):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
     def test_blocked_story_refuses_any_stage_advance(self, mock_save, mock_md, mock_roadmap):
@@ -454,6 +457,111 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("BLOCKED", result["message"])
         self.assertIn("resolve_story_blocker", result["message"])
+
+
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestStageAdvancePushesStateToTheCorrectBranch(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #388): a real run (0.1.0-run48) showed
+    US-0001's Tested/Accepted stages silently vanish from state between
+    sprints - save_state_to_repo's own commit is local-only (never
+    pushed), and nothing else pushed the roadmap/story/state update either,
+    so a later branch switch orphaned it. advance_story_stage must now
+    push that update itself, as part of the same atomic call, to the
+    correct branch for each stage.
+    """
+
+    def _accepted_ready_context(self):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        record_acceptance_check("US-0001", "Verified all AC met.", tool_context=tc)
+        return tc
+
+    def test_implemented_pushes_to_the_active_feature_branch(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
+        tc.state["active_feature_branches"] = {"US-0001": "feature/US-0001-add-login"}
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)) as mock_checkout, \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "feature/US-0001-add-login"}) as mock_push:
+            result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_checkout.assert_called_once_with(
+            ["git", "checkout", "feature/US-0001-add-login"], unittest.mock.ANY, tool_context=tc,
+        )
+        mock_push.assert_called_once_with(
+            branch="feature/US-0001-add-login", commit_message=unittest.mock.ANY,
+            add_all=False, allow_protected=False, tool_context=tc,
+        )
+
+    def test_implemented_skips_the_push_with_no_active_feature_branch(self, mock_save, mock_md, mock_roadmap):
+        """A spike story (or any story with no tracked feature branch) has
+        nowhere to push to - the state/roadmap update stays local-only,
+        same as before this fix, rather than erroring out."""
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["product_backlog"][0]["spike"] = True
+        tc.state["sprint_backlog"][0]["spike"] = True
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        with patch("agents.scrum_team.tools.github._git_push_impl") as mock_push:
+            result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("state_push", result)
+        mock_push.assert_not_called()
+
+    def test_accepted_pushes_directly_to_develop(self, mock_save, mock_md, mock_roadmap):
+        tc = self._accepted_ready_context()
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)) as mock_checkout, \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "develop"}) as mock_push:
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_checkout.assert_called_once_with(["git", "checkout", "develop"], unittest.mock.ANY, tool_context=tc)
+        mock_push.assert_called_once_with(
+            branch="develop", commit_message=unittest.mock.ANY, add_all=False, allow_protected=True, tool_context=tc,
+        )
+
+    def test_accepted_reports_error_when_the_push_itself_fails(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #388's whole point: a push failure must not be
+        silently swallowed - that's exactly how a real run lost a story's
+        Accepted stage without anyone noticing."""
+        tc = self._accepted_ready_context()
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "error", "message": "network error"}):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("pushing", result["message"])
+        self.assertIn("develop", result["message"])
+
+    def test_accepted_reports_error_when_the_checkout_itself_fails(self, mock_save, mock_md, mock_roadmap):
+        tc = self._accepted_ready_context()
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "error", "stderr": "no such ref"}, None)):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("pushing", result["message"])
+
+    def test_draft_and_ready_never_attempt_a_push(self, mock_save, mock_md, mock_roadmap):
+        """Draft/Ready are Product Owner's own planning-doc edits, already
+        covered by create_sprint_backlog_pr's own commit+push sweep -
+        pushing them here too would land ad-hoc commits on develop ahead
+        of that reviewable sprint-backlog PR."""
+        tc = _tool_context("ProductOwner", [])
+        with patch("agents.scrum_team.tools.github._git_push_impl") as mock_push:
+            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("state_push", result)
+        mock_push.assert_not_called()
 
 
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
@@ -1095,7 +1203,10 @@ class TestDenyReview(unittest.TestCase):
 
         # A genuinely fresh acceptance check after the denial resolves it.
         record_acceptance_check("US-0001", "Re-checked after fix", tool_context=tc)
-        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}), \
+             patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "develop"}):
             result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
