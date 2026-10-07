@@ -462,7 +462,17 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
     _git_push_impl directly instead, which isn't registered as a tool for
     any role and therefore isn't something any prompt can reach at all.
     """
-    return _git_push_impl(branch, commit_message, add_all, allow_protected=False, tool_context=tool_context)
+    result = _git_push_impl(branch, commit_message, add_all, allow_protected=False, tool_context=tool_context)
+    # GH issue #380: only a push to a story's own feature branch can change
+    # what gh_pr_checks is actually reporting on - a sprint-backlog-PR push
+    # (create_sprint_backlog_pr) touches a completely different branch and
+    # shouldn't make an already-fresh CI result for an unrelated story look
+    # stale. See last_pr_checks/git_push_count in state.py for the freshness
+    # check this feeds (advance_story_stage's Implemented-stage gate).
+    if result.get("status") == "ok" and result.get("branch", branch).startswith("feature/") \
+            and tool_context and getattr(tool_context, "state", None):
+        tool_context.state["git_push_count"] = tool_context.state.get("git_push_count", 0) + 1
+    return result
 
 
 def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: bool = True, allow_protected: bool = False, tool_context=None) -> Dict[str, Any]:
@@ -1300,21 +1310,33 @@ def gh_pr_checks(pr_id: str | int | None = None, watch: bool = False, interval: 
     cmd.append("state,bucket")
 
     r = _run(cmd, cwd=repo_root, tool_context=tool_context)
-    
+
     if r.get("status") == "error":
         stderr = r.get("stderr", "")
         stdout = r.get("stdout", "")
         # No checks case
         if "no checks reported" in stderr.lower() or "no checks reported" in stdout.lower():
-            return {"status": "ok", "passing": True, "message": "No checks defined.", "details": r}
-        
+            result = {"status": "ok", "passing": True, "message": "No checks defined.", "details": r}
         # Pending case (exit code 8)
-        if r.get("returncode") == 8:
-            return {"status": "pending", "passing": False, "message": "Checks are pending.", "details": r}
-            
-        return {"status": "error", "passing": False, "message": "Checks are failing or another error occurred.", "details": r}
+        elif r.get("returncode") == 8:
+            result = {"status": "pending", "passing": False, "message": "Checks are pending.", "details": r}
+        else:
+            result = {"status": "error", "passing": False, "message": "Checks are failing or another error occurred.", "details": r}
+    else:
+        result = {"status": "ok", "passing": True, "message": "All checks passing.", "details": r}
 
-    return {"status": "ok", "passing": True, "message": "All checks passing.", "details": r}
+    # GH issue #380: advance_story_stage's Implemented-stage gate requires a
+    # gh_pr_checks() result recorded here - same "last tool result, snapshot
+    # the staleness counter at call time" pattern check_build() already uses
+    # (last_check_build/dependency_manifest_write_count) - before this,
+    # nothing anywhere actually required CI to be checked at all before a
+    # story could be marked Implemented.
+    if tool_context and getattr(tool_context, "state", None):
+        tool_context.state["last_pr_checks"] = {
+            "passing": result.get("passing"),
+            "git_push_count_at_check": tool_context.state.get("git_push_count", 0),
+        }
+    return result
 
 def gh_release_create(tag: str, title: str | None = None, notes: str | None = None, generate_notes: bool = False, draft: bool = False, prerelease: bool = False, tool_context=None) -> Dict[str, Any]:
     """
