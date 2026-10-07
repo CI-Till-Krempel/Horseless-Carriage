@@ -909,6 +909,21 @@ commit, push) only once none remain. Safe to call repeatedly as resolution progr
 time. Added to DevTeam's tool list, with `DevTeam-workflow.md` guidance pointing here instead of the
 "recreate the PR from scratch" workaround the team had converged on.
 
+### Customer Satisfaction and Commitment Reliability KPIs are no longer fabricated (GH issue #389)
+
+`calculate_kpis` (`agents/scrum_team/tools/quality.py`) hardcoded `commitment_reliability` to `1.0` and
+`customer_satisfaction` to `4.5` - plausible-looking fake numbers presented as real measurements in
+every single sprint report, despite the function's own docstring admitting "no principled way to compute
+them exists... no human satisfaction survey." This directly contradicted the honest `None` + note
+pattern already used correctly for `defect_escape_rate` a few lines below in the same function.
+
+Both now consistently report unavailable (`None` + an explanatory `_note` field), matching
+`defect_escape_rate`'s existing pattern. The sprint report renderer (`budget.py`) now also shows the
+same "not available (\<note\>)" fallback line already used for Test Coverage/Code Complexity/Security
+Scan when a KPI is unavailable, instead of just omitting the line entirely - a reader can now tell
+"never computed" apart from "computed but genuinely zero," for all three previously-fabricated/
+unavailable KPIs (Commitment Reliability, Customer Satisfaction, Defect Escape Rate).
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

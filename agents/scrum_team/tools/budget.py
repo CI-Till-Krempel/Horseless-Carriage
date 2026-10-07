@@ -1437,10 +1437,16 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                 report += f"- Say-Do Ratio: {team_effectiveness['say_do_ratio']}\n"
             if team_effectiveness.get("commitment_reliability") is not None:
                 report += f"- Commitment Reliability: {team_effectiveness['commitment_reliability']}\n"
+            elif team_effectiveness.get("commitment_reliability_note"):
+                report += f"- Commitment Reliability: not available ({team_effectiveness['commitment_reliability_note']})\n"
             if result_quality.get("defect_escape_rate") is not None:
                 report += f"- Defect Escape Rate: {result_quality['defect_escape_rate']}\n"
+            elif result_quality.get("defect_escape_rate_note"):
+                report += f"- Defect Escape Rate: not available ({result_quality['defect_escape_rate_note']})\n"
             if result_quality.get("customer_satisfaction") is not None:
                 report += f"- Customer Satisfaction: {result_quality['customer_satisfaction']}\n"
+            elif result_quality.get("customer_satisfaction_note"):
+                report += f"- Customer Satisfaction: not available ({result_quality['customer_satisfaction_note']})\n"
             if maintainability.get("test_coverage_available"):
                 report += (
                     f"- Test Coverage: {maintainability.get('test_coverage')} "
