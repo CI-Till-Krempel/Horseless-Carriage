@@ -2278,7 +2278,8 @@ class TestEnsureSprintReportOnFinalHalt(unittest.TestCase):
              patch("agents.scrum_team.agent._run", return_value={"status": "ok", "stdout": "", "stderr": ""}), \
              patch("agents.scrum_team.agent.render_fallback_sprint_report") as mock_render, \
              patch("agents.scrum_team.agent.integrate_open_changes") as mock_integrate, \
-             patch("agents.scrum_team.agent._git_push_impl") as mock_push:
+             patch("agents.scrum_team.agent._git_push_impl") as mock_push, \
+             patch("agents.scrum_team.agent.create_release_pr") as mock_release_pr:
             _ensure_sprint_report_on_final_halt(mock_context)
 
         mock_render.assert_called_once_with(mock_context)
@@ -2290,6 +2291,7 @@ class TestEnsureSprintReportOnFinalHalt(unittest.TestCase):
             allow_protected=True,
             tool_context=mock_context,
         )
+        mock_release_pr.assert_called_once()
 
     def test_falls_back_to_current_branch_if_develop_checkout_fails(self):
         mock_context = self._context()
@@ -2306,7 +2308,8 @@ class TestEnsureSprintReportOnFinalHalt(unittest.TestCase):
              patch("agents.scrum_team.agent._run", side_effect=fake_run), \
              patch("agents.scrum_team.agent.render_fallback_sprint_report"), \
              patch("agents.scrum_team.agent.integrate_open_changes") as mock_integrate, \
-             patch("agents.scrum_team.agent._git_push_impl") as mock_push:
+             patch("agents.scrum_team.agent._git_push_impl") as mock_push, \
+             patch("agents.scrum_team.agent.create_release_pr"):
             _ensure_sprint_report_on_final_halt(mock_context)
 
         mock_integrate.assert_called_once_with(tool_context=mock_context)
@@ -2322,6 +2325,39 @@ class TestEnsureSprintReportOnFinalHalt(unittest.TestCase):
         mock_context = self._context()
         with patch("agents.scrum_team.agent._configured_repo_root", side_effect=Exception("boom")):
             _ensure_sprint_report_on_final_halt(mock_context)  # must not raise
+
+    def test_never_raises_if_create_release_pr_itself_fails(self):
+        """GH issue #379: create_release_pr is attempted best-effort after
+        the report - a real interaction level might require a fresh
+        pre-release approval that isn't available mechanically here, or
+        develop/main may already be in sync. Either way this must not
+        propagate - sprint_report_pending_release just stays set for a
+        later sprint to clear, same as if this call were never attempted."""
+        mock_context = self._context()
+        with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
+             patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
+             patch("agents.scrum_team.agent._run", return_value={"status": "ok", "stdout": "", "stderr": ""}), \
+             patch("agents.scrum_team.agent.render_fallback_sprint_report"), \
+             patch("agents.scrum_team.agent.integrate_open_changes"), \
+             patch("agents.scrum_team.agent._git_push_impl"), \
+             patch("agents.scrum_team.agent.create_release_pr", side_effect=Exception("no approval")):
+            _ensure_sprint_report_on_final_halt(mock_context)  # must not raise
+
+    def test_release_pr_title_names_the_sprint_number(self):
+        mock_context = self._context()
+        mock_context.state["sprint_number"] = 3
+        with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
+             patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
+             patch("agents.scrum_team.agent._run", return_value={"status": "ok", "stdout": "", "stderr": ""}), \
+             patch("agents.scrum_team.agent.render_fallback_sprint_report"), \
+             patch("agents.scrum_team.agent.integrate_open_changes"), \
+             patch("agents.scrum_team.agent._git_push_impl"), \
+             patch("agents.scrum_team.agent.create_release_pr") as mock_release_pr:
+            _ensure_sprint_report_on_final_halt(mock_context)
+
+        _, kwargs = mock_release_pr.call_args
+        self.assertIn("Sprint 3", kwargs["title"])
+        self.assertEqual(kwargs["tool_context"], mock_context)
 
 
 class TestEnsureStateInitializedCallback(unittest.TestCase):

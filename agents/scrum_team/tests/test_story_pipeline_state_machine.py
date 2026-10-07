@@ -67,6 +67,18 @@ def _fake_run(cmd, cwd=None, tool_context=None, timeout=None, env_overrides=None
             "stdout": "TOTAL 100 10 90%\n5 passed in 0.42s",
             "stderr": "",
         }
+    # GH issue #379: create_sprint_backlog_pr now calls integrate_open_changes
+    # (scoped to specs/+.hc/, instead of the blast-radius "git add -A" it
+    # used before) before pushing - that function's "is there anything new
+    # to integrate" check reads real `git status --porcelain`/`git diff
+    # --cached --name-only` stdout, which this blanket mock otherwise always
+    # returns empty for regardless of the real files this file's own
+    # _plan_story (upsert_prd/update_roadmap/upsert_story) genuinely wrote to
+    # disk before ever reaching create_sprint_backlog_pr.
+    if cmd and cmd[:2] == ["git", "status"]:
+        return {"status": "ok", "returncode": 0, "stdout": "M specs/ROADMAP.md\n", "stderr": ""}
+    if cmd and cmd[:4] == ["git", "diff", "--cached", "--name-only"]:
+        return {"status": "ok", "returncode": 0, "stdout": "specs/ROADMAP.md\n", "stderr": ""}
     return dict(_OK_RUN_RESULT)
 
 
