@@ -13,7 +13,6 @@ from agents.scrum_team.agent import (
     dev_team,
     qa_agent,
     architect,
-    quality_guardian,
     root_agent,
     check_cost_budget_callback,
     update_token_usage_callback,
@@ -692,7 +691,7 @@ class TestOnToolErrorCallback(unittest.TestCase):
     ValueError and synthesizes a placeholder BaseTool(description="Tool not
     found") for exactly this case before invoking on_tool_error_callback -
     this is a real production incident (ProductOwner hallucinating
-    write_file, which only DevTeam/QualityGuardian have, aborted an entire
+    write_file, which only DevTeam/Architect have, aborted an entire
     eval run with a raw traceback instead of the agent recovering).
     """
 
@@ -727,7 +726,7 @@ class TestOnToolErrorCallback(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_registered_on_every_agent(self):
-        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, root_agent):
             self.assertEqual(agent.on_tool_error_callback, on_tool_error_callback)
 
 
@@ -777,10 +776,10 @@ class TestLogToolInvocationCallback(unittest.TestCase):
         tool_context.state = ScrumState().model_dump()
 
         with patch("builtins.print") as mock_print:
-            log_tool_invocation_callback(tool, {"agent_name": "QualityGuardian"}, tool_context)
+            log_tool_invocation_callback(tool, {"agent_name": "ProductOwner"}, tool_context)
 
         printed_text = mock_print.call_args[0][0]
-        self.assertIn('transfer_to_agent(agent_name="QualityGuardian")', printed_text)
+        self.assertIn('transfer_to_agent(agent_name="ProductOwner")', printed_text)
 
     def test_truncates_long_argument_values_instead_of_hiding_them(self):
         """
@@ -804,7 +803,7 @@ class TestLogToolInvocationCallback(unittest.TestCase):
         self.assertIn("...", printed_text)
 
     def test_registered_on_every_agent(self):
-        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, root_agent):
             self.assertEqual(agent.before_tool_callback, log_tool_invocation_callback)
 
     def test_appends_a_names_and_values_entry_to_the_shared_transcript(self):
@@ -910,7 +909,7 @@ class TestLogToolResultCallback(unittest.TestCase):
         mock_print.assert_not_called()
 
     def test_registered_on_every_agent(self):
-        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, root_agent):
             self.assertEqual(agent.after_tool_callback, log_tool_result_callback)
 
 
@@ -1305,8 +1304,8 @@ class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
         # budget (TRANSFER_ROTATION_THRESHOLD is 6 - without this fix,
         # 3 inherited + 3 fresh hits it exactly on the chain's own 3rd hop).
         self.assertIsNone(hop("QA", "ScrumMaster"))
-        self.assertIsNone(hop("ScrumMaster", "QualityGuardian"))
-        self.assertIsNone(hop("QualityGuardian", "ProductOwner"))
+        self.assertIsNone(hop("ScrumMaster", "Architect"))
+        self.assertIsNone(hop("Architect", "ProductOwner"))
 
     def test_a_read_only_status_call_once_per_lap_does_not_evade_the_breaker(self):
         """
@@ -1358,9 +1357,9 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
     """
     Acceptance Criteria: real eval runs showed non-transfer tools stuck in
     the same kind of unproductive loop transfer_to_agent already had a
-    breaker for - QualityGuardian calling calculate_kpis()/
-    update_sprint_report(kpis=...) back to back a dozen+ times even after
-    each call *succeeded*, and ProductOwner calling
+    breaker for - the former QualityGuardian role (now ScrumMaster, GH #395)
+    calling calculate_kpis()/update_sprint_report(kpis=...) back to back a
+    dozen+ times even after each call *succeeded*, and ProductOwner calling
     advance_story_stage(title_or_id="US-0006", stage="Ready") with
     identical arguments repeatedly after the same rejection every time.
     _detect_repeated_call_loop must catch the exact-same-tool-exact-same-
@@ -1370,7 +1369,7 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
     def test_blocks_identical_repeated_calls(self):
         tool = BaseTool(name="update_sprint_report", description="Update the sprint report.")
         tool_context = MagicMock()
-        tool_context.agent_name = "QualityGuardian"
+        tool_context.agent_name = "ScrumMaster"
         tool_context.state = ScrumState().model_dump()
 
         results = [
@@ -1384,17 +1383,17 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
 
     def test_a_signature_that_already_broke_the_loop_is_blocked_immediately_next_time(self):
         """
-        Acceptance Criteria: a real eval run showed QualityGuardian retrying
-        the exact same already-broken update_sprint_report call again right
-        after the counter reset to 0 - so it took another full
-        REPEATED_CALL_LOOP_THRESHOLD streak to break it a second time,
-        burning the whole call budget in repeated bursts. Once this exact
-        tool+args combination has broken the loop once this session, any
-        further occurrence must be refused immediately.
+        Acceptance Criteria: a real eval run showed the former QualityGuardian
+        role (now ScrumMaster, GH #395) retrying the exact same already-broken
+        update_sprint_report call again right after the counter reset to 0 -
+        so it took another full REPEATED_CALL_LOOP_THRESHOLD streak to break
+        it a second time, burning the whole call budget in repeated bursts.
+        Once this exact tool+args combination has broken the loop once this
+        session, any further occurrence must be refused immediately.
         """
         tool = BaseTool(name="update_sprint_report", description="Update the sprint report.")
         tool_context = MagicMock()
-        tool_context.agent_name = "QualityGuardian"
+        tool_context.agent_name = "ScrumMaster"
         tool_context.state = ScrumState().model_dump()
 
         for _ in range(agent_module.REPEATED_CALL_LOOP_THRESHOLD):
@@ -1462,7 +1461,7 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
         story-linking existed."""
         tool = BaseTool(name="update_sprint_report", description="Update the sprint report.")
         tool_context = MagicMock()
-        tool_context.agent_name = "QualityGuardian"
+        tool_context.agent_name = "ScrumMaster"
         tool_context.state = ScrumState().model_dump()
 
         result = None
@@ -1478,7 +1477,7 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
         tool = BaseTool(name="calculate_kpis", description="Calculate KPIs.")
         other_tool = BaseTool(name="upsert_issue", description="Add or update an issue.")
         tool_context = MagicMock()
-        tool_context.agent_name = "QualityGuardian"
+        tool_context.agent_name = "ScrumMaster"
         tool_context.state = ScrumState().model_dump()
 
         results = []
@@ -1582,7 +1581,7 @@ class TestRecoverFakeToolCallCallback(unittest.TestCase):
             '{"function_name": "update_sprint_report", "arguments": {"kpis": "calculate_kpis"}}'
         )
         callback_context = MagicMock()
-        callback_context.agent_name = "QualityGuardian"
+        callback_context.agent_name = "ScrumMaster"
 
         recover_fake_tool_call_callback(callback_context, response)
 
@@ -1599,7 +1598,7 @@ class TestRecoverFakeToolCallCallback(unittest.TestCase):
             '{"type": "function", "name": "update_sprint_report", "parameters": {"kpis": "calculate_kpis"}}'
         )
         callback_context = MagicMock()
-        callback_context.agent_name = "QualityGuardian"
+        callback_context.agent_name = "ScrumMaster"
 
         recover_fake_tool_call_callback(callback_context, response)
 
@@ -1619,7 +1618,7 @@ class TestRecoverFakeToolCallCallback(unittest.TestCase):
             "{'type': 'function', 'name': 'update_sprint_report', 'parameters': {'kpis': 'calculate_kpis'}}"
         )
         callback_context = MagicMock()
-        callback_context.agent_name = "QualityGuardian"
+        callback_context.agent_name = "ScrumMaster"
 
         recover_fake_tool_call_callback(callback_context, response)
 
@@ -1700,7 +1699,7 @@ class TestRecoverFakeToolCallCallback(unittest.TestCase):
         self.assertEqual(callback_context.state["orchestrator_stall_count"], 0)
 
     def test_registered_on_every_agent(self):
-        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian, root_agent):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, root_agent):
             self.assertIn(recover_fake_tool_call_callback, agent.canonical_after_model_callbacks)
 
     def test_converts_looser_shape_with_no_type_and_properties_key(self):
@@ -1898,13 +1897,14 @@ class TestSprintCloseoutGrace(unittest.TestCase):
     release PR at all on token-budget exhaustion, since every subsequent
     call for every agent was replaced with a canned halt response the
     instant the main budget tripped - nobody ever got a turn to run the
-    SPRINT CLOSE SEQUENCE (retro -> create_sprint_report -> KPIs ->
-    create_release_pr). ScrumMaster/ProductOwner/QualityGuardian/
-    ScrumOrchestrator now get a small, bounded extra allowance
-    (closeout_grace_percent, agents/scrum_team/helpers.py) specifically to
-    finish that sequence for real; DevTeam/QA/Architect still hard-halt
+    SPRINT CLOSE SEQUENCE. ProductOwner/ScrumOrchestrator now get a small,
+    bounded extra allowance (closeout_grace_percent, agents/scrum_team/
+    helpers.py) specifically to finish the one remaining step
+    (create_release_pr) for real; DevTeam/QA/Architect still hard-halt
     immediately, unconditionally - no more code should get written past the
-    cap.
+    cap. GH #395: Scrum Master (retro -> KPIs -> create_sprint_report) is no
+    longer part of this grace at all - see TestScrumMasterRitualBudget
+    below for its own, entirely separate mechanism.
     """
 
     def _context(self, agent_name, token_total, token_usage, agent_own_usage=None):
@@ -1932,7 +1932,7 @@ class TestSprintCloseoutGrace(unittest.TestCase):
         # 100 main budget, pinned 5% grace -> ceiling 105; 104 is over the
         # main budget but still under grace. Pinned explicitly, not relying
         # on the ambient default (see ISSUE-0046).
-        for agent_name in ("ScrumMaster", "ProductOwner", "QualityGuardian", "ScrumOrchestrator"):
+        for agent_name in ("ProductOwner", "ScrumOrchestrator"):
             with self.subTest(agent_name=agent_name):
                 mock_context = self._context(agent_name, 100, 104)
                 # clear=True: this test is scoped to the TOKEN grace logic -
@@ -2053,6 +2053,156 @@ class TestSprintCloseoutGrace(unittest.TestCase):
                 with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
                 self.assertIsNotNone(result, f"{agent_name} must not get a second reserved turn")
+
+
+class TestScrumMasterRitualBudget(unittest.TestCase):
+    """
+    Acceptance Criteria (GH #395): Scrum Master's own ritual work
+    (facilitation, retro, KPI calculation, authoring the sprint report) now
+    draws on a separate budget - PROCESS_OVERHEAD_PERCENTAGE percent of the
+    main sprint token budget - checked against its own token usage only,
+    entirely independent of the shared main-budget check
+    TestSprintCloseoutGrace exercises for everyone else. Replaces the old
+    design where Scrum Master shared SPRINT_CLOSEOUT_GRACE_ROLES with
+    QualityGuardian/ProductOwner/ScrumOrchestrator - a verbose main sprint
+    could previously exhaust the shared budget before Scrum Master ever got
+    a turn to run the retrospective or KPIs at all.
+    """
+
+    def _context(self, token_total, token_usage_total, sm_own_usage):
+        mock_context = MagicMock()
+        mock_context.agent_name = "ScrumMaster"
+        state = ScrumState()
+        state.budgets.total = token_total
+        state.token_usage.total = token_usage_total
+        state.token_usage.agents["ScrumMaster"] = sm_own_usage
+        state.litellm_keys["ScrumMaster"] = "sk-test-agent-key"
+        mock_context.state = state.model_dump()
+        return mock_context
+
+    def test_gets_a_real_call_through_within_its_own_ritual_budget(self):
+        # 100 main budget, 50% overhead -> 50-token ritual ceiling. Own usage
+        # (40) is under that ceiling even though the shared total (150) is
+        # well past the 100 main ceiling everyone else is measured against.
+        mock_context = self._context(100, 150, 40)
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "50"}, clear=True):
+            with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNone(result, "ScrumMaster should get a real call within its own ritual budget")
+
+    def test_hard_halts_once_its_own_ritual_budget_is_exhausted(self):
+        mock_context = self._context(100, 150, 60)
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "50"}, clear=True):
+            with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt_once") as mock_ensure:
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNotNone(result)
+        self.assertIn("RITUAL BUDGET EXCEEDED", result.content.parts[0].text)
+        mock_ensure.assert_called_once()
+
+    def test_never_affected_by_the_shared_total_tripping_the_main_ceiling(self):
+        """Even a shared total enormously over the main ceiling must not
+        halt ScrumMaster, as long as its OWN usage stays under its own
+        ritual ceiling - the whole point of a separate budget."""
+        mock_context = self._context(100, 10_000, 5)
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "10"}, clear=True):
+            with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNone(result)
+
+    def test_uncapped_while_the_sprint_report_step_is_active(self):
+        """Once a fresh retro and a fresh KPI update both already exist this
+        sprint (create_sprint_report's own two prerequisites), the ritual
+        ceiling must not apply at all - no matter how large ScrumMaster's
+        own usage already is."""
+        mock_context = self._context(100, 150, 999_999)
+        mock_context.state["retro_actions"] = [{"action": "did a thing"}]
+        mock_context.state["retro_baseline"] = 0
+        mock_context.state["kpi_update_count"] = 1
+        mock_context.state["kpi_baseline"] = 0
+        mock_context.state["sprint_report_pending_release"] = False
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "1"}, clear=True):
+            with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNone(result, "the sprint-report step itself must be mechanically uncapped")
+
+    def test_not_uncapped_once_the_report_has_already_succeeded(self):
+        """sprint_report_pending_release=True means the report already
+        closed this sprint - the uncapped window must not still apply to
+        whatever ScrumMaster does next."""
+        mock_context = self._context(100, 150, 999_999)
+        mock_context.state["retro_actions"] = [{"action": "did a thing"}]
+        mock_context.state["retro_baseline"] = 0
+        mock_context.state["kpi_update_count"] = 1
+        mock_context.state["kpi_baseline"] = 0
+        mock_context.state["sprint_report_pending_release"] = True
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "1"}, clear=True):
+            with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt_once"):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNotNone(result)
+
+
+class TestRestrictToSprintReportStep(unittest.TestCase):
+    """
+    Acceptance Criteria (GH #395): uncapping the ritual budget during the
+    sprint-report step (TestScrumMasterRitualBudget above) only guarantees
+    Scrum Master CAN keep working - this is the other half, stopping that
+    uncapped window from being spent on anything other than the report
+    sequence itself.
+    """
+
+    def _active_state(self):
+        state = ScrumState()
+        state.retro_actions = [{"action": "did a thing"}]
+        state.retro_baseline = 0
+        state.kpi_update_count = 1
+        state.kpi_baseline = 0
+        state.sprint_report_pending_release = False
+        return state.model_dump()
+
+    def test_blocks_other_tools_while_the_step_is_active(self):
+        tool = BaseTool(name="add_retro_action", description="Log a retro action.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumMaster"
+        tool_context.state = self._active_state()
+
+        result = log_tool_invocation_callback(tool, {"action": "x", "owner": "ScrumMaster"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("create_sprint_report", result["message"])
+
+    def test_allows_the_report_sequence_itself(self):
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumMaster"
+        tool_context.state = self._active_state()
+
+        for tool_name in ("calculate_kpis", "update_sprint_report", "create_sprint_report", "transfer_to_agent"):
+            with self.subTest(tool_name=tool_name):
+                tool = BaseTool(name=tool_name, description="d")
+                args = {"agent_name": "ProductOwner"} if tool_name == "transfer_to_agent" else {}
+                result = log_tool_invocation_callback(tool, args, tool_context)
+                self.assertIsNone(result)
+
+    def test_does_not_apply_to_other_roles(self):
+        tool = BaseTool(name="write_file", description="Write a file.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        tool_context.state = self._active_state()
+
+        result = log_tool_invocation_callback(tool, {"path": "x.py", "content": "y"}, tool_context)
+
+        self.assertIsNone(result)
+
+    def test_does_not_apply_once_the_step_is_no_longer_active(self):
+        tool = BaseTool(name="add_retro_action", description="Log a retro action.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumMaster"
+        state = ScrumState()
+        tool_context.state = state.model_dump()  # fresh state - step not active
+
+        result = log_tool_invocation_callback(tool, {"action": "x", "owner": "ScrumMaster"}, tool_context)
+
+        self.assertIsNone(result)
 
 
 class TestBudgetWarningTier(unittest.TestCase):

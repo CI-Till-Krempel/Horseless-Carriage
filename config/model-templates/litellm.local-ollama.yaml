@@ -43,11 +43,6 @@ model_list:
       model: ollama/llama3.1:8b
       api_base: http://ollama:11434
 
-  - model_name: scrum-quality
-    litellm_params:
-      model: ollama/llama3.1:8b
-      api_base: http://ollama:11434
-
   - model_name: scrum-eval-cheap
     litellm_params:
       model: ollama/llama3.1:8b

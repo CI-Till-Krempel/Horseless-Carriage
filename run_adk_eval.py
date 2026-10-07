@@ -117,7 +117,7 @@ EVAL_RUNNER_SHIM_PATH = "eval/adk/run_eval_shim.py"
 # agent_name values every specialist role can be addressed/transferred to
 # by. ScrumOrchestrator is deliberately excluded (agent.py's fallback-key
 # guard already exempts it - it never calls a model with its own scoped key).
-_SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect", "QualityGuardian"]
+_SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect"]
 
 # Eval cases whose whole point is exercising the missing-key block itself
 # (see agent.py's fallback-key guard) - these must keep their fixture's

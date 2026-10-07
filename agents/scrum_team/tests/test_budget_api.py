@@ -322,7 +322,7 @@ class TestBudgetAPI(unittest.TestCase):
         gen_call = mock_post.call_args_list[2]
         self.assertEqual(
             gen_call[1]["json"]["models"],
-            ["scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", "scrum-arch", "scrum-orchestrator", "scrum-quality"],
+            ["scrum-po", "scrum-sm", "scrum-dev", "scrum-qa", "scrum-arch", "scrum-orchestrator"],
         )
 
 if __name__ == "__main__":

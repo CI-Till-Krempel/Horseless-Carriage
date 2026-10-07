@@ -46,7 +46,7 @@ from agents.scrum_team.tools.base import _hc_version
 from agents.scrum_team.tools.budget import sprint_budget_reset_state_delta
 
 DEFAULT_EVAL_REPO_URL = "git@github.com:CI-Till-Krempel/horseless-carriage-eval-todo-app.git"
-EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH", "QUALITY"]
+EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH"]
 SCENARIO_PATH = Path(__file__).resolve().parents[3] / "eval" / "scenario" / "PRODUCT-VISION.md"
 
 
@@ -296,7 +296,7 @@ def _merge_open_prs(local_path: Path, base_branch: str, sprint_result: dict | No
     return results
 
 
-_SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect", "QualityGuardian"]
+_SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect"]
 
 
 def _kickoff_message(scenario_text: str) -> str:
@@ -508,7 +508,7 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
                 "sprint_report": "",
                 # GH issue #124: sprint_report_kpis is never cleared by the
                 # product code itself either (same as sprint_report above) -
-                # without this reset, a sprint where QualityGuardian doesn't
+                # without this reset, a sprint where Scrum Master's KPI step doesn't
                 # get to run would silently inherit the previous sprint's
                 # KPI values instead of correctly having none.
                 "sprint_report_kpis": {},
@@ -606,12 +606,13 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         "sprint_report": sprint_report,
         "sprint_backlog": session.state.get("sprint_backlog"),
         "product_backlog": session.state.get("product_backlog"),
-        # GH issue #124: QualityGuardian's calculate_kpis/update_sprint_report
-        # (see its prompt's "YOU DO") stores its findings here - captured so
-        # run_eval_analysis.py can plot Say-Do Ratio/Quality/Test Coverage as
-        # a time series across sprints. Only present if QualityGuardian
-        # actually got to run this sprint (cheap-model/budget-constrained
-        # sprints sometimes don't) - None otherwise, not a fabricated value.
+        # GH issue #124: Scrum Master's calculate_kpis/update_sprint_report
+        # (formerly QualityGuardian's - see GH #395; see its prompt's "YOU DO")
+        # stores its findings here - captured so run_eval_analysis.py can plot
+        # Say-Do Ratio/Quality/Test Coverage as a time series across sprints.
+        # Only present if Scrum Master actually got to run this step this
+        # sprint (cheap-model/budget-constrained sprints sometimes don't) -
+        # None otherwise, not a fabricated value.
         "sprint_report_kpis": session.state.get("sprint_report_kpis"),
         # GH issue #342: "human"-category retro/impediment findings
         # (add_retro_action/add_impediment's category param) - not tied to

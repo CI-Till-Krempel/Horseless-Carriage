@@ -13,7 +13,6 @@ from agents.scrum_team.agent import (
     dev_team,
     qa_agent,
     architect,
-    quality_guardian,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -242,7 +241,7 @@ class TestHistoryManagement(unittest.TestCase):
     def test_transcript_captures_specialist_agent_turns(self):
         # US-0001: every sub-agent's turns must land in the shared transcript,
         # tagged by agent_name, not silently dropped.
-        for agent_name in ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect", "QualityGuardian"]:
+        for agent_name in ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect"]:
             state = ScrumState()
             mock_context = MagicMock()
             mock_context.agent_name = agent_name
@@ -310,7 +309,7 @@ class TestHistoryManagement(unittest.TestCase):
     def test_specialist_agents_are_wired_to_history_after_callback(self):
         # Registration check: specialists must actually have the callback
         # attached, or capture would never fire in practice.
-        for agent in [product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian]:
+        for agent in [product_owner, scrum_master, dev_team, qa_agent, architect]:
             self.assertIn(history_management_after_callback, agent.after_model_callback)
 
     def test_trim_transcript_leaves_under_threshold_untouched(self):

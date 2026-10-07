@@ -12,33 +12,99 @@ def get_process_overhead_percentage() -> float:
     return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
 
 
+def ritual_token_budget(token_limit: int) -> float:
+    """
+    GH #395: ScrumMaster's own budget for ritual work - facilitation, retro,
+    KPI calculation, authoring the sprint report - sized as
+    get_process_overhead_percentage() percent of the sprint's main token
+    budget. Checked (agent.py's check_cost_budget_callback) against
+    ScrumMaster's own token_usage.agents entry, never against the shared
+    total DevTeam/QA/Architect/ProductOwner spend down - see
+    main_budget_token_usage below for the other half of that separation.
+    Previously PROCESS_OVERHEAD_PERCENTAGE was purely cosmetic (only ever
+    printed in the sprint report/cost breakdown, never actually enforced) -
+    a real eval run showed why that wasn't enough: a verbose main sprint
+    could exhaust the shared budget before ScrumMaster ever got a turn to
+    run the retrospective or KPIs at all, and create_sprint_report
+    "repeatedly fails" across runs as a direct result.
+    """
+    if token_limit <= 0:
+        return 0.0
+    return token_limit * (get_process_overhead_percentage() / 100.0)
+
+
+def main_budget_token_usage(state) -> int:
+    """
+    GH #395: the token usage the main per-sprint ceiling (DevTeam/QA/
+    Architect/ProductOwner) should actually be checked against -
+    state.token_usage.total MINUS ScrumMaster's own usage. ScrumMaster's
+    ritual work now draws on its own separate budget (ritual_token_budget
+    above); without this exclusion, its own spend would still silently
+    erode the shared ceiling everyone else is measured against, defeating
+    the entire point of giving it a separate pool.
+    """
+    total = state.token_usage.total
+    sm_usage = (state.token_usage.agents or {}).get("ScrumMaster", 0)
+    return max(0, total - sm_usage)
+
+
+def _retro_and_kpi_freshness(state) -> tuple:
+    """Shared by closeout_remaining_work_fraction and sprint_report_step_active below - whether a fresh add_retro_action/add_impediment and a fresh calculate_kpis/update_sprint_report have each happened since the last sprint report."""
+    process_signals = len(state.retro_actions or []) + len(state.impediment_log or [])
+    retro_fresh = process_signals > state.retro_baseline
+    kpi_fresh = state.kpi_update_count > state.kpi_baseline
+    return retro_fresh, kpi_fresh
+
+
+def sprint_report_step_active(state) -> bool:
+    """
+    GH #395: True once ScrumMaster has freshly logged this sprint's retro
+    action/impediment AND a fresh KPI update, but create_sprint_report
+    hasn't succeeded yet (sprint_report_pending_release not yet set) - i.e.
+    the one mechanical step left this sprint is create_sprint_report
+    itself. This window is deliberately both uncapped (ritual_token_budget
+    above doesn't apply while this is True - see check_cost_budget_callback)
+    and tool-gated (agent.py's before_tool_callback refuses anything that
+    isn't the report call sequence while this is True) - uncapping it alone
+    would just open a different way to never actually close the sprint.
+    """
+    retro_fresh, kpi_fresh = _retro_and_kpi_freshness(state)
+    return retro_fresh and kpi_fresh and not state.sprint_report_pending_release
+
+
 def closeout_grace_percent(state=None) -> float:
     """
     How much EXTRA token/USD budget (as a percentage of the main sprint
-    ceiling) ScrumMaster/ProductOwner/QualityGuardian/ScrumOrchestrator may
-    still spend, combined, after the main budget is exhausted - specifically
-    to finish the SPRINT CLOSE SEQUENCE (retro -> create_sprint_report ->
-    KPIs -> create_release_pr) for real, rather than skipping it entirely.
-    A real eval run produced no sprint report and no release PR at all on
-    exhaustion, since every subsequent model call for every agent was
-    replaced with a canned halt response the instant the main budget
-    tripped - see check_cost_budget_callback/SPRINT_CLOSEOUT_GRACE_ROLES,
-    agents/scrum_team/agent.py. DevTeam/QA/Architect get none of this grace -
-    their work is frozen at exhaustion; only closing the sprint out still
-    needs turns. Configurable via SPRINT_CLOSEOUT_GRACE_PERCENT; default 20.0
-    (20%, raised from an original 5.0 - see ISSUE-0046). 5% (a real run's
-    main sprint ceiling was 5,000,000, so 250,000 tokens of grace) wasn't
-    enough headroom in practice: the close-out sequence is several sequential
-    agent hops (a non-grace role's redirect to ProductOwner,
-    ProductOwner -> Scrum Master for retro, Scrum Master -> QualityGuardian
-    for KPIs, QualityGuardian -> ProductOwner for create_sprint_report/
-    create_release_pr), each of which costs real tokens purely to reason
+    ceiling) ProductOwner/ScrumOrchestrator may still spend, combined, after
+    the main budget is exhausted - specifically to finish the SPRINT CLOSE
+    SEQUENCE's remaining step (create_release_pr) for real, rather than
+    skipping it entirely. A real eval run produced no sprint report and no
+    release PR at all on exhaustion, since every subsequent model call for
+    every agent was replaced with a canned halt response the instant the
+    main budget tripped - see check_cost_budget_callback/
+    SPRINT_CLOSEOUT_GRACE_ROLES, agents/scrum_team/agent.py. DevTeam/QA/
+    Architect get none of this grace - their work is frozen at exhaustion;
+    only closing the sprint out still needs turns. Configurable via
+    SPRINT_CLOSEOUT_GRACE_PERCENT; default 20.0 (20%, raised from an
+    original 5.0 - see ISSUE-0046). 5% (a real run's main sprint ceiling was
+    5,000,000, so 250,000 tokens of grace) wasn't enough headroom in
+    practice: the close-out sequence used to be several sequential agent
+    hops (a non-grace role's redirect to ProductOwner, ProductOwner ->
+    Scrum Master for retro, Scrum Master -> QualityGuardian for KPIs,
+    QualityGuardian -> ProductOwner for create_sprint_report/
+    create_release_pr), each of which cost real tokens purely to reason
     about the next hand-off - a real run burned its entire 5% grace on two
     wrong guesses (an invalid stage transition, a stray transfer to
     Architect) before ever reaching Scrum Master's retro turn, then froze
     with nowhere left to redirect. Each agent's own LiteLLM virtual-key
     budget is still the ultimate financial backstop underneath this either
     way.
+
+    GH #395 update: ScrumMaster is no longer in SPRINT_CLOSEOUT_GRACE_ROLES
+    at all - its retro/KPI/sprint-report work now draws on its own separate,
+    uncapped-but-gated ritual budget (ritual_token_budget,
+    sprint_report_step_active) instead of sharing this one. What's left for
+    this grace to cover is just ProductOwner's create_release_pr call.
 
     GH issue #220: the flat percentage above must be sized for the worst
     case (the whole close-out sequence still outstanding) every time, even
@@ -65,7 +131,10 @@ def closeout_remaining_work_fraction(state) -> float:
     create_sprint_report -> create_release_pr) is still outstanding this
     sprint, as a fraction in [0.0, 1.0], purely from existing state signals
     - see GH issue #220. Used by closeout_grace_percent to scale its ceiling
-    down as less work remains, instead of a flat percentage.
+    down as less work remains, instead of a flat percentage. GH #395: retro
+    and KPIs are now gated by ScrumMaster's own separate ritual budget
+    rather than this one (see sprint_report_step_active), but still used
+    here as a progress signal for how much of the overall close-out is done.
 
     Mirrors the exact "fresh since baseline" checks create_sprint_report
     (tools/budget.py) and calculate_kpis (tools/quality.py) already enforce,
@@ -80,9 +149,7 @@ def closeout_remaining_work_fraction(state) -> float:
     configured grace - identical to closeout_grace_percent()'s behavior
     before this scaling existed.
     """
-    process_signals = len(state.retro_actions or []) + len(state.impediment_log or [])
-    retro_fresh = process_signals > state.retro_baseline
-    kpi_fresh = state.kpi_update_count > state.kpi_baseline
+    retro_fresh, kpi_fresh = _retro_and_kpi_freshness(state)
 
     TOTAL_STEPS = 4  # retro, KPIs, sprint report, release PR
     if state.sprint_report_pending_release:
@@ -107,17 +174,21 @@ NON_GRACE_FLOOR_ROLES = frozenset({"DevTeam", "QA", "Architect"})
 
 
 # The roles the SPRINT CLOSE SEQUENCE actually needs a real turn from once
-# the main budget trips (see closeout_grace_percent above) - ScrumMaster
-# (retro), ProductOwner (create_sprint_report/create_release_pr),
-# QualityGuardian (calculate_kpis/update_sprint_report), and
-# ScrumOrchestrator itself: run_eval.py's continuation nudges
-# (_run_one_sprint's _CONTINUE_NUDGE) are sent as a fresh top-level message
-# each time, which re-enters through the root agent - if ScrumOrchestrator
-# were hard-halted too, a nudge could never even route to ScrumMaster in the
-# first place, silently reproducing the exact failure this grace exists to
-# fix. ScrumOrchestrator has no code-writing tools, so including it adds
-# negligible cost risk.
-SPRINT_CLOSEOUT_GRACE_ROLES = frozenset({"ScrumMaster", "ProductOwner", "QualityGuardian", "ScrumOrchestrator"})
+# the main budget trips (see closeout_grace_percent above) - ProductOwner
+# (create_release_pr) and ScrumOrchestrator itself: run_eval.py's
+# continuation nudges (_run_one_sprint's _CONTINUE_NUDGE) are sent as a
+# fresh top-level message each time, which re-enters through the root agent
+# - if ScrumOrchestrator were hard-halted too, a nudge could never even
+# route to anyone in the first place, silently reproducing the exact
+# failure this grace exists to fix. ScrumOrchestrator has no code-writing
+# tools, so including it adds negligible cost risk.
+#
+# GH #395: ScrumMaster is deliberately NOT a member here anymore - its own
+# retro/KPI/sprint-report work now draws on a separate ritual budget
+# (ritual_token_budget) that is entirely independent of whether the main
+# budget has tripped, rather than sharing this grace allowance with
+# whatever's left of it.
+SPRINT_CLOSEOUT_GRACE_ROLES = frozenset({"ProductOwner", "ScrumOrchestrator"})
 
 
 # --- Budget env var naming (GH issue #81) ---

@@ -32,8 +32,23 @@ if you haven't renamed it in your own `.env` yet.
   a role logs any real usage, it hard-halts on the next exhausted call exactly as before.
 - **Scaled close-out grace (GH issue #220)**: `SPRINT_CLOSEOUT_GRACE_PERCENT`'s ceiling
   (`closeout_grace_percent`, `agents/scrum_team/helpers.py`) now scales down as less of the SPRINT
-  CLOSE SEQUENCE (retro -> KPIs -> sprint report -> release PR) remains outstanding, instead of
-  always granting the full configured percentage regardless of how much work is actually left.
+  CLOSE SEQUENCE remains outstanding, instead of always granting the full configured percentage
+  regardless of how much work is actually left. GH #395: this grace now only covers Product Owner's
+  `create_release_pr` call (and ScrumOrchestrator's routing) after the main budget trips - it no
+  longer applies to Scrum Master, which has its own separate ritual budget instead (see below).
+- **Scrum Master's separate ritual budget (GH #395)**: facilitating events, the retrospective, KPI
+  calculation, and authoring the sprint report are process overhead, not feature/implementation
+  work - they're checked against Scrum Master's own token usage and a ceiling sized at
+  `PROCESS_OVERHEAD_PERCENTAGE` percent of `SPRINT_TOKEN_BUDGET` (`ritual_token_budget`,
+  `agents/scrum_team/helpers.py`), entirely independent of whether the shared budget below has
+  tripped for DevTeam/QA/Architect/Product Owner. Previously `PROCESS_OVERHEAD_PERCENTAGE` was
+  purely cosmetic (only ever printed in the sprint report); a verbose main sprint could exhaust the
+  shared budget before Scrum Master ever got a turn to run the retrospective or KPIs at all, which is
+  exactly why `create_sprint_report` kept failing across real eval runs. Once a fresh retro action
+  and a fresh KPI update both exist this sprint, the one remaining step (`create_sprint_report`
+  itself) is mechanically uncapped - and simultaneously tool-gated (`agent.py`'s
+  `before_tool_callback`) to refuse anything that isn't the report call sequence - so a sprint can
+  never fail to produce its required KPIs/report purely for lack of remaining ritual budget.
 - **Automatic Tracking**: The system automatically tracks token usage after every LLM call and attributes it to the specific agent role.
 - **Purpose**: Prevents long-running loops or runaway agent conversations within a single sprint.
   LiteLLM natively supports rate limits (tokens per minute) but does not provide a hard-stop for a
@@ -134,8 +149,10 @@ The system tracks performance indicators to provide visibility into team health:
   reported as such rather than a guessed number.
 
 ### Sprint Report
-At the end of each sprint, the Product Owner generates a report via `create_sprint_report`, which
-includes a detailed breakdown of token usage per agent, total USD spend, and quality metrics.
+At the end of each sprint, the Scrum Master generates a report via `create_sprint_report`
+(GH #395 - previously Product Owner's tool, with KPI calculation split off to a separate
+QualityGuardian role; both now consolidated into Scrum Master), which includes a detailed
+breakdown of token usage per agent, total USD spend, and quality metrics.
 Every sprint's report is kept — written to a sequentially numbered
 `specs/reports/SPRINT-REPORT-NNN.md` (`001`, `002`, ...; the number is derived by scanning what's
 already there, the same way story/ADR IDs are generated, so there's no separate counter to drift

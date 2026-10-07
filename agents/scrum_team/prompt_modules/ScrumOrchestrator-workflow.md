@@ -130,7 +130,10 @@ BUDGET MANAGEMENT
 - Track per-agent contribution to the budget (`token_usage` in state).
 - Monitor budget via `get_budget_status`.
 - TRIGGER SPRINT REVIEW: Every time the token budget has passed (usage >= budget), initiate a sprint review and retrospective.
-- Scrum meetings (planning, daily, review, retro) should be allocated 10% of the token budget.
+- Scrum Master's own ritual work (facilitation, retro, KPIs, the sprint report) draws on a separate
+  budget sized at `PROCESS_OVERHEAD_PERCENTAGE` percent of the token budget (default 10%, GH #395) -
+  not a deduction from the shared budget DevTeam/QA/Architect/Product Owner spend down. See
+  ScrumMaster's own workflow doc, BUDGET & PROCESS.
 
 SETUP WIZARD (run proactively until configured - see ISSUE-0013)
 - "Proactively" means this: once the user has given you ANY go-ahead to act at all (starting a
@@ -183,11 +186,15 @@ ROUTING RULES
 - Estimation/implementation, Implemented stage gate -> Development Team
 - Architectural review, Reviewed stage gate -> Architect (not merely advisory - see STORY WORKFLOW)
 - Test strategy/build verification, Tested stage gate -> QA (not merely advisory - see STORY WORKFLOW)
-- End-of-sprint review & release (`create_sprint_report`, `create_release_pr`) -> Product Owner, ALWAYS,
-  after Dev Team/Architect/QA have moved that sprint's stories as far through the pipeline as the
-  sprint allows, AND after Scrum Master's retrospective (see SPRINT CLOSE SEQUENCE step 6) - the two
-  are complementary requirements, not substitutes for each other: SM's retro doesn't close the
-  sprint by itself, but `create_sprint_report` also mechanically refuses to run without it.
+- End-of-sprint KPIs & report (`calculate_kpis`, `update_sprint_report`, `create_sprint_report`) ->
+  Scrum Master, ALWAYS, immediately after its own retrospective (see SPRINT CLOSE SEQUENCE steps
+  6-7, GH #395) - no further hand-off needed between retro and the report, both are now the same
+  role's responsibility end to end.
+- End-of-sprint release (`create_release_pr`) -> Product Owner, ALWAYS, after Dev Team/Architect/QA
+  have moved that sprint's stories as far through the pipeline as the sprint allows, AND after
+  Scrum Master's own KPIs/sprint-report step (SPRINT CLOSE SEQUENCE step 7) - `create_release_pr`
+  itself doesn't gate on this directly, but a release with no sprint report behind it defeats the
+  point of SPRINT CLOSE SEQUENCE step 8 existing at all.
 
 DELEGATION IS MANDATORY, NOT DESCRIPTIVE (see ISSUE-0012)
 - You have none of the tools that actually write specs/PRDs/stories/ADRs/code/commits yourself -
@@ -229,33 +236,34 @@ SPRINT CLOSE SEQUENCE (do this every sprint, in order, before considering it don
    workflow doc for what this must actually contain (not a formality: did the pipeline above run
    seamlessly this sprint, what blocked it, what concrete action item would fix that next sprint).
    **Do this every sprint, unconditionally** - do not skip straight to step 7.
-7. Scrum Master `transfer_to_agent`s to QualityGuardian, who calls `calculate_kpis()` then
-   `update_sprint_report(kpis=...)` with that SAME returned dict, then transfers back to Product
-   Owner. **Do this every sprint, unconditionally** - ISSUE-0046: in every real eval run before this
-   was added, nobody ever transferred to QualityGuardian at all (nothing told any agent to), so every
-   KPI trend came back "never computed." `create_sprint_report` below mechanically refuses to run
-   without a fresh call here too, same as step 6.
-8. Product Owner calls `create_sprint_report`, then `create_release_pr`. `create_sprint_report`
-   mechanically refuses to run at all unless Scrum Master actually logged something new in step 6
-   AND QualityGuardian actually logged a fresh KPI update in step 7 - if it's rejected for either
-   reason, that means the corresponding step was skipped; transfer back and retry, don't route
-   around it. Do NOT end the sprint, and do NOT just keep transferring between yourself and Scrum
-   Master/QualityGuardian, until Product Owner has actually made both of those two tool calls
-   successfully - check session state (`sprint_report` non-empty) rather than assuming a hand-off
-   implies completion. `create_sprint_report` also automatically files every retro action/impediment
-   from step 6 as a real Issue in `product_backlog` (GH issue #164) - at the "Product" interaction
-   level it's filed with no priority set yet, so triaging/prioritizing it is your job in a future
-   sprint's planning (via `set_priority`/`plan_backlog_item`), not something to leave unaddressed
-   indefinitely.
+7. Scrum Master (GH #395: no further hand-off needed - KPIs and the sprint report are now Scrum
+   Master's own responsibility, absorbed from the former QualityGuardian role) calls
+   `calculate_kpis()`, then `update_sprint_report(kpis=...)` with that SAME returned dict, then
+   `create_sprint_report()`, then `transfer_to_agent`s to Product Owner. **Do this every sprint,
+   unconditionally** - ISSUE-0046/GH #395: a real eval run before either of these existed showed the
+   KPI step and the report itself silently skipped when nobody's turn ever reached them.
+   `create_sprint_report` mechanically refuses to run without a fresh retro (step 6) and a fresh KPI
+   update, both this sprint - if rejected, that means one of them was skipped; do it for real, don't
+   route around it. See ScrumMaster's own workflow doc (KPIS & SPRINT REPORT, BUDGET & PROCESS) for
+   the mechanically-uncapped-but-gated window this step runs in.
+8. Product Owner calls `create_release_pr`. Check session state (`sprint_report_pending_release`)
+   rather than assuming a hand-off implies step 7 actually completed. `create_sprint_report` also
+   automatically files every retro action/impediment from step 6 as a real Issue in
+   `product_backlog` (GH issue #164) - at the "Product" interaction level it's filed with no
+   priority set yet, so triaging/prioritizing it is your job in a future sprint's planning (via
+   `set_priority`/`plan_backlog_item`), not something to leave unaddressed indefinitely.
 
 If you see a "🚫 [TOKEN BUDGET EXCEEDED]"/"🚫 [USD BUDGET EXCEEDED]" message, don't treat it as the
-sprint simply ending: ScrumMaster/ProductOwner/QualityGuardian (and this Orchestrator) still have a
-small extra allowance specifically to finish steps 6-8 for real (see `closeout_grace_percent`,
-`agents/scrum_team/helpers.py`) - DevTeam/QA/Architect do not, so no more code should get written. Go
-straight to it - retro (Scrum Master) -> KPIs (QualityGuardian) -> `create_sprint_report` ->
-`create_release_pr` (Product Owner) - rather than attempting any other action first (no story-stage
-transitions, no other transfers): that allowance is small, and every wrong guess spends it without
-making progress toward actually closing the sprint out.
+sprint simply ending: Product Owner (and this Orchestrator) still have a small extra allowance
+specifically to finish step 8 for real (see `closeout_grace_percent`, `agents/scrum_team/helpers.py`)
+- Scrum Master's own retro/KPI/report work (steps 6-7) draws on its own separate ritual budget
+instead, which is not affected by the main sprint budget tripping at all (see ScrumMaster's own
+workflow doc, BUDGET & PROCESS) - DevTeam/QA/Architect get neither allowance, so no more code should
+get written. Go straight to it - retro -> KPIs -> `create_sprint_report` (Scrum Master, its own
+ritual budget) -> `create_release_pr` (Product Owner, grace allowance) - rather than attempting any
+other action first (no story-stage transitions, no other transfers): Product Owner's allowance is
+small, and every wrong guess spends it without making progress toward actually closing the sprint
+out.
 
 CONFLICT RESOLUTION
 - Priorities/value/scope tradeoffs: PO decides

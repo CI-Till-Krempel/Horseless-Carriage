@@ -493,7 +493,7 @@ class TestStateRepoStructureChecks:
         doctor.check(valid_repo)
         for role in ROLE_NAMES:
             assert (state_repo / f"{role}-identity.md").is_file()
-        assert "Created default identity.md in the state repository for 7 role(s)" in capsys.readouterr().out
+        assert "Created default identity.md in the state repository for 6 role(s)" in capsys.readouterr().out
 
     def test_existing_identity_file_survives_a_doctor_run(self, valid_repo, monkeypatch, capsys):
         _patch_proxy_unreachable(monkeypatch)
@@ -505,7 +505,7 @@ class TestStateRepoStructureChecks:
 
         assert (state_repo / "ProductOwner-identity.md").read_text(encoding="utf-8") == custom
         note_line = next(line for line in capsys.readouterr().out.splitlines() if "Created default identity.md" in line)
-        assert "6 role(s)" in note_line
+        assert "5 role(s)" in note_line
         assert "ProductOwner" not in note_line
 
     def test_already_migrated_repo_produces_no_note(self, valid_repo, monkeypatch, capsys):
