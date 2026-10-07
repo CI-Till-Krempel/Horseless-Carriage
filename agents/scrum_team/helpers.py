@@ -350,6 +350,18 @@ _ROLE_BEHAVIOR_SIGNAL_PHRASES = (
     "discipline", "synchronized", "in strict sequence", "in sequence",
     "sequencing", "rigorous", "consistently", "going forward", "recurring",
     "repeatedly", "every sprint", "each sprint", "adhere to", "stay in sync",
+    # GH issue #381: a real run (0.1.0-run47) filed 4 of 5 retro findings as
+    # "technical" despite reading as team-process reminders, not one-time
+    # code tasks - none of the phrases above happened to appear in any of
+    # them (e.g. "Ensure automated tests are fully stable before starting
+    # sprint test execution phases", "Recreate clean PRs promptly when merge
+    # conflicts arise to avoid stale branch blocking", "Ensure all stories in
+    # sprint backlog reach accepted stage before sprint finalization").
+    # These generalize the imperative "do X before/promptly during Y"
+    # process-gating shape those share, rather than overfitting to their
+    # exact wording.
+    "before starting", "before story implementation", "finalization",
+    "promptly", "stale branch",
 )
 _ROLE_NAMES_FOR_BEHAVIOR_SIGNAL = (
     "devteam", "dev team", "architect", "qa", "scrummaster", "scrum master",
