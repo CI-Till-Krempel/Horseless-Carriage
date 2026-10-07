@@ -18,6 +18,7 @@ from agents.scrum_team.scripts.run_eval_analysis import (
     _collect_general_blockers,
     _render_blockers_section,
     _render_stopped_early_callout,
+    _sprint_metrics_table,
 )
 
 _BASE_MANIFEST = {
@@ -139,6 +140,38 @@ class TestKpiTimeSeries:
         assert series["Say-Do Ratio"] == [(1, 0.8)]
         assert series["Quality (defect escape rate)"] == [(1, 0.05)]
         assert series["Test Coverage"] == [(1, 0.72)]
+
+
+class TestSprintMetricsTable:
+    """GH issue #379: a real run (0.1.0-run47) had the table claim 'Sprint
+    Report? yes' for every sprint even though 4 of 5 were the mechanically-
+    rendered budget-exhaustion fallback stub, not a real Product Owner
+    report - hiding exactly the distinction a reader would want."""
+
+    def test_no_report_reads_no(self):
+        manifest = {"sprints": [{"sprint_number": 1, "sprint_backlog": []}]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | n/a | 0 | no | 0/0 |" in table
+
+    def test_real_report_reads_yes(self):
+        manifest = {"sprints": [{
+            "sprint_number": 1, "sprint_backlog": [],
+            "sprint_report": "# Sprint Review Report\n\nShipped the login flow.",
+        }]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | n/a | 0 | yes | 0/0 |" in table
+
+    def test_fallback_report_reads_fallback_not_yes(self):
+        manifest = {"sprints": [{
+            "sprint_number": 1, "sprint_backlog": [],
+            "sprint_report": (
+                "# Sprint Review Report\n\n"
+                "## Mechanically-Rendered Report (Budget Used in Full)\n"
+                "This sprint's token/USD budget was used in full..."
+            ),
+        }]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | n/a | 0 | fallback | 0/0 |" in table
 
 
 class TestRenderKpiGraphs:

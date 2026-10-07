@@ -563,6 +563,13 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
     with no sprint report attached at all because the sprint ran out of
     budget before anything ever pushed one.
 
+    Also attempts create_release_pr itself (GH issue #379) once the report
+    is committed - guaranteeing a report but never trying to release it
+    just moves the "nothing merged" failure one step later, as a real run
+    (0.1.0-run47) showed: 4 of 5 sprints hit this exact safety net and NONE
+    of them got a release PR, since Product Owner never got a turn to open
+    one either. See that call's own best-effort framing below.
+
     Also lands everything else the grace period itself produced, via
     integrate_open_changes (tools/github.py) - not just the report. A
     second real incident: by the time THIS safety net fires (only after
@@ -616,6 +623,26 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
                 allow_protected=True,
                 tool_context=callback_context,
             )
+
+        # GH issue #379: this safety net already guarantees a sprint report
+        # always exists, but a real run (0.1.0-run47) showed that wasn't
+        # enough - every budget-exhausted sprint (4 of 5) still had NO
+        # release PR at all, because nothing after this point ever calls
+        # create_release_pr for it; Product Owner simply never got a turn
+        # to. Best-effort, same as everything else here: if this interaction
+        # level requires a fresh pre-release human approval that isn't
+        # available mechanically, or develop/main are already in sync,
+        # create_release_pr just errors and sprint_report_pending_release
+        # stays set for a future sprint to clear, exactly like today.
+        create_release_pr(
+            title=f"Sprint {callback_context.state.get('sprint_number', '?')}: budget-exhaustion close-out",
+            body=(
+                "Mechanically-triggered release PR - this sprint's token/USD budget (including its "
+                "grace allowance) ran out before Product Owner's own create_release_pr call could "
+                "run. See the sprint report for what was actually accomplished this sprint."
+            ),
+            tool_context=callback_context,
+        )
     except Exception as e:
         logging.getLogger(__name__).warning(f"Sprint report safety net on budget exhaustion failed (non-fatal): {e}")
 

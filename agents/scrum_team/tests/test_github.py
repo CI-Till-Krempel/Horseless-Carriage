@@ -1830,11 +1830,12 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         self.assertIn("start_sprint", result["message"])
         mock_run.assert_not_called()
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
-    def test_happy_path_opens_and_merges_against_develop(self, mock_run, mock_git_push, mock_gh_pr_create):
+    def test_happy_path_opens_and_merges_against_develop(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
         mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
         tool_context = MagicMock()
         tool_context.state = {
@@ -1850,7 +1851,7 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         self.assertEqual(result["sprint_number"], 3)
         self.assertEqual(result["branch"], "sprint-backlog/3")
         mock_git_push.assert_called_once_with(
-            branch="sprint-backlog/3", commit_message="chore: sprint 3 backlog", tool_context=tool_context,
+            branch="sprint-backlog/3", commit_message="chore: sprint 3 backlog", add_all=False, tool_context=tool_context,
         )
         mock_gh_pr_create.assert_called_once_with(
             title="Sprint Backlog #3",
@@ -1871,11 +1872,12 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         # capacity advisory from, so it's simply absent, not an error.
         self.assertNotIn("capacity_advisory", result)
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
-    def test_snapshots_engagement_baseline_on_the_first_merge_this_sprint(self, mock_run, mock_git_push, mock_gh_pr_create):
+    def test_snapshots_engagement_baseline_on_the_first_merge_this_sprint(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
         """GH issue #357: start_feature_branch's team-engagement gate needs a
         fresh-this-sprint baseline - take it the moment this sprint's Sprint
         Backlog PR first merges, from whatever pr_review_calls holds then."""
@@ -1896,11 +1898,12 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             {"Architect": 2, "QA": 1},
         )
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
-    def test_does_not_resnapshot_the_baseline_on_a_second_merge_the_same_sprint(self, mock_run, mock_git_push, mock_gh_pr_create):
+    def test_does_not_resnapshot_the_baseline_on_a_second_merge_the_same_sprint(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
         """A second create_sprint_backlog_pr call the same sprint (e.g. PO
         adding more stories) shouldn't erase the baseline already taken -
         otherwise engagement a role already gave on the first merge would be
@@ -1924,11 +1927,12 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             {"Architect": 1, "DevTeam": 1, "QA": 1},
         )
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
-    def test_surfaces_capacity_advisory_when_backlog_is_undersized(self, mock_run, mock_git_push, mock_gh_pr_create):
+    def test_surfaces_capacity_advisory_when_backlog_is_undersized(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
         """GH issue #294: a non-blocking nudge when the committed backlog
         looks clearly under-sized relative to the sprint's token budget."""
         mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
@@ -1959,10 +1963,39 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("develop", result["message"])
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": False, "message": "No open planning-doc changes under specs/ or .hc/ to integrate."})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_refuses_when_there_is_no_new_planning_output_to_publish(self, mock_run, mock_git_push, mock_integrate):
+        """
+        GH issue #379: this used to call git_push with its default
+        add_all=True ("git add -A"), which staged whichever pending writes
+        happened to be sitting in the shared checkout at that moment -
+        including, in a real run, another story's not-yet-committed spec
+        file - and git_push's own --allow-empty fallback meant even
+        genuinely NOTHING new still silently opened/merged a content-free
+        PR. Scoped to specs/+.hc/ via integrate_open_changes now, this must
+        refuse outright instead of publishing an empty "Sprint Backlog" PR.
+        """
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY,
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("no new planning output", result["message"])
+        mock_git_push.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.git_push", return_value={"status": "error", "branch": "sprint-backlog/1"})
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
-    def test_reports_error_when_push_fails(self, mock_run, mock_git_push):
+    def test_reports_error_when_push_fails(self, mock_run, mock_git_push, mock_integrate):
         tool_context = MagicMock()
         tool_context.state = {"sprint_number": 1, "product_backlog": _ONE_READY_STORY}
 
@@ -1971,11 +2004,12 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("push", result["message"].lower())
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "error", "stderr": "already exists"})
     @patch("agents.scrum_team.tools.github.git_push", return_value={"status": "ok", "branch": "sprint-backlog/1"})
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
-    def test_reports_error_when_pr_create_fails(self, mock_run, mock_git_push, mock_gh_pr_create):
+    def test_reports_error_when_pr_create_fails(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
         tool_context = MagicMock()
         tool_context.state = {"sprint_number": 1, "product_backlog": _ONE_READY_STORY}
 
@@ -2009,11 +2043,12 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         self.assertIn("advance_story_stage", result["message"])
         mock_run.assert_not_called()
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
-    def test_proceeds_once_the_must_issue_has_reached_ready(self, mock_run, mock_git_push, mock_gh_pr_create):
+    def test_proceeds_once_the_must_issue_has_reached_ready(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
         mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
         tool_context = MagicMock()
         tool_context.state = {
@@ -2028,11 +2063,12 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
-    def test_does_not_block_on_a_blocked_must_issue(self, mock_run, mock_git_push, mock_gh_pr_create):
+    def test_does_not_block_on_a_blocked_must_issue(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
         """A genuinely BLOCKED issue (raise_story_blocker) has its own
         separate escalation path - this guardrail must not additionally
         wedge Sprint Planning on something already flagged as blocked."""
@@ -2056,11 +2092,12 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
-    def test_does_not_block_on_a_reprioritized_issue(self, mock_run, mock_git_push, mock_gh_pr_create):
+    def test_does_not_block_on_a_reprioritized_issue(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
         """set_priority(..., away from 'Must') is the explicit escape hatch
         the error message offers - once used, this guardrail must stand
         down for that item."""
