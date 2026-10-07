@@ -942,6 +942,7 @@ class TestStartFeatureBranch(unittest.TestCase):
             "sprint_backlog_pr_sprint": 1,
             "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
             "product_backlog": [{"id": "US-1", "title": "Add Login!"}],
+            "sprint_backlog": [{"id": "US-1", "title": "Add Login!"}],
         }
 
         result = start_feature_branch("US-1", "Add Login!", tool_context=tool_context)
@@ -975,6 +976,7 @@ class TestStartFeatureBranch(unittest.TestCase):
             "sprint_backlog_pr_sprint": 1,
             "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
             "product_backlog": [{"id": "US-2", "title": "A Messy Slug!! Here??"}],
+            "sprint_backlog": [{"id": "US-2", "title": "A Messy Slug!! Here??"}],
         }
 
         result = start_feature_branch("US-2", "A Messy Slug!! Here??", tool_context=tool_context)
@@ -993,6 +995,7 @@ class TestStartFeatureBranch(unittest.TestCase):
             "sprint_backlog_pr_sprint": 1,
             "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
             "product_backlog": [{"id": "US-3", "title": "broken"}],
+            "sprint_backlog": [{"id": "US-3", "title": "broken"}],
         }
 
         result = start_feature_branch("US-3", "broken", tool_context=tool_context)
@@ -1031,6 +1034,7 @@ class TestStartFeatureBranch(unittest.TestCase):
             "sprint_backlog_pr_sprint": 1,
             "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
             "product_backlog": [{"id": "US-4", "title": "Resume Work"}],
+            "sprint_backlog": [{"id": "US-4", "title": "Resume Work"}],
         }
 
         result = start_feature_branch("US-4", "Resume Work", tool_context=tool_context)
@@ -1055,6 +1059,11 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
             "sprint_number": 1,
             "sprint_backlog_pr_sprint": 1,
             "product_backlog": product_backlog,
+            # GH issue #378's planning gate also runs in start_feature_branch,
+            # before the ordering gate - every item here is already "planned"
+            # by default so this class's tests stay focused on the ordering
+            # gate specifically.
+            "sprint_backlog": [{"id": item.get("id"), "title": item.get("title")} for item in product_backlog],
             # GH issue #357's team-engagement gate also runs in
             # start_feature_branch - satisfy it by default here so this
             # class's tests stay focused on the ordering gate specifically.
@@ -1170,6 +1179,72 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
 
 
+class TestStartFeatureBranchPlanningGate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #378): a real run (0.1.0-run47) never
+    called plan_sprint_backlog_item a single time across 5 whole sprints -
+    nothing stopped start_feature_branch from beginning work on a story
+    that was never actually planned into the sprint, which is also why
+    sprint_backlog (and every KPI sourced from it) stayed permanently empty.
+    """
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_refuses_to_start_a_story_never_planned_into_the_sprint(self, mock_run):
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "product_backlog": [{"id": "US-0001", "title": "Add login"}],
+            "sprint_backlog": [],
+            "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
+        }
+
+        result = start_feature_branch("US-0001", "add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("plan_sprint_backlog_item", result["message"])
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_allows_starting_once_planned_by_id(self, mock_run, mock_git_push, mock_gh_pr_create):
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0001-add-login"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "product_backlog": [{"id": "US-0001", "title": "Add login"}],
+            "sprint_backlog": [{"id": "US-0001", "title": "Add login", "estimate": 5}],
+            "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
+        }
+
+        result = start_feature_branch("US-0001", "add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_allows_starting_once_planned_by_title_when_called_without_an_id(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """A story looked up by title (no id assigned yet) must match the
+        same way plan_sprint_backlog_item itself matches sprint_backlog
+        entries (see its own title-or-id lookup)."""
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/Add-login-add-login"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "product_backlog": [{"title": "Add login"}],
+            "sprint_backlog": [{"title": "Add login", "estimate": 5}],
+            "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
+        }
+
+        result = start_feature_branch("Add login", "add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+
 class TestStartFeatureBranchBlockedStoryGate(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #359): a story marked BLOCKED
@@ -1190,6 +1265,7 @@ class TestStartFeatureBranchBlockedStoryGate(unittest.TestCase):
                 "id": "US-0001", "title": "Add login",
                 "blocked": {"category": "technical", "question": "which auth library?", "raised_by": "DevTeam"},
             }],
+            "sprint_backlog": [{"id": "US-0001", "title": "Add login"}],
         }
 
         result = start_feature_branch("US-0001", "add-login", tool_context=tool_context)
@@ -1209,6 +1285,7 @@ class TestStartFeatureBranchBlockedStoryGate(unittest.TestCase):
             "sprint_number": 1,
             "sprint_backlog_pr_sprint": 1,
             "product_backlog": [{"id": "US-0001", "title": "Add login", "blocked": None}],
+            "sprint_backlog": [{"id": "US-0001", "title": "Add login"}],
             # GH issue #357's team-engagement gate also runs in
             # start_feature_branch, after this one - satisfy it here so
             # this test stays focused on the blocked-story gate specifically.
@@ -1230,6 +1307,10 @@ class TestStartFeatureBranchBlockedStoryGate(unittest.TestCase):
             "sprint_backlog_pr_sprint": 1,
             "product_backlog": [
                 {"id": "US-0001", "title": "Add login", "blocked": {"category": "technical", "question": "why?"}},
+                {"id": "US-0002", "title": "Add logout"},
+            ],
+            "sprint_backlog": [
+                {"id": "US-0001", "title": "Add login"},
                 {"id": "US-0002", "title": "Add logout"},
             ],
             "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
@@ -1258,6 +1339,7 @@ class TestStartFeatureBranchTeamEngagementGate(unittest.TestCase):
             # single, non-blocked-story backlog satisfies both trivially,
             # keeping this class focused on the engagement gate specifically.
             "product_backlog": [{"id": "US-1", "title": "add-login"}],
+            "sprint_backlog": [{"id": "US-1", "title": "add-login"}],
             "pr_review_calls": {},
             "sprint_backlog_engagement_baseline": {},
         }

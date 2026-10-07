@@ -42,7 +42,7 @@ from agents.scrum_team.tools.requirements import (
 from agents.scrum_team.tools.docs import upsert_prd, write_file
 from agents.scrum_team.tools.requirements import update_roadmap
 from agents.scrum_team.tools.budget import log_story_tokens
-from agents.scrum_team.tools.scrum import start_sprint
+from agents.scrum_team.tools.scrum import start_sprint, plan_sprint_backlog_item
 from agents.scrum_team.tools.github import (
     start_feature_branch, git_push, mark_pr_ready_for_review,
     gh_pr_comment, gh_pr_review, merge_story_pr, create_sprint_backlog_pr,
@@ -155,6 +155,12 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
     def _draft_to_ready(self, tc, story_id):
         self.assertEqual(advance_story_stage(story_id, "Draft", tool_context=tc)["status"], "ok")
         self.assertEqual(advance_story_stage(story_id, "Ready", tool_context=tc)["status"], "ok")
+        # GH issue #378: start_feature_branch mechanically refuses a story
+        # that was never planned into this sprint's sprint_backlog.
+        _as(tc, "DevTeam")
+        self.assertEqual(
+            plan_sprint_backlog_item(story_id, {"estimate": 5}, tool_context=tc)["status"], "ok"
+        )
         self._publish_sprint_backlog(tc)
 
     def _implement(self, tc, story_id, slug="add-login", source_path="src/app.py", content="def login(): ..."):
