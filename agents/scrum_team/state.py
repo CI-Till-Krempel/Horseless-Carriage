@@ -116,3 +116,12 @@ class ScrumState(BaseModel):
     # discuss, not just silently let the report's "Open Questions for
     # Stakeholder" section note it exists again.
     blocked_story_ids_as_of_last_report: List[str] = Field(default_factory=list)
+    # GH issue #390: snapshot of how many non-Epic product_backlog items had
+    # reached Accepted as of the last successful create_sprint_report close -
+    # compared against the current count to tell "this sprint genuinely
+    # delivered something new" apart from a generically positive narrative
+    # ("completed successfully", "sign-off", ...) with nothing concrete
+    # behind it. Non-blocking nudge only - see create_sprint_report's own
+    # comment for why this isn't a hard gate like the specific-story-ID
+    # overclaim check right above it.
+    accepted_count_baseline: int = 0

@@ -909,6 +909,22 @@ commit, push) only once none remain. Safe to call repeatedly as resolution progr
 time. Added to DevTeam's tool list, with `DevTeam-workflow.md` guidance pointing here instead of the
 "recreate the PR from scratch" workaround the team had converged on.
 
+### Non-blocking nudge for sprint reports with a generic success narrative but nothing new Accepted (GH issue #390)
+
+A real eval run (0.1.0-run48) produced sprint reports claiming "Sprint 3 completed successfully with
+backlog refinement", "Sprint 4 executed successfully with... robustness verification", and "Completed
+final sprint review, quality validation, and release sign-off for Sprint 5" - despite zero stories
+reaching Accepted any of those sprints. `create_sprint_report`'s existing overclaim check only catches a
+claim that names a SPECIFIC story ID not yet Accepted - generic success narrative naming no story at all
+sailed through unchecked.
+
+`create_sprint_report` now adds a non-blocking warning (not a hard rejection, unlike the specific-story
+check - "sounds too positive" is a fuzzy signal that could false-positive on a genuinely good, truthfully-
+worded sprint) when the summary/accomplishments contain generic success phrasing ("completed
+successfully", "sign-off", "finalized", ...) and no story reached Accepted that wasn't already Accepted
+before this sprint (tracked via a new `accepted_count_baseline`, same "must be NEW since last report"
+pattern as `retro_baseline`/`kpi_baseline`).
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
