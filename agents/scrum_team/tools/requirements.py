@@ -1677,6 +1677,44 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "logged yet. Call log_story_tokens(title_or_id, actual_tokens) first."
                 ),
             })
+        # GH issue #380: nothing previously required CI to actually be
+        # checked before a story could be marked Implemented at all -
+        # gh_pr_checks only ever gated mark_pr_ready_for_review, which
+        # happens AFTER. Same freshness pattern as check_build's
+        # dependency_manifest_write_count check right below Tested: a result
+        # recorded before this story's last feature-branch push doesn't
+        # count, since a later push could easily have broken what that
+        # result actually verified.
+        last_checks = s.get("last_pr_checks")
+        if not is_spike:
+            if not last_checks:
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Implemented - gh_pr_checks() hasn't been called "
+                        "yet for this story's PR. Call it first."
+                    ),
+                })
+            if last_checks.get("passing") is False:
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Implemented - the last gh_pr_checks() result was "
+                        "not passing. Fix the failing/pending checks and call gh_pr_checks() again "
+                        "until it passes before retrying."
+                    ),
+                })
+            current_push_count = s.get("git_push_count", 0)
+            checked_push_count = last_checks.get("git_push_count_at_check", 0)
+            if current_push_count > checked_push_count:
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Implemented - a feature-branch push happened "
+                        "since the last gh_pr_checks() result. Call gh_pr_checks() again against the "
+                        "current push before retrying - the passing result on file is stale."
+                    ),
+                })
     elif stage == "Reviewed":
         pr_calls = s.get("pr_review_calls", {}) or {}
         architect_review_count = pr_calls.get("Architect", 0)

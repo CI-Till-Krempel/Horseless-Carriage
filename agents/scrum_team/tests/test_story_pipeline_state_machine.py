@@ -45,7 +45,7 @@ from agents.scrum_team.tools.budget import log_story_tokens
 from agents.scrum_team.tools.scrum import start_sprint, plan_sprint_backlog_item
 from agents.scrum_team.tools.github import (
     start_feature_branch, git_push, mark_pr_ready_for_review,
-    gh_pr_comment, gh_pr_review, merge_story_pr, create_sprint_backlog_pr,
+    gh_pr_comment, gh_pr_review, gh_pr_checks, merge_story_pr, create_sprint_backlog_pr,
 )
 from agents.scrum_team.tools.quality import check_build
 
@@ -171,8 +171,11 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         self.assertEqual(write_file(source_path, content, overwrite=True, tool_context=tc)["status"], "ok")
         self.assertEqual(log_story_tokens(story_id, 1234, tool_context=tc)["status"], "ok")
         self.assertEqual(git_push(branch=branch, commit_message="feat: add login", tool_context=tc)["status"], "ok")
-        self.assertEqual(mark_pr_ready_for_review(tool_context=tc)["status"], "ok")
+        # GH issue #380: advance_story_stage's Implemented-stage gate now
+        # requires a fresh, passing gh_pr_checks() result since this push.
+        self.assertTrue(gh_pr_checks(tool_context=tc)["passing"])
         self.assertEqual(advance_story_stage(story_id, "Implemented", tool_context=tc)["status"], "ok")
+        self.assertEqual(mark_pr_ready_for_review(tool_context=tc)["status"], "ok")
         return branch
 
     def _dev_pushes_a_fix(self, tc, branch, content="def login(): ...  # fixed"):
@@ -365,5 +368,6 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         _as(tc, "DevTeam")
         self.assertEqual(write_file("src/app.py", "def login(): ...", overwrite=True, tool_context=tc)["status"], "ok")
         self.assertEqual(log_story_tokens(story_a, 500, tool_context=tc)["status"], "ok")
+        self.assertTrue(gh_pr_checks(tool_context=tc)["passing"])
         result = advance_story_stage(story_a, "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")

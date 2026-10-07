@@ -851,6 +851,23 @@ same pattern `create_release_pr` already uses for exactly this reason) instead o
 refuses outright with a clear message if there's genuinely no new planning output to publish,
 instead of leaning on git_push's generic empty-commit fallback.
 
+### advance_story_stage(Implemented) now requires a fresh, passing gh_pr_checks() result (GH issue #380)
+
+`gh_pr_checks` only ever gated `mark_pr_ready_for_review`, which happens *after* a story is already
+marked Implemented - nothing anywhere actually required CI to be checked before that transition
+itself, despite `DevTeam-workflow.md`'s own prose already saying to do so.
+
+`gh_pr_checks` now stamps `last_pr_checks` (passing/failing, and the `git_push_count` at the moment
+it ran) every time it's called - the same "last tool result, snapshot the staleness counter"
+pattern `check_build`'s `last_check_build`/`dependency_manifest_write_count` already uses for the
+Tested gate. `git_push` (the agent-facing tool) bumps `git_push_count` on every successful push to a
+feature branch (not sprint-backlog/release pushes, which don't touch a story's own code).
+`advance_story_stage`'s Implemented-stage gate now refuses outright if `gh_pr_checks()` was never
+called, its last result wasn't passing, or a feature-branch push happened since that passing result
+(stale - CI needs rechecking). Spike stories (no code, no PR) are exempt, same as the existing
+source-file-write gate. `DevTeam-workflow.md`'s "Typical flow" reordered to call `gh_pr_checks()`
+before `advance_story_stage(..., "Implemented")`, not after.
+
 ### DevTeam can actually resolve a real git merge conflict (GH issue #382)
 
 A real eval run (0.1.0-run47) hit a genuine merge conflict on a story's feature-branch PR -

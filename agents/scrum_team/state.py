@@ -56,7 +56,20 @@ class ScrumState(BaseModel):
     # persistence to .hc/state.json.
     unadvanced_write_nudge_baseline: int = 0
     last_check_build: Optional[Dict[str, Any]] = None
+    # GH issue #380: same "last tool result" pattern as last_check_build,
+    # stamped by gh_pr_checks every time it's called - advance_story_stage's
+    # Implemented-stage gate requires a fresh (post-git_push_count) passing
+    # result here before letting a story advance.
+    last_pr_checks: Optional[Dict[str, Any]] = None
     dependency_manifest_write_count: int = 0
+    # GH issue #380: bumped by the agent-facing git_push tool (not internal-
+    # only _git_push_impl callers like report-landing/roadmap-sync, which
+    # don't touch a story's own feature branch) every successful push -
+    # gh_pr_checks snapshots this into last_pr_checks so a LATER push after
+    # the last passing check can be told apart from one that's still fresh,
+    # the same staleness pattern dependency_manifest_write_count already
+    # uses for check_build.
+    git_push_count: int = 0
     pr_review_calls: Dict[str, int] = Field(default_factory=dict)
     architect_review_baseline: int = 0
     qa_review_baseline: int = 0
