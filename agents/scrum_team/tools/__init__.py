@@ -51,6 +51,7 @@ from .github import (
     create_story_spec_pr,
     mark_pr_ready_for_review,
     merge_story_pr,
+    resolve_feature_branch_conflicts,
     integrate_open_changes,
 )
 from .docs import (

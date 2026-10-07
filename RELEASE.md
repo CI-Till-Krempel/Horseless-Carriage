@@ -800,6 +800,26 @@ the real one still counts as real dev progress toward the Implemented-stage touc
 Added to DevTeam's and Architect's tool lists (the two roles that already have `write_file`), with
 prompt guidance in `DevTeam-workflow.md` to reach for it instead of narrating a no-op removal.
 
+### DevTeam can actually resolve a real git merge conflict (GH issue #382)
+
+A real eval run (0.1.0-run47) hit a genuine merge conflict on a story's feature-branch PR -
+`merge_story_pr` reported "not mergeable" 5 times in a row. Each time, DevTeam's only response was
+re-running `git_push`, which only ever re-fetches/re-pushes the *same* branch - it never runs `git
+merge`/rebase against `develop`, so nothing about the actual conflict ever changed. The team
+eventually gave up and recreated the PR from scratch, re-implementing the same story on a fresh
+branch - survivable only because that story's diff happened to be small.
+
+`resolve_feature_branch_conflicts(story_id)` (`agents/scrum_team/tools/github.py`) gives DevTeam a
+real fix: it merges the current `develop` into the story's feature branch
+(`active_feature_branches[story_id]`, set by `start_feature_branch`). With no real conflict, it
+commits and pushes immediately. With one, it returns each conflicted file's actual on-disk content -
+including git's own `<<<<<<</=======/>>>>>>>` markers - so DevTeam can resolve it via `write_file`
+(replacing the marked section with the real merged content) and call the tool again; it tracks which
+files still have marker lines left versus which are already clean, and finishes the merge (stage,
+commit, push) only once none remain. Safe to call repeatedly as resolution progresses one file at a
+time. Added to DevTeam's tool list, with `DevTeam-workflow.md` guidance pointing here instead of the
+"recreate the PR from scratch" workaround the team had converged on.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
