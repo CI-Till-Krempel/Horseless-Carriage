@@ -695,6 +695,83 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_two_unresolved_role_behavior_findings_filed_as_technical(self, mock_write_file, mock_getenv):
+        """
+        GH issue #381: a real run (0.1.0-run47) never once assigned
+        category='steering', despite ScrumMaster being nudged at filing time
+        that several of its 'technical' findings read like role-behavior/
+        process-discipline gaps - so the steering gate right above never got
+        a chance to fire. 2+ open 'technical' findings that still read this
+        way, with no steering proposal since the last report, is the
+        backstop for when that nudge keeps getting ignored.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure automated tests are fully stable before starting sprint test execution phases",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+            {
+                "action": "Ensure all stories in sprint backlog reach accepted stage before sprint finalization",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_steering_change", result["message"])
+        self.assertIn("category='technical'", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_one_unresolved_role_behavior_finding_does_not_trip_the_gate(self, mock_write_file, mock_getenv):
+        """A single occurrence could still be a false positive (the
+        heuristic's own design tolerates those) - only 2+ escalates."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure automated tests are fully stable before starting sprint test execution phases",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_succeeds_once_steering_change_proposed_for_role_behavior_findings(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure automated tests are fully stable before starting sprint test execution phases",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+            {
+                "action": "Ensure all stories in sprint backlog reach accepted stage before sprint finalization",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["steering_proposal_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_rejects_a_blocker_unresolved_across_a_full_sprint_with_no_retro_mention(self, mock_write_file, mock_getenv):
         """GH issue #359: a story still BLOCKED now, that was ALSO already
         BLOCKED as of the last report, must actually be discussed in the

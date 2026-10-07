@@ -800,6 +800,27 @@ the real one still counts as real dev progress toward the Implemented-stage touc
 Added to DevTeam's and Architect's tool lists (the two roles that already have `write_file`), with
 prompt guidance in `DevTeam-workflow.md` to reach for it instead of narrating a no-op removal.
 
+### Role-behavior retro findings filed as "technical" get a broader nudge, and a real backstop (GH issue #381)
+
+A real run (0.1.0-run47) filed 4 of 5 retro/impediment findings as category `"technical"` despite
+reading as team-process reminders, not one-time code tasks - `propose_steering_change` was called
+zero times across all 5 sprints. Two causes: `looks_like_role_behavior_finding`'s keyword heuristic
+missed 3 of those 4 (none contained the exact matched phrases or a role name); and even the one it
+did catch was just a non-blocking warning on the `add_retro_action` response, which ScrumMaster
+could (and did) simply ignore - `create_sprint_report`'s own real backstop only ever fires once a
+finding is actually categorized `"steering"`, which never happened.
+
+Broadened `_ROLE_BEHAVIOR_SIGNAL_PHRASES` (`agents/scrum_team/helpers.py`) with the process-gating
+shape ("before starting", "promptly", "finalization", etc.) those 3 misses shared, without
+overfitting to their exact wording - a genuine one-off technical nitpick phrased as an imperative
+("Ensure test assertions use dynamic IDs correctly...") stays unflagged. `create_sprint_report`
+(`tools/budget.py`) now also blocks sprint close if 2+ *open* `"technical"` findings still read as
+role-behavior gaps with no `propose_steering_change` call since the last report - the same
+mandatory-backstop pattern already used for a correctly-categorized `"steering"` finding, extended
+to the case where the categorization itself never happened. A single match still isn't enough to
+block (the heuristic's own design tolerates an occasional false positive) - only a recurring,
+ignored pattern is.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

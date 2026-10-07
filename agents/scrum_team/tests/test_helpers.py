@@ -265,6 +265,26 @@ class TestLooksLikeRoleBehaviorFinding(unittest.TestCase):
     def test_non_string_input_is_not_flagged(self):
         self.assertFalse(looks_like_role_behavior_finding(None))
 
+    def test_flags_process_gating_findings_the_original_phrase_list_missed(self):
+        """GH issue #381: a real run (0.1.0-run47) filed these 3 of 5 retro
+        findings as 'technical' despite reading as team-process reminders -
+        none matched the original phrase list or a role name."""
+        for text in (
+            "Ensure automated tests are fully stable before starting sprint test execution phases",
+            "Recreate clean PRs promptly when merge conflicts arise to avoid stale branch blocking",
+            "Ensure all stories in sprint backlog reach accepted stage before sprint finalization",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(looks_like_role_behavior_finding(text))
+
+    def test_does_not_flag_a_one_off_technical_nitpick(self):
+        """A concrete, one-time code-quality instruction - not a recurring
+        process/behavior gap - should stay unflagged even though it's
+        phrased as an imperative, same as test_does_not_flag_a_genuine_code_task."""
+        self.assertFalse(looks_like_role_behavior_finding(
+            "Ensure test assertions use dynamic IDs correctly from created objects"
+        ))
+
 
 class TestRecurringTechnicalFindingSprint(unittest.TestCase):
     """GH issue #354: detects a "technical" finding recurring from an

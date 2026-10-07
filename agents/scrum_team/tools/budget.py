@@ -13,6 +13,7 @@ from ..helpers import (
     required_pre_implementation_approval,
     report_detail_level,
     get_env_with_deprecated_fallback,
+    looks_like_role_behavior_finding,
 )
 
 # GH issue #298: below this many tokens, "$0 spend" is indistinguishable
@@ -1078,6 +1079,39 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                 "with no fresh propose_steering_change call since the last sprint report. Transfer "
                 "to Scrum Master to call propose_steering_change(role, new_content, rationale) for "
                 "it first, then retry create_sprint_report. This is mandatory, not optional."
+            ),
+        }
+
+    # GH issue #381: the check above only ever fires once a finding is
+    # actually categorized "steering" - a real run (0.1.0-run47) never
+    # assigned that category a single time across 5 sprints, despite
+    # ScrumMaster being nudged at filing time (_technical_category_nudge)
+    # that several of its "technical" findings read like role-behavior/
+    # process-discipline gaps every single time. That nudge is deliberately
+    # non-blocking at filing time (a false positive there costs nothing) -
+    # this is the backstop for when it keeps getting ignored: 2+ open
+    # "technical" findings that still read this way, with no steering
+    # proposal since the last report, is no longer "maybe a false positive",
+    # it's a pattern nobody has acted on.
+    unresolved_role_behavior_findings = [
+        e for e in list(retro) + list(impediments)
+        if e.get("category") == "technical" and e.get("status", "open") == "open"
+        and looks_like_role_behavior_finding(e.get("action") or e.get("description") or "")
+    ]
+    if len(unresolved_role_behavior_findings) >= 2 and s.get("steering_proposal_count", 0) <= s.get("steering_baseline", 0):
+        examples = "; ".join(
+            (e.get("action") or e.get("description") or "")[:80]
+            for e in unresolved_role_behavior_findings[:2]
+        )
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot close the sprint report: {len(unresolved_role_behavior_findings)} retro/"
+                f"impediment findings read like role-behavior/process-discipline gaps (e.g. "
+                f"{examples}) but are filed as category='technical', with no propose_steering_change "
+                "call since the last sprint report. Transfer to Scrum Master to call "
+                "propose_steering_change(role, new_content, rationale) for the recurring behavior "
+                "these point at, then retry create_sprint_report. This is mandatory, not optional."
             ),
         }
 
