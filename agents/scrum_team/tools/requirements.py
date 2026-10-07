@@ -1952,6 +1952,69 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
         "story_markdown": story_md_result,
         "roadmap_sync": roadmap_result,
     }
+
+    # GH issue #383: save_state_to_repo's own commit (_checkpoint_state_commit)
+    # is a deliberately LOCAL-ONLY safety net - it lands on whatever branch
+    # happens to be checked out at this exact moment. A real eval run
+    # (0.1.0-run48) showed exactly why that's not enough on its own: nothing
+    # previously pushed this commit anywhere, and the working tree routinely
+    # switches branches again later in the same sprint (QA's merge_story_pr,
+    # the next story's start_feature_branch, ...) - a local-only commit left
+    # behind on an abandoned branch is simply gone. US-0001's Tested/Accepted
+    # stages vanished from state between sprints this exact way, which then
+    # permanently blocked every later story via the one-story-at-a-time
+    # ordering gate. Pushing here, as part of this same atomic call - not a
+    # separate git_push the calling role has to remember - closes that gap
+    # at the only place that can reliably catch it: the moment the stage
+    # genuinely changes.
+    #
+    # Target branch depends on where this story's own work actually lives:
+    # Implemented/Reviewed/Tested still have an open feature-branch PR (QA's
+    # merge_story_pr, right after Tested, carries this same push's commit
+    # into develop as part of that same merge) - Accepted happens after that
+    # merge already landed, so it pushes straight to develop instead. Draft/
+    # Ready are deliberately left alone: they're Product Owner's own
+    # planning-doc edits, already covered by create_sprint_backlog_pr's own
+    # commit+push sweep - pushing them here too would land ad-hoc commits on
+    # develop ahead of (and bypassing) that reviewable sprint-backlog PR.
+    if synced:
+        push_target = None
+        allow_protected = False
+        if stage == "Accepted":
+            from .github import _develop_branch_name
+            push_target = _develop_branch_name(tool_context)
+            allow_protected = True
+        elif stage in ("Implemented", "Reviewed", "Tested"):
+            push_target = (s.get("active_feature_branches") or {}).get(story_id)
+
+        if push_target:
+            from .github import integrate_open_changes, _git_push_impl, _checkout_with_auto_integrate
+            repo_root = str(_configured_repo_root(tool_context))
+            checkout_res, _auto_integrated = _checkout_with_auto_integrate(
+                ["git", "checkout", push_target], repo_root, tool_context=tool_context
+            )
+            if checkout_res.get("status") == "ok":
+                integrate_open_changes(tool_context=tool_context)
+                push_res = _git_push_impl(
+                    branch=push_target,
+                    commit_message=f"chore: {story_id} -> {stage}",
+                    add_all=False,
+                    allow_protected=allow_protected,
+                    tool_context=tool_context,
+                )
+            else:
+                push_res = {"status": "error", "message": "Could not check out the target branch.", "checkout": checkout_res}
+            result["state_push"] = push_res
+            if push_res.get("status") != "ok":
+                result["status"] = "error"
+                result["message"] = (
+                    f"'{story_id}' is recorded as {stage} in state and specs/ROADMAP.md/story file "
+                    f"are synced locally, but pushing that update to '{push_target}' failed - see "
+                    "state_push for details. Retry so this doesn't silently fall out of sync the next "
+                    "time something switches branches - this exact gap is what caused a real run to "
+                    "permanently lose a story's Tested/Accepted stage between sprints."
+                )
+
     if stub_test_warning:
         result["warning"] = stub_test_warning
     return result
