@@ -1,5 +1,7 @@
 # agents/scrum_team/tests/test_budget.py
 import os
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -23,6 +25,7 @@ from agents.scrum_team.tools.budget import (
     _render_retro_doc,
     _render_steering_doc,
 )
+from agents.scrum_team.tools.scrum import init_scrum_state
 from agents.scrum_team.state import ScrumState
 
 
@@ -1966,6 +1969,87 @@ class TestCreateSprintReportFilesRetroItems(unittest.TestCase):
         self.assertTrue(issue_id)
         self.assertIn(f"filed as {issue_id}", report)
         self.assertTrue(any(item["id"] == issue_id for item in tool_context.state["product_backlog"]))
+
+
+class TestCreateSprintReportPersistsStateToRepo(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #397): a real eval run (0.1.0-run50) showed
+    ProductOwner and ScrumMaster bouncing transfer_to_agent until the loop
+    breaker tripped - root-caused to create_sprint_report/create_release_pr
+    never persisting their retro_baseline/kpi_baseline/
+    sprint_report_pending_release bumps to the repo's .hc/state.json, unlike
+    every other state-mutating tool (advance_story_stage, reset_sprint_budget,
+    ...). A stale on-disk snapshot (e.g. from an advance_story_stage call
+    made between a rejected create_sprint_report attempt and its eventual
+    success) could then get reloaded by a later init_scrum_state() call -
+    clobbering the correctly-advanced in-memory baselines and resurrecting a
+    false sprint_report_step_active() condition (helpers.py) that locks
+    ScrumMaster out of every tool but transfer_to_agent.
+
+    Reproduces the exact failure end to end: create_sprint_report succeeds,
+    then a FRESH tool_context (simulating the next sprint's own
+    init_scrum_state() call reading straight from the repo, as ProductOwner's
+    does at the start of every sprint in the real transcript) must see the
+    already-consumed freshness baselines, not the stale pre-close ones.
+    """
+
+    def setUp(self):
+        self.test_repo = Path("test_repo_create_sprint_report_persistence")
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        self.test_repo.mkdir(exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.test_repo, check=True)
+
+        self.old_internal_path = os.environ.get("INTERNAL_STATE_REPO_PATH")
+        if "INTERNAL_STATE_REPO_PATH" in os.environ:
+            del os.environ["INTERNAL_STATE_REPO_PATH"]
+        os.environ["STATE_REPO_PATH"] = str(self.test_repo.absolute())
+
+    def tearDown(self):
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        if "STATE_REPO_PATH" in os.environ:
+            del os.environ["STATE_REPO_PATH"]
+        if self.old_internal_path:
+            os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_fresh_init_scrum_state_sees_the_just_closed_baselines_not_a_stale_snapshot(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "fix coverage tooling", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+
+        # Simulates the mid-sprint save a real advance_story_stage call makes
+        # while retro/KPIs are already fresh but the report hasn't closed yet
+        # (e.g. after an earlier rejected create_sprint_report attempt) -
+        # exactly the stale snapshot the real run50 failure reloaded later.
+        from agents.scrum_team.tools.scrum import save_state_to_repo
+        save_state_to_repo(tool_context=tool_context)
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+
+        fresh_context = MagicMock()
+        fresh_context.state = {}
+        init_scrum_state(tool_context=fresh_context)
+
+        self.assertEqual(fresh_context.state["retro_baseline"], tool_context.state["retro_baseline"])
+        self.assertEqual(fresh_context.state["kpi_baseline"], tool_context.state["kpi_baseline"])
+        self.assertEqual(
+            fresh_context.state["sprint_report_pending_release"],
+            tool_context.state["sprint_report_pending_release"],
+        )
+        # The actual symptom: with the bug, this would still read as "fresh"
+        # (process_signals/kpi_update_count past a stale, un-persisted
+        # baseline of 0) even though create_sprint_report just consumed it.
+        process_signals = len(fresh_context.state.get("retro_actions", [])) + len(fresh_context.state.get("impediment_log", []))
+        self.assertFalse(process_signals > fresh_context.state["retro_baseline"])
+        self.assertFalse(fresh_context.state["kpi_update_count"] > fresh_context.state["kpi_baseline"])
 
 
 if __name__ == "__main__":

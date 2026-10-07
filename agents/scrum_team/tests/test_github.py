@@ -1,6 +1,9 @@
 # agents/scrum_team/tests/test_github.py
 import os
+import shutil
+import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.tools.github import (
@@ -27,6 +30,7 @@ from agents.scrum_team.tools.github import (
     _preserve_local_only_develop_commits,
     release_pr_still_open,
 )
+from agents.scrum_team.tools.scrum import init_scrum_state
 import agents.scrum_team.tools.github as _github_module
 from agents.scrum_team.state import ScrumState
 
@@ -2360,6 +2364,70 @@ class TestResolveFeatureBranchConflicts(unittest.TestCase):
 
         self.assertEqual(result["status"], "conflict")
         self.assertEqual(list(result["conflicted_files"].keys()), ["app.py"])
+
+
+class TestCreateReleasePrPersistsStateToRepo(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #397): create_release_pr clearing
+    sprint_report_pending_release only ever landed in the live in-memory
+    session state - unlike every other state-mutating tool, it never
+    persisted that to the repo's .hc/state.json. Combined with
+    create_sprint_report's own equivalent gap, a later init_scrum_state()
+    call (it reloads state.json unconditionally whenever present, including
+    at the start of every sprint) could clobber the correctly-cleared value
+    with a stale one, resurrecting a false sprint_report_step_active()
+    condition (helpers.py) that locked ScrumMaster out of every tool but
+    transfer_to_agent - a real eval run (0.1.0-run50) showed exactly this,
+    with ProductOwner and ScrumMaster bouncing transfer_to_agent until the
+    loop breaker tripped.
+    """
+
+    def setUp(self):
+        self.test_repo = Path("test_repo_create_release_pr_persistence")
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        self.test_repo.mkdir(exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.test_repo, check=True)
+
+        self.old_internal_path = os.environ.get("INTERNAL_STATE_REPO_PATH")
+        if "INTERNAL_STATE_REPO_PATH" in os.environ:
+            del os.environ["INTERNAL_STATE_REPO_PATH"]
+        os.environ["STATE_REPO_PATH"] = str(self.test_repo.absolute())
+
+    def tearDown(self):
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        if "STATE_REPO_PATH" in os.environ:
+            del os.environ["STATE_REPO_PATH"]
+        if self.old_internal_path:
+            os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_fresh_init_scrum_state_sees_the_cleared_flag_not_a_stale_snapshot(self, mock_run, mock_gh_pr_create):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["repo"] = {"default_branch": "main", "develop_branch": "develop"}
+        tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        # Simulates a mid-sprint save made while the report was already
+        # closed (sprint_report_pending_release=True) but before the
+        # release PR went out - exactly the window create_release_pr itself
+        # is meant to close.
+        tool_context.state["sprint_report_pending_release"] = True
+        from agents.scrum_team.tools.scrum import save_state_to_repo
+        save_state_to_repo(tool_context=tool_context)
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(tool_context.state["sprint_report_pending_release"])
+
+        fresh_context = MagicMock()
+        fresh_context.state = {}
+        init_scrum_state(tool_context=fresh_context)
+
+        self.assertFalse(fresh_context.state["sprint_report_pending_release"])
 
 
 if __name__ == "__main__":

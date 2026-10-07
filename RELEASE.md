@@ -1007,6 +1007,30 @@ separation of concerns.
 Out of scope for this change (left for a separate future PR): general timeboxing/runaway-task-detection
 nudges for the team, and blocker-surfacing by the root ScrumOrchestrator agent.
 
+### create_sprint_report/create_release_pr now persist state - a stale disk reload was deadlocking Scrum Master and Product Owner (GH issue #397)
+
+The very first eval run after GH issue #395 shipped (0.1.0-run50) showed Product Owner and Scrum Master
+bouncing `transfer_to_agent` back and forth until the loop breaker tripped, in multiple sprints. Root
+cause: `create_sprint_report` and `create_release_pr` never called `save_state_to_repo` on success - unlike
+nearly every other state-mutating tool (`advance_story_stage`, `reset_sprint_budget`, `update_budgets`,
+`log_token_usage`, `log_story_tokens`, `create_sprint_backlog_pr` all do) - so the `retro_baseline`/
+`kpi_baseline`/`sprint_report_pending_release` bumps these two functions make on success only ever landed
+in the live in-memory session state, never on disk.
+
+If an earlier `create_sprint_report` attempt was rejected (a common case - e.g. the overclaim gate) and the
+team went on to do more real work to fix it, `advance_story_stage`'s own `save_state_to_repo` calls along
+the way would commit a stale `.hc/state.json` snapshot: baselines still at their pre-close values, while
+`retro_actions`/`kpi_update_count` were already past them. `init_scrum_state()` reloads `.hc/state.json`
+unconditionally whenever it's present - and runs at the start of every single sprint in the real
+transcript - so it would clobber the correctly-advanced in-memory baselines with that stale snapshot,
+resurrecting a false `sprint_report_step_active()` condition (GH issue #395) that mechanically locks Scrum
+Master out of every tool but `transfer_to_agent`. With nothing new for Product Owner to do in response, the
+two bounced until the loop breaker fired.
+
+Both functions now call `save_state_to_repo` at the exact moment these fields change, matching the
+convention every other close-sequence mutator already follows - disk can no longer drift behind memory for
+them.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
