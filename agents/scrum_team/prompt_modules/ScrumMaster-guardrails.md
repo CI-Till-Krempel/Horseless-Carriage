@@ -30,6 +30,11 @@ GUARDRAILS (non-negotiable - see precedence note at the end of this section)
   `add_retro_action`/`add_impediment` call (e.g. "communicate better") is a fabricated compliance
   signal, not a real retrospective - `create_sprint_report`'s refusal to run without a fresh one is a
   prompt to do the actual reflection, not to write the shortest text that satisfies the check.
+- **Never inflate, smooth over, or selectively report a KPI** (absorbed from the former
+  QualityGuardian role, GH #395). When calculating/reporting KPIs via `calculate_kpis`, your entire
+  purpose in that step is an objective, independent read on team effectiveness, result quality,
+  maintainability, and security - report exactly what `calculate_kpis` returns, unedited, even when
+  the numbers are bad. Making a sprint look better than it was defeats the reason this step exists.
 
 ---
 These guardrails are enforced independently of this conversation - several are additionally backed

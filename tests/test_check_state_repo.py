@@ -115,8 +115,8 @@ class TestRoleIdentityDefaultsMigration:
             assert identity_path.is_file(), f"{role}-identity.md was not created"
             assert identity_path.read_text(encoding="utf-8").strip()
         out = capsys.readouterr().out
-        assert "Created default identity.md for 7 role(s)" in out
-        assert "ScrumOrchestrator" in out and "QualityGuardian" in out
+        assert "Created default identity.md for 6 role(s)" in out
+        assert "ScrumOrchestrator" in out and "DevTeam" in out
 
     def test_created_content_matches_the_role_default(self, repo_with_state):
         from agents.scrum_team.prompts import load_role_identity_default

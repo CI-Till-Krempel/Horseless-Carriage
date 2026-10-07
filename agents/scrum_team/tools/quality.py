@@ -32,7 +32,6 @@ _ROLE_MODEL_KEYS = {
     "DevTeam": "dev",
     "QA": "qa",
     "Architect": "arch",
-    "QualityGuardian": "quality",
 }
 
 

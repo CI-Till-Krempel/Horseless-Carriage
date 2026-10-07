@@ -5,8 +5,7 @@
 <!-- content into specs/reports/STEERING-NNN.md automatically (only when at least one -->
 <!-- propose_steering_change call happened that sprint) - this file is not written to. -->
 
-- Role Targeted: <ProductOwner | ScrumMaster | DevTeam | QA | Architect | QualityGuardian |
-  ScrumOrchestrator>
+- Role Targeted: <ProductOwner | ScrumMaster | DevTeam | QA | Architect | ScrumOrchestrator>
 - Proposed By: <agent_name>
 - Pull Request: <link>
 - Outcome: pending human review | merged | rejected | superseded by a later proposal

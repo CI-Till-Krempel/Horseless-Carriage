@@ -971,6 +971,42 @@ successfully", "sign-off", "finalized", ...) and no story reached Accepted that 
 before this sprint (tracked via a new `accepted_count_baseline`, same "must be NEW since last report"
 pattern as `retro_baseline`/`kpi_baseline`).
 
+### QualityGuardian merged into ScrumMaster; ScrumMaster gets its own separate, uncapped-but-gated ritual budget (GH issue #395)
+
+Across eval runs 0.1.0-run48/run49, `create_sprint_report` "repeatedly failed" - a verbose sprint could
+exhaust the shared per-sprint token budget before ScrumMaster (retrospective) or QualityGuardian (KPI
+calculation) ever got a turn, leaving every sprint's required close-out artifacts (retro, KPIs, sprint
+report) silently skipped. `PROCESS_OVERHEAD_PERCENTAGE` existed to size exactly this kind of reserved
+process budget, but was purely cosmetic - only ever printed in the report, never actually enforced.
+
+Separately, QualityGuardian and ScrumMaster were both pure process/reporting roles with no implementation
+responsibility of their own - splitting "facilitate the retro" from "calculate and report the KPIs that
+summarize the same sprint" added a mandatory extra agent hand-off to every sprint close for no real
+separation of concerns.
+
+**The fix:**
+- The `QualityGuardian` role is folded into `ScrumMaster`. `calculate_kpis`, `update_sprint_report`, and
+  `create_sprint_report` (moved off Product Owner) are now Scrum Master's own tools, end to end -
+  `create_release_pr` stays with Product Owner.
+- Scrum Master's own ritual work (facilitation, retro, KPIs, sprint report) now draws on a **separate
+  budget**, sized at `PROCESS_OVERHEAD_PERCENTAGE` percent of the sprint's token budget and checked
+  against Scrum Master's own token usage only (`ritual_token_budget`/`main_budget_token_usage`,
+  `agents/scrum_team/helpers.py`) - entirely independent of whether the shared main budget has tripped
+  for DevTeam/QA/Architect/Product Owner.
+- Once a fresh retro action and a fresh KPI update both exist this sprint (`create_sprint_report`'s own
+  two prerequisites), that final step is mechanically **uncapped** - and simultaneously **tool-gated**
+  (a `before_tool_callback` check, `_restrict_to_sprint_report_step` in `agent.py`) to refuse any tool
+  call other than the report sequence itself, so the uncapped window can't be spent on anything else.
+  This guarantees a sprint can never fail to produce its required KPIs/report purely for lack of
+  remaining ritual budget - the mechanical safety net (`render_fallback_sprint_report`) still exists as
+  the final backstop if Scrum Master's own ritual budget runs out before reaching that point.
+- `SPRINT_CLOSEOUT_GRACE_ROLES`/`closeout_grace_percent` (the main-budget-exhaustion grace) now only
+  covers Product Owner's `create_release_pr` call and ScrumOrchestrator's routing - Scrum Master no
+  longer shares it.
+
+Out of scope for this change (left for a separate future PR): general timeboxing/runaway-task-detection
+nudges for the team, and blocker-surfacing by the root ScrumOrchestrator agent.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

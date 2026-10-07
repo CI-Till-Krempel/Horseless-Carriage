@@ -12,12 +12,11 @@ source of truth for their slice; this page is the composite map plus the knobs t
 | Agent | Owns | Key tools |
 |---|---|---|
 | 🧑‍✈️ **ScrumOrchestrator** (root) | Routing only - never writes specs/code/commits itself | `init_scrum_state`, `create_litellm_virtual_key`, `configure_github_repo`/`configure_github_app`/`seed_repository`, `repo_status`, `save_state_to_repo`/`load_state_from_repo`, budget/read tools |
-| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_acceptance_check`, `deny_review`, `raise_story_blocker`/`resolve_story_blocker`, `create_sprint_backlog_pr`, `create_release_pr`, `create_sprint_report`, `record_human_approval` |
-| 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `raise_story_blocker`, `update_budgets`/`get_budget_status` |
+| 🧑‍💼 **ProductOwner** | Vision, backlog, priorities, acceptance | `upsert_prd`/`upsert_srs`, `update_roadmap`, `upsert_story`/`upsert_epic`/`upsert_issue`, `set_priority`/`plan_backlog_item`, `advance_story_stage`, `record_acceptance_check`, `deny_review`, `raise_story_blocker`/`resolve_story_blocker`, `create_sprint_backlog_pr`, `create_release_pr`, `record_human_approval` |
+| 🧑‍🏫 **ScrumMaster** | Facilitation, impediments, retros, budget housekeeping, KPI reporting, sprint report (GH #395 - absorbed from the former QualityGuardian role) | `start_sprint`, `add_impediment`, `add_retro_action`, `record_human_approval`, `record_blocking_interaction`, `raise_story_blocker`, `update_budgets`/`get_budget_status`, `calculate_kpis`, `update_sprint_report`, `create_sprint_report`, `upsert_issue` |
 | 🧑‍💻 **DevTeam** | Implementation | `plan_sprint_backlog_item`, `advance_story_stage`, `raise_story_blocker`, `start_feature_branch`, `write_file`, `git_push`, `mark_pr_ready_for_review`, `gh_pr_*` |
 | 👷 **Architect** | Technical review, ADRs | `advance_story_stage`, `deny_review`, `raise_story_blocker`/`resolve_story_blocker`, `gh_pr_review`/`gh_pr_comment`, `upsert_adr`, `write_file` |
 | 🕵️ **QA** | Test strategy, build verification | `check_build`, `advance_story_stage`, `deny_review`, `raise_story_blocker`, `merge_story_pr`, `gh_pr_review`/`gh_pr_comment` |
-| 🧑‍⚖️ **QualityGuardian** | KPI reporting | `calculate_kpis`, `update_sprint_report`, `upsert_issue` |
 
 Every role uses an actual human-figure emoji - a deliberate, consistent "persona" icon per role. Mermaid
 flowcharts have no native actor/stick-figure shape (that's a `sequenceDiagram`-only feature); a distinct
@@ -31,7 +30,7 @@ recovers gracefully instead of crashing - see RELEASE.md "Tool dispatch resilien
 Both flowcharts below share the same color key and icon vocabulary:
 
 **Roles** (color + persona icon, leads every box): 🟦🧑‍💼 ProductOwner · 🟧🧑‍🏫 ScrumMaster ·
-🟩🧑‍💻 DevTeam · 🟪👷 Architect · 🟨🕵️ QA · 🟫🧑‍⚖️ QualityGuardian ·
+🟩🧑‍💻 DevTeam · 🟪👷 Architect · 🟨🕵️ QA ·
 ⬜ spans multiple roles (see the other diagram)
 
 **Markers**: 🔧 tool call · 🔄 state change (sprint started / story stage advanced) ·
@@ -62,8 +61,8 @@ flowchart TD
     D --> E{{"All stories as far\nas this sprint allows?"}}:::loop
     E -- "no — iterate" --> D
     E -- yes --> F["🧑‍🏫 ScrumMaster\n🔧 add_retro_action / add_impediment\n⚠️ MANDATORY: must be NEW since last report"]:::sm
-    F --> G["🧑‍💼 ProductOwner\n🔧 create_sprint_report\n📄 specs/reports/SPRINT-REPORT-N.md\n❌ refuses without a fresh retro/impediment"]:::po
-    G --> H["🧑‍⚖️ QualityGuardian\n🔧 calculate_kpis + update_sprint_report"]:::qg
+    F --> G["🧑‍🏫 ScrumMaster\n🔧 calculate_kpis + update_sprint_report"]:::sm
+    G --> H["🧑‍🏫 ScrumMaster\n🔧 create_sprint_report\n📄 specs/reports/SPRINT-REPORT-N.md\n❌ refuses without a fresh retro/impediment + KPI update\n(GH #395: absorbed from the former QualityGuardian role)"]:::sm
     H --> I{"Release approval\nrequired at this level?"}:::gate
     I -- "🔵 Product" --> J["🟥👤 HUMAN APPROVAL\n🔧 record_human_approval('release')"]:::human
     I -- "🟠 CEO / 🤖 EVAL" --> K
@@ -78,7 +77,6 @@ flowchart TD
     classDef dev fill:#d1f7d6,stroke:#198754,color:#000
     classDef arch fill:#e6d9f7,stroke:#6f42c1,color:#000
     classDef qa fill:#fff3b0,stroke:#e0b400,color:#000
-    classDef qg fill:#e8d0b3,stroke:#8b5a2b,color:#000
     classDef human fill:#ff8787,stroke:#c92a2a,stroke-width:3px,color:#000
     classDef gate fill:#f1f3f5,stroke:#868e96,color:#000
     classDef multi fill:#ffffff,stroke:#495057,stroke-dasharray: 5 5,color:#000
@@ -133,7 +131,6 @@ flowchart TD
     classDef dev fill:#d1f7d6,stroke:#198754,color:#000
     classDef arch fill:#e6d9f7,stroke:#6f42c1,color:#000
     classDef qa fill:#fff3b0,stroke:#e0b400,color:#000
-    classDef qg fill:#e8d0b3,stroke:#8b5a2b,color:#000
     classDef human fill:#ff8787,stroke:#c92a2a,stroke-width:3px,color:#000
     classDef gate fill:#f1f3f5,stroke:#868e96,color:#000
     classDef loop fill:#fff9db,stroke:#f08c00,stroke-width:2px,color:#000

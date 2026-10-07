@@ -98,23 +98,35 @@ removes every human approval gate for that `.env`.
 | `SPRINT_TOKEN_BUDGET` | Per-sprint, resets automatically | Always (local and cloud) |
 | `TOTAL_USD_BUDGET` (canonical) / `SPRINT_USD_BUDGET` (deprecated fallback) | Whole engagement, never resets | Cloud providers only — a no-op for Local/Ollama |
 | `EVAL_SPRINT_TOKEN_BUDGET` / `EVAL_USD_BUDGET_PER_SPRINT` (+ deprecated `EVAL_SPRINT_USD_BUDGET`) | Eval-harness-only, separate from a real engagement's budget | Only when `run_eval.py` runs |
-| `PROCESS_OVERHEAD_PERCENTAGE` | Applies to both budgets | Always |
-| `SPRINT_CLOSEOUT_GRACE_PERCENT` | Extra allowance on top of `SPRINT_TOKEN_BUDGET`/the USD budget | Always — but only spendable by ScrumMaster/ProductOwner/QualityGuardian/ScrumOrchestrator, and only after the main budget trips |
+| `PROCESS_OVERHEAD_PERCENTAGE` | Sizes ScrumMaster's own separate ritual budget (GH #395) | Always |
+| `SPRINT_CLOSEOUT_GRACE_PERCENT` | Extra allowance on top of `SPRINT_TOKEN_BUDGET`/the USD budget | Always — but only spendable by ProductOwner/ScrumOrchestrator, and only after the main budget trips |
 
 `setup_llm.py`'s local-provider flow (`is_local=True`) skips the
 `TOTAL_USD_BUDGET` question entirely rather than asking something that can
 never be enforced — it still writes a harmless default so `.env` stays
 consistent if the same file is later reconfigured for a cloud provider.
 
+`PROCESS_OVERHEAD_PERCENTAGE` (default `10.0`, i.e. 10%) sizes ScrumMaster's
+own separate ritual budget (GH #395) — facilitating events, the
+retrospective, KPI calculation, and authoring the sprint report are checked
+against Scrum Master's own token usage against a ceiling of this percentage
+of `SPRINT_TOKEN_BUDGET`, entirely independent of whether the shared budget
+has tripped for DevTeam/QA/Architect/Product Owner (see
+`agents/scrum_team/helpers.py:ritual_token_budget`). Previously this
+variable was purely cosmetic (only ever printed in the sprint report, never
+actually enforced).
+
 `SPRINT_CLOSEOUT_GRACE_PERCENT` (default `20.0`, i.e. 20%) is how much EXTRA
 token/USD budget — as a percentage of the main sprint ceiling —
-ScrumMaster/ProductOwner/QualityGuardian/ScrumOrchestrator may still spend,
-combined, after the main budget is exhausted, specifically to finish the
-SPRINT CLOSE SEQUENCE (retro → `create_sprint_report` → KPIs →
-`create_release_pr`) for real rather than skipping it entirely (see
-`agents/scrum_team/helpers.py:closeout_grace_percent`, ISSUE-0046).
-DevTeam/QA/Architect get none of this grace — their work stays frozen at
-exhaustion; only closing the sprint out still gets turns.
+ProductOwner/ScrumOrchestrator may still spend, combined, after the main
+budget is exhausted, specifically to finish the one remaining SPRINT CLOSE
+SEQUENCE step (`create_release_pr`) for real rather than skipping it
+entirely (see `agents/scrum_team/helpers.py:closeout_grace_percent`,
+ISSUE-0046). DevTeam/QA/Architect get none of this grace — their work stays
+frozen at exhaustion; only closing the sprint out still gets turns. GH
+#392: Scrum Master no longer shares this grace at all — its own
+retro/KPIs/sprint-report work draws on the separate ritual budget above
+instead, regardless of whether the main budget has tripped.
 
 ## Sprint-shape axis
 

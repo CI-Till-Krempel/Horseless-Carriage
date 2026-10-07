@@ -153,12 +153,13 @@ def _sprint_metrics_table(manifest: dict) -> str:
 
 # GH issue #124: which KPI each series is sourced from. The first four are
 # derived straight from each sprint's own backlog snapshot (sprint_backlog),
-# always present. The last three come from QualityGuardian's calculate_kpis/
-# update_sprint_report (see its prompt's "YOU DO" and tools/quality.py) via
-# sprint_report_kpis, which only exists for a sprint if QualityGuardian
-# actually got to run - a sprint that ran out of budget/events first simply
-# has no data point for these, reported honestly as missing rather than a
-# fabricated 0 or a repeat of the last known value.
+# always present. The last three come from Scrum Master's calculate_kpis/
+# update_sprint_report (formerly QualityGuardian's - see GH #395; see its
+# prompt's "YOU DO" and tools/quality.py) via sprint_report_kpis, which only
+# exists for a sprint if that step actually got to run - a sprint that ran
+# out of budget/events first simply has no data point for these, reported
+# honestly as missing rather than a fabricated 0 or a repeat of the last
+# known value.
 _ACCEPTED_STAGE = "Accepted"
 _IMPLEMENTED_STAGE = "Implemented"
 
@@ -264,7 +265,7 @@ def _format_kpi_value(value) -> str:
 # this specific sub-metric has no underlying data source yet", which
 # calculate_kpis already reports honestly via its own *_note field in that
 # same payload. Confusing the two misrepresented a real run (0.1.0-run43):
-# the report claimed QualityGuardian "was not called in any sprint" for
+# the report claimed this KPI step "was not called in any sprint" for
 # defect escape rate, while the same run's Say-Do Ratio - sourced from the
 # exact same calculate_kpis calls - had real values for 4 of 5 sprints.
 _KPI_NOTE_LOCATIONS = {
@@ -287,12 +288,12 @@ def _kpi_unavailable_message(manifest: dict, name: str) -> str:
             note = (kpis.get(parent_key) or {}).get(note_key)
             if note:
                 return (
-                    f"No data available for this run - {note} (QualityGuardian's "
+                    f"No data available for this run - {note} (Scrum Master's "
                     "calculate_kpis did run this run, this specific metric just has no "
                     "data source yet)."
                 )
     return (
-        "No data available for this run - never computed (QualityGuardian's "
+        "No data available for this run - never computed (Scrum Master's "
         "calculate_kpis/update_sprint_report was not called in any sprint)."
     )
 

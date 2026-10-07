@@ -34,6 +34,8 @@ fork again
         - Facilitate events
         - Remove impediments
         - Monitor budget
+        - Calculate KPIs
+        - Author sprint report
     end note
 fork again
     :DevTeam;
@@ -53,12 +55,6 @@ fork again
     note right
         - Review pull requests
         - Propose ADRs
-    end note
-fork again
-    :QualityGuardian;
-    note right
-        - Calculate KPIs
-        - Update sprint report
     end note
 end fork
 
@@ -141,8 +137,8 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
     guardrails/workflow rules live.
 
     - role: one of ROLE_NAMES (prompts.py) - ScrumOrchestrator, ProductOwner,
-      ScrumMaster, DevTeam, QA, Architect, or QualityGuardian. Anything else
-      is refused outright.
+      ScrumMaster, DevTeam, QA, or Architect. Anything else is refused
+      outright.
     - new_content: the full replacement content for that role's
       `<role>-identity.md` (like write_file - not a unified diff, simpler
       and safer to validate/apply).

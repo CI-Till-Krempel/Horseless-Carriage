@@ -664,12 +664,12 @@ class TestBudgetTools(unittest.TestCase):
     def test_create_sprint_report_rejects_without_fresh_kpi_update(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (ISSUE-0046): create_sprint_report must refuse to
-        close the sprint unless QualityGuardian's update_sprint_report was
-        called since the last successful report, mirroring the retro gate
-        immediately above - across every real eval run before this existed,
-        QualityGuardian was never once transferred to (nothing in the SPRINT
-        CLOSE SEQUENCE told anyone to), so every KPI trend came back "never
-        computed".
+        close the sprint unless update_sprint_report was called since the
+        last successful report, mirroring the retro gate immediately above -
+        across every real eval run before this existed, the former
+        QualityGuardian role (now ScrumMaster, GH #395) was never once
+        transferred to (nothing in the SPRINT CLOSE SEQUENCE told anyone
+        to), so every KPI trend came back "never computed".
         """
         mock_getenv.return_value = "15.0"
         tool_context = MagicMock()
@@ -681,7 +681,7 @@ class TestBudgetTools(unittest.TestCase):
         result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
 
         self.assertEqual(result["status"], "error")
-        self.assertIn("QualityGuardian", result["message"])
+        self.assertIn("fresh KPI update", result["message"])
         mock_write_file.assert_not_called()
 
     @patch("os.getenv")
@@ -707,7 +707,7 @@ class TestBudgetTools(unittest.TestCase):
         tool_context.state["retro_actions"].append({"action": "sprint 2 retro", "owner": "SM", "status": "open"})
         second = create_sprint_report("summary 2", ["accomplishment 2"], tool_context=tool_context)
         self.assertEqual(second["status"], "error")
-        self.assertIn("QualityGuardian", second["message"])
+        self.assertIn("fresh KPI update", second["message"])
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
@@ -934,8 +934,9 @@ class TestBudgetTools(unittest.TestCase):
     def test_create_sprint_report_renders_kpi_dashboard(self, mock_write_file, mock_getenv):
         """Acceptance Criteria (ISSUE-0046): the KPI dashboard was computed
         and stored (sprint_report_kpis) but never actually rendered anywhere
-        in the report document itself - QUALITY_GUARDIAN_PROMPT's own "YOU
-        DO" says to include it, but create_sprint_report's code never did."""
+        in the report document itself - SM_PROMPT's own "YOU DO" (formerly
+        QUALITY_GUARDIAN_PROMPT's, GH #395) says to include it, but
+        create_sprint_report's code never did."""
         mock_getenv.return_value = "15.0"
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
