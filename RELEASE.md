@@ -909,6 +909,52 @@ commit, push) only once none remain. Safe to call repeatedly as resolution progr
 time. Added to DevTeam's tool list, with `DevTeam-workflow.md` guidance pointing here instead of the
 "recreate the PR from scratch" workaround the team had converged on.
 
+### advance_story_stage pushes its own state/roadmap update - a local-only commit was silently getting lost (GH issue #388)
+
+A real eval run (0.1.0-run48) showed US-0001's `stages_completed` silently regress between sprints -
+`Tested` and `Accepted` vanished from both `product_backlog` and `sprint_backlog` between sprint 1's
+close and sprint 2's start. This single regression explained the entire rest of that run: the
+one-story-at-a-time ordering gate then correctly refused every later story ("the higher-priority story
+'US-0001' must reach Accepted first"), even though it genuinely had been - zero feature-branch PRs
+opened for sprints 2-5, every auto-filed retro Issue froze permanently at Ready, and the sprint-2
+"QA/ScrumOrchestrator transfer loop" the eval report flagged was the #367 breaker working correctly on a
+team that had nothing left to do.
+
+Root cause: `save_state_to_repo`'s own docstring admits `_checkpoint_state_commit` is a "purely local
+safety net" - it commits `.hc/state.json` onto whatever branch happens to be checked out at that exact
+moment, and never pushes. `advance_story_stage` calls this after every stage transition, but nothing
+pushed that commit anywhere, and a sprint routinely switches checked-out branches multiple times
+(feature branch -> `develop` via `merge_story_pr`, a new feature branch for the next story, ...) - a
+local-only commit left behind on a branch that's later abandoned is simply gone.
+
+`advance_story_stage` now pushes its own commit (state + `specs/ROADMAP.md` + the story/issue markdown
+file) as part of the same atomic call, instead of relying on a separate `git_push` the calling role has
+to remember: `Implemented`/`Reviewed`/`Tested` push to the story's active feature branch (so the update
+rides into `develop` as part of the very next `merge_story_pr`), `Accepted` pushes straight to `develop`
+(the merge has already landed by then). `Draft`/`Ready` are deliberately left alone - those are Product
+Owner's own planning-doc edits, already covered by `create_sprint_backlog_pr`'s own commit+push sweep.
+If the push itself fails, the call now reports `"status": "error"` instead of silently succeeding -
+that silent-drift is exactly the failure mode this closes.
+
+A larger follow-up (GH issue #391, not implemented here) would fold the required PR review/comment and
+QA's `merge_story_pr` into the stage-advancement call itself too, so each role's gate decision is a
+single atomic tool call start to finish.
+
+### Customer Satisfaction and Commitment Reliability KPIs are no longer fabricated (GH issue #389)
+
+`calculate_kpis` (`agents/scrum_team/tools/quality.py`) hardcoded `commitment_reliability` to `1.0` and
+`customer_satisfaction` to `4.5` - plausible-looking fake numbers presented as real measurements in
+every single sprint report, despite the function's own docstring admitting "no principled way to compute
+them exists... no human satisfaction survey." This directly contradicted the honest `None` + note
+pattern already used correctly for `defect_escape_rate` a few lines below in the same function.
+
+Both now consistently report unavailable (`None` + an explanatory `_note` field), matching
+`defect_escape_rate`'s existing pattern. The sprint report renderer (`budget.py`) now also shows the
+same "not available (\<note\>)" fallback line already used for Test Coverage/Code Complexity/Security
+Scan when a KPI is unavailable, instead of just omitting the line entirely - a reader can now tell
+"never computed" apart from "computed but genuinely zero," for all three previously-fabricated/
+unavailable KPIs (Commitment Reliability, Customer Satisfaction, Defect Escape Rate).
+
 ### Non-blocking nudge for sprint reports with a generic success narrative but nothing new Accepted (GH issue #390)
 
 A real eval run (0.1.0-run48) produced sprint reports claiming "Sprint 3 completed successfully with
