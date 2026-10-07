@@ -19,6 +19,22 @@ from ..helpers import (
 # GH issue #298: below this many tokens, "$0 spend" is indistinguishable
 # from a sprint that just started - only worth flagging once there's been
 # enough real usage that a genuinely-priced model would show *some* cost.
+# GH issue #390: a real eval run (0.1.0-run48) produced sprint reports
+# claiming "Sprint 3 completed successfully with backlog refinement",
+# "Sprint 4 executed successfully with... robustness verification", and
+# "Completed final sprint review, quality validation, and release sign-off
+# for Sprint 5" - despite ZERO stories reaching Accepted any of those
+# sprints. The overclaim check right below only catches a claim that names a
+# SPECIFIC story ID not yet Accepted - generic success narrative naming no
+# story at all sails through unchecked. This is deliberately a non-blocking
+# nudge, not a hard gate like the specific-story-ID check: unlike "story
+# US-0003 is claimed delivered but isn't Accepted" (an unambiguous, provably
+# false claim), "sounds too positive" is a fuzzy signal that could
+# false-positive on a genuinely good, truthfully-worded sprint.
+_GENERIC_SUCCESS_PHRASES = (
+    "completed successfully", "executed successfully", "sign-off", "signed off",
+    "finalized", "successfully delivered", "quality validation",
+)
 _SUSPICIOUS_ZERO_SPEND_TOKEN_THRESHOLD = 50_000
 
 
@@ -1166,6 +1182,17 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     product_backlog = s.get("product_backlog", []) or []
     sprint_backlog = s.get("sprint_backlog", []) or []
     claimed_text = " ".join([summary, *accomplishments])
+    accepted_count = sum(
+        1 for item in product_backlog
+        if item.get("type") != "Epic"
+        and "Accepted" in _story_stages_completed(
+            item, next((x for x in sprint_backlog if x.get("id") == item.get("id")), {})
+        )
+    )
+    # Captured BEFORE accepted_count_baseline gets bumped to accepted_count
+    # further down (on success) - reading it after that point would always
+    # compare accepted_count against itself.
+    accepted_count_baseline_before = s.get("accepted_count_baseline", 0)
     overclaimed = []
     for item in product_backlog:
         story_id = item.get("id")
@@ -1570,6 +1597,11 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # genuinely fresh Tested transition again, not just the same story that
     # already satisfied it once before.
     s["qa_tested_baseline"] = tested_count
+    # GH issue #390: same snapshot pattern - freezes the Accepted count that
+    # satisfied this sprint's generic-overclaim nudge (see accepted_count
+    # above), so next sprint's nudge demands a genuinely NEW Accepted story
+    # again, not just the same count from a sprint ago.
+    s["accepted_count_baseline"] = accepted_count
 
     # ISSUE-0001: closing this sprint's report "uses up" its human
     # pre-implementation approval - the next sprint's stories can't reach
@@ -1589,7 +1621,18 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # gate refuses further story work until create_release_pr clears this.
     s["sprint_report_pending_release"] = True
 
-    return {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
+    result = {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
+    if accepted_count <= accepted_count_baseline_before:
+        lowered_claim = claimed_text.lower()
+        matched_phrase = next((p for p in _GENERIC_SUCCESS_PHRASES if p in lowered_claim), None)
+        if matched_phrase:
+            result["warning"] = (
+                f"summary/accomplishments reads like a generically positive narrative (contains "
+                f"'{matched_phrase}'), but no story reached Accepted this sprint that wasn't already "
+                "Accepted before it - if nothing concrete actually landed, say so plainly instead of "
+                "a success-sounding summary nobody checked against real state."
+            )
+    return result
 
 def calculate_cost_breakdown(tool_context=None) -> Dict[str, Any]:
     """

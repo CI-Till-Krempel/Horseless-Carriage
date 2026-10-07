@@ -590,6 +590,77 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_warns_on_generic_success_narrative_with_no_new_accepted_story(self, mock_write_file, mock_getenv):
+        """
+        GH issue #390: a real run (0.1.0-run48) produced sprint reports
+        claiming "completed successfully"/"sign-off" despite zero stories
+        reaching Accepted that sprint - the specific-story-ID overclaim
+        check above doesn't catch generic narrative that names no story at
+        all. This is a non-blocking nudge, not a hard rejection.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        result = create_sprint_report(
+            "Sprint 3 completed successfully with backlog refinement", ["Reviewed the backlog"],
+            tool_context=tool_context,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("warning", result)
+        self.assertIn("completed successfully", result["warning"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_no_warning_when_a_story_was_genuinely_accepted(self, mock_write_file, mock_getenv):
+        """Same generic success phrasing, but backed by a real, new Accepted
+        story this sprint - no warning, since the claim is actually true."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+        ]
+
+        result = create_sprint_report(
+            "Sprint 3 completed successfully", ["US-0002 accepted"], tool_context=tool_context,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("warning", result)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_no_warning_without_generic_success_phrasing(self, mock_write_file, mock_getenv):
+        """Zero new Accepted stories is normal and not itself a problem -
+        only flagged when paired with success-sounding narrative."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        result = create_sprint_report(
+            "Sprint 3: no stories progressed, budget mostly spent on review",
+            ["Nothing shipped this sprint"], tool_context=tool_context,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("warning", result)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_rejects_without_fresh_kpi_update(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (ISSUE-0046): create_sprint_report must refuse to
