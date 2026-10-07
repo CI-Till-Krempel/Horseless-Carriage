@@ -989,7 +989,41 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 "auto_integrated": branch_auto_integrated,
             }
 
-        push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", tool_context=tool_context)
+        # GH issue #379: this used to call git_push with its default
+        # add_all=True ("git add -A"), which stages every pending write in
+        # the shared checkout, not just this sprint's own planning output -
+        # whichever PR-creating tool's commit lands FIRST wins everyone
+        # else's not-yet-committed writes too. A real run (0.1.0-run47)
+        # showed this exact race: upsert_story had already written
+        # US-0003/4/5's story files to disk when this ran, swept them into
+        # the sprint-backlog commit via "-A", and merged them into develop -
+        # so create_story_spec_pr's own later, deliberately-scoped `git add
+        # <rel_path>` found nothing left to stage and opened an empty PR.
+        # integrate_open_changes is scoped to specs/+.hc/ only (same
+        # pattern create_release_pr already uses for exactly this reason)
+        # - this tool is only ever responsible for planning docs, never a
+        # feature branch's code.
+        integrate_res = integrate_open_changes(tool_context=tool_context)
+        if not integrate_res.get("integrated"):
+            # ISSUE-0050/0.1.0-run34: git_push's own --allow-empty fallback
+            # exists so a DIFFERENT caller (create_release_pr, after
+            # integrate_open_changes already committed everything itself)
+            # doesn't hard-fail on "nothing staged" - reusing that same
+            # fallback here would instead silently open/merge a content-free
+            # "Sprint Backlog" PR, which is exactly what a real run showed
+            # (nothing new planned yet, but the PR still opened and merged
+            # with zero roadmap/story edits in it). This tool is the one
+            # place that distinction matters, so it checks for itself
+            # instead of leaning on git_push's generic behavior.
+            return {
+                "status": "error",
+                "message": (
+                    "Cannot create the Sprint Backlog PR - there's no new planning output (roadmap/"
+                    "PRD/epics/stories) to publish this sprint yet. Write some via upsert_prd/"
+                    "upsert_epic/upsert_story/update_roadmap first, then retry."
+                ),
+            }
+        push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", add_all=False, tool_context=tool_context)
         if push_res.get("status") != "ok":
             return {"status": "error", "message": "Failed to push the sprint backlog branch.", "push": push_res}
         actual_branch = push_res.get("branch", branch)
