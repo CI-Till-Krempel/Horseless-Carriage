@@ -1506,6 +1506,41 @@ class TestIntegrateOpenChanges(unittest.TestCase):
         self.assertEqual(add_call.args[0], ["git", "add", "--", "specs", ".hc"])
 
     @patch("agents.scrum_team.tools.github._configured_repo_root")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_bumps_planning_output_commit_count_on_success(self, mock_run, mock_root):
+        """GH issue #399: create_sprint_backlog_pr's own "has anything
+        landed since my last publish" check relies on this counter
+        advancing on EVERY successful integration, regardless of which
+        caller or branch triggered it."""
+        mock_root.return_value = MagicMock(__truediv__=lambda self, other: MagicMock(exists=lambda: True))
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M specs/ROADMAP.md"},
+            {"status": "ok"},
+            {"status": "ok", "stdout": "specs/ROADMAP.md"},
+            {"status": "ok"},
+        ]
+        tool_context = MagicMock()
+        tool_context.state = {"planning_output_commit_count": 2}
+
+        result = integrate_open_changes(tool_context=tool_context)
+
+        self.assertTrue(result["integrated"])
+        self.assertEqual(tool_context.state["planning_output_commit_count"], 3)
+
+    @patch("agents.scrum_team.tools.github._configured_repo_root")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_does_not_bump_the_counter_when_nothing_integrated(self, mock_run, mock_root):
+        mock_root.return_value = MagicMock(__truediv__=lambda self, other: MagicMock(exists=lambda: True))
+        mock_run.return_value = {"status": "ok", "stdout": ""}
+        tool_context = MagicMock()
+        tool_context.state = {"planning_output_commit_count": 2}
+
+        result = integrate_open_changes(tool_context=tool_context)
+
+        self.assertFalse(result["integrated"])
+        self.assertEqual(tool_context.state["planning_output_commit_count"], 2)
+
+    @patch("agents.scrum_team.tools.github._configured_repo_root")
     def test_skips_a_pathspec_that_does_not_exist_yet(self, mock_root):
         # .hc/ doesn't exist before the first save_state_to_repo call ever
         # ran - `git add -- specs .hc` would hard-fail on that pathspec
@@ -1987,6 +2022,72 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             "sprint_number": 1,
             "repo": {"default_branch": "main", "develop_branch": "develop"},
             "product_backlog": _ONE_READY_STORY,
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("no new planning output", result["message"])
+        mock_git_push.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": False, "message": "No open planning-doc changes under specs/ or .hc/ to integrate."})
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_recognizes_content_already_landed_via_a_different_path_as_published(
+        self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate
+    ):
+        """
+        GH issue #399: a real eval run (0.1.0-run51) showed start_sprint's
+        own cleanup sweep (tools/scrum.py) commit this sprint's own
+        not-yet-published planning output directly, before this call ever
+        ran - so by the time THIS call's own integrate_open_changes runs,
+        there's nothing left dirty, indistinguishable at a glance from
+        "nothing was ever written this sprint". planning_output_commit_count
+        having advanced past this PR's own last-published baseline is the
+        signal that tells the two apart - must recognize the backlog as
+        published (not reject forever with no way to ever satisfy this gate
+        again), and must not attempt to push/open a PR for content that's
+        already on develop with nothing left to diff.
+        """
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY,
+            "planning_output_commit_count": 3,
+            "sprint_backlog_pr_content_baseline": 1,
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["merged"])
+        self.assertIn("warning", result)
+        self.assertIn("already committed directly to develop", result["warning"])
+        self.assertEqual(tool_context.state["sprint_backlog_pr_sprint"], 1)
+        self.assertEqual(tool_context.state["sprint_backlog_pr_content_baseline"], 3)
+        mock_git_push.assert_not_called()
+        mock_gh_pr_create.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": False, "message": "No open planning-doc changes under specs/ or .hc/ to integrate."})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_still_refuses_when_the_commit_counter_has_not_moved_since_the_last_publish(self, mock_run, mock_git_push, mock_integrate):
+        """The counter existing at all must not become a permanent
+        free pass - only an ADVANCE past this PR's own last-published
+        baseline counts as "something landed since"; a counter sitting
+        at (or below) that baseline is still the genuine "nothing new
+        written this sprint" rejection."""
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 1,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY,
+            "planning_output_commit_count": 1,
+            "sprint_backlog_pr_content_baseline": 1,
         }
 
         result = create_sprint_backlog_pr(tool_context=tool_context)
