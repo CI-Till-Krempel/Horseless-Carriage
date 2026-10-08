@@ -1031,6 +1031,28 @@ Both functions now call `save_state_to_repo` at the exact moment these fields ch
 convention every other close-sequence mutator already follows - disk can no longer drift behind memory for
 them.
 
+### create_sprint_backlog_pr now recognizes content that landed via a different path - start_sprint's own cleanup sweep could bypass its review entirely (GH issue #399)
+
+The very next eval run (0.1.0-run51) hit the same transfer-loop symptom as 0.1.0-run50 (GH issue #397), but
+via a completely different, unrelated root cause - confirmed by cloning the actual eval repo and inspecting
+its git history directly, not just the transcript. ScrumOrchestrator routed the first turn to Product Owner,
+who wrote the PRD/roadmap/epic/story before any sprint was ever started - nothing mechanically prevents
+this. Once Scrum Master finally called `start_sprint(goal)`, its own "clean working copy" sweep (an older
+fix, "GH issue eval run41", meant to commit genuinely stale leftovers from a *previous* sprint's close-out)
+committed THIS sprint's own not-yet-published planning output directly onto whatever branch was checked
+out - bypassing `create_sprint_backlog_pr`'s reviewable PR entirely. `create_sprint_backlog_pr`'s own "is
+there anything to commit right now" check then found nothing dirty, indistinguishable from "nothing was
+ever written this sprint," and rejected it with no way for Product Owner to ever satisfy the gate again -
+Product Owner and Scrum Master bounced `transfer_to_agent` until the loop breaker tripped, and the story
+got BLOCKED, stopping the run early with zero stories implemented.
+
+`create_sprint_backlog_pr` now has a memory of its own: `planning_output_commit_count` (bumped by every
+successful `integrate_open_changes` call, regardless of which caller or branch triggered it) against a
+`sprint_backlog_pr_content_baseline` snapshotted at its own last successful publish. If nothing is dirty
+right now but the counter has advanced since that baseline, the content already landed - just not
+reviewably - and the sprint backlog is recognized as published (with a clear warning that review was
+bypassed) instead of rejecting forever.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

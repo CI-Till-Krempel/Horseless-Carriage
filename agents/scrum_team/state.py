@@ -20,6 +20,15 @@ class ScrumState(BaseModel):
     sprint_goal: str = ""
     sprint_number: int = 0
     sprint_backlog_pr_sprint: int = 0
+    # GH issue #399: how many times integrate_open_changes has ever
+    # successfully committed something (any caller, any branch) -
+    # create_sprint_backlog_pr's own baseline snapshot of this at its last
+    # successful publish, so it can tell "nothing was ever written" apart
+    # from "it already landed via a different path" (e.g. start_sprint's own
+    # cleanup sweep) when its own live working-tree check finds nothing
+    # dirty right now.
+    planning_output_commit_count: int = 0
+    sprint_backlog_pr_content_baseline: int = 0
     sprint_backlog: List[Dict] = Field(default_factory=list)
     impediment_log: List[Dict] = Field(default_factory=list)
     retro_actions: List[Dict] = Field(default_factory=list)

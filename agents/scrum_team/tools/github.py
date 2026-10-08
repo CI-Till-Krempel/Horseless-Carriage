@@ -121,6 +121,19 @@ def integrate_open_changes(tool_context=None) -> Dict[str, Any]:
     )
     if commit.get("status") != "ok":
         return {"status": "error", "message": "Failed to commit open planning-doc changes.", "files": files, "commit": commit}
+    # GH issue #399: a real eval run (0.1.0-run51) showed start_sprint's own
+    # "clean working copy" sweep (tools/scrum.py) committing this sprint's
+    # own not-yet-published planning output directly, onto whatever branch
+    # happened to be checked out - bypassing create_sprint_backlog_pr's
+    # reviewable PR entirely. create_sprint_backlog_pr's own "nothing to
+    # integrate" check then had no way to tell "nothing was ever written"
+    # apart from "it was already committed by this exact function, just not
+    # right this instant" - this counter is that memory, bumped on every
+    # successful integration regardless of which caller (or branch)
+    # triggered it, so create_sprint_backlog_pr can compare against its own
+    # baseline instead of only ever checking the live working tree.
+    if tool_context and getattr(tool_context, "state", None):
+        tool_context.state["planning_output_commit_count"] = tool_context.state.get("planning_output_commit_count", 0) + 1
     return {"status": "ok", "integrated": True, "files": files, "commit": commit}
 
 
@@ -1016,22 +1029,69 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
         # feature branch's code.
         integrate_res = integrate_open_changes(tool_context=tool_context)
         if not integrate_res.get("integrated"):
-            # ISSUE-0050/0.1.0-run34: git_push's own --allow-empty fallback
-            # exists so a DIFFERENT caller (create_release_pr, after
-            # integrate_open_changes already committed everything itself)
-            # doesn't hard-fail on "nothing staged" - reusing that same
-            # fallback here would instead silently open/merge a content-free
-            # "Sprint Backlog" PR, which is exactly what a real run showed
-            # (nothing new planned yet, but the PR still opened and merged
-            # with zero roadmap/story edits in it). This tool is the one
-            # place that distinction matters, so it checks for itself
-            # instead of leaning on git_push's generic behavior.
+            # GH issue #399: a real eval run (0.1.0-run51) showed
+            # start_sprint's own "clean working copy" sweep (tools/scrum.py)
+            # commit this sprint's own not-yet-published planning output
+            # directly onto whatever branch was checked out, BEFORE this
+            # call ever ran - bypassing this PR's review entirely. By the
+            # time this integrate_open_changes call above runs, there's
+            # genuinely nothing left dirty, indistinguishable at a glance
+            # from "nothing was ever written this sprint" - the exact
+            # rejection below. planning_output_commit_count (bumped by every
+            # successful integrate_open_changes call, github.py, regardless
+            # of which caller or branch triggered it) is the memory that
+            # tells the two apart: if it's moved since this PR's own last
+            # successful publish, SOMETHING landed - just not reviewably.
+            content_already_landed = (
+                tool_context.state.get("planning_output_commit_count", 0)
+                > state.get("sprint_backlog_pr_content_baseline", 0)
+                if tool_context and getattr(tool_context, "state", None) else False
+            )
+            if not content_already_landed:
+                # ISSUE-0050/0.1.0-run34: git_push's own --allow-empty fallback
+                # exists so a DIFFERENT caller (create_release_pr, after
+                # integrate_open_changes already committed everything itself)
+                # doesn't hard-fail on "nothing staged" - reusing that same
+                # fallback here would instead silently open/merge a content-free
+                # "Sprint Backlog" PR, which is exactly what a real run showed
+                # (nothing new planned yet, but the PR still opened and merged
+                # with zero roadmap/story edits in it). This tool is the one
+                # place that distinction matters, so it checks for itself
+                # instead of leaning on git_push's generic behavior.
+                return {
+                    "status": "error",
+                    "message": (
+                        "Cannot create the Sprint Backlog PR - there's no new planning output (roadmap/"
+                        "PRD/epics/stories) to publish this sprint yet. Write some via upsert_prd/"
+                        "upsert_epic/upsert_story/update_roadmap first, then retry."
+                    ),
+                }
+            # Content already landed on develop directly (this sprint's own
+            # branch, just created from origin/develop's current tip, so it
+            # already includes that commit - there's nothing left to push or
+            # open a PR for; a PR comparing identical branches would be
+            # empty/refused by GitHub anyway). Recognize the sprint backlog
+            # as effectively published rather than rejecting forever with no
+            # way for Product Owner to ever satisfy this gate again - but say
+            # so plainly, since this did skip the normal review step.
+            tool_context.state["sprint_backlog_pr_content_baseline"] = tool_context.state.get("planning_output_commit_count", 0)
+            if tool_context.state.get("sprint_backlog_pr_sprint") != sprint_number:
+                tool_context.state["sprint_backlog_engagement_baseline"] = dict(
+                    tool_context.state.get("pr_review_calls", {}) or {}
+                )
+            tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
+            from .scrum import save_state_to_repo
+            save_state_to_repo(tool_context)
             return {
-                "status": "error",
-                "message": (
-                    "Cannot create the Sprint Backlog PR - there's no new planning output (roadmap/"
-                    "PRD/epics/stories) to publish this sprint yet. Write some via upsert_prd/"
-                    "upsert_epic/upsert_story/update_roadmap first, then retry."
+                "status": "ok",
+                "merged": True,
+                "sprint_number": sprint_number,
+                "warning": (
+                    "This sprint's planning output (roadmap/PRD/epics/stories) was already committed "
+                    "directly to develop by an earlier step (most likely start_sprint's own cleanup "
+                    "sweep), before this call ever ran - there was nothing left to open a reviewable "
+                    "Sprint Backlog PR for. Treating it as published so the sprint isn't permanently "
+                    "stuck, but note this means it went to develop without the usual team review."
                 ),
             }
         push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", add_all=False, tool_context=tool_context)
@@ -1104,6 +1164,11 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 tool_context.state.get("pr_review_calls", {}) or {}
             )
         tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
+        # GH issue #399: snapshot the same "has anything landed under specs/
+        # since I last published" counter the early-return shortcut above
+        # checks, so a later sprint's own content-already-landed detection
+        # compares against THIS publish, not a stale one from sprints ago.
+        tool_context.state["sprint_backlog_pr_content_baseline"] = tool_context.state.get("planning_output_commit_count", 0)
         from .scrum import save_state_to_repo
         save_state_to_repo(tool_context)
 
