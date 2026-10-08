@@ -15,6 +15,9 @@ from agents.scrum_team.helpers import (
     closeout_remaining_work_fraction,
     looks_like_role_behavior_finding,
     recurring_technical_finding_sprint,
+    current_sprint_phase,
+    SPRINT_PHASES,
+    SPRINT_PHASE_GUIDANCE,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -312,6 +315,102 @@ class TestRecurringTechnicalFindingSprint(unittest.TestCase):
         existing = [{"action": "Update the README with setup instructions", "category": "technical", "sprint_number": 1}]
         result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 3, "action")
         self.assertIsNone(result)
+
+
+class TestCurrentSprintPhase(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #403): current_sprint_phase derives the
+    team's current ritual phase - Conceptual Work -> Plan & Start Sprint ->
+    Development -> Review, Retro & Release - purely from existing state
+    signals, so it can be surfaced proactively (a system-context nudge plus
+    a console-log prefix) instead of the team only finding out reactively,
+    after a mechanically-enforced tool call gets rejected.
+    """
+
+    def _base_state(self, **overrides):
+        state = {
+            "sprint_number": 0,
+            "sprint_backlog_pr_sprint": 0,
+            "product_backlog": [],
+            "sprint_backlog": [],
+            "backlog_scope_complete": False,
+            "sprint_report_pending_release": False,
+            "budgets": {"total": 1000},
+            "token_usage": {"total": 0},
+        }
+        state.update(overrides)
+        return state
+
+    def test_conceptual_work_when_no_sprint_and_backlog_not_ready_sufficient(self):
+        state = self._base_state()
+        self.assertEqual(current_sprint_phase(state), "Conceptual Work")
+
+    def test_plan_and_start_sprint_once_backlog_is_ready_sufficient(self):
+        state = self._base_state(backlog_scope_complete=True)
+        self.assertEqual(current_sprint_phase(state), "Plan & Start Sprint")
+
+    def test_plan_and_start_sprint_while_sprint_started_but_backlog_pr_not_yet_published(self):
+        state = self._base_state(backlog_scope_complete=True, sprint_number=1, sprint_backlog_pr_sprint=0)
+        self.assertEqual(current_sprint_phase(state), "Plan & Start Sprint")
+
+    def test_development_once_backlog_published_and_stories_not_all_accepted(self):
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_backlog=[{"id": "ST-1", "stages_completed": ["Ready", "Implemented"]}],
+        )
+        self.assertEqual(current_sprint_phase(state), "Development")
+
+    def test_review_retro_release_once_every_story_accepted(self):
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_backlog=[{"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}],
+        )
+        self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
+
+    def test_review_retro_release_once_budget_exhausted_even_with_unfinished_stories(self):
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_backlog=[{"id": "ST-1", "stages_completed": ["Ready"]}],
+            budgets={"total": 1000},
+            token_usage={"total": 1000},
+        )
+        self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
+
+    def test_review_retro_release_while_report_done_but_release_still_pending(self):
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_report_pending_release=True,
+        )
+        self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
+
+    def test_epics_are_never_counted_toward_all_accepted(self):
+        """An Epic sitting in sprint_backlog alongside a not-yet-accepted
+        story must not itself cause (or prevent) "every story accepted" -
+        only real stories count."""
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_backlog=[
+                {"id": "EP-1", "type": "Epic", "stages_completed": []},
+                {"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            ],
+        )
+        self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
+
+    def test_every_phase_has_its_own_guidance_text(self):
+        for phase in SPRINT_PHASES:
+            with self.subTest(phase=phase):
+                self.assertIn(phase, SPRINT_PHASE_GUIDANCE)
+                self.assertTrue(SPRINT_PHASE_GUIDANCE[phase])
 
 
 if __name__ == "__main__":

@@ -1053,6 +1053,25 @@ right now but the counter has advanced since that baseline, the content already 
 reviewably - and the sprint backlog is recognized as published (with a clear warning that review was
 bypassed) instead of rejecting forever.
 
+### The team is now proactively made aware of the current sprint phase, and Scrum Master nudges toward it (GH issue #403)
+
+0.1.0-run52 showed real, measurably better delivery - and also confirmed, via direct observation, that the
+team's ritual order (groom the backlog to Ready -> plan & start the sprint -> development -> review, retro
+& release) was enforced only *reactively*: a tool call made out of phase got mechanically rejected after
+the fact, with nothing proactively telling the team which phase it was actually in. DevTeam tried to jump
+straight to implementation, got rejected, and only then did Product Owner backfill the planning work that
+should have come first.
+
+A new `current_sprint_phase` helper derives one of four phases - Conceptual Work, Plan & Start Sprint,
+Development, Review/Retro & Release - purely from existing state signals (no new state to track). A new
+`before_model_callback`, registered for every role every turn, injects a one-line `[SPRINT PHASE: ...]`
+system-context message plus that phase's own short goal/scope reminder. Scrum Master's own prompt now
+explicitly owns intervening when another role acts outside the current phase - a nudge, not a new
+mechanical gate; the existing gates (`new_sprint_item_blocked`, `sprint_backlog_pr_missing`,
+`ready_backlog_shortfall`, ...) are untouched and remain the only real enforcement. The same phase and
+token-usage snapshot now also prefixes every tool-call console/transcript log line, so a human watching a
+live run sees both at a glance.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
