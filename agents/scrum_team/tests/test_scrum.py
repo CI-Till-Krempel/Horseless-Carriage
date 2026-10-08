@@ -561,6 +561,25 @@ class TestScrumTools(unittest.TestCase):
         result = start_sprint("Ship the next increment", tool_context=tool_context)
         self.assertEqual(result["status"], "ok")
 
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    def test_start_sprint_rejects_new_work_while_release_pending_even_if_every_story_accepted(self, mock_md):
+        """GH issue #401: a real eval run (0.1.0-run52) showed a sprint that
+        finished cleanly - every story Accepted - still let the next sprint
+        start without ever opening a release PR, because this gate used to
+        stop blocking the instant nothing was left unfinished."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_report_pending_release"] = True
+        tool_context.state["sprint_backlog"] = [
+            {"id": "ST-1", "title": "Old Story", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}
+        ]
+
+        result = start_sprint("Ship the next increment", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("create_release_pr", result["message"])
+        self.assertEqual(tool_context.state["sprint_goal"], "")
+
     @patch("agents.scrum_team.tools.github.release_pr_still_open")
     @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
     def test_start_sprint_rejects_when_previous_release_pr_still_open(self, mock_md, mock_pr_open):

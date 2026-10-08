@@ -661,10 +661,23 @@ def new_sprint_item_blocked(state: dict) -> str | None:
     """
     Returns a rejection message if a previous sprint's close sequence was
     left incomplete, else None. "Incomplete" here means
-    `sprint_report_pending_release` is set (create_sprint_report succeeded -
-    so the retro/report step did happen, see retro_baseline - but
-    create_release_pr never followed) and that prior sprint still has
-    planned stories short of Accepted. See ISSUE-0010.
+    `sprint_report_pending_release` is still set - create_sprint_report
+    succeeded (so the retro/report step did happen, see retro_baseline) but
+    create_release_pr never followed, regardless of whether that prior
+    sprint's stories all reached Accepted. See ISSUE-0010.
+
+    GH issue #401: this used to return None the moment every planned story
+    reached Accepted, even with sprint_report_pending_release still set -
+    meaning a sprint that finished *cleanly* (every story Accepted, exactly
+    the common/success case) let the next one start without its release PR
+    ever having been opened. A real eval run (0.1.0-run52) showed exactly
+    this: a sprint's release PR only ever got opened retroactively, inside
+    the NEXT sprint's own window (forced by start_sprint's own
+    release_pr_still_open check reacting to the prompt's own close-sequence
+    guidance) - and for the last sprint of a run, with no next sprint to
+    force it, no release PR ever went out at all despite every story being
+    genuinely done. sprint_report_pending_release alone - not "and stories
+    are unfinished" - is the actual signal this gate exists to catch.
 
     Only meant to gate genuinely *new* sprint_backlog items - an ongoing
     sprint planning several stories before any of them reach Accepted is
@@ -677,13 +690,19 @@ def new_sprint_item_blocked(state: dict) -> str | None:
         x for x in (state.get("sprint_backlog") or [])
         if x.get("type", "User Story") != "Epic" and "Accepted" not in (x.get("stages_completed") or [])
     ]
-    if not unfinished:
-        return None
-    unfinished_ids = [x.get("id") or x.get("title") for x in unfinished]
+    if unfinished:
+        unfinished_ids = [x.get("id") or x.get("title") for x in unfinished]
+        return (
+            "Cannot plan new sprint work - the previous sprint's retrospective/report was completed "
+            "but create_release_pr was never called (or didn't succeed) for it, and it still has "
+            f"stories short of Accepted ({unfinished_ids}). Finish the previous sprint's release "
+            "(create_release_pr) before starting new work - see ORCHESTRATOR_PROMPT SPRINT CLOSE "
+            "SEQUENCE."
+        )
     return (
-        "Cannot plan new sprint work - the previous sprint's retrospective/report was completed "
-        "but create_release_pr was never called (or didn't succeed) for it, and it still has "
-        f"stories short of Accepted ({unfinished_ids}). Finish the previous sprint's release "
-        "(create_release_pr) before starting new work - see ORCHESTRATOR_PROMPT SPRINT CLOSE "
-        "SEQUENCE."
+        "Cannot plan new sprint work - the previous sprint's retrospective/report was completed, "
+        "and every one of its planned stories reached Accepted, but create_release_pr was never "
+        "called (or didn't succeed) for it. A finished sprint is not actually closed until its "
+        "release PR is opened - call create_release_pr before starting new work - see "
+        "ORCHESTRATOR_PROMPT SPRINT CLOSE SEQUENCE."
     )

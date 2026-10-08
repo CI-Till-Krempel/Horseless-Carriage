@@ -1053,6 +1053,21 @@ right now but the counter has advanced since that baseline, the content already 
 reviewably - and the sprint backlog is recognized as published (with a clear warning that review was
 bypassed) instead of rejecting forever.
 
+### A cleanly-finished sprint could start the next one without ever opening its release PR (GH issue #401)
+
+0.1.0-run52 (the first eval run with both fixes above in) showed real, measurably better delivery - but
+confirmed a gap: the team repeatedly "forgot" to open the release PR before closing a sprint.
+`new_sprint_item_blocked` (the gate `start_sprint`/`plan_sprint_backlog_item` both rely on) was written to
+only block the next sprint when the previous one's `sprint_report_pending_release` was set **and** it still
+had stories short of Accepted - the moment every story reached Accepted, it returned `None` regardless.
+Confirmed in the transcript: Sprint 1 fully delivered and accepted its one story, but its release PR only
+got opened retroactively inside Sprint 2's own window - and the run's last two sprints, with no further
+sprint to force it, never got a release PR at all despite every story being genuinely done.
+
+`new_sprint_item_blocked` now blocks on `sprint_report_pending_release` alone, full stop - the "stories
+still short of Accepted" detail only changes which message is shown, never whether the gate fires. A sprint
+is not actually closed until its release PR is opened, regardless of how cleanly it finished.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
