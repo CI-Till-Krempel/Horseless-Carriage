@@ -296,6 +296,52 @@ def _merge_open_prs(local_path: Path, base_branch: str, sprint_result: dict | No
     return results
 
 
+def _merge_open_steering_prs(local_path: Path, develop_branch: str) -> list:
+    """
+    Auto-merges open `propose_steering_change` PRs (GH #405) - these also
+    target develop_branch, but _merge_open_prs above is deliberately never
+    called with base_branch=develop_branch (see the comment at its own call
+    site), so without this they just accumulate unmerged for the whole run;
+    a real eval run (0.1.0-run52) left 5 of them open across 5 sprints, with
+    nothing in the harness or the team's own tools able to act on them.
+
+    Unlike _merge_open_prs, this is NOT a blanket develop-targeted sweep -
+    that would risk force-merging incomplete/unreviewed feature->develop
+    PRs too (the exact risk _merge_open_prs's own narrow scoping avoids).
+    Instead this filters to PRs whose head branch was created by
+    propose_steering_change itself (`steering/{role_slug}-identity-...`,
+    see workflow.py), which is the eval harness's stand-in for the human
+    review propose_steering_change's own PR body asks for - the same
+    stand-in role _merge_open_prs already plays for the release PR.
+    Returns a list of {number, merged, message} for the report.
+    """
+    results = []
+    list_res = subprocess.run(
+        ["gh", "pr", "list", "--base", develop_branch, "--state", "open", "--json", "number,headRefName"],
+        cwd=str(local_path), capture_output=True, text=True,
+    )
+    if list_res.returncode != 0:
+        return [{"error": f"gh pr list failed: {list_res.stderr.strip()}"}]
+    try:
+        prs = json.loads(list_res.stdout or "[]")
+    except json.JSONDecodeError:
+        prs = []
+    for pr in prs:
+        if "/steering/" not in (pr.get("headRefName") or ""):
+            continue
+        number = pr["number"]
+        merge_res = subprocess.run(
+            ["gh", "pr", "merge", str(number), "--merge", "--admin"],
+            cwd=str(local_path), capture_output=True, text=True,
+        )
+        results.append({
+            "number": number,
+            "merged": merge_res.returncode == 0,
+            "message": (merge_res.stdout + merge_res.stderr).strip(),
+        })
+    return results
+
+
 _SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect"]
 
 
@@ -711,6 +757,12 @@ async def _main_async(args: argparse.Namespace) -> dict:
             # merged by QA's own merge_story_pr call during the sprint instead.
             merges = _merge_open_prs(args.local_path, args.branch, sprint_result=sprint_result)
             manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number} for m in merges])
+            # GH #405: steering proposals are the one develop-targeted PR
+            # type the eval harness treats as "reviewed" on the team's
+            # behalf (see _merge_open_steering_prs's own docstring) - swept
+            # separately from the release-PR merge above, every sprint.
+            steering_merges = _merge_open_steering_prs(args.local_path, args.develop_branch)
+            manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number, "steering": True} for m in steering_merges])
             _sync_local_clone_to_branch(args.develop_branch, args.local_path, args.github_token)
         except Exception as e:
             # Whatever crashed (a real run hit an uncaught litellm.RateLimitError

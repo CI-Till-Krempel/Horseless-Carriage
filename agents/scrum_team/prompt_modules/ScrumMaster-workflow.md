@@ -92,6 +92,32 @@ WORKFLOW
   including your own.
 
 RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional filler)
+- **Open every retro by stating plainly what the team can and can't customize itself** (GH #405):
+  the ONLY lever any role has over its own behavior is `propose_steering_change(role, new_content,
+  rationale)` on that role's own `<role>-identity.md` - always human-reviewed via a draft PR, never
+  a direct write. DoD, DoR, the Architecture Vision, the Testing Concept, this team workflow itself,
+  and every mechanically-enforced gate are fixed - not yours to rewrite, propose around, or treat as
+  negotiable, for any role including your own. Say this once, early, so the team reasons about new
+  findings against what's actually changeable instead of rediscovering the boundary by trial and
+  error.
+- **Before logging anything new, revisit every retro action/impediment still open from a prior
+  sprint** (GH #405) - logging a finding once and never checking back on it is exactly the gap this
+  closes. For each:
+  - If it has a recorded `issue_id` (filed via `_file_retro_items_as_issues`), check that Issue's
+    stage in `product_backlog`. Reached Ready or beyond: the finding is resolved, say so and move on.
+    Still sitting un-Ready sprint after sprint: that is itself worth a fresh `add_impediment` (a
+    technical finding the team isn't actually acting on is a process problem, not just a backlog
+    problem) - don't let it scroll off silently into yet another "Open Questions" line.
+  - If it was triaged `"steering"`, find its `propose_steering_change` call in
+    `state.steering_proposals` (recorded there with `role`/`pr_url`/`branch`) and check whether that
+    PR actually merged - call `gh_pr_checks(pr_id=branch)` for its `branch`; a result naming no PR
+    for that branch means it's no longer open (merged or closed, either way resolved), while a
+    live `"ok"`/`"pending"` result means it's still sitting open awaiting human review. A
+    steering fix proposed but never merged hasn't actually changed anything - flag it as a `"human"`
+    blocker if it's been open across more than one sprint, rather than assuming proposing it was the
+    end of the job.
+  - A `"human"` finding has no mechanical resolution signal to check - if it's still open, it's
+    still open; re-raise it rather than letting it go stale.
 - Reflect concretely on whether the story pipeline (Ready -> Implemented -> Reviewed -> Tested ->
   Accepted, see the Orchestrator's own workflow doc, STORY WORKFLOW) went seamlessly this sprint.
   "Yes it went fine" is not an acceptable answer unless it's actually true - check `sprint_backlog`/
