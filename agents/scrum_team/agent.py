@@ -317,7 +317,6 @@ from .tools import (
     update_budgets,
     get_budget_status,
     log_token_usage,
-    reset_sprint_budget,
     log_story_tokens,
     create_sprint_report,
     create_release_pr,
@@ -659,8 +658,9 @@ def _ensure_sprint_report_on_final_halt_once(callback_context: CallbackContext) 
     right below, using its own flag (sprint_report_safety_net_fired) since
     this fires later/less often than that one (only on the true final
     halt, not on the very first grace-eligible halt - see this function's
-    own docstring). Cleared by reset_sprint_budget, so a halt in a later
-    sprint is guaranteed a report again too."""
+    own docstring). Cleared by start_sprint's own mechanical reset (GH #413,
+    sprint_budget_reset_state_delta), so a halt in a later sprint is
+    guaranteed a report again too."""
     if callback_context.state.get("sprint_report_safety_net_fired"):
         return
     _ensure_sprint_report_on_final_halt(callback_context)
@@ -673,9 +673,9 @@ def _sync_roadmap_on_exhaustion_once(callback_context: CallbackContext) -> None:
     sprint - every call after the first exhaustion this sprint hits this same
     callback again (the canned response repeats on every subsequent turn), so
     without this guard it would redundantly re-sync/re-push on every single
-    one of those. Cleared by reset_sprint_budget / the eval harness's
-    per-sprint state_delta at the start of each new sprint, so exhaustion in
-    a later sprint syncs again.
+    one of those. Cleared by start_sprint's own mechanical reset (GH #413)
+    at the start of each new sprint, so exhaustion in a later sprint syncs
+    again.
     """
     if callback_context.state.get("budget_exhaustion_synced"):
         return
@@ -706,8 +706,9 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str, detail: s
     canned halt response repeats on every turn once the budget's exhausted),
     appending a new blocking_interactions entry and re-firing every
     configured notifier again and again, undoing the alert-fatigue fix
-    ISSUE-0025 was meant to deliver. Cleared by reset_sprint_budget, same as
-    budget_exhaustion_synced, so a halt in a later sprint notifies again."""
+    ISSUE-0025 was meant to deliver. Cleared by start_sprint's own
+    mechanical reset (GH #413), same as budget_exhaustion_synced, so a halt
+    in a later sprint notifies again."""
     if callback_context.state.get("critical_halt_notified"):
         return
     from .tools.notifications import record_blocking_interaction
@@ -908,8 +909,8 @@ def _maybe_inject_budget_warning(
     SPRINT_TOKEN_BUDGET, so a human watching the console - and the model
     itself - gets advance notice instead. Gated by a single "highest
     threshold already warned" flag in state so each threshold fires at most
-    once per sprint; reset_sprint_budget clears it for the next one (see
-    sprint_budget_reset_state_delta, tools/budget.py).
+    once per sprint; start_sprint's own mechanical reset (GH #413) clears it
+    for the next one (see sprint_budget_reset_state_delta, tools/budget.py).
     """
     if token_limit <= 0:
         return
@@ -2684,7 +2685,6 @@ scrum_master = LlmAgent(
         update_budgets,
         get_budget_status,
         log_token_usage,
-        reset_sprint_budget,
         gh_pr_status,
         gh_pr_checks,
         gh_pr_comment,

@@ -16,7 +16,6 @@ from agents.scrum_team.scripts.run_eval import (
     _sprint_needs_human_this_harness_cannot_provide,
     _unresolved_high_priority_general_blocker,
 )
-from agents.scrum_team.tools.budget import sprint_budget_reset_state_delta
 
 
 class _FakeSession:
@@ -33,13 +32,13 @@ class _SelfTransferRunner:
     """Simulates ADK's resolve_and_derive_transfer_context rejecting a
     hallucinated agent-transfers-to-itself tool call mid-turn."""
 
-    async def run_async(self, user_id, session_id, new_message, state_delta):
+    async def run_async(self, user_id, session_id, new_message, state_delta=None):
         raise ValueError("Agent 'DevTeam' cannot transfer to itself.")
         yield  # pragma: no cover - never reached; keeps this an async generator
 
 
 class _OtherValueErrorRunner:
-    async def run_async(self, user_id, session_id, new_message, state_delta):
+    async def run_async(self, user_id, session_id, new_message, state_delta=None):
         raise ValueError("some unrelated bug")
         yield  # pragma: no cover
 
@@ -56,7 +55,7 @@ class _OneEventThenHaltRunner:
     "max_events_reached" right after, the same way a real eval run's
     sprint got cut off mid-close-out."""
 
-    async def run_async(self, user_id, session_id, new_message, state_delta):
+    async def run_async(self, user_id, session_id, new_message, state_delta=None):
         yield _FakeEvent()
 
 
@@ -73,17 +72,12 @@ class _StatefulSessionService:
         return self._session
 
 
-class _RecordingRunner:
-    """Records every state_delta it's called with, then ends the turn
-    immediately (no sprint report) so _run_one_sprint keeps nudging until
-    max_nudges - only attempt 0's state_delta (the one under test) is ever
-    non-None."""
+class _NoProgressRunner:
+    """Ends every turn immediately with no events and no tool activity at
+    all - simulates a sprint invocation where the team did nothing new this
+    attempt (e.g. it's still between real sprints)."""
 
-    def __init__(self):
-        self.state_deltas = []
-
-    async def run_async(self, user_id, session_id, new_message, state_delta):
-        self.state_deltas.append(state_delta)
+    async def run_async(self, user_id, session_id, new_message, state_delta=None):
         return
         yield  # pragma: no cover - never reached; keeps this an async generator
 
@@ -114,30 +108,66 @@ def test_run_one_sprint_reraises_unrelated_value_error():
         raise AssertionError("expected the unrelated ValueError to propagate, not be swallowed")
 
 
-def test_run_one_sprint_reset_state_delta_matches_shared_sprint_budget_reset():
+def test_run_one_sprint_does_not_mistake_a_stale_report_from_before_this_call_as_fresh():
     """
-    ISSUE-0049 / 0.1.0-run33: this harness-side reset used to be an
-    independent, hand-copied subset of reset_sprint_budget's own key list
-    (agents/scrum_team/tools/budget.py) and had drifted - missing
-    critical_halt_notified/sprint_report_safety_net_fired - so a sprint that
-    ended via the final-halt safety net left the NEXT sprint's own safety
-    net silently disarmed. Assert the harness's state_delta is a superset
-    of the shared reset dict (plus its own extra sprint_report/
-    sprint_report_kpis keys), so the two can never independently drift
-    apart again.
+    GH #413: _run_one_sprint no longer clears sprint_report via state_delta
+    (that mutation now belongs to start_sprint's own mechanical reset,
+    tied to the real sprint boundary) - it snapshots whatever's already in
+    state as a baseline and only treats a CHANGED value as "produced this
+    invocation". A session that already has a report sitting in state
+    (e.g. the team hasn't called start_sprint for a new sprint yet) must
+    not be mistaken for "this attempt just produced one".
     """
-    runner = _RecordingRunner()
-    _run(_run_one_sprint(
-        runner, _FakeSessionService(), "app", "user", "session-1",
+    session_service = _StatefulSessionService({"sprint_report": "Stale report from a prior sprint"})
+    result = _run(_run_one_sprint(
+        _NoProgressRunner(), session_service, "app", "user", "session-1",
         "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
     ))
 
-    assert len(runner.state_deltas) == 1
-    state_delta = runner.state_deltas[0]
-    for key, value in sprint_budget_reset_state_delta().items():
-        assert state_delta[key] == value, f"{key!r} missing/mismatched in harness state_delta"
-    assert state_delta["sprint_report"] == ""
-    assert state_delta["sprint_report_kpis"] == {}
+    assert result["stop_reason"] != "sprint_report_produced"
+    assert result["sprint_report"] is None
+
+
+def test_run_one_sprint_detects_a_genuinely_new_report_against_the_baseline():
+    """Sibling to the stale-report case above: a report that actually
+    CHANGES from whatever baseline existed is real completion evidence."""
+    state = {"sprint_report": "Stale report from a prior sprint"}
+    session_service = _StatefulSessionService(state)
+
+    class _ProducesNewReportRunner:
+        async def run_async(self, user_id, session_id, new_message, state_delta=None):
+            state["sprint_report"] = "Fresh report from this very call"
+            return
+            yield  # pragma: no cover
+
+    result = _run(_run_one_sprint(
+        _ProducesNewReportRunner(), session_service, "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+    ))
+
+    assert result["stop_reason"] == "sprint_report_produced"
+    assert result["sprint_report"] == "Fresh report from this very call"
+
+
+def test_run_one_sprint_never_passes_a_state_delta_to_the_runner():
+    """GH #413: no harness-side state mutation at all any more - token
+    budget/report/KPI resets are exclusively start_sprint's job now,
+    mechanical and tied to the real sprint boundary."""
+    calls = []
+
+    class _CapturingRunner:
+        async def run_async(self, user_id, session_id, new_message, **kwargs):
+            calls.append(kwargs)
+            return
+            yield  # pragma: no cover
+
+    _run(_run_one_sprint(
+        _CapturingRunner(), _FakeSessionService(), "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+    ))
+
+    assert len(calls) == 1
+    assert "state_delta" not in calls[0]
 
 
 def test_sprint_should_not_abort_when_no_critical_halt_occurred():
@@ -356,18 +386,56 @@ class TestHostSideSprintReportBackstop:
         assert result["stop_reason"] == "max_events_reached"
         assert result["sprint_report"] == "# Fallback Report"
 
-    def test_does_not_call_the_backstop_when_a_real_report_already_exists(self):
-        state = {"critical_halt_notified": True, "sprint_report": "# Real Report"}
+    def test_does_not_call_the_backstop_when_this_invocation_already_produced_a_real_report(self):
+        """
+        GH #413: sprint_report is compared against a baseline snapshotted
+        BEFORE this invocation started, not read bare - a report that was
+        already sitting in state before anything ran this call (e.g. a
+        genuinely stale leftover from a previous sprint the team hasn't
+        started a new one over yet) must NOT be mistaken for "this
+        invocation's own work produced one". This test instead simulates
+        the real case the backstop is meant to skip: THIS invocation's own
+        activity (the event loop below) is what produced the report.
+        """
+        state = {"critical_halt_notified": True}
         session_service = _StatefulSessionService(state)
+
+        class _ProducesReportThenHaltsRunner:
+            async def run_async(self, user_id, session_id, new_message, state_delta=None):
+                state["sprint_report"] = "# Real Report"
+                yield _FakeEvent()
 
         with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt") as mock_ensure:
             result = _run(_run_one_sprint(
-                _OneEventThenHaltRunner(), session_service, "app", "user", "session-1",
+                _ProducesReportThenHaltsRunner(), session_service, "app", "user", "session-1",
                 "hello", max_events=1, deadline=time.monotonic() + 60, max_nudges=0,
             ))
 
         mock_ensure.assert_not_called()
         assert result["sprint_report"] == "# Real Report"
+
+    def test_backstop_still_fires_for_a_genuinely_stale_leftover_report(self):
+        """
+        Sibling/contrast to the test above: a report already sitting in
+        state BEFORE this invocation did anything (the team hasn't called
+        start_sprint for a new sprint yet, so the previous sprint's own
+        report is still there) must not suppress the backstop - this
+        invocation's own activity produced nothing new.
+        """
+        state = {"critical_halt_notified": True, "sprint_report": "# Stale Report From Last Sprint"}
+        session_service = _StatefulSessionService(state)
+
+        def _fake_ensure(tool_context):
+            tool_context.state["sprint_report"] = "# Fallback Report"
+
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=_fake_ensure) as mock_ensure:
+            result = _run(_run_one_sprint(
+                _OneEventThenHaltRunner(), session_service, "app", "user", "session-1",
+                "hello", max_events=1, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        mock_ensure.assert_called_once()
+        assert result["sprint_report"] == "# Fallback Report"
 
     def test_does_not_call_the_backstop_without_a_critical_halt(self):
         """A sprint that just ran out of max_events without ever hitting a

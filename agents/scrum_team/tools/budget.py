@@ -111,35 +111,50 @@ def log_token_usage(agent_name: str, tokens: int, tool_context=None) -> Dict[str
 def sprint_budget_reset_state_delta() -> Dict[str, Any]:
     """
     Single source of truth for exactly which state keys must be cleared at
-    the start of a new sprint, and to what. Two callers need this identical
-    set: this module's own reset_sprint_budget (the agent-invoked tool used
-    in interactive/real usage) and run_eval.py's _run_one_sprint (the eval
-    harness's own unattended equivalent, since there's no Scrum Master
-    around to call reset_sprint_budget for it).
+    the start of a new sprint, and to what. SPRINT_TOKEN_BUDGET is a
+    per-sprint allowance, not a cumulative total for the whole engagement -
+    without this, token_usage.total only ever grows, silently starving
+    every later sprint of further LLM calls.
 
-    ISSUE-0049 / 0.1.0-run33: those two used to be independent, hand-copied
-    key lists. run_eval.py's copy predated critical_halt_notified and
-    sprint_report_safety_net_fired being added here and was never
-    backported, so a sprint that ended via the final-halt safety net (see
-    _ensure_sprint_report_on_final_halt_once, agent.py) left
-    sprint_report_safety_net_fired=True stuck for the rest of the run - the
-    very next sprint's own final halt then silently no-opped on that guard
-    and produced NO sprint report at all (not even the fallback one),
-    exactly the failure EVAL-REPORT.md flagged as run33's worst problem.
-    Both callers importing this one function instead of maintaining their
-    own copy means they can't drift apart like that again.
+    GH #413: applied mechanically by start_sprint itself (tools/scrum.py)
+    as part of actually starting a new sprint - there is no longer a
+    separate agent-invoked reset_sprint_budget tool, and no separate
+    harness-side reset in run_eval.py either. Both used to exist
+    independently of the real sprint boundary (an agent "MANDATORY"-text
+    instruction it could forget to follow, and a harness reset tied to
+    whichever scripted message happened to arrive next, not to whether a
+    real sprint actually started) - a real eval run (0.1.0-run53) hit
+    exactly this: a sprint stuck mid-close-out got a completely fresh
+    token/event budget purely because the harness sent its next scripted
+    message, letting an unresolved deadlock run again from scratch. One
+    mechanical reset, tied to the one real event that should trigger it,
+    can no longer drift out of sync with "the rest of the sprint process"
+    this way.
+
+    ISSUE-0049 / 0.1.0-run33: before this, start_sprint's own enforcement
+    and run_eval.py's harness-side copy were independent, hand-copied key
+    lists that drifted apart (run_eval.py's predated critical_halt_notified/
+    sprint_report_safety_net_fired and was missing them, leaving a stuck
+    flag across sprint boundaries that silently suppressed a later sprint's
+    own safety net). A single shared function closes that gap for good.
 
     Returns a fresh dict (with fresh nested dicts) on every call so a
-    caller mutating its own copy - or writing each key into its own
-    per-sprint state_delta alongside a few keys of its own - never risks
-    aliasing another caller's copy.
+    caller mutating its own copy never risks aliasing another's.
     """
     return {
         "token_usage": {"total": 0, "agents": {}},
         "budget_exhaustion_synced": False,
-        "budget_reset_since_last_sprint_start": True,
         "critical_halt_notified": False,
         "sprint_report_safety_net_fired": False,
+        # GH #413: ScrumState.sprint_report/sprint_report_kpis are just
+        # whatever the last create_sprint_report/update_sprint_report call
+        # produced - never cleared by the product code itself otherwise, so
+        # without this a new sprint would silently start with the PREVIOUS
+        # sprint's report/KPIs still sitting in state until this sprint's
+        # own calls overwrite them (or never do, if this sprint's own report
+        # step is skipped for any reason).
+        "sprint_report": "",
+        "sprint_report_kpis": {},
         # GH issue (0.1.0-run42): the numbered specs/reports/SPRINT-REPORT-
         # NNN.md path this sprint's report was written to (create_sprint_report
         # / render_fallback_sprint_report both set this on write, and reuse it
@@ -163,48 +178,6 @@ def sprint_budget_reset_state_delta() -> Dict[str, Any]:
         # silently suppressed because a previous sprint already crossed 90%.
         "_budget_warning_pct_fired": 0,
     }
-
-
-def reset_sprint_budget(tool_context=None) -> Dict[str, Any]:
-    """
-    Resets the LOGICAL token budget for a new sprint. SPRINT_TOKEN_BUDGET is
-    a per-sprint allowance, not a cumulative total for the whole engagement -
-    without this, token_usage.total only ever grows, so a sprint that used
-    most of the budget silently starves every later sprint of any further
-    LLM calls (check_cost_budget_callback compares token_usage.total against
-    the same never-reset budgets.total). Call this once, at the start of
-    every sprint after the first, before Sprint Planning.
-
-    Deliberately does NOT touch budgets.total_usd: the USD guardrail is an
-    intentional whole-run financial ceiling enforced by the LiteLLM proxy's
-    shared scrum-sprint-budget object (see BUDGET.md), not a per-sprint one.
-
-    Also clears the exhaustion-sync guard (see check_cost_budget_callback in
-    agent.py) so a new sprint's exhaustion, if it happens, syncs the roadmap
-    again rather than being silently skipped because a *previous* sprint
-    already tripped it once. Likewise clears the critical-halt notification
-    guard (GH issue #112) - see _notify_critical_halt in agent.py - so a
-    halt in this new sprint notifies again rather than being silently
-    skipped because a previous sprint's halt already fired it once. Same
-    for the sprint-report safety net's own guard (see
-    _ensure_sprint_report_on_final_halt_once in agent.py) - a new sprint's
-    final halt, if it happens, is guaranteed a report again too.
-
-    Also marks the budget as freshly reset (see GH issue #110) - start_sprint
-    requires this to have happened since the previous sprint started (except
-    for the very first sprint, which has no previous sprint's usage to
-    clear), instead of relying on SM_PROMPT's "MANDATORY" text alone.
-
-    See sprint_budget_reset_state_delta (ISSUE-0049) for the actual list of
-    keys/values this clears - shared with run_eval.py's harness-side
-    equivalent so the two can't drift apart again.
-    """
-    from .scrum import save_state_to_repo
-    s = tool_context.state
-    for key, value in sprint_budget_reset_state_delta().items():
-        s[key] = value
-    save_state_to_repo(tool_context)
-    return {"status": "ok", "token_usage": s["token_usage"]}
 
 
 def log_story_tokens(title_or_id: str, actual_tokens: int, tool_context=None) -> Dict[str, Any]:
@@ -342,9 +315,10 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         # while the shared budget_id above already enforces the real,
         # correctly-sized ceiling (total_budget_usd) across every agent -
         # this per-key cap is redundant at best. Worse, it's never reset or
-        # recreated between sprints (reset_sprint_budget only clears local
-        # token counters), so a too-small value starves that agent for the
-        # rest of the run once hit, and the eventual litellm.RateLimitError
+        # recreated between sprints (start_sprint's own mechanical reset,
+        # GH #413, only clears local token counters), so a too-small value
+        # starves that agent for the rest of the run once hit, and the
+        # eventual litellm.RateLimitError
         # used to crash the whole process (see _patched_adk_acompletion).
         # Never let an individual key's cap be tighter than the shared
         # budget that's meant to be the real ceiling.
@@ -429,8 +403,8 @@ def estimate_sprint_capacity(s: Dict[str, Any]) -> float | None:
     """
     Average actual tokens per completed story, computed from every
     story_estimates[*].actual logged so far (log_story_tokens) - persists
-    across sprints, unlike token_usage/sprint_backlog which
-    reset_sprint_budget clears each sprint. The same "observed
+    across sprints, unlike token_usage/sprint_backlog which start_sprint's
+    own mechanical reset (GH #413) clears each sprint. The same "observed
     tokens-per-completed-story rate" _sprint_length_feedback already
     extrapolates from at sprint *close*, exposed here for use at sprint
     *start* too (see sprint_capacity_advisory below). None if nothing has
@@ -1630,7 +1604,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # sprint_report_pending_release) previously only ever landed in the live
     # in-memory session state - this function never persisted them, unlike
     # nearly every other state-mutating tool (advance_story_stage,
-    # reset_sprint_budget, log_story_tokens, ...). A real eval run (0.1.0-
+    # start_sprint, log_story_tokens, ...). A real eval run (0.1.0-
     # run50) showed the exact failure this causes: if an EARLIER
     # create_sprint_report attempt was rejected (e.g. the overclaim gate)
     # and the team went on to do more real work to fix it,

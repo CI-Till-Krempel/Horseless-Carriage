@@ -1207,6 +1207,25 @@ ever existed even with a usable manifest.json on disk. Split into two steps, wit
 from whatever manifest exists. `run_eval.py`'s own `main()` also now guarantees a (possibly minimal)
 manifest gets written even if something crashes outside the per-sprint loop entirely, where previously
 nothing would be written at all.
+### Sprint token-budget reset is now purely mechanical - no more agent-invoked or harness-side resets to drift out of sync (GH issue #413)
+
+Two independent, forgettable reset paths existed for the same underlying fact ("a new sprint
+started"): ScrumMaster had to remember to call `reset_sprint_budget()` - "MANDATORY" only in prompt
+text, with no code enforcing it beyond refusing the next `start_sprint` call until it happened - and
+`run_eval.py`'s `_run_one_sprint` separately, blindly reset the same state at the start of every
+scripted per-sprint message, regardless of whether a real sprint boundary had actually occurred. This
+was root cause #1 of eval run53's 2.4x budget overspend (GH issue #407/#409): a sprint stuck
+mid-close-out got a completely fresh token/event budget purely because the harness happened to send
+its next scripted message, letting an unresolved deadlock run again from scratch.
+
+The reset (token usage, sprint_report/sprint_report_kpis, and every sibling guard flag -
+`sprint_budget_reset_state_delta`) is now applied directly inside `start_sprint` itself, for every
+sprint after the first - mechanical, tied to the one real event that should trigger it. The
+`reset_sprint_budget` tool has been removed entirely (there's nothing left for an agent to forget).
+`run_eval.py` no longer mutates session state via `state_delta` at all - it snapshots
+`sprint_report`/`sprint_report_kpis` as a baseline before sending anything, and detects "did this
+invocation's own activity produce something new" by comparing against that snapshot afterward, a
+pure read that can never drift out of sync with the real sprint boundary again.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
