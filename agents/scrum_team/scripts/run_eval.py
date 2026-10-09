@@ -486,6 +486,49 @@ def _sprint_needs_human_this_harness_cannot_provide(sprint_result: dict, previou
     return None
 
 
+_DOMINANT_REJECTION_MIN_COUNT = 3
+_DOMINANT_REJECTION_MESSAGE_KEY_LEN = 80
+
+
+def _dominant_repeated_rejection(sprint_result: dict) -> Optional[tuple]:
+    """
+    GH #409: finds the single (tool_name, message_prefix) pair that failed
+    with the exact same (truncated) rejection message most often this
+    sprint, if any pair repeated at least _DOMINANT_REJECTION_MIN_COUNT
+    times - a content-based "the team is stuck on this specific rejection"
+    signal, checked here across sprint boundaries (see
+    _sprint_stuck_on_the_same_rejection_as_last_sprint below). Independent
+    of whether agent.py's own in-sprint loop breakers
+    (_detect_transfer_loop/_detect_repeated_rejection_loop, GH #408) fired -
+    those can themselves keep re-tripping turn after turn without the team
+    ever actually resolving the underlying cause, which still burns this
+    harness's per-sprint event/token budget same as the original rejection
+    would.
+
+    A real eval run (0.1.0-run53, GH issue #407) hit the identical
+    "Cannot close the sprint report: ..." rejection from create_sprint_report
+    75+ times across two separate per-sprint harness invocations - each
+    invocation's own event/token budget reset fresh (see
+    sprint_budget_reset_state_delta), so neither ever accumulated enough
+    within a single invocation to look stuck on its own.
+    """
+    counts: dict = {}
+    for event in sprint_result.get("events") or []:
+        for tr in event.get("tool_responses") or []:
+            response = tr.get("response")
+            if not isinstance(response, dict) or response.get("status") != "error":
+                continue
+            message = str(response.get("message") or response.get("error") or "")
+            key = (tr.get("name"), message[:_DOMINANT_REJECTION_MESSAGE_KEY_LEN])
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    dominant_key, dominant_count = max(counts.items(), key=lambda kv: kv[1])
+    if dominant_count < _DOMINANT_REJECTION_MIN_COUNT:
+        return None
+    return dominant_key
+
+
 async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, session_id: str, message_text: str, max_events: int, deadline: float, max_nudges: int = 4) -> dict:
     """
     Sends message_text, then - if the model stops with plain text and no
@@ -731,6 +774,13 @@ async def _main_async(args: argparse.Namespace) -> dict:
     # blocked, same as last sprint" apart from "just got blocked this
     # sprint" - see that function's own docstring.
     previously_blocked_ids = set()
+    # GH #409: carried across sprint boundaries so a sprint whose own
+    # dominant repeated rejection (_dominant_repeated_rejection) matches the
+    # PREVIOUS sprint's - with no sprint report produced by either - can be
+    # told apart from "stuck on this rejection for the first time, may just
+    # need another sprint's budget". See the check right after
+    # _sprint_needs_human_this_harness_cannot_provide below.
+    previously_dominant_rejection = None
 
     for sprint_number in range(1, args.sprints + 1):
         if time.monotonic() >= deadline:
@@ -833,6 +883,29 @@ async def _main_async(args: argparse.Namespace) -> dict:
             manifest["stop_reason"] = f"blocked_{reason}"
             manifest["blocked_story"] = {"id": story_id, "blocked": blocked}
             break
+
+        # GH #409: a sprint that produced no sprint report, dominated by the
+        # exact same rejection (tool + truncated message) as the PREVIOUS
+        # sprint - also produced no sprint report - across a sprint
+        # boundary. Resetting the token/event budget and sending the next
+        # scripted message has already been tried once for this exact
+        # symptom; a real eval run (0.1.0-run53) hit this across two sprint
+        # boundaries before it had to be cancelled manually, each reset
+        # just giving the identical stuck pattern a fresh lease on life.
+        dominant_rejection = None if sprint_result.get("sprint_report") else _dominant_repeated_rejection(sprint_result)
+        if dominant_rejection and dominant_rejection == previously_dominant_rejection:
+            tool_name, message_key = dominant_rejection
+            print(
+                f"--- sprint {sprint_number}/{args.sprints}: dominated by the same rejection as the "
+                f"previous sprint ({tool_name}: {message_key!r}), with no sprint report produced by "
+                "either - resetting the budget again would just repeat this. Stopping run ---",
+                file=sys.stderr,
+            )
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = "repeated_sprint_closing_deadlock"
+            manifest["dominant_rejection"] = {"tool": tool_name, "message_prefix": message_key}
+            break
+        previously_dominant_rejection = dominant_rejection
 
         previously_blocked_ids = set(_blocked_stories(sprint_result).keys())
 
