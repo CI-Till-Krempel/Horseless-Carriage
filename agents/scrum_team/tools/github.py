@@ -13,6 +13,13 @@ from ..helpers import (
     ready_backlog_shortfall,
 )
 
+# GH #415: the version a newly-committed sprint story defaults to if it has
+# none assigned yet - matches spec-templates/ROADMAP.md's own first real
+# release section ("### v0.1 — MVP (target: YYYY-MM)"), so stories actually
+# land there instead of the generic "Backlog (unplanned)" bucket forever.
+# See create_sprint_backlog_pr's own mechanical roadmap sync.
+DEFAULT_RELEASE_VERSION = "v0.1"
+
 def release_pr_still_open(tool_context=None) -> bool:
     """
     True if a release PR (develop -> main, or their eval-run-resolved
@@ -1169,6 +1176,48 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
         # checks, so a later sprint's own content-already-landed detection
         # compares against THIS publish, not a stale one from sprints ago.
         tool_context.state["sprint_backlog_pr_content_baseline"] = tool_context.state.get("planning_output_commit_count", 0)
+
+        # GH #415: mechanically keep specs/ROADMAP.md's release goals and
+        # Kanban version-grouping populated - previously entirely optional
+        # (update_roadmap's own `goals` param is never supplied unless an
+        # agent happens to pass it, and a story defaults to
+        # version="Backlog (unplanned)" forever unless something explicitly
+        # assigns a real one). A real eval run (0.1.0-run54) showed
+        # ROADMAP.md's release goals and "### v0.1 Kanban" sections left
+        # permanently empty despite stories actually being tracked - just
+        # under the generic unplanned bucket, never grouped into a real
+        # release. Every non-Epic story newly committed to THIS sprint's
+        # backlog defaults to DEFAULT_RELEASE_VERSION if it has none yet,
+        # and this sprint's own goal (state.sprint_goal, set by
+        # start_sprint) is appended to that version's Goals - no separate
+        # agent action required, same "make it mechanical" philosophy as
+        # GH #413's sprint-budget reset.
+        from .requirements import update_roadmap
+        sprint_story_ids = {x.get("id") or x.get("title") for x in (state.get("sprint_backlog") or [])}
+        product_backlog = tool_context.state.get("product_backlog", []) or []
+        versions_touched = {}
+        for item in product_backlog:
+            story_key = item.get("id") or item.get("title")
+            if story_key not in sprint_story_ids or item.get("type") == "Epic":
+                continue
+            if not item.get("version") or item.get("version") == "Backlog (unplanned)":
+                item["version"] = DEFAULT_RELEASE_VERSION
+            versions_touched.setdefault(item["version"], []).append(story_key)
+        # update_roadmap's own `goals` REPLACES a version's Goals section
+        # wholesale on every call (it has no "append" mode) - accumulated
+        # here in state instead (deduped) and passed as the full list every
+        # time, so a later sprint's own goal doesn't erase earlier sprints'
+        # already-recorded ones for the same version.
+        sprint_goal = tool_context.state.get("sprint_goal")
+        version_goals = dict(tool_context.state.get("version_goals") or {})
+        for version, story_keys in versions_touched.items():
+            goals = list(version_goals.get(version, []))
+            if sprint_goal and sprint_goal not in goals:
+                goals.append(sprint_goal)
+            version_goals[version] = goals
+            update_roadmap(version, goals=goals, stories=story_keys, tool_context=tool_context)
+        tool_context.state["version_goals"] = version_goals
+
         from .scrum import save_state_to_repo
         save_state_to_repo(tool_context)
 
