@@ -49,10 +49,10 @@ MODEL_PRICING_LOOKUP = {
 
 def _total_tokens_used(manifest: dict) -> int:
     """
-    token_usage.total now resets at the start of every sprint (see
-    run_eval.py's _run_one_sprint state_delta / reset_sprint_budget) - each
-    sprint row reflects only that sprint's own consumption, so the run's
-    total is the SUM of every sprint row, not the last (biggest) one.
+    token_usage.total now resets at the start of every sprint (start_sprint's
+    own mechanical reset, GH #413) - each sprint row reflects only that
+    sprint's own consumption, so the run's total is the SUM of every sprint
+    row, not the last (biggest) one.
     """
     totals = [(s.get("token_usage") or {}).get("total", 0) for s in manifest.get("sprints", [])]
     return sum(totals)

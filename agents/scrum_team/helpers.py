@@ -224,9 +224,10 @@ SPRINT_CLOSEOUT_GRACE_ROLES = frozenset({"ProductOwner", "ScrumOrchestrator"})
 # TOTAL_USD_BUDGET replaces SPRINT_USD_BUDGET as the canonical name for the
 # whole-engagement, never-reset-per-sprint USD ceiling - the old name looked
 # like a per-sprint value (same "SPRINT_" prefix as the genuinely-per-sprint
-# SPRINT_TOKEN_BUDGET, which *does* reset every sprint via reset_sprint_budget),
-# but actually behaves as a cumulative cap for the entire engagement (see
-# BUDGET.md, reset_sprint_budget's docstring in tools/budget.py). Read via
+# SPRINT_TOKEN_BUDGET, which *does* reset every sprint via start_sprint's own
+# mechanical reset, GH #413), but actually behaves as a cumulative cap for
+# the entire engagement (see BUDGET.md, sprint_budget_reset_state_delta's
+# docstring in tools/budget.py). Read via
 # get_env_with_deprecated_fallback so an existing .env using the old name
 # keeps working exactly as before - a silent drop here would fall back to
 # this module's own hardcoded default, which could be a *higher* ceiling

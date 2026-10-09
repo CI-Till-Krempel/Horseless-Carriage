@@ -14,9 +14,9 @@ if you haven't renamed it in your own `.env` yet.
 - **Unit**: Total tokens (e.g., 5,000,000 - the default as of GH issue #220; a real "product mode"
   test-drive showed planning alone, before Dev/QA ever ran, can use just over 1,000,000, the
   previous default).
-- **Scope**: **Per sprint.** Resets automatically at the start of every new sprint
-  (`reset_sprint_budget`, or the eval harness's own per-sprint reset) - a sprint that used most of
-  its budget doesn't starve every later sprint.
+- **Scope**: **Per sprint.** Resets automatically whenever `start_sprint` actually starts a new one
+  (mechanical, GH #413 - no separate tool call or harness-side reset involved) - a sprint that used
+  most of its budget doesn't starve every later sprint.
 - **Enforcement**: Hard-blocked locally, purely from session state/`SPRINT_TOKEN_BUDGET` — no
   call to LiteLLM is involved, so this guardrail applies **even if the LiteLLM proxy isn't
   running**. See step 1 of `check_cost_budget_callback` in `agents/scrum_team/agent.py`
@@ -65,8 +65,8 @@ if you haven't renamed it in your own `.env` yet.
 ## 2. USD Budget (LiteLLM Layer)
 - **Unit**: US Dollars (e.g., $0.50).
 - **Scope**: **Whole engagement.** Never resets automatically, unlike the token budget above -
-  `reset_sprint_budget` deliberately does not touch it (see its docstring in
-  `agents/scrum_team/tools/budget.py`).
+  `start_sprint`'s own mechanical per-sprint reset (`sprint_budget_reset_state_delta`,
+  `agents/scrum_team/tools/budget.py`) deliberately does not touch it.
 - **Enforcement**: Hard-blocked by the LiteLLM Proxy, plus a real-time pre-call check
   against current spend on the shared `scrum-sprint-budget` object.
 - **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via
