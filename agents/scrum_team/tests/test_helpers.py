@@ -15,6 +15,7 @@ from agents.scrum_team.helpers import (
     closeout_remaining_work_fraction,
     looks_like_role_behavior_finding,
     recurring_technical_finding_sprint,
+    new_sprint_item_blocked,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -312,6 +313,61 @@ class TestRecurringTechnicalFindingSprint(unittest.TestCase):
         existing = [{"action": "Update the README with setup instructions", "category": "technical", "sprint_number": 1}]
         result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 3, "action")
         self.assertIsNone(result)
+
+
+class TestNewSprintItemBlocked(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #401): a real eval run (0.1.0-run52) showed
+    a sprint that finished *cleanly* - every planned story reached Accepted -
+    still let the next sprint start without its release PR ever having been
+    opened, because this gate used to return None the instant no story was
+    left unfinished, regardless of sprint_report_pending_release. That flag
+    alone - not "and stories are unfinished" - is what this gate must key on.
+    """
+
+    def test_not_blocked_when_nothing_is_pending_release(self):
+        state = {"sprint_report_pending_release": False, "sprint_backlog": []}
+        self.assertIsNone(new_sprint_item_blocked(state))
+
+    def test_blocked_when_pending_release_and_stories_unfinished(self):
+        state = {
+            "sprint_report_pending_release": True,
+            "sprint_backlog": [{"id": "ST-1", "stages_completed": ["Ready", "Implemented"]}],
+        }
+        message = new_sprint_item_blocked(state)
+        self.assertIsNotNone(message)
+        self.assertIn("ST-1", message)
+
+    def test_blocked_when_pending_release_even_with_every_story_accepted(self):
+        """The exact gap GH issue #401 closes: a cleanly-finished sprint
+        (nothing left unfinished) must still be blocked until its release
+        PR actually goes out."""
+        state = {
+            "sprint_report_pending_release": True,
+            "sprint_backlog": [{"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}],
+        }
+        message = new_sprint_item_blocked(state)
+        self.assertIsNotNone(message)
+        self.assertIn("create_release_pr", message)
+
+    def test_not_blocked_once_release_pr_opened_and_flag_cleared(self):
+        state = {
+            "sprint_report_pending_release": False,
+            "sprint_backlog": [{"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}],
+        }
+        self.assertIsNone(new_sprint_item_blocked(state))
+
+    def test_epics_are_never_counted_as_unfinished(self):
+        state = {
+            "sprint_report_pending_release": True,
+            "sprint_backlog": [{"id": "EP-1", "type": "Epic", "stages_completed": []}],
+        }
+        message = new_sprint_item_blocked(state)
+        # Still blocked (pending_release alone is enough) but the message
+        # must reflect "every story accepted" phrasing, not list the Epic
+        # as an unfinished story.
+        self.assertIsNotNone(message)
+        self.assertNotIn("EP-1", message)
 
 
 if __name__ == "__main__":
