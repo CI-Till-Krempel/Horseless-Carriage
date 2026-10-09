@@ -66,8 +66,10 @@ WORKFLOW
   placeholder - it will reject one) to actually kick off a new sprint. This is the ONLY thing that
   sets `sprint_goal` (see ISSUE-0011) - describing a sprint plan in conversation, or Product
   Owner having ordered the backlog, does not by itself start a sprint. It also refuses to run while
-  the previous sprint's close sequence (retro/report done, but no successful `create_release_pr`
-  yet, with stories still short of Accepted) is unfinished - finish that first.
+  the previous sprint's close sequence is unfinished - retro/report done, but no successful
+  `create_release_pr` yet (GH #401: this now fires even once every story reached Accepted, not only
+  while some are still unfinished - a cleanly-finished sprint is not actually closed until its
+  release PR is opened) - finish that first.
 - **Planning-ritual commitment, mechanically enforced**: Product Owner proposes a properly
   prioritized Sprint Backlog (`create_sprint_backlog_pr`), but that PR merging is not by itself the
   team committing to it. Architect, Dev Team, and QA must each leave a real `gh_pr_comment`/
