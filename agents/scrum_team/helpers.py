@@ -706,3 +706,82 @@ def new_sprint_item_blocked(state: dict) -> str | None:
         "release PR is opened - call create_release_pr before starting new work - see "
         "ORCHESTRATOR_PROMPT SPRINT CLOSE SEQUENCE."
     )
+
+
+# --- Sprint-phase awareness (GH issue #403) ---
+# The ritual the team is meant to follow - conceptual work (groom the
+# backlog to Ready) -> plan & start the sprint -> development -> review,
+# retro & release - was previously enforced only REACTIVELY: a tool call
+# made out of phase gets mechanically rejected after the fact
+# (new_sprint_item_blocked/sprint_backlog_pr_missing/ready_backlog_shortfall
+# above), but nothing proactively told the team which phase it's actually
+# in before that happens. A real eval run (0.1.0-run52) showed DevTeam try
+# to jump straight to implementation, get rejected, and only then have
+# Product Owner backfill the planning work that should have come first.
+#
+# current_sprint_phase below derives one of SPRINT_PHASES purely from
+# existing state signals (nothing new to track) so it can be surfaced
+# proactively - as a one-line system-context nudge every role sees every
+# turn (agent.py's phase_awareness_injection_callback), and as a console-
+# log prefix a human watching a live run can see at a glance. Nudging
+# only: nothing here may ever refuse a tool call - the existing mechanical
+# gates above remain the only real enforcement.
+SPRINT_PHASES = (
+    "Conceptual Work",
+    "Plan & Start Sprint",
+    "Development",
+    "Review, Retro & Release",
+)
+
+SPRINT_PHASE_GUIDANCE = {
+    "Conceptual Work": (
+        "The Ready backlog isn't deep enough yet - groom it (upsert_prd/upsert_epic/upsert_story, "
+        "then advance_story_stage(..., 'Ready')) until it is. Starting a sprint, publishing a Sprint "
+        "Backlog PR, or implementation work don't belong in this phase yet."
+    ),
+    "Plan & Start Sprint": (
+        "The Ready backlog is deep enough - Scrum Master calls start_sprint(goal) if that hasn't "
+        "happened yet this sprint, then Product Owner publishes it via create_sprint_backlog_pr(). "
+        "More backlog grooming belongs here only for a specific, stated reason, not as a default."
+    ),
+    "Development": (
+        "This sprint's Sprint Backlog is published - implement/review/test/accept its stories. New "
+        "backlog grooming or re-planning belongs in Conceptual Work/Plan & Start Sprint, not here."
+    ),
+    "Review, Retro & Release": (
+        "This sprint's planned work is done (or its budget is spent) - run the retrospective, KPIs, "
+        "sprint report, and release PR (Scrum Master's own SPRINT CLOSE SEQUENCE). Starting new "
+        "implementation work does not belong here."
+    ),
+}
+
+
+def current_sprint_phase(state: dict) -> str:
+    """
+    One of SPRINT_PHASES, derived purely from existing state - see the
+    module comment above for why this exists and what it's for (nudging
+    only, never a gate).
+    """
+    if sprint_backlog_pr_missing(state) is None:
+        # Sprint started AND this sprint's own Sprint Backlog PR already
+        # published - either doing the work, or already wrapping it up.
+        if state.get("sprint_report_pending_release"):
+            return "Review, Retro & Release"
+        sprint_stories = [
+            x for x in (state.get("sprint_backlog") or [])
+            if x.get("type", "User Story") != "Epic"
+        ]
+        all_accepted = bool(sprint_stories) and all(
+            "Accepted" in (x.get("stages_completed") or []) for x in sprint_stories
+        )
+        budgets = state.get("budgets") or {}
+        usage = state.get("token_usage") or {}
+        token_limit = budgets.get("total") or 0
+        token_usage = usage.get("total") or 0
+        budget_exhausted = token_limit > 0 and token_usage >= token_limit
+        if all_accepted or budget_exhausted:
+            return "Review, Retro & Release"
+        return "Development"
+    if ready_backlog_shortfall(state.get("product_backlog") or [], state.get("backlog_scope_complete", False)) <= 0:
+        return "Plan & Start Sprint"
+    return "Conceptual Work"

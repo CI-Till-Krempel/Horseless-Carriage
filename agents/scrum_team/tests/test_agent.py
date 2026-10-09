@@ -27,6 +27,8 @@ from agents.scrum_team.agent import (
     inject_litellm_key_callback,
     _sync_and_commit_roadmap_on_exhaustion,
     _ensure_sprint_report_on_final_halt,
+    phase_awareness_injection_callback,
+    _phase_and_tokens_prefix,
 )
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.base import _project_root
@@ -658,6 +660,84 @@ class TestRoleIdentityInjectionCallback(unittest.TestCase):
                 role_identity_injection_callback(mock_context, mock_llm_request)
 
                 self.assertEqual(len(mock_llm_request.contents), 1, f"{role} did not get identity content injected")
+
+
+class TestPhaseAwarenessInjectionCallback(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #403): every role, every turn, sees a
+    one-line "[SPRINT PHASE: ...]" system-context message naming the
+    current ritual phase plus its own goal/scope reminder - nudging the
+    team proactively instead of only reactively, after a mechanically-
+    enforced tool call gets rejected (see helpers.py's current_sprint_phase
+    for the real eval run this responds to).
+    """
+
+    def _mock_context(self, state=None):
+        mock_context = MagicMock()
+        mock_context.state = (state or ScrumState()).model_dump()
+        return mock_context
+
+    def _mock_request(self):
+        mock_llm_request = MagicMock()
+        mock_llm_request.contents = []
+        return mock_llm_request
+
+    def test_injects_the_current_phase_and_its_guidance(self):
+        state = ScrumState()
+        state.backlog_scope_complete = True  # -> "Plan & Start Sprint"
+        mock_context = self._mock_context(state)
+        mock_llm_request = self._mock_request()
+
+        phase_awareness_injection_callback(mock_context, mock_llm_request)
+
+        self.assertEqual(len(mock_llm_request.contents), 1)
+        content = mock_llm_request.contents[0]
+        self.assertEqual(content.role, "system")
+        text = content.parts[0].text
+        self.assertIn("SPRINT PHASE: Plan & Start Sprint", text)
+        self.assertIn("start_sprint", text)
+
+    def test_reflects_a_different_phase_once_state_changes(self):
+        state = ScrumState()  # fresh - nothing Ready yet -> "Conceptual Work"
+        mock_context = self._mock_context(state)
+        mock_llm_request = self._mock_request()
+
+        phase_awareness_injection_callback(mock_context, mock_llm_request)
+
+        text = mock_llm_request.contents[0].parts[0].text
+        self.assertIn("SPRINT PHASE: Conceptual Work", text)
+
+    def test_registered_for_every_sub_agent_and_root(self):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, root_agent):
+            self.assertIn(phase_awareness_injection_callback, agent.before_model_callback)
+
+
+class TestPhaseAndTokensPrefix(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #403): the same phase/budget snapshot the
+    LLM-facing nudge above uses is also what prefixes every tool-call log
+    line, so a human watching a live run sees both at a glance.
+    """
+
+    def test_includes_phase_and_token_ratio(self):
+        state = ScrumState()
+        state.backlog_scope_complete = True
+        state.budgets.total = 1000
+        state.token_usage.total = 250
+
+        prefix = _phase_and_tokens_prefix(state.model_dump())
+
+        self.assertIn("Phase: Plan & Start Sprint", prefix)
+        self.assertIn("Tokens: 250/1,000", prefix)
+
+    def test_omits_the_budget_denominator_when_no_limit_is_configured(self):
+        state = ScrumState()
+        state.token_usage.total = 42
+
+        prefix = _phase_and_tokens_prefix(state.model_dump())
+
+        self.assertIn("Tokens: 42", prefix)
+        self.assertNotIn("/", prefix)
 
 
 class TestStoriesReadyForNextStageCount(unittest.TestCase):

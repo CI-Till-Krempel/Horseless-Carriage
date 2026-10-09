@@ -256,6 +256,8 @@ from .helpers import (
     ritual_token_budget,
     main_budget_token_usage,
     sprint_report_step_active,
+    current_sprint_phase,
+    SPRINT_PHASE_GUIDANCE,
 )
 from .prompts import (
     ORCHESTRATOR_PROMPT,
@@ -1580,6 +1582,48 @@ def _trim_transcript(transcript: List[Dict[str, Any]], max_entries: Optional[int
     }
     return [marker] + transcript[-max_entries:]
 
+def _phase_and_tokens_prefix(state: dict) -> str:
+    """
+    Shared by phase_awareness_injection_callback below and
+    log_tool_invocation_callback's own console-log line - GH issue #403
+    asks for both the system-injected nudge and the human-facing log to
+    show the same phase/budget snapshot, so this is the one place that
+    actually reads state for it.
+    """
+    phase = current_sprint_phase(state)
+    budgets = state.get("budgets") or {}
+    usage = state.get("token_usage") or {}
+    token_limit = budgets.get("total") or 0
+    token_usage = usage.get("total") or 0
+    tokens_str = f"{token_usage:,}/{token_limit:,}" if token_limit > 0 else f"{token_usage:,}"
+    return f"[Phase: {phase} | Tokens: {tokens_str}]"
+
+
+def phase_awareness_injection_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
+    """
+    BeforeModelCallback (every role, every turn): injects a one-line
+    "[SPRINT PHASE: ...]" system-context message stating which of
+    SPRINT_PHASES (helpers.py) the team is currently in, plus that phase's
+    own short goal/scope reminder - see current_sprint_phase's own module
+    comment in helpers.py for the real eval run (0.1.0-run52) this responds
+    to: DevTeam jumping straight to implementation, getting mechanically
+    rejected, and only then having Product Owner backfill the planning
+    work that should have come first.
+
+    Nudging only, same spirit as _maybe_inject_budget_warning above -
+    informs every role, but SM_PROMPT's own WORKFLOW section is the one
+    actually told to intervene on a mismatch. This never refuses a tool
+    call itself; the existing mechanical gates (new_sprint_item_blocked,
+    sprint_backlog_pr_missing, ready_backlog_shortfall, ...) are untouched
+    and remain the only real enforcement.
+    """
+    state = callback_context.state
+    phase = current_sprint_phase(state)
+    guidance = SPRINT_PHASE_GUIDANCE.get(phase, "")
+    msg = f"\n[SPRINT PHASE: {phase}] {guidance}\n"
+    llm_request.contents.insert(0, types.Content(role="system", parts=[types.Part(text=msg)]))
+
+
 def history_management_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
     BeforeModelCallback: recovers persisted conversation history into a
@@ -2342,13 +2386,26 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
             print(f"\U0001f501 [{agent_name}] repeated-call loop broken (-> {tool.name})", file=sys.stderr)
             return loop_result
 
+    # GH issue #403: a human watching a live run (console or
+    # `docker compose logs agent`) previously had no quick way to tell which
+    # sprint phase a given tool call happened in, or how close the sprint
+    # was to its token budget, without cross-referencing the sprint report -
+    # prefixing every tool-call line with both, from the same state this
+    # turn's phase_awareness_injection_callback already read.
+    try:
+        phase_prefix = _phase_and_tokens_prefix(tool_context.state)
+    except Exception:
+        phase_prefix = ""
     if os.getenv("AGENT_MODE", "web") == "cli":
         try:
+            if phase_prefix:
+                print(phase_prefix, file=sys.stderr)
             print(tui.speech_bubble(agent_name, call_desc), file=sys.stderr)
             return None
         except Exception:
             pass
-    print(f"\U0001f527 [{agent_name}] {call_desc}", file=sys.stderr)
+    prefix = f"{phase_prefix} " if phase_prefix else ""
+    print(f"{prefix}\U0001f527 [{agent_name}] {call_desc}", file=sys.stderr)
     return None
 
 
@@ -2417,7 +2474,7 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
 
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
-    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, role_identity_injection_callback, agent_thinking_start_callback],
+    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, role_identity_injection_callback, phase_awareness_injection_callback, agent_thinking_start_callback],
     "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
     "after_tool_callback": log_tool_result_callback,
@@ -2615,6 +2672,7 @@ root_agent = LlmAgent(
         inject_litellm_key_callback,
         check_cost_budget_callback,
         role_identity_injection_callback,
+        phase_awareness_injection_callback,
         sprint_status_injection_callback,
         history_management_callback,
         agent_thinking_start_callback
