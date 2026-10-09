@@ -1179,6 +1179,34 @@ window - past it, the same mechanical fallback-report generator fires instead of
 indefinitely. Loop-detection gaps that let this run as long as it did, and a harness-level
 cross-sprint abort signal, are tracked separately (GH issues #408/#409).
 
+### Eval harness stops immediately on a mechanically-detected loop or a genuinely human-only blocker, and an eval report now survives a crashed sprints step (GH issue #414)
+
+0.1.0-run54 only stopped after `blocked_unresolved_across_sprint` fired - i.e. only once the SAME
+story was still BLOCKED after a full extra sprint's budget was spent re-confirming it, even though a
+mechanical transfer-loop breaker had already proven the team stuck well before that. Root cause:
+`should_escalate_blocker_to_user`'s immediate-stop check was gated on the REAL configured
+`INTERACTION_LEVEL`, but the eval harness always runs at `EVAL` - a "product"-category blocker never
+escalated immediately there no matter how clearly only a human could answer it, even though this
+harness has exactly as little a human available in EVAL mode as "Product" mode assumes. Separately, a
+blocker raised by a loop breaker (`_detect_transfer_loop`/`_detect_repeated_call_loop`) is categorically
+different from an agent's own judgment call - the breaker only fires after the team already proved
+itself unable to make progress through repeated attempts, so giving it the same one-more-sprint benefit
+of the doubt as an ordinary blocker just re-confirms something already demonstrated unresolvable.
+
+`_sprint_needs_human_this_harness_cannot_provide` now checks `should_escalate_blocker_to_user` as if
+this were "Product" level regardless of the actually-configured one (this harness always has no human,
+in any mode), and a new `mechanically_detected` flag - set by the loop breakers themselves right after
+their own `raise_story_blocker` call succeeds, never agent-settable - triggers the same immediate stop.
+Human-approval gates are untouched; they're a separate mechanism, never raised via
+`raise_story_blocker`.
+
+Also: `.github/workflows/eval.yml`'s sprints-and-analysis step used to be one `set -e` bash step - if
+the sprints half crashed or was cancelled (as in run53), the analysis half never ran, so no report.md
+ever existed even with a usable manifest.json on disk. Split into two steps, with analysis using
+`if: always()` (matching the tag/upload/teardown steps already below it) so it always attempts a report
+from whatever manifest exists. `run_eval.py`'s own `main()` also now guarantees a (possibly minimal)
+manifest gets written even if something crashes outside the per-sprint loop entirely, where previously
+nothing would be written at all.
 ### Sprint token-budget reset is now purely mechanical - no more agent-invoked or harness-side resets to drift out of sync (GH issue #413)
 
 Two independent, forgettable reset paths existed for the same underlying fact ("a new sprint

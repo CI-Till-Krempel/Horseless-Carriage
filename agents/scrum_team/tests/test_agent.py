@@ -1258,6 +1258,31 @@ class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
         # the pair-based breaker alone (unchanged) must not be what fired.
         self.assertIn("hops in a row", result["message"])
 
+    def test_tripping_the_rotation_marks_the_blocked_story_mechanically_detected(self):
+        """
+        Acceptance Criteria (GH #414): the eval harness treats a
+        mechanically-detected blocker as an immediate-stop signal, distinct
+        from an ordinary blocker - _detect_transfer_loop must flag the
+        story it blocks this way, not just block it.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [{
+            "id": "US-0001", "title": "In-progress story", "type": "User Story", "stages_completed": [],
+        }]
+
+        cycle = [
+            ("ScrumOrchestrator", "ProductOwner"),
+            ("ProductOwner", "ScrumMaster"),
+            ("ScrumMaster", "ScrumOrchestrator"),
+        ]
+        hops = (cycle * agent_module.TRANSFER_ROTATION_THRESHOLD)[: agent_module.TRANSFER_ROTATION_THRESHOLD]
+        self._rotate(tool_context, hops)
+
+        story = next(x for x in tool_context.state["product_backlog"] if x["id"] == "US-0001")
+        self.assertTrue(story.get("blocked"))
+        self.assertTrue(story["blocked"].get("mechanically_detected"))
+
     def test_rotation_shorter_than_threshold_is_not_blocked(self):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
@@ -1576,6 +1601,8 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
         self.assertIsNotNone(blocked)
         self.assertEqual(blocked["category"], "product")
         self.assertIn("repeated advance_story_stage", blocked["question"])
+        # GH #414: the eval harness treats this as an immediate-stop signal.
+        self.assertTrue(blocked.get("mechanically_detected"))
 
     def test_repeated_call_loop_falls_back_to_plain_stalled_interaction_with_no_story_named(self):
         """calculate_kpis()-style calls have no title_or_id at all - must

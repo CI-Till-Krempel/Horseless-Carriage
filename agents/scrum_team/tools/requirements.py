@@ -2236,6 +2236,16 @@ def raise_story_blocker(title_or_id: str, question: str, category: str, tool_con
     function once a stuck story can be identified). advance_story_stage
     refuses every further call for this story while `blocked` is set.
 
+    GH #414: this function's own signature deliberately has no
+    "mechanically_detected" parameter - adding one would expose it directly
+    in every role's own tool schema (ADK builds each tool's schema straight
+    from the Python signature), making it agent-settable, which defeats the
+    whole point of a signal only our own breaker code should ever set. The
+    two loop-breaker call sites (agent.py) instead set
+    `blocked["mechanically_detected"] = True` directly on the story they
+    just blocked, as a separate step right after this call succeeds - see
+    their own code for exactly where.
+
     `category` is "technical" (routed to Architect) or "product" (routed to
     Product Owner - or, at the "Product" interaction level, escalated
     straight to the human User instead, since that human already IS the

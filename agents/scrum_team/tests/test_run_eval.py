@@ -275,6 +275,48 @@ class TestSprintNeedsHumanThisHarnessCannotProvide:
         assert story_id == "US-0001"
         assert reason == "needs_human"
 
+    def test_needs_human_for_a_product_category_blocker_even_at_eval_interaction_level(self):
+        """
+        Acceptance Criteria (GH #414): the real eval harness runs at
+        INTERACTION_LEVEL=EVAL (set by _configure_env), not "Product" -
+        should_escalate_blocker_to_user's own category check used to be
+        gated on the REAL configured level, so a "product"-category blocker
+        never escalated immediately in EVAL mode no matter how clearly only
+        a human could answer it, always paying the "unresolved_across_
+        sprint" grace below first instead. This harness always has no
+        human to ask, in any mode - it must escalate immediately here too.
+        """
+        os.environ["INTERACTION_LEVEL"] = "EVAL"
+        sprint_result = {
+            "product_backlog": [_story("US-0001", {"category": "product", "question": "which color?"})]
+        }
+        result = _sprint_needs_human_this_harness_cannot_provide(sprint_result, set())
+        assert result is not None
+        story_id, blocked, reason = result
+        assert story_id == "US-0001"
+        assert reason == "needs_human"
+
+    def test_mechanically_detected_blocker_stops_immediately_without_waiting_a_sprint(self):
+        """
+        Acceptance Criteria (GH #414): a blocker raised by one of agent.py's
+        own loop breakers (_detect_transfer_loop/_detect_repeated_call_loop,
+        marked mechanically_detected=True by _mark_blocker_mechanically_
+        detected) already proved the team couldn't make progress through
+        repeated attempts - treated as an immediate stop, same as
+        "needs_human", regardless of category and without waiting for the
+        "unresolved_across_sprint" grace a fresh ordinary blocker gets.
+        """
+        sprint_result = {
+            "product_backlog": [_story("US-0001", {
+                "category": "technical", "question": "why?", "mechanically_detected": True,
+            })]
+        }
+        result = _sprint_needs_human_this_harness_cannot_provide(sprint_result, set())
+        assert result is not None
+        story_id, blocked, reason = result
+        assert story_id == "US-0001"
+        assert reason == "mechanically_detected"
+
     def test_no_immediate_stop_for_a_fresh_technical_blocker(self):
         """A "technical" blocker never escalates to the human (Architect
         always owns it) - freshly blocked this sprint, it gets a full

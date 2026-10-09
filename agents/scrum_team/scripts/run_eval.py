@@ -460,11 +460,28 @@ def _sprint_needs_human_this_harness_cannot_provide(sprint_result: dict, previou
 
     Returns (story_id, blocked_dict, reason) the first time either holds,
     else None:
-    - reason="needs_human": the blocker's own category escalates straight
-      to the human User at this interaction level (should_escalate_blocker_
-      to_user, agents/scrum_team/helpers.py) - this harness has no human to
-      answer it, so continuing is certain wasted budget, not a chance at
-      progress.
+    - reason="needs_human": the blocker's own category escalates straight to
+      the human User (should_escalate_blocker_to_user, agents/scrum_team/
+      helpers.py) - explicitly checked as if this were "Product" interaction
+      level regardless of the actually-configured INTERACTION_LEVEL (GH
+      #414): should_escalate_blocker_to_user's own "no human available"
+      reasoning is about THIS harness specifically (it never has a human to
+      answer anything, in any mode), not about whatever level a real
+      deployment happens to run at - checking against the real configured
+      level meant an EVAL-mode run never escalated a "product"-category
+      blocker immediately, no matter how clearly only a human could answer
+      it, and instead always paid the "unresolved_across_sprint" grace
+      below first.
+    - reason="mechanically_detected": the blocker was raised by one of
+      agent.py's own loop breakers (_detect_transfer_loop/
+      _detect_repeated_call_loop calling raise_story_blocker with
+      mechanically_detected=True), not from an agent's own judgment call -
+      by definition, the breaker only fires after the team already proved
+      itself unable to make progress through repeated attempts. Treating
+      this the same as an ordinary blocker (worth one more sprint's benefit
+      of the doubt, see "unresolved_across_sprint" below) wastes a full
+      sprint's budget re-confirming something already demonstrated
+      unresolvable - a real eval run (0.1.0-run54) did exactly that.
     - reason="unresolved_across_sprint": the SAME story was already BLOCKED
       at the end of the *previous* sprint and still is now - the team had a
       full sprint's own budget to resolve it themselves (a "technical"
@@ -477,8 +494,10 @@ def _sprint_needs_human_this_harness_cannot_provide(sprint_result: dict, previou
     from agents.scrum_team.helpers import should_escalate_blocker_to_user
     current_blocked = _blocked_stories(sprint_result)
     for story_id, blocked in current_blocked.items():
-        if should_escalate_blocker_to_user(blocked.get("category")):
+        if should_escalate_blocker_to_user(blocked.get("category"), level="Product"):
             return (story_id, blocked, "needs_human")
+        if blocked.get("mechanically_detected"):
+            return (story_id, blocked, "mechanically_detected")
     for story_id in previously_blocked_ids:
         if story_id in current_blocked:
             return (story_id, current_blocked[story_id], "unresolved_across_sprint")
@@ -861,8 +880,14 @@ async def _main_async(args: argparse.Namespace) -> dict:
             if reason == "needs_human":
                 explanation = (
                     f"'{story_id}' is blocked on a {blocked.get('category')}-category question that "
-                    f"escalates straight to a human at this interaction level: {blocked.get('question')!r} "
-                    "- this scripted harness has no human to answer it."
+                    f"would escalate straight to a human: {blocked.get('question')!r} - this scripted "
+                    "harness has no human to answer it, regardless of configured INTERACTION_LEVEL."
+                )
+            elif reason == "mechanically_detected":
+                explanation = (
+                    f"'{story_id}' was blocked by a mechanical loop breaker, not an agent's own "
+                    f"judgment call: {blocked.get('question')!r} - the team already proved itself "
+                    "unable to make progress through repeated attempts before this blocker was raised."
                 )
             else:
                 explanation = (
@@ -1036,9 +1061,38 @@ def main() -> None:
     args.github_token = get_github_token()
 
     _configure_env(args)
-    _prepare_local_clone(args.eval_repo_url, args.branch, args.develop_branch, args.local_path, args.github_token)
 
-    manifest = asyncio.run(_main_async(args))
+    # GH #414: an eval report should exist in any case - _main_async's own
+    # per-sprint try/except already turns a crash DURING a sprint into a
+    # clean "crashed" manifest entry, but anything that raises BEFORE or
+    # AROUND that loop (clone setup, ADK session/runner bootstrap, a bug in
+    # harness code that runs between sprints) would previously propagate
+    # straight out of main() with no manifest written at all - the
+    # .github/workflows/eval.yml analysis step genuinely has nothing to
+    # analyze in that case. This is the last-resort backstop: whatever
+    # metadata is already known gets written out, with the actual
+    # exception recorded, rather than nothing at all.
+    try:
+        _prepare_local_clone(args.eval_repo_url, args.branch, args.develop_branch, args.local_path, args.github_token)
+        manifest = asyncio.run(_main_async(args))
+    except Exception as e:
+        print(f"--- run crashed outside the per-sprint loop: {type(e).__name__}: {e} ---", file=sys.stderr)
+        manifest = {
+            "run_id": args.run_id,
+            "branch": args.branch,
+            "develop_branch": args.develop_branch,
+            "eval_repo_url": args.eval_repo_url,
+            "model": args.model,
+            "hc_commit": os.environ.get("HC_COMMIT_SHA", "unknown"),
+            "sprints_requested": args.sprints,
+            "max_duration_minutes": args.max_duration_minutes,
+            "sprints": [],
+            "pr_merges": [],
+            "stopped_early": True,
+            "stop_reason": "crashed_outside_sprint_loop",
+            "crash_error": f"{type(e).__name__}: {e}",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     Path(args.report_path).write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     print(f"Run manifest written to {args.report_path}")
