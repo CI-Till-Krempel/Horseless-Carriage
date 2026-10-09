@@ -1113,6 +1113,26 @@ release-PR merge, narrowly scoped to open PRs whose head branch contains `/steer
 develop-targeted sweep, which would risk force-merging incomplete feature->develop PRs too (the exact
 risk `_merge_open_prs`'s own scoping already avoids).
 
+### Loop detection didn't catch a failing-call-interspersed transfer rotation, or reworded repeats of the same rejection (GH issue #408)
+
+0.1.0-run53's deadlock (see GH issue #407) ran for ~140 hops / 75 rejected `create_sprint_report`
+calls across two internal sprints before the run had to be cancelled - the loop detectors meant to
+catch exactly this never tripped. Two independent gaps: the transfer-rotation/pair breaker
+(`_detect_transfer_loop`) reset its counters on ANY non-transfer tool call, with no check on whether
+that call actually succeeded - a rejected `create_sprint_report`/`propose_steering_change` call counted
+as "real progress" and reset the streak just as readily as a genuine success would, so the ~140-hop
+rotation (through 5 roles, a failing call interspersed every cycle) never accumulated past 1-2. And the
+repeated-call breaker (`_detect_repeated_call_loop`) keys on exact argument values - ScrumMaster reworded
+`summary`/`accomplishments` nearly every attempt (different free text each time, same underlying
+rejection), so it almost never matched.
+
+Both fixed: the rotation/pair-breaker reset now only fires on a *successful* non-transfer, non-read-only
+call - moved from the before-tool callback (which can't know the outcome yet) to the after-tool callback
+`log_tool_result_callback`, which already inspects the response. And a new, content-aware
+`_detect_repeated_rejection_loop` tracks the tool's own rejection *message* (not the caller's arguments)
+across consecutive failures by the same agent+tool - surviving any number of intervening
+`transfer_to_agent` hops - and refuses further calls to that exact tool once the same rejection repeats
+`REPEATED_REJECTION_LOOP_THRESHOLD` (3) times, regardless of how the wording varies.
 ### run_eval.py now stops a run stuck on the same sprint-closing rejection across sprint boundaries (GH issue #409)
 
 0.1.0-run53's deadlock (GH issue #407) also exposed a harness-level gap: `_run_one_sprint`'s token/event
