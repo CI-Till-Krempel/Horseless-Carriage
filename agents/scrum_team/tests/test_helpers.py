@@ -19,6 +19,7 @@ from agents.scrum_team.helpers import (
     SPRINT_PHASES,
     SPRINT_PHASE_GUIDANCE,
     new_sprint_item_blocked,
+    ritual_hard_ceiling,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -467,6 +468,28 @@ class TestNewSprintItemBlocked(unittest.TestCase):
         # as an unfinished story.
         self.assertIsNotNone(message)
         self.assertNotIn("EP-1", message)
+
+
+class TestRitualHardCeiling(unittest.TestCase):
+    """
+    Acceptance Criteria (GH #407): the sprint-report-step-active window is
+    uncapped relative to ritual_token_budget, but not literally unbounded -
+    ritual_hard_ceiling is the absolute backstop, default 50% of the main
+    sprint token budget, configurable via RITUAL_HARD_CEILING_PERCENT.
+    """
+
+    def test_defaults_to_fifty_percent_of_the_main_budget(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(ritual_hard_ceiling(1000), 500.0)
+
+    def test_configurable_via_env_var(self):
+        with patch.dict("os.environ", {"RITUAL_HARD_CEILING_PERCENT": "25"}, clear=True):
+            self.assertEqual(ritual_hard_ceiling(1000), 250.0)
+
+    def test_zero_for_a_non_positive_token_limit(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(ritual_hard_ceiling(0), 0.0)
+            self.assertEqual(ritual_hard_ceiling(-5), 0.0)
 
 
 if __name__ == "__main__":

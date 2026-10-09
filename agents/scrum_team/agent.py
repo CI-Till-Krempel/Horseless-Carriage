@@ -254,6 +254,7 @@ from .helpers import (
     SPRINT_CLOSEOUT_GRACE_ROLES,
     NON_GRACE_FLOOR_ROLES,
     ritual_token_budget,
+    ritual_hard_ceiling,
     main_budget_token_usage,
     sprint_report_step_active,
     current_sprint_phase,
@@ -1014,10 +1015,30 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                     content=types.Content(role="model", parts=[types.Part(text=msg)]),
                     model_version=llm_request.model or "unknown",
                 )
-        # Else: the sprint report step itself is mechanically uncapped (see
-        # sprint_report_step_active's own docstring) - a before_tool_callback
-        # gate (see _restrict_to_sprint_report_step below) is what stops this
-        # window from being spent on anything other than the report itself.
+        else:
+            # GH #407: the sprint report step itself is mechanically uncapped
+            # relative to ritual_token_budget above (see
+            # sprint_report_step_active's own docstring) - a
+            # before_tool_callback gate (see _restrict_to_sprint_report_step
+            # below) is what stops this window from being spent on anything
+            # other than the report itself. But "uncapped" is not "unbounded" -
+            # ritual_hard_ceiling (helpers.py) is the absolute backstop for
+            # when something keeps this window open indefinitely (a real eval
+            # run, 0.1.0-run53, hit exactly that - see GH #407).
+            hard_ceiling = ritual_hard_ceiling(token_limit)
+            sm_usage = state.token_usage.agents.get("ScrumMaster", 0)
+            if hard_ceiling > 0 and sm_usage >= hard_ceiling:
+                _ensure_sprint_report_on_final_halt_once(callback_context)
+                msg = (
+                    f"🚫 [RITUAL BUDGET HARD CEILING] Scrum Master's usage during the sprint-report "
+                    f"close-out window ({sm_usage:,} tokens) has passed the absolute backstop "
+                    f"({hard_ceiling:,.0f} tokens) - something is stuck, not just slow. A fallback "
+                    "sprint report has been generated mechanically instead. Agent execution halted."
+                )
+                return LlmResponse(
+                    content=types.Content(role="model", parts=[types.Part(text=msg)]),
+                    model_version=llm_request.model or "unknown",
+                )
     else:
         token_usage = main_budget_token_usage(state)
         if token_limit > 0 and token_usage < token_limit:
@@ -2231,8 +2252,27 @@ def _format_tool_call(tool_name: str, args: Dict[str, Any]) -> str:
 # False on its own, see that function's own docstring), or escalate if it
 # genuinely gets stuck - this gate blocks scope creep, not every possible
 # escape hatch.
+#
+# GH #407: propose_steering_change is also allowed, for a narrower but
+# critical reason - create_sprint_report's own gate (tools/budget.py) hard-
+# refuses to close the sprint while an open "steering"-category finding (or
+# 2+ "technical" findings that read like role-behavior gaps) has no fresh
+# propose_steering_change call behind it, and its own error message says to
+# call propose_steering_change next. But sprint_report_step_active is true
+# under that exact same precondition (fresh retro + fresh KPI, report not
+# yet successful) - so without this exception, ScrumMaster is told to call
+# the one tool this gate has just made impossible to call: a genuine,
+# code-level catch-22 with no mechanical escape. A real eval run
+# (0.1.0-run53) hit this twice, each time retrying create_sprint_report with
+# reworded text ~37 times (it can never work - the rejection has nothing to
+# do with wording) before burning millions of tokens and requiring a manual
+# cancellation. propose_steering_change itself still only ever opens a
+# draft PR for human review (see its own docstring) - allowing it here adds
+# no new write path, it just un-blocks the one tool the other gate already
+# demands.
 _SPRINT_REPORT_STEP_ALLOWED_TOOLS = frozenset({
     "calculate_kpis", "update_sprint_report", "create_sprint_report", "transfer_to_agent",
+    "propose_steering_change",
 })
 
 
@@ -2245,9 +2285,9 @@ def _restrict_to_sprint_report_step(tool_context: ToolContext, agent_name: str, 
     the budget alone would just open a different way to never actually close
     the sprint (spending the now-unlimited window on anything else); this is
     the other half - while that window is open, refuses every ScrumMaster
-    tool call except the report sequence itself
-    (_SPRINT_REPORT_STEP_ALLOWED_TOOLS). Not gated at all for any other
-    agent/role.
+    tool call except the report sequence itself and propose_steering_change
+    (_SPRINT_REPORT_STEP_ALLOWED_TOOLS, see GH #407 note there). Not gated at
+    all for any other agent/role.
     """
     if agent_name != "ScrumMaster" or tool_name in _SPRINT_REPORT_STEP_ALLOWED_TOOLS:
         return None
@@ -2258,9 +2298,10 @@ def _restrict_to_sprint_report_step(tool_context: ToolContext, agent_name: str, 
         "status": "error",
         "message": (
             f"This sprint's retro and KPI update are both already fresh - only "
-            "calculate_kpis/update_sprint_report/create_sprint_report (or transfer_to_agent) may "
-            f"run until the sprint report actually exists. '{tool_name}' is refused for now - "
-            "finish closing this sprint out first (call create_sprint_report)."
+            "calculate_kpis/update_sprint_report/create_sprint_report/propose_steering_change (or "
+            f"transfer_to_agent) may run until the sprint report actually exists. '{tool_name}' is "
+            "refused for now - finish closing this sprint out first (call create_sprint_report, or "
+            "propose_steering_change first if it's rejecting over an open steering finding)."
         ),
     }
 

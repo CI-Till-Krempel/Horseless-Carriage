@@ -33,6 +33,35 @@ def ritual_token_budget(token_limit: int) -> float:
     return token_limit * (get_process_overhead_percentage() / 100.0)
 
 
+def ritual_hard_ceiling(token_limit: int) -> float:
+    """
+    GH #407: an absolute backstop on ScrumMaster's own spend while
+    sprint_report_step_active (check_cost_budget_callback's "else" branch,
+    agent.py) - that window is deliberately uncapped relative to
+    ritual_token_budget (a sprint must never fail to close purely for lack
+    of budget), but "uncapped" was never meant to mean "literally
+    unbounded". A real eval run (0.1.0-run53) hit an unrelated code-level
+    deadlock (create_sprint_report's own steering-finding gate demanding a
+    propose_steering_change call that _restrict_to_sprint_report_step was
+    simultaneously refusing - see GH #407's other fix) that kept this window
+    open indefinitely; ScrumMaster's own usage ran to 11.17M tokens against
+    a 5,000,000 sprint budget with nothing ever stopping it, because nothing
+    in this window had any ceiling at all.
+
+    Sized as RITUAL_HARD_CEILING_PERCENT percent of the sprint's main token
+    budget (default 50%, i.e. half again on top of the main 100% ceiling
+    this window is already exempt from) - deliberately generous, since a
+    genuinely-working close-out sequence (retro already logged, KPIs,
+    propose_steering_change, the report itself) should essentially never
+    approach it. This is a backstop for the next unknown way this window
+    could get stuck, not a tuning knob meant to bind in normal operation.
+    """
+    if token_limit <= 0:
+        return 0.0
+    pct = float(os.getenv("RITUAL_HARD_CEILING_PERCENT", "50.0"))
+    return token_limit * (pct / 100.0)
+
+
 def main_budget_token_usage(state) -> int:
     """
     GH #395: the token usage the main per-sprint ceiling (DevTeam/QA/

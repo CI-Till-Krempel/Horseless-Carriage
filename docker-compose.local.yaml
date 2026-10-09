@@ -171,6 +171,9 @@ services:
       - TOTAL_USD_BUDGET=${TOTAL_USD_BUDGET:-}
       - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET:-}
       - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE:-10.0}
+      # GH #407: absolute backstop on the sprint-report-step's own uncapped
+      # window - see ritual_hard_ceiling, agents/scrum_team/helpers.py.
+      - RITUAL_HARD_CEILING_PERCENT=${RITUAL_HARD_CEILING_PERCENT:-50.0}
       # Per-sprint config for agents/scrum_team/scripts/run_eval.py - see
       # .env.example's "Eval Harness Budget Configuration" section. No inline
       # default here (unlike the vars above) - run_eval.py's own
