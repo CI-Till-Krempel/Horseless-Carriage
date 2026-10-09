@@ -1133,6 +1133,34 @@ call - moved from the before-tool callback (which can't know the outcome yet) to
 across consecutive failures by the same agent+tool - surviving any number of intervening
 `transfer_to_agent` hops - and refuses further calls to that exact tool once the same rejection repeats
 `REPEATED_REJECTION_LOOP_THRESHOLD` (3) times, regardless of how the wording varies.
+### Sprint-closing deadlock: propose_steering_change was blocked exactly when create_sprint_report demanded it, and the ritual-budget exemption had no ceiling (GH issue #407)
+
+0.1.0-run53 had to be cancelled manually after ScrumMaster got stuck in an unrecoverable loop for two
+separate internal sprints, running up to 11.9M tokens against a 5,000,000 sprint budget (~2.4x)
+before the cancellation. Root cause was a genuine code-level catch-22, not a model confusion:
+`create_sprint_report`'s own gate (GH #381/#354) hard-refuses to close the sprint once 2+ open
+"technical" retro/impediment findings read like role-behavior gaps, until a fresh
+`propose_steering_change` call exists - and its own error message says to call that tool next. But the
+same precondition (fresh retro + fresh KPI, report not yet successful) also makes
+`sprint_report_step_active` true, which mechanically refused every ScrumMaster tool call except the
+report sequence itself (GH #395) - `propose_steering_change` was not on that allowed list. Once this
+exact state was reached, ScrumMaster was structurally unable to ever satisfy create_sprint_report's
+own requirement - confirmed via identical rejection text repeating dozens of times across two separate
+internal sprints.
+
+Separately, GH #395's "uncapped ritual budget" (ScrumMaster is exempt from any token ceiling while
+`sprint_report_step_active`, so a sprint can never fail to close "for lack of budget") had no upper
+bound of its own - combined with the catch-22 above (the window could never close on its own), one
+internal sprint ran to 11.17M tokens with no halt ever firing at all, because the main per-sprint
+ceiling deliberately excludes ScrumMaster's own usage from what it measures.
+
+Two fixes: `propose_steering_change` is now in `_SPRINT_REPORT_STEP_ALLOWED_TOOLS` - it still only
+ever opens a draft PR for human review, so this adds no new write path, it just un-blocks the one tool
+the other gate already demands. And a new `ritual_hard_ceiling` (default 50% of the main sprint token
+budget, configurable via `RITUAL_HARD_CEILING_PERCENT`) is an absolute backstop on the uncapped
+window - past it, the same mechanical fallback-report generator fires instead of continuing
+indefinitely. Loop-detection gaps that let this run as long as it did, and a harness-level
+cross-sprint abort signal, are tracked separately (GH issues #408/#409).
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so

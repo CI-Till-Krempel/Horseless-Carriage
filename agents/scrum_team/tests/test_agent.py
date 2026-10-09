@@ -2340,9 +2340,13 @@ class TestScrumMasterRitualBudget(unittest.TestCase):
     def test_uncapped_while_the_sprint_report_step_is_active(self):
         """Once a fresh retro and a fresh KPI update both already exist this
         sprint (create_sprint_report's own two prerequisites), the ritual
-        ceiling must not apply at all - no matter how large ScrumMaster's
-        own usage already is."""
-        mock_context = self._context(100, 150, 999_999)
+        ceiling must not apply - ScrumMaster's own usage (40) is already far
+        past the 1-token ritual ceiling this sized PROCESS_OVERHEAD_PERCENTAGE
+        would otherwise impose, but still well under the GH #407 hard
+        ceiling (50% of the 100-token main budget = 50) - see
+        test_hard_ceiling_still_halts_once_usage_passes_it below for what
+        happens past that absolute backstop."""
+        mock_context = self._context(100, 150, 40)
         mock_context.state["retro_actions"] = [{"action": "did a thing"}]
         mock_context.state["retro_baseline"] = 0
         mock_context.state["kpi_update_count"] = 1
@@ -2351,7 +2355,45 @@ class TestScrumMasterRitualBudget(unittest.TestCase):
         with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "1"}, clear=True):
             with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
                 result = check_cost_budget_callback(mock_context, MagicMock(model=None))
-        self.assertIsNone(result, "the sprint-report step itself must be mechanically uncapped")
+        self.assertIsNone(result, "the sprint-report step itself must be uncapped relative to the ritual ceiling")
+
+    def test_hard_ceiling_still_halts_once_usage_passes_it(self):
+        """GH #407: a real eval run (0.1.0-run53) hit a code-level deadlock
+        that kept the sprint-report step active indefinitely, with
+        ScrumMaster's own usage running to 11.17M tokens against a
+        5,000,000 sprint budget - nothing stopped it, because the uncapped
+        window had no ceiling of its own at all. ritual_hard_ceiling is the
+        absolute backstop: default 50% of the main budget (50 tokens here,
+        on a 100-token main budget) - usage of 60 must still halt even
+        though the step is active."""
+        mock_context = self._context(100, 150, 60)
+        mock_context.state["retro_actions"] = [{"action": "did a thing"}]
+        mock_context.state["retro_baseline"] = 0
+        mock_context.state["kpi_update_count"] = 1
+        mock_context.state["kpi_baseline"] = 0
+        mock_context.state["sprint_report_pending_release"] = False
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "1"}, clear=True):
+            with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt_once") as mock_ensure:
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNotNone(result)
+        self.assertIn("RITUAL BUDGET HARD CEILING", result.content.parts[0].text)
+        mock_ensure.assert_called_once()
+
+    def test_hard_ceiling_is_configurable_via_env_var(self):
+        """RITUAL_HARD_CEILING_PERCENT narrows the backstop - 10% of 100 = 10,
+        so usage of 15 (comfortably under the default 50% ceiling) must still
+        halt once the env var tightens it."""
+        mock_context = self._context(100, 150, 15)
+        mock_context.state["retro_actions"] = [{"action": "did a thing"}]
+        mock_context.state["retro_baseline"] = 0
+        mock_context.state["kpi_update_count"] = 1
+        mock_context.state["kpi_baseline"] = 0
+        mock_context.state["sprint_report_pending_release"] = False
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "1", "RITUAL_HARD_CEILING_PERCENT": "10"}, clear=True):
+            with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt_once"):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNotNone(result)
+        self.assertIn("RITUAL BUDGET HARD CEILING", result.content.parts[0].text)
 
     def test_not_uncapped_once_the_report_has_already_succeeded(self):
         """sprint_report_pending_release=True means the report already
@@ -2404,12 +2446,37 @@ class TestRestrictToSprintReportStep(unittest.TestCase):
         tool_context.agent_name = "ScrumMaster"
         tool_context.state = self._active_state()
 
-        for tool_name in ("calculate_kpis", "update_sprint_report", "create_sprint_report", "transfer_to_agent"):
+        for tool_name in (
+            "calculate_kpis", "update_sprint_report", "create_sprint_report", "transfer_to_agent",
+            "propose_steering_change",
+        ):
             with self.subTest(tool_name=tool_name):
                 tool = BaseTool(name=tool_name, description="d")
                 args = {"agent_name": "ProductOwner"} if tool_name == "transfer_to_agent" else {}
                 result = log_tool_invocation_callback(tool, args, tool_context)
                 self.assertIsNone(result)
+
+    def test_allows_propose_steering_change_to_break_the_catch22(self):
+        """
+        GH #407: create_sprint_report's own gate (tools/budget.py) demands a
+        fresh propose_steering_change call whenever an open steering finding
+        (or 2+ role-behavior-reading "technical" ones) has none since the
+        last report - but this exact gate being active is also what makes
+        sprint_report_step_active true, which used to refuse
+        propose_steering_change itself: a genuine catch-22 a real eval run
+        (0.1.0-run53) could never escape. propose_steering_change must be
+        allowed through even while the step is active.
+        """
+        tool = BaseTool(name="propose_steering_change", description="d")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumMaster"
+        tool_context.state = self._active_state()
+
+        result = log_tool_invocation_callback(
+            tool, {"role": "ScrumMaster", "new_content": "x", "rationale": "y"}, tool_context,
+        )
+
+        self.assertIsNone(result)
 
     def test_does_not_apply_to_other_roles(self):
         tool = BaseTool(name="write_file", description="Write a file.")
