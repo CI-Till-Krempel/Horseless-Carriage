@@ -1905,6 +1905,38 @@ _READ_ONLY_STATUS_TOOLS = frozenset({
 })
 
 
+def _mark_blocker_mechanically_detected(tool_context: ToolContext, story_id: str) -> None:
+    """
+    GH #414: flags a just-raised story blocker as mechanically detected -
+    called only by this module's own loop breakers (_detect_transfer_loop,
+    _detect_repeated_call_loop), right after their own raise_story_blocker
+    call succeeds. Deliberately not a parameter on raise_story_blocker
+    itself (see that function's own docstring for why) - this reaches back
+    into state and sets the flag as a separate step instead, so it can
+    never be set by anything other than our own breaker code.
+
+    The eval harness (run_eval.py's _sprint_needs_human_this_harness_
+    cannot_provide) treats this as an immediate-stop signal: a loop breaker
+    firing only happens after the team already proved itself unable to
+    make progress through repeated attempts, unlike an ordinary blocker
+    (which still gets one more sprint's benefit of the doubt).
+
+    Best-effort: a failure here must never surface as an error from the
+    breaker itself - the story is already BLOCKED either way by this
+    point, this is purely an extra signal for the harness.
+    """
+    try:
+        from .tools.scrum import save_state_to_repo
+        state = tool_context.state
+        for key in ("product_backlog", "sprint_backlog"):
+            for item in state.get(key) or []:
+                if (item.get("id") or item.get("title")) == story_id and item.get("blocked"):
+                    item["blocked"]["mechanically_detected"] = True
+        save_state_to_repo(tool_context)
+    except Exception:
+        pass
+
+
 def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: str) -> Optional[Dict[str, Any]]:
     """
     Breaks an unproductive transfer_to_agent ping-pong between exactly two
@@ -2048,6 +2080,8 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
                 infer_blocker_category(from_agent, to_agent),
                 tool_context=tool_context,
             )
+            if (result or {}).get("status") == "ok":
+                _mark_blocker_mechanically_detected(tool_context, result["story_id"])
         if not story or (result or {}).get("status") != "ok":
             from .tools.notifications import record_blocking_interaction
             record_blocking_interaction(
@@ -2207,6 +2241,8 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
                 infer_blocker_category(agent_name),
                 tool_context=tool_context,
             )
+            if (result or {}).get("status") == "ok":
+                _mark_blocker_mechanically_detected(tool_context, result["story_id"])
         if not story_id or (result or {}).get("status") != "ok":
             from .tools.notifications import record_blocking_interaction
             record_blocking_interaction(
