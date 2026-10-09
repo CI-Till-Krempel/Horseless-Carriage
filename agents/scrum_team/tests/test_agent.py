@@ -1272,7 +1272,15 @@ class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_a_real_tool_call_resets_the_rotation_counter(self):
+    def test_a_successful_tool_call_resets_the_rotation_counter(self):
+        """
+        GH #408: the reset only happens once a non-transfer call actually
+        SUCCEEDS (log_tool_result_callback, the after-tool callback) - not
+        merely on log_tool_invocation_callback's before-the-call hook, which
+        used to reset unconditionally regardless of outcome. See the sibling
+        test below for the case this fixes: a call that FAILS must not
+        reset anything.
+        """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
@@ -1287,12 +1295,46 @@ class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
         other_tool = BaseTool(name="repo_status", description="Report repo status.")
         tool_context.agent_name = "ScrumOrchestrator"
         log_tool_invocation_callback(other_tool, {}, tool_context)
+        log_tool_result_callback(other_tool, {}, tool_context, {"status": "ok"})
 
         # Another full lap should not be enough on its own, since real
         # progress reset the streak in between.
         result = self._rotate(tool_context, cycle)
 
         self.assertIsNone(result)
+
+    def test_a_failed_tool_call_does_not_reset_the_rotation_counter(self):
+        """
+        GH #408: a real eval run (0.1.0-run53) had a REJECTED
+        create_sprint_report call reset the rotation counter just as
+        readily as a real success would (the before-the-call reset used to
+        fire regardless of outcome), letting a ~140-hop stuck rotation
+        never accumulate past 1-2. A call that fails must not reset the
+        streak - only a genuine success may.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        cycle = [
+            ("ScrumOrchestrator", "ProductOwner"),
+            ("ProductOwner", "ScrumMaster"),
+            ("ScrumMaster", "ScrumOrchestrator"),
+        ]
+        # One full lap - short of the threshold.
+        self._rotate(tool_context, cycle)
+
+        other_tool = BaseTool(name="create_sprint_report", description="Close the sprint.")
+        tool_context.agent_name = "ScrumOrchestrator"
+        log_tool_invocation_callback(other_tool, {}, tool_context)
+        log_tool_result_callback(other_tool, {}, tool_context, {"status": "error", "message": "still rejected"})
+
+        # A second lap must now push the rotation past TRANSFER_ROTATION_
+        # THRESHOLD, since the failed call in between did not reset anything.
+        result = self._rotate(tool_context, cycle)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("TRANSFER LOOP DETECTED", result["message"])
 
     def test_rotation_breaker_resets_after_tripping_instead_of_permanently_blocking(self):
         """
@@ -1394,13 +1436,13 @@ class TestLogToolInvocationCallbackBlocksTransferRotation(unittest.TestCase):
         ScrumOrchestrator -> ProductOwner -> ScrumMaster -> DevTeam ->
         ScrumOrchestrator -> ... but slipped in one
         list_blocking_interactions()/get_budget_status() call per lap -
-        just often enough to reset the rotation counter (see the
-        before_tool callback's "any non-transfer tool call is real
-        progress" reset) before it ever reached
+        just often enough to reset the rotation counter (see
+        log_tool_result_callback's "only a SUCCESSFUL non-transfer call is
+        real progress" reset, GH #408) before it ever reached
         TRANSFER_ROTATION_THRESHOLD, so the breaker never fired and the
         session burned its entire call budget without ever reaching
         create_release_pr. These read-only calls must not count as
-        progress for this purpose.
+        progress for this purpose, even if they'd otherwise "succeed".
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
@@ -1587,6 +1629,112 @@ class TestLogToolInvocationCallbackBlocksRepeatedCalls(unittest.TestCase):
         ]
 
         self.assertTrue(all(r is None for r in results))
+
+
+class TestRepeatedRejectionLoop(unittest.TestCase):
+    """
+    Acceptance Criteria (GH #408): complements _detect_repeated_call_loop's
+    exact-args matching - a real eval run (0.1.0-run53) reworded
+    create_sprint_report's summary/accomplishments text almost every
+    attempt while hitting the identical underlying rejection 37+ times,
+    evading the exact-args breaker entirely. This tracks the tool's own
+    rejection MESSAGE instead of the caller's arguments, and survives any
+    number of intervening transfer_to_agent hops (unlike the exact-args
+    breaker, which requires "no other distinct call in between").
+    """
+
+    def _reject(self, tool_context, tool, args, message):
+        """Simulates one full before+after round trip for a call that goes
+        on to fail with `message`. Returns the BEFORE-callback's own result
+        (None unless this exact attempt was itself already refused by the
+        breaker) - log_tool_result_callback (the after-callback) always
+        returns None itself, it only ever observes."""
+        before_result = log_tool_invocation_callback(tool, args, tool_context)
+        log_tool_result_callback(tool, args, tool_context, {"status": "error", "message": message})
+        return before_result
+
+    def test_blocks_after_the_same_rejection_repeats_with_varied_arguments(self):
+        tool = BaseTool(name="create_sprint_report", description="Close the sprint.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumMaster"
+        tool_context.state = ScrumState().model_dump()
+        message = "Cannot close the sprint report: 2 retro/impediment findings read like role-behavior..."
+
+        for i in range(agent_module.REPEATED_REJECTION_LOOP_THRESHOLD):
+            self._reject(tool_context, tool, {"summary": f"attempt {i}"}, message)
+
+        result = log_tool_invocation_callback(tool, {"summary": "yet another wording"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("REPEATED REJECTION DETECTED", result["message"])
+
+    def test_survives_transfer_to_agent_hops_in_between(self):
+        """The exact shape of the real run53 deadlock: the rejected tool
+        call is interspersed with transfer_to_agent hops to other roles,
+        not repeated back-to-back."""
+        tool = BaseTool(name="create_sprint_report", description="Close the sprint.")
+        transfer = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        message = "Cannot close the sprint report: 2 retro/impediment findings read like role-behavior..."
+
+        for i in range(agent_module.REPEATED_REJECTION_LOOP_THRESHOLD):
+            tool_context.agent_name = "ScrumMaster"
+            self._reject(tool_context, tool, {"summary": f"attempt {i}"}, message)
+            log_tool_invocation_callback(transfer, {"agent_name": "ProductOwner"}, tool_context)
+            tool_context.agent_name = "ProductOwner"
+            log_tool_invocation_callback(transfer, {"agent_name": "ScrumMaster"}, tool_context)
+
+        tool_context.agent_name = "ScrumMaster"
+        result = log_tool_invocation_callback(tool, {"summary": "still trying"}, tool_context)
+
+        self.assertIsNotNone(result)
+        self.assertIn("REPEATED REJECTION DETECTED", result["message"])
+
+    def test_a_different_rejection_message_does_not_trip_it(self):
+        tool = BaseTool(name="create_sprint_report", description="Close the sprint.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumMaster"
+        tool_context.state = ScrumState().model_dump()
+
+        self._reject(tool_context, tool, {"summary": "a"}, "overclaimed story US-0001")
+        self._reject(tool_context, tool, {"summary": "b"}, "overclaimed story US-0002")
+        self._reject(tool_context, tool, {"summary": "c"}, "overclaimed story US-0003")
+
+        result = log_tool_invocation_callback(tool, {"summary": "d"}, tool_context)
+
+        self.assertIsNone(result, "a different rejection reason each time must never trip this breaker")
+
+    def test_a_successful_call_resets_the_streak(self):
+        tool = BaseTool(name="create_sprint_report", description="Close the sprint.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumMaster"
+        tool_context.state = ScrumState().model_dump()
+        message = "Cannot close the sprint report: 2 retro/impediment findings read like role-behavior..."
+
+        for i in range(agent_module.REPEATED_REJECTION_LOOP_THRESHOLD - 1):
+            self._reject(tool_context, tool, {"summary": f"attempt {i}"}, message)
+
+        other_tool = BaseTool(name="propose_steering_change", description="Propose a steering change.")
+        log_tool_invocation_callback(other_tool, {"role": "ScrumMaster"}, tool_context)
+        log_tool_result_callback(other_tool, {"role": "ScrumMaster"}, tool_context, {"status": "ok"})
+
+        result = log_tool_invocation_callback(tool, {"summary": "final attempt"}, tool_context)
+
+        self.assertIsNone(result)
+
+    def test_transfer_to_agent_is_never_tracked_by_this_breaker(self):
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ScrumMaster"
+        tool_context.state = ScrumState().model_dump()
+
+        for _ in range(agent_module.REPEATED_REJECTION_LOOP_THRESHOLD + 2):
+            log_tool_result_callback(tool, {"agent_name": "ProductOwner"}, tool_context, {"status": "error", "message": "blocked"})
+
+        streak = tool_context.state.get("_repeated_rejection_loop") or {}
+        self.assertNotEqual(streak.get("tool"), "transfer_to_agent")
 
 
 class TestRecoverFakeToolCallCallback(unittest.TestCase):

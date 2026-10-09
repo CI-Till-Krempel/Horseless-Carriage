@@ -2199,6 +2199,53 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
     return {"status": "error", "message": msg}
 
 
+REPEATED_REJECTION_LOOP_THRESHOLD = 3
+
+
+def _detect_repeated_rejection_loop(tool_context: ToolContext, agent_name: str, tool_name: str) -> Optional[Dict[str, Any]]:
+    """
+    BeforeToolCallback helper (GH #408): complements _detect_repeated_call_loop
+    above, which only catches an agent repeating the EXACT SAME arguments. A
+    real eval run (0.1.0-run53) reworded create_sprint_report's
+    summary/accomplishments text almost every attempt while hitting the
+    identical underlying rejection 37+ times across two sprints - genuinely
+    different arguments every time, so the exact-args breaker almost never
+    matched (it fired twice, by coincidence, when two consecutive attempts
+    happened to reuse identical wording).
+
+    This tracks the TOOL's OWN rejection message instead of the caller's
+    arguments: log_tool_result_callback (the after-tool callback, which
+    actually sees the response) records a streak whenever the same agent
+    gets the same tool rejected with the same (truncated) error message
+    again - regardless of what else, including any number of
+    transfer_to_agent hops, happens in between. Once that streak reaches
+    REPEATED_REJECTION_LOOP_THRESHOLD, this before-the-call check refuses
+    any further call to that exact tool outright, without even running it -
+    the same "stop retrying, the wording isn't the problem" signal
+    _detect_repeated_call_loop already gives for the exact-args case, just
+    reachable even when the agent varies its wording every time.
+
+    The streak itself is cleared by a later SUCCESSFUL non-transfer call
+    (see log_tool_result_callback) - a different, successful action is real
+    evidence something changed, worth letting the team try this tool again.
+    """
+    streak = tool_context.state.get("_repeated_rejection_loop") or {}
+    if (
+        streak.get("agent") == agent_name
+        and streak.get("tool") == tool_name
+        and streak.get("count", 0) >= REPEATED_REJECTION_LOOP_THRESHOLD
+    ):
+        msg = (
+            f"🔁 [REPEATED REJECTION DETECTED] {agent_name} has had {tool_name} rejected with the same "
+            f"underlying error {streak['count']} times in a row - the wording of the call varied, the "
+            "actual rejection did not. Rewording will not fix this: read and address what the error "
+            "message actually says, or transfer to whichever role can act on it, instead of retrying "
+            f"{tool_name} again."
+        )
+        return {"status": "error", "message": msg}
+    return None
+
+
 TOOL_LOG_ARG_VALUE_MAX_LEN = 20
 
 
@@ -2358,29 +2405,17 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
                 print(f"⚠️ [{agent_name}] blocked transfer - unadvanced implementation (-> {target_agent})", file=sys.stderr)
                 return unadvanced_result
     else:
-        # Any non-transfer tool call is real progress against the
-        # transfer-loop breaker - reset that streak so it only fires on
-        # genuinely unproductive bouncing. EXCEPT the read-only status
-        # tools in _READ_ONLY_STATUS_TOOLS: a real eval run
-        # (create_release_pr_rejects_without_release_approval) showed a
-        # rotation that never repeated the same pair 3x running (dodging
-        # TRANSFER_LOOP_THRESHOLD) and never sustained 6 transfer_to_agent
-        # hops in a row either (dodging TRANSFER_ROTATION_THRESHOLD,
-        # GH issue #191's fix) - because it slipped in exactly one
-        # list_blocking_interactions()/get_budget_status() call per lap,
-        # just often enough to reset both counters before either could
-        # fire, and burned the entire ADK_EVAL_MAX_LLM_CALLS budget without
-        # ever calling create_release_pr. These tools can never make actual
-        # progress on their own (nothing about the story/sprint/backlog
-        # changes from calling them) - only genuinely state-changing calls
-        # should count as evidence the team is unstuck.
-        if tool.name not in _READ_ONLY_STATUS_TOOLS:
-            try:
-                tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
-                tool_context.state["_transfer_rotation_count"] = 0
-            except Exception:
-                pass
-        # But it can itself be a loop: see _detect_repeated_call_loop.
+        # GH #408: the transfer-loop/rotation counters (and the content-
+        # aware repeated-rejection streak just below) are now only reset on
+        # a SUCCESSFUL non-transfer call - see log_tool_result_callback,
+        # which is where that reset actually happens now (it needs the
+        # tool's response to know whether this call succeeded). This
+        # before-the-call callback only runs the checks that can block the
+        # call outright.
+        rejection_loop_result = _detect_repeated_rejection_loop(tool_context, agent_name, tool.name)
+        if rejection_loop_result is not None:
+            print(f"\U0001f501 [{agent_name}] repeated-rejection loop broken (-> {tool.name})", file=sys.stderr)
+            return rejection_loop_result
         loop_result = _detect_repeated_call_loop(tool_context, agent_name, tool.name, args)
         if loop_result is not None:
             print(f"\U0001f501 [{agent_name}] repeated-call loop broken (-> {tool.name})", file=sys.stderr)
@@ -2424,14 +2459,48 @@ def log_tool_result_callback(
     run's console gave no way to tell, without reading the full transcript,
     which calls this repo's own code-level gates actually rejected.
 
+    GH #408: also the single place that decides whether a non-transfer call
+    counts as "real progress" against the transfer-loop/rotation breakers
+    (_detect_transfer_loop) and the content-aware repeated-rejection streak
+    (_detect_repeated_rejection_loop) - moved here from
+    log_tool_invocation_callback's before-the-call reset, which used to fire
+    on ANY non-transfer, non-read-only call regardless of whether it
+    actually succeeded. A real eval run (0.1.0-run53) had a REJECTED
+    create_sprint_report call reset the rotation counter just as readily as
+    a real success would, letting a ~140-hop stuck rotation (through 5
+    roles, a failing create_sprint_report interspersed every cycle) never
+    accumulate past 1-2 - this is the fix: only a call that actually
+    succeeded resets anything.
+
     Only ever observes; never modifies the tool's real response (always
     returns None) - a genuine tool bug should still surface exactly as it
     would without this callback."""
-    if isinstance(tool_response, dict) and tool_response.get("status") == "error":
-        agent_name = getattr(tool_context, "agent_name", None) or "?"
+    agent_name = getattr(tool_context, "agent_name", None) or "?"
+    failed = isinstance(tool_response, dict) and tool_response.get("status") == "error"
+    if failed:
         message = str(tool_response.get("message") or tool_response.get("error") or "no message")
         short_message = message[:TOOL_LOG_ERROR_MESSAGE_MAX_LEN] + ("..." if len(message) > TOOL_LOG_ERROR_MESSAGE_MAX_LEN else "")
         print(f"❌ [{agent_name}] {tool.name} failed: {short_message}", file=sys.stderr)
+        if tool.name != "transfer_to_agent":
+            try:
+                message_key = message[:TOOL_LOG_ERROR_MESSAGE_MAX_LEN]
+                streak = tool_context.state.get("_repeated_rejection_loop") or {}
+                if streak.get("agent") == agent_name and streak.get("tool") == tool.name and streak.get("message_key") == message_key:
+                    count = streak.get("count", 0) + 1
+                else:
+                    count = 1
+                tool_context.state["_repeated_rejection_loop"] = {
+                    "agent": agent_name, "tool": tool.name, "message_key": message_key, "count": count,
+                }
+            except Exception:
+                pass
+    elif tool.name != "transfer_to_agent" and tool.name not in _READ_ONLY_STATUS_TOOLS:
+        try:
+            tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
+            tool_context.state["_transfer_rotation_count"] = 0
+            tool_context.state["_repeated_rejection_loop"] = {}
+        except Exception:
+            pass
     return None
 
 # --- Tool Dispatch Error Handling ---
