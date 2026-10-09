@@ -5,6 +5,48 @@ from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name
 
+# GH #419: seeded into every project from its very first commit (see
+# seed_repository below) - common build/test/editor artifacts that real
+# eval runs have shown DevTeam/QA's own normal work (running tests, a local
+# SQLite db, bytecode caches) leaves untracked in the working tree, which a
+# later GitFlow checkout can hard-fail on ("untracked working tree files
+# would be overwritten"). Deliberately broad/multi-ecosystem rather than
+# narrowly Python-only - this template seeds projects in whatever language
+# Dev Team ends up writing, not just Python.
+_DEFAULT_GITIGNORE = """\
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+instance/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local databases
+*.db
+*.sqlite3
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+"""
+
+
 def _strip_agent_safeguard_comments(text: str) -> str:
     """
     Templates under spec-templates/ carry `<!-- ... -->` HTML comment lines
@@ -325,7 +367,8 @@ def create_from_template(template_path: str, destination_path: str, substitution
 
 def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
-    Creates a specs/ directory and a README.md in the configured target repo.
+    Creates a specs/ directory, a README.md, and a .gitignore (GH #419 - see
+    _DEFAULT_GITIGNORE's own comment for why) in the configured target repo.
     Then performs an initial commit and push.
     - overwrite: If True, existing files in the target will be replaced.
     """
@@ -359,6 +402,27 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
             
             dst_readme.write_text(content, encoding="utf-8")
             files_seeded.append("README.md")
+
+        # GH #419: two separate real eval runs (0.1.0-run54, 0.1.0-run55)
+        # each hit a GitFlow checkout hard-failing with git's "untracked
+        # working tree files would be overwritten by checkout" - run54 on
+        # instance/todo.db (Flask's default SQLite location), run55 on
+        # .coverage/__pycache__/*.pyc (left behind by QA's own check_build()
+        # test runs) - because the generated project had no .gitignore at
+        # all, so DevTeam/QA's own normal local test runs left real,
+        # untracked build/test artifacts sitting in the working tree that
+        # ANY later checkout (create_release_pr, start_feature_branch, ...)
+        # could trip over. A comment on git_push's own "nothing staged"
+        # handling (ISSUE-0050 follow-up) already diagnosed the identical
+        # root cause once before, for a different symptom (a commit
+        # failure, not a checkout failure) - .gitignore existing from the
+        # very first commit prevents the whole class of failure at the
+        # source, for both symptoms, rather than patching one call site at a
+        # time as new artifact types show up.
+        dst_gitignore = repo_root / ".gitignore"
+        if not dst_gitignore.exists() or overwrite:
+            dst_gitignore.write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
+            files_seeded.append(".gitignore")
 
         # Create specs/ directory
         specs_dir = repo_root / "specs"

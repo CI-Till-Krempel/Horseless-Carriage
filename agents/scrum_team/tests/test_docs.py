@@ -217,5 +217,64 @@ class TestSeedRepositoryBranch(unittest.TestCase):
         self.assertEqual(mock_git_push_impl.call_args.kwargs["allow_protected"], True)
 
 
+class TestSeedRepositoryGitignore(unittest.TestCase):
+    """
+    Acceptance Criteria (GH #419): two separate real eval runs each hit a
+    GitFlow checkout hard-failing with git's "untracked working tree files
+    would be overwritten by checkout" - instance/todo.db in one,
+    .coverage/__pycache__/*.pyc in the other - because the generated
+    project had no .gitignore at all, so DevTeam/QA's own normal local test
+    runs left real, untracked build/test artifacts in the working tree for
+    a later checkout to trip over. seed_repository now creates one from the
+    project's very first commit, preventing the whole class of failure
+    rather than patching one artifact type at a time.
+    """
+
+    @patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok"})
+    def test_creates_a_gitignore_on_first_seed(self, mock_git_push_impl):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch("agents.scrum_team.tools.docs._configured_repo_root", return_value=Path(tmp_dir)):
+                result = seed_repository(tool_context=tool_context)
+            gitignore_content = (Path(tmp_dir) / ".gitignore").read_text()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn(".gitignore", result["seeded"])
+        # The two real failures this closes, by name.
+        self.assertIn("__pycache__", gitignore_content)
+        self.assertIn(".coverage", gitignore_content)
+        self.assertIn("instance/", gitignore_content)
+
+    @patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok"})
+    def test_does_not_overwrite_an_existing_gitignore_by_default(self, mock_git_push_impl):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / ".gitignore").write_text("# custom, team-written rules\n")
+            with patch("agents.scrum_team.tools.docs._configured_repo_root", return_value=Path(tmp_dir)):
+                result = seed_repository(tool_context=tool_context)
+            gitignore_content = (Path(tmp_dir) / ".gitignore").read_text()
+
+        self.assertNotIn(".gitignore", result.get("seeded", []))
+        self.assertEqual(gitignore_content, "# custom, team-written rules\n")
+
+    @patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok"})
+    def test_overwrite_flag_does_replace_an_existing_gitignore(self, mock_git_push_impl):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / ".gitignore").write_text("# stale rules\n")
+            with patch("agents.scrum_team.tools.docs._configured_repo_root", return_value=Path(tmp_dir)):
+                result = seed_repository(overwrite=True, tool_context=tool_context)
+            gitignore_content = (Path(tmp_dir) / ".gitignore").read_text()
+
+        self.assertIn(".gitignore", result["seeded"])
+        self.assertIn("__pycache__", gitignore_content)
+
+
 if __name__ == "__main__":
     unittest.main()
