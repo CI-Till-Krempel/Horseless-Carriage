@@ -136,7 +136,7 @@ jobs:
             sleep 2
           done
 
-      - name: Run evaluation sprints and analysis
+      - name: Run evaluation sprints
         run: |
           # GH issue #337: docker-compose.eval.yml swaps net-proxy's egress
           # allowlist to also permit pypi.org/files.pythonhosted.org/
@@ -146,8 +146,7 @@ jobs:
           # (GH issue #287), which a real eval run hit as an unfixable
           # ModuleNotFoundError loop. Real end-user projects never pass
           # this file, so they keep the default allowlist unconditionally.
-          docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval run --rm agent bash -c '
-            set -e
+          docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval run --rm agent \
             python3 -m agents.scrum_team.scripts.run_eval \
               --sprints "${{ github.event.inputs.sprints || 5 }}" \
               --run-id "${{ steps.run_id.outputs.run_id }}" \
@@ -155,13 +154,30 @@ jobs:
               --local-path /app/eval-output/clone \
               --report-path /app/eval-output/manifest.json \
               --transcript-path /app/eval-output/transcript.md
+
+      # GH #414: a SEPARATE step, not chained with `&&`/`set -e` after the
+      # sprints step above - a real eval run (0.1.0-run53) was manually
+      # cancelled mid-sprint, and because analysis used to run as the
+      # second half of the SAME bash step, it never got a chance to run at
+      # all, leaving no report.md even though a usable manifest.json may
+      # still exist. `if: always()` (matching the tag/upload/teardown steps
+      # below, which already use it) means this step still runs - and still
+      # produces whatever report it can - regardless of whether the sprints
+      # step above succeeded, failed, or was cancelled.
+      - name: Run evaluation analysis
+        if: always()
+        run: |
+          if [ ! -s eval-output/manifest.json ]; then
+            echo "No manifest.json produced (sprints step crashed or was cancelled before writing one) - nothing to analyze." >&2
+            exit 0
+          fi
+          docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval run --rm agent \
             python3 -m agents.scrum_team.scripts.run_eval_analysis \
               --manifest /app/eval-output/manifest.json \
               --repo-path /app/eval-output/clone \
               --report-path /app/eval-output/report.md \
               --run-id "${{ steps.run_id.outputs.run_id }}" \
               --base-branch "${{ steps.run_id.outputs.branch }}"
-          '
 
       - name: Tag commit with run id
         if: always()

@@ -65,7 +65,6 @@ REPO_STATE_KEYS = [
     "sprint_backlog_engagement_baseline",
     "sprint_report_pending_release",
     "blocking_interactions",
-    "budget_reset_since_last_sprint_start",
     "overclaim_rejection_counts",
     "general_blockers",
     "steering_proposal_count",
@@ -225,10 +224,6 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("sprint_report_pending_release", False)
     s.setdefault("blocking_interactions", [])
     s.setdefault("orchestrator_stall_count", 0)
-    # True by default: the very first sprint needs no reset_sprint_budget()
-    # call (see GH issue #110) - there's no previous sprint's token usage to
-    # clear yet.
-    s.setdefault("budget_reset_since_last_sprint_start", True)
 
     # 1. Try to load from repo if present first, so environment can override
     state_json_corrupted = False
@@ -853,15 +848,26 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
       clears the instant it *opens* the PR, not once it's actually merged
       - so that gate alone stops firing well before the real close-out is
       done.
-    - Refuses to start a SECOND (or later) sprint unless reset_sprint_budget
-      has been called since the previous one started (see GH issue #110) -
-      previously this was "MANDATORY" only in SM_PROMPT's text, with no code
-      backing it at all, so a forgotten call silently carried over whatever
+    - Mechanically resets the sprint token/event budget and its sibling
+      guard flags (sprint_budget_reset_state_delta, tools/budget.py) for
+      every sprint after the first (GH issues #110, #413). This used to
+      need a separate reset_sprint_budget() tool call ScrumMaster had to
+      remember to make first - "MANDATORY" only in prompt text, with no
+      code backing it, so a forgotten call silently carried over whatever
       token budget headroom the previous sprint left (or didn't leave),
       shrinking or eliminating the new sprint's real budget with no error
-      until an unexplained early halt partway through. The very first sprint
-      needs no reset (there's no previous sprint's leftover usage to clear),
-      detected by sprint_goal still being unset.
+      until an unexplained early halt partway through. GH #413 removed that
+      tool entirely and folded the reset in here instead: the eval harness
+      (run_eval.py) used to ALSO reset this same state independently, at the
+      start of every scripted per-sprint message regardless of whether a
+      real sprint boundary had actually occurred - a real eval run
+      (0.1.0-run53) hit exactly this, with a sprint stuck mid-close-out
+      getting a completely fresh budget purely because the harness sent its
+      next scripted message. One mechanical reset, tied to the one real
+      event that should trigger it, replaces both forgettable/out-of-sync
+      paths. The very first sprint needs no reset (there's no previous
+      sprint's leftover usage to clear), detected by sprint_goal still being
+      unset.
     """
     if is_low_quality_retro_text(goal):
         return {
@@ -894,21 +900,15 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
                     "increment's work - see ORCHESTRATOR_PROMPT SPRINT CLOSE SEQUENCE."
                 ),
             }
-    if s.get("sprint_goal") and not s.get("budget_reset_since_last_sprint_start", True):
-        return {
-            "status": "error",
-            "message": (
-                "Cannot start a new sprint - reset_sprint_budget() must be called first. "
-                "SPRINT_TOKEN_BUDGET is a per-sprint allowance, not cumulative; without a fresh "
-                "reset, this sprint would silently inherit whatever token budget headroom the "
-                "previous sprint left over."
-            ),
-        }
+    if s.get("sprint_goal"):
+        # GH #413: mechanical reset, not an agent-invoked tool call this
+        # relies on remembering - see sprint_budget_reset_state_delta's own
+        # docstring. Only for a real second-or-later sprint; the very first
+        # has no previous sprint's leftover usage/report to clear.
+        from .budget import sprint_budget_reset_state_delta
+        for key, value in sprint_budget_reset_state_delta().items():
+            s[key] = value
     s["sprint_goal"] = goal.strip()
-    # Consumed by this start - a fresh reset_sprint_budget() call is required
-    # again before the *next* sprint can start (same "must be NEW since last
-    # time" pattern as create_sprint_report's retro_baseline).
-    s["budget_reset_since_last_sprint_start"] = False
     # Used by create_sprint_backlog_pr (tools/github.py) to name that
     # sprint's "Sprint Backlog #<N>" PR - the only place a sprint number is
     # tracked in agent state at all (run_eval.py's own sprint counter is a

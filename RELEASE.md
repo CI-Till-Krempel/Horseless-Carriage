@@ -1201,6 +1201,53 @@ section) if it doesn't already have one, and records this sprint's goal against 
 (it has no "append" mode), the accumulated history is tracked in state (`version_goals`, deduped) and
 passed in full every time, so a later sprint's goal never erases an earlier sprint's already-recorded
 one.
+### Eval harness stops immediately on a mechanically-detected loop or a genuinely human-only blocker, and an eval report now survives a crashed sprints step (GH issue #414)
+
+0.1.0-run54 only stopped after `blocked_unresolved_across_sprint` fired - i.e. only once the SAME
+story was still BLOCKED after a full extra sprint's budget was spent re-confirming it, even though a
+mechanical transfer-loop breaker had already proven the team stuck well before that. Root cause:
+`should_escalate_blocker_to_user`'s immediate-stop check was gated on the REAL configured
+`INTERACTION_LEVEL`, but the eval harness always runs at `EVAL` - a "product"-category blocker never
+escalated immediately there no matter how clearly only a human could answer it, even though this
+harness has exactly as little a human available in EVAL mode as "Product" mode assumes. Separately, a
+blocker raised by a loop breaker (`_detect_transfer_loop`/`_detect_repeated_call_loop`) is categorically
+different from an agent's own judgment call - the breaker only fires after the team already proved
+itself unable to make progress through repeated attempts, so giving it the same one-more-sprint benefit
+of the doubt as an ordinary blocker just re-confirms something already demonstrated unresolvable.
+
+`_sprint_needs_human_this_harness_cannot_provide` now checks `should_escalate_blocker_to_user` as if
+this were "Product" level regardless of the actually-configured one (this harness always has no human,
+in any mode), and a new `mechanically_detected` flag - set by the loop breakers themselves right after
+their own `raise_story_blocker` call succeeds, never agent-settable - triggers the same immediate stop.
+Human-approval gates are untouched; they're a separate mechanism, never raised via
+`raise_story_blocker`.
+
+Also: `.github/workflows/eval.yml`'s sprints-and-analysis step used to be one `set -e` bash step - if
+the sprints half crashed or was cancelled (as in run53), the analysis half never ran, so no report.md
+ever existed even with a usable manifest.json on disk. Split into two steps, with analysis using
+`if: always()` (matching the tag/upload/teardown steps already below it) so it always attempts a report
+from whatever manifest exists. `run_eval.py`'s own `main()` also now guarantees a (possibly minimal)
+manifest gets written even if something crashes outside the per-sprint loop entirely, where previously
+nothing would be written at all.
+### Sprint token-budget reset is now purely mechanical - no more agent-invoked or harness-side resets to drift out of sync (GH issue #413)
+
+Two independent, forgettable reset paths existed for the same underlying fact ("a new sprint
+started"): ScrumMaster had to remember to call `reset_sprint_budget()` - "MANDATORY" only in prompt
+text, with no code enforcing it beyond refusing the next `start_sprint` call until it happened - and
+`run_eval.py`'s `_run_one_sprint` separately, blindly reset the same state at the start of every
+scripted per-sprint message, regardless of whether a real sprint boundary had actually occurred. This
+was root cause #1 of eval run53's 2.4x budget overspend (GH issue #407/#409): a sprint stuck
+mid-close-out got a completely fresh token/event budget purely because the harness happened to send
+its next scripted message, letting an unresolved deadlock run again from scratch.
+
+The reset (token usage, sprint_report/sprint_report_kpis, and every sibling guard flag -
+`sprint_budget_reset_state_delta`) is now applied directly inside `start_sprint` itself, for every
+sprint after the first - mechanical, tied to the one real event that should trigger it. The
+`reset_sprint_budget` tool has been removed entirely (there's nothing left for an agent to forget).
+`run_eval.py` no longer mutates session state via `state_delta` at all - it snapshots
+`sprint_report`/`sprint_report_kpis` as a baseline before sending anything, and detects "did this
+invocation's own activity produce something new" by comparing against that snapshot afterward, a
+pure read that can never drift out of sync with the real sprint boundary again.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so

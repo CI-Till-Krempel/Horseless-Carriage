@@ -317,7 +317,6 @@ from .tools import (
     update_budgets,
     get_budget_status,
     log_token_usage,
-    reset_sprint_budget,
     log_story_tokens,
     create_sprint_report,
     create_release_pr,
@@ -659,8 +658,9 @@ def _ensure_sprint_report_on_final_halt_once(callback_context: CallbackContext) 
     right below, using its own flag (sprint_report_safety_net_fired) since
     this fires later/less often than that one (only on the true final
     halt, not on the very first grace-eligible halt - see this function's
-    own docstring). Cleared by reset_sprint_budget, so a halt in a later
-    sprint is guaranteed a report again too."""
+    own docstring). Cleared by start_sprint's own mechanical reset (GH #413,
+    sprint_budget_reset_state_delta), so a halt in a later sprint is
+    guaranteed a report again too."""
     if callback_context.state.get("sprint_report_safety_net_fired"):
         return
     _ensure_sprint_report_on_final_halt(callback_context)
@@ -673,9 +673,9 @@ def _sync_roadmap_on_exhaustion_once(callback_context: CallbackContext) -> None:
     sprint - every call after the first exhaustion this sprint hits this same
     callback again (the canned response repeats on every subsequent turn), so
     without this guard it would redundantly re-sync/re-push on every single
-    one of those. Cleared by reset_sprint_budget / the eval harness's
-    per-sprint state_delta at the start of each new sprint, so exhaustion in
-    a later sprint syncs again.
+    one of those. Cleared by start_sprint's own mechanical reset (GH #413)
+    at the start of each new sprint, so exhaustion in a later sprint syncs
+    again.
     """
     if callback_context.state.get("budget_exhaustion_synced"):
         return
@@ -706,8 +706,9 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str, detail: s
     canned halt response repeats on every turn once the budget's exhausted),
     appending a new blocking_interactions entry and re-firing every
     configured notifier again and again, undoing the alert-fatigue fix
-    ISSUE-0025 was meant to deliver. Cleared by reset_sprint_budget, same as
-    budget_exhaustion_synced, so a halt in a later sprint notifies again."""
+    ISSUE-0025 was meant to deliver. Cleared by start_sprint's own
+    mechanical reset (GH #413), same as budget_exhaustion_synced, so a halt
+    in a later sprint notifies again."""
     if callback_context.state.get("critical_halt_notified"):
         return
     from .tools.notifications import record_blocking_interaction
@@ -908,8 +909,8 @@ def _maybe_inject_budget_warning(
     SPRINT_TOKEN_BUDGET, so a human watching the console - and the model
     itself - gets advance notice instead. Gated by a single "highest
     threshold already warned" flag in state so each threshold fires at most
-    once per sprint; reset_sprint_budget clears it for the next one (see
-    sprint_budget_reset_state_delta, tools/budget.py).
+    once per sprint; start_sprint's own mechanical reset (GH #413) clears it
+    for the next one (see sprint_budget_reset_state_delta, tools/budget.py).
     """
     if token_limit <= 0:
         return
@@ -1905,6 +1906,38 @@ _READ_ONLY_STATUS_TOOLS = frozenset({
 })
 
 
+def _mark_blocker_mechanically_detected(tool_context: ToolContext, story_id: str) -> None:
+    """
+    GH #414: flags a just-raised story blocker as mechanically detected -
+    called only by this module's own loop breakers (_detect_transfer_loop,
+    _detect_repeated_call_loop), right after their own raise_story_blocker
+    call succeeds. Deliberately not a parameter on raise_story_blocker
+    itself (see that function's own docstring for why) - this reaches back
+    into state and sets the flag as a separate step instead, so it can
+    never be set by anything other than our own breaker code.
+
+    The eval harness (run_eval.py's _sprint_needs_human_this_harness_
+    cannot_provide) treats this as an immediate-stop signal: a loop breaker
+    firing only happens after the team already proved itself unable to
+    make progress through repeated attempts, unlike an ordinary blocker
+    (which still gets one more sprint's benefit of the doubt).
+
+    Best-effort: a failure here must never surface as an error from the
+    breaker itself - the story is already BLOCKED either way by this
+    point, this is purely an extra signal for the harness.
+    """
+    try:
+        from .tools.scrum import save_state_to_repo
+        state = tool_context.state
+        for key in ("product_backlog", "sprint_backlog"):
+            for item in state.get(key) or []:
+                if (item.get("id") or item.get("title")) == story_id and item.get("blocked"):
+                    item["blocked"]["mechanically_detected"] = True
+        save_state_to_repo(tool_context)
+    except Exception:
+        pass
+
+
 def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: str) -> Optional[Dict[str, Any]]:
     """
     Breaks an unproductive transfer_to_agent ping-pong between exactly two
@@ -2048,6 +2081,8 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
                 infer_blocker_category(from_agent, to_agent),
                 tool_context=tool_context,
             )
+            if (result or {}).get("status") == "ok":
+                _mark_blocker_mechanically_detected(tool_context, result["story_id"])
         if not story or (result or {}).get("status") != "ok":
             from .tools.notifications import record_blocking_interaction
             record_blocking_interaction(
@@ -2207,6 +2242,8 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
                 infer_blocker_category(agent_name),
                 tool_context=tool_context,
             )
+            if (result or {}).get("status") == "ok":
+                _mark_blocker_mechanically_detected(tool_context, result["story_id"])
         if not story_id or (result or {}).get("status") != "ok":
             from .tools.notifications import record_blocking_interaction
             record_blocking_interaction(
@@ -2648,7 +2685,6 @@ scrum_master = LlmAgent(
         update_budgets,
         get_budget_status,
         log_token_usage,
-        reset_sprint_budget,
         gh_pr_status,
         gh_pr_checks,
         gh_pr_comment,

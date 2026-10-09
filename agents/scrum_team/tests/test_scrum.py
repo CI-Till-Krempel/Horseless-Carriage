@@ -23,7 +23,6 @@ from agents.scrum_team.tools.requirements import (
     set_priority,
     update_roadmap,
 )
-from agents.scrum_team.tools.budget import reset_sprint_budget
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.base import _hc_version
 
@@ -599,7 +598,6 @@ class TestScrumTools(unittest.TestCase):
         # start_sprint's own "not the first sprint" guard).
         mock_pr_open.return_value = False
         start_sprint("Ship the first increment", tool_context=tool_context)
-        reset_sprint_budget(tool_context=tool_context)
 
         mock_pr_open.return_value = True
         result = start_sprint("Ship the second increment", tool_context=tool_context)
@@ -629,8 +627,8 @@ class TestScrumTools(unittest.TestCase):
     def test_first_sprint_needs_no_budget_reset(self):
         """
         Acceptance Criteria (GH issue #110): the very first sprint has no
-        previous sprint's leftover token usage to clear, so it must not be
-        blocked just because reset_sprint_budget was never called.
+        previous sprint's leftover token usage to clear, so start_sprint
+        must not even attempt a reset (there's nothing to reset yet).
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
@@ -640,56 +638,50 @@ class TestScrumTools(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
-    def test_second_sprint_without_reset_is_refused(self):
+    def test_second_sprint_mechanically_resets_the_budget_with_no_separate_call(self):
         """
-        Acceptance Criteria (GH issue #110): reset_sprint_budget() is
-        "MANDATORY" only in SM_PROMPT's text - nothing in code checked
-        whether it actually ran before a new sprint started, so a forgotten
-        call silently carried over the previous sprint's token usage. A
-        second (or later) sprint must now be refused unless a fresh
-        reset_sprint_budget() call happened since the previous one started.
+        Acceptance Criteria (GH issues #110, #413): reset_sprint_budget()
+        used to be a separate tool call "MANDATORY" only in SM_PROMPT's
+        text - nothing in code checked whether it actually ran, so a
+        forgotten call silently carried over the previous sprint's token
+        usage, and a real eval run (0.1.0-run53) separately showed the
+        harness's own equivalent reset drifting out of sync with the real
+        sprint boundary. start_sprint itself now resets the budget (and its
+        sibling guard flags/sprint_report/sprint_report_kpis) mechanically,
+        for every sprint after the first - no separate call, and nothing to
+        forget.
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         start_sprint("Ship the first increment", tool_context=tool_context)
         tool_context.state["token_usage"] = {"total": 950_000, "agents": {"DevTeam": 950_000}}
-
-        result = start_sprint("Ship the second increment", tool_context=tool_context)
-
-        self.assertEqual(result["status"], "error")
-        self.assertIn("reset_sprint_budget", result["message"])
-        # Refused: sprint_goal and the leftover usage must be unchanged.
-        self.assertEqual(tool_context.state["sprint_goal"], "Ship the first increment")
-        self.assertEqual(tool_context.state["token_usage"]["total"], 950_000)
-
-    def test_second_sprint_after_reset_succeeds(self):
-        tool_context = MagicMock()
-        tool_context.state = ScrumState().model_dump()
-        start_sprint("Ship the first increment", tool_context=tool_context)
-        tool_context.state["token_usage"] = {"total": 950_000, "agents": {"DevTeam": 950_000}}
-
-        reset_result = reset_sprint_budget(tool_context=tool_context)
-        self.assertEqual(reset_result["status"], "ok")
-        self.assertEqual(tool_context.state["token_usage"]["total"], 0)
+        tool_context.state["sprint_report"] = "Sprint 1 report content"
+        tool_context.state["sprint_report_kpis"] = {"velocity": 3}
+        tool_context.state["critical_halt_notified"] = True
 
         result = start_sprint("Ship the second increment", tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tool_context.state["sprint_goal"], "Ship the second increment")
+        self.assertEqual(tool_context.state["token_usage"], {"total": 0, "agents": {}})
+        self.assertEqual(tool_context.state["sprint_report"], "")
+        self.assertEqual(tool_context.state["sprint_report_kpis"], {})
+        self.assertFalse(tool_context.state["critical_halt_notified"])
 
-    def test_reset_required_again_before_a_third_sprint(self):
-        """The reset is consumed by each start_sprint call - it doesn't
-        carry forward as a standing "always allowed" state."""
+    def test_third_sprint_also_resets_mechanically(self):
+        """The mechanical reset applies to every sprint after the first,
+        not just the second - no standing "already reset, skip it from now
+        on" state."""
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         start_sprint("Ship the first increment", tool_context=tool_context)
-        reset_sprint_budget(tool_context=tool_context)
         start_sprint("Ship the second increment", tool_context=tool_context)
+        tool_context.state["token_usage"] = {"total": 500_000, "agents": {}}
 
         result = start_sprint("Ship the third increment", tool_context=tool_context)
 
-        self.assertEqual(result["status"], "error")
-        self.assertIn("reset_sprint_budget", result["message"])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["token_usage"], {"total": 0, "agents": {}})
 
 
 class TestSyncBudgetsFromEnv(unittest.TestCase):
