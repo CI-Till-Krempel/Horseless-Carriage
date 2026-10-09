@@ -16,7 +16,6 @@ from agents.scrum_team.tools.budget import (
     optimize_process_for_budget,
     create_sprint_report,
     render_fallback_sprint_report,
-    reset_sprint_budget,
     sprint_budget_reset_state_delta,
     _write_conversation_transcript,
     _file_retro_items_as_issues,
@@ -62,32 +61,25 @@ class TestBudgetTools(unittest.TestCase):
         self.assertEqual(tool_context.state["token_usage"]["agents"]["ProductOwner"], 100)
         self.assertEqual(tool_context.state["token_usage"]["total"], 100)
 
-    def test_reset_sprint_budget_clears_every_grace_and_safety_net_guard(self):
+    def test_sprint_budget_reset_state_delta_clears_every_grace_and_safety_net_guard(self):
         """
         ISSUE-0049 / 0.1.0-run33: a prior sprint's halt can leave
         critical_halt_notified/sprint_report_safety_net_fired stuck True -
-        reset_sprint_budget must clear all of them, not just token_usage,
-        or the NEXT sprint's own final halt silently produces no report.
+        this dict must clear all of them, not just token_usage, or the NEXT
+        sprint's own final halt silently produces no report. GH #413:
+        applied mechanically by start_sprint itself now (see test_scrum.py
+        for that integration) - this just checks the dict's own content.
         """
-        tool_context = MagicMock()
-        tool_context.state = ScrumState().model_dump()
-        tool_context.state["token_usage"] = {"total": 6032161, "agents": {"DevTeam": 1604179}}
-        tool_context.state["budget_exhaustion_synced"] = True
-        tool_context.state["budget_reset_since_last_sprint_start"] = False
-        tool_context.state["critical_halt_notified"] = True
-        tool_context.state["sprint_report_safety_net_fired"] = True
-        tool_context.state["sprint_report_path"] = "specs/reports/SPRINT-REPORT-004.md"
-        tool_context.state["transcript_path"] = "specs/reports/TRANSCRIPT-004.md"
+        delta = sprint_budget_reset_state_delta()
 
-        reset_sprint_budget(tool_context=tool_context)
-
-        self.assertEqual(tool_context.state["token_usage"], {"total": 0, "agents": {}})
-        self.assertFalse(tool_context.state["budget_exhaustion_synced"])
-        self.assertTrue(tool_context.state["budget_reset_since_last_sprint_start"])
-        self.assertFalse(tool_context.state["critical_halt_notified"])
-        self.assertFalse(tool_context.state["sprint_report_safety_net_fired"])
-        self.assertEqual(tool_context.state["sprint_report_path"], "", "a new sprint must allocate its own fresh report number, not reuse the previous sprint's")
-        self.assertEqual(tool_context.state["transcript_path"], "", "a new sprint must allocate its own fresh transcript number, not reuse the previous sprint's")
+        self.assertEqual(delta["token_usage"], {"total": 0, "agents": {}})
+        self.assertFalse(delta["budget_exhaustion_synced"])
+        self.assertFalse(delta["critical_halt_notified"])
+        self.assertFalse(delta["sprint_report_safety_net_fired"])
+        self.assertEqual(delta["sprint_report"], "")
+        self.assertEqual(delta["sprint_report_kpis"], {})
+        self.assertEqual(delta["sprint_report_path"], "", "a new sprint must allocate its own fresh report number, not reuse the previous sprint's")
+        self.assertEqual(delta["transcript_path"], "", "a new sprint must allocate its own fresh transcript number, not reuse the previous sprint's")
 
     def test_sprint_budget_reset_state_delta_returns_independent_copies(self):
         """Two calls must not share the same nested dict - a caller
@@ -1978,7 +1970,7 @@ class TestCreateSprintReportPersistsStateToRepo(unittest.TestCase):
     breaker tripped - root-caused to create_sprint_report/create_release_pr
     never persisting their retro_baseline/kpi_baseline/
     sprint_report_pending_release bumps to the repo's .hc/state.json, unlike
-    every other state-mutating tool (advance_story_stage, reset_sprint_budget,
+    every other state-mutating tool (advance_story_stage, start_sprint,
     ...). A stale on-disk snapshot (e.g. from an advance_story_stage call
     made between a rejected create_sprint_report attempt and its eventual
     success) could then get reloaded by a later init_scrum_state() call -

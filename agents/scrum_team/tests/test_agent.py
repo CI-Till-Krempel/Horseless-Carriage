@@ -32,7 +32,7 @@ from agents.scrum_team.agent import (
 )
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.base import _project_root
-from agents.scrum_team.tools.budget import reset_sprint_budget
+from agents.scrum_team.tools.budget import sprint_budget_reset_state_delta
 from google.genai import types
 from google.adk.models.llm_response import LlmResponse
 
@@ -2076,7 +2076,8 @@ class TestCriticalHaltNotifications(unittest.TestCase):
         lasts - previously each of those re-invocations appended a new
         blocking_interactions entry and re-fired every configured notifier,
         an unbounded stream of duplicate alerts for the same exhaustion
-        event. Must notify exactly once until reset_sprint_budget clears it.
+        event. Must notify exactly once until start_sprint's own mechanical
+        reset (GH #413) clears it for the next sprint.
         """
         mock_context = MagicMock()
         mock_context.agent_name = "TestAgent"
@@ -2094,7 +2095,11 @@ class TestCriticalHaltNotifications(unittest.TestCase):
         interactions = mock_context.state["blocking_interactions"]
         self.assertEqual(len(interactions), 1)
 
-    def test_reset_sprint_budget_allows_a_fresh_notification_next_sprint(self):
+    def test_mechanical_sprint_reset_allows_a_fresh_notification_next_sprint(self):
+        """GH #413: the guard flag is now cleared by start_sprint's own
+        mechanical reset (sprint_budget_reset_state_delta) rather than a
+        separate reset_sprint_budget tool call - applied directly here to
+        isolate this callback's own behavior from start_sprint's."""
         mock_context = MagicMock()
         mock_context.agent_name = "TestAgent"
         state = ScrumState()
@@ -2108,7 +2113,8 @@ class TestCriticalHaltNotifications(unittest.TestCase):
             check_cost_budget_callback(mock_context, MagicMock(model=None))
         self.assertEqual(len(mock_context.state["blocking_interactions"]), 1)
 
-        reset_sprint_budget(tool_context=mock_context)
+        for key, value in sprint_budget_reset_state_delta().items():
+            mock_context.state[key] = value
         self.assertFalse(mock_context.state["critical_halt_notified"])
         # Simulate the new sprint ALSO exhausting its (freshly reset) budget.
         mock_context.state["token_usage"]["total"] = 150
@@ -2507,8 +2513,8 @@ class TestBudgetWarningTier(unittest.TestCase):
     and again at 90%, of the budget - previously the hard-halt itself was
     the only signal anyone got. Gated by a single "highest threshold
     already warned" flag in state (_budget_warning_pct_fired) so each
-    threshold fires at most once per sprint; reset_sprint_budget clears it
-    for the next one.
+    threshold fires at most once per sprint; start_sprint's own mechanical
+    reset (GH #413) clears it for the next one.
     """
 
     def _context(self, token_total, token_usage, already_warned_pct=0):
@@ -2584,9 +2590,10 @@ class TestBudgetWarningTier(unittest.TestCase):
                 check_cost_budget_callback(mock_context, llm_request)
         self.assertEqual(self._system_warnings(llm_request), [])
 
-    def test_reset_sprint_budget_clears_the_warning_flag(self):
+    def test_mechanical_sprint_reset_clears_the_warning_flag(self):
         mock_context = self._context(1000, 900, already_warned_pct=90)
-        reset_sprint_budget(tool_context=mock_context)
+        for key, value in sprint_budget_reset_state_delta().items():
+            mock_context.state[key] = value
         self.assertEqual(mock_context.state["_budget_warning_pct_fired"], 0)
 
 
