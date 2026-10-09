@@ -1087,6 +1087,32 @@ mechanical gate; the existing gates (`new_sprint_item_blocked`, `sprint_backlog_
 token-usage snapshot now also prefixes every tool-call console/transcript log line, so a human watching a
 live run sees both at a glance.
 
+### Scrum Master now revisits prior retro findings before logging new ones, and EVAL mode auto-merges steering-proposal PRs (GH issue #405)
+
+0.1.0-run52's own retrospective reasoning showed two further gaps once GH issue #403's phase
+awareness was in place. First: `add_retro_action`/`add_impediment` entries are append-only - nothing
+mechanically or prompt-wise ever revisits a prior sprint's still-open finding, so a technical gap
+filed as an Issue, or a steering-category gap handed off via `propose_steering_change`, could sit
+unresolved indefinitely with the retro only ever adding new findings on top. Second: direct
+inspection of the eval repo's own PR list confirmed 5 open "Steering proposal: ...-identity.md" PRs
+from run52, all unmerged - `run_eval.py`'s existing auto-merge sweep (`_merge_open_prs`) is
+deliberately scoped to `base_branch=args.branch` (the release PR's target) only, by design, so these
+develop-targeted PRs were never touched by the harness standing in for human review.
+
+Scrum Master's retro reasoning now opens every retrospective by stating plainly what the team can
+actually customize itself (only a role's own `identity.md`, via `propose_steering_change`, always
+human-reviewed - never DoD/DoR/the mechanically-enforced workflow itself), then revisits every retro
+action/impediment still open from a prior sprint before logging anything new: a `"technical"` finding
+checks its filed Issue's stage in `product_backlog`; a `"steering"` finding checks whether its
+recorded `propose_steering_change` PR (`state.steering_proposals`) actually merged, via
+`gh_pr_checks`. No new mechanical "mark resolved" tool was added - this reuses state the codebase
+already records.
+
+A new `_merge_open_steering_prs` sweep in `run_eval.py` runs once per sprint alongside the existing
+release-PR merge, narrowly scoped to open PRs whose head branch contains `/steering/` - not a blanket
+develop-targeted sweep, which would risk force-merging incomplete feature->develop PRs too (the exact
+risk `_merge_open_prs`'s own scoping already avoids).
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
