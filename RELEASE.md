@@ -1179,6 +1179,28 @@ window - past it, the same mechanical fallback-report generator fires instead of
 indefinitely. Loop-detection gaps that let this run as long as it did, and a harness-level
 cross-sprint abort signal, are tracked separately (GH issues #408/#409).
 
+### specs/ROADMAP.md's release goals and Kanban version-grouping are now populated mechanically (GH issue #415)
+
+0.1.0-run54's own eval report flagged this directly: "project tracking files like specs/ROADMAP.md
+were left largely unpopulated with release goals and kanban states" / "specs/ROADMAP.md containing
+empty version goals and blank Kanban tables under '### v0.1 Kanban'." Root cause: `update_roadmap`'s
+own `goals` parameter is entirely optional and nothing ever mechanically supplied it - only populated
+if an agent happened to call `update_roadmap` with `goals=` explicitly, which nothing prompted or
+gated. Separately, every `product_backlog` story defaults to `version="Backlog (unplanned)"` unless
+something explicitly assigns a real release version - `advance_story_stage` keeps a story's Kanban
+checkboxes correctly in sync *once it has a version*, but nothing ever assigned one, so stories
+accumulated under the generic unplanned bucket forever and the real "### v0.1 Kanban" section stayed
+empty.
+
+`create_sprint_backlog_pr` - which already runs every sprint and already knows both the sprint's own
+goal (`state.sprint_goal`, set by `start_sprint`) and which stories are newly committed to it - now
+does both mechanically on a successful merge: defaults each newly-committed story's `version` to
+`DEFAULT_RELEASE_VERSION` ("v0.1", matching `spec-templates/ROADMAP.md`'s own first real release
+section) if it doesn't already have one, and records this sprint's goal against that version. Since
+`update_roadmap`'s own `goals` parameter replaces a version's Goals section wholesale on every call
+(it has no "append" mode), the accumulated history is tracked in state (`version_goals`, deduped) and
+passed in full every time, so a later sprint's goal never erases an earlier sprint's already-recorded
+one.
 ### Eval harness stops immediately on a mechanically-detected loop or a genuinely human-only blocker, and an eval report now survives a crashed sprints step (GH issue #414)
 
 0.1.0-run54 only stopped after `blocked_unresolved_across_sprint` fired - i.e. only once the SAME

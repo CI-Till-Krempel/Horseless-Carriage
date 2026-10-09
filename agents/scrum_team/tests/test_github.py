@@ -1966,12 +1966,13 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             {"Architect": 1, "DevTeam": 1, "QA": 1},
         )
 
+    @patch("agents.scrum_team.tools.requirements.update_roadmap")
     @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
-    def test_surfaces_capacity_advisory_when_backlog_is_undersized(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+    def test_surfaces_capacity_advisory_when_backlog_is_undersized(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate, mock_update_roadmap):
         """GH issue #294: a non-blocking nudge when the committed backlog
         looks clearly under-sized relative to the sprint's token budget."""
         mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
@@ -1990,6 +1991,110 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIn("capacity_advisory", result)
         self.assertIn("under this sprint's 1,000,000 token budget", result["capacity_advisory"])
+
+    @patch("agents.scrum_team.tools.requirements.update_roadmap")
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
+    def test_mechanically_defaults_story_version_and_records_the_sprint_goal(
+        self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate, mock_update_roadmap,
+    ):
+        """
+        Acceptance Criteria (GH #415): a real eval run (0.1.0-run54) showed
+        specs/ROADMAP.md's release goals and "### v0.1 Kanban" section left
+        permanently empty - update_roadmap's own `goals` param is never
+        supplied unless an agent happens to pass it, and a story defaults
+        to version="Backlog (unplanned)" forever unless something
+        explicitly assigns a real one. create_sprint_backlog_pr now does
+        both mechanically: defaults a newly-committed story with no version
+        to DEFAULT_RELEASE_VERSION, and records this sprint's own goal.
+        """
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
+        product_backlog = [{"id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready"]}]
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 3,
+            "sprint_goal": "Ship the MVP to-do list",
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": product_backlog,
+            "sprint_backlog": product_backlog,
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(product_backlog[0]["version"], "v0.1")
+        mock_update_roadmap.assert_called_once_with(
+            "v0.1", goals=["Ship the MVP to-do list"], stories=["US-0001"], tool_context=tool_context,
+        )
+        self.assertEqual(tool_context.state["version_goals"], {"v0.1": ["Ship the MVP to-do list"]})
+
+    @patch("agents.scrum_team.tools.requirements.update_roadmap")
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
+    def test_does_not_override_an_explicitly_assigned_version(
+        self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate, mock_update_roadmap,
+    ):
+        """A story Product Owner already placed under a real version via
+        plan_backlog_item/update_roadmap must keep that version, not get
+        silently reassigned to the generic default."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
+        product_backlog = [{"id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready"], "version": "v0.2"}]
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 3,
+            "sprint_goal": "Ship the MVP to-do list",
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": product_backlog,
+            "sprint_backlog": product_backlog,
+        }
+
+        create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(product_backlog[0]["version"], "v0.2")
+        mock_update_roadmap.assert_called_once_with(
+            "v0.2", goals=["Ship the MVP to-do list"], stories=["US-0001"], tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.requirements.update_roadmap")
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
+    def test_accumulates_goals_across_sprints_instead_of_overwriting(
+        self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate, mock_update_roadmap,
+    ):
+        """update_roadmap's own `goals` param replaces a version's Goals
+        section wholesale on every call - version_goals in state is the
+        accumulated history passed in full every time, so a later sprint's
+        goal doesn't erase an earlier sprint's already-recorded one."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/4"}
+        product_backlog = [{"id": "US-0002", "type": "User Story", "stages_completed": ["Draft", "Ready"]}]
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "sprint_goal": "Add task editing",
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": product_backlog,
+            "sprint_backlog": product_backlog,
+            "version_goals": {"v0.1": ["Ship the MVP to-do list"]},
+        }
+
+        create_sprint_backlog_pr(tool_context=tool_context)
+
+        mock_update_roadmap.assert_called_once_with(
+            "v0.1", goals=["Ship the MVP to-do list", "Add task editing"], stories=["US-0002"], tool_context=tool_context,
+        )
+        self.assertEqual(
+            tool_context.state["version_goals"],
+            {"v0.1": ["Ship the MVP to-do list", "Add task editing"]},
+        )
 
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "error", "stderr": "no such ref"})
     @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
