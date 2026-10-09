@@ -1133,6 +1133,23 @@ call - moved from the before-tool callback (which can't know the outcome yet) to
 across consecutive failures by the same agent+tool - surviving any number of intervening
 `transfer_to_agent` hops - and refuses further calls to that exact tool once the same rejection repeats
 `REPEATED_REJECTION_LOOP_THRESHOLD` (3) times, regardless of how the wording varies.
+### run_eval.py now stops a run stuck on the same sprint-closing rejection across sprint boundaries (GH issue #409)
+
+0.1.0-run53's deadlock (GH issue #407) also exposed a harness-level gap: `_run_one_sprint`'s token/event
+budget resets fresh at the start of every scripted per-sprint message, with no memory of whether the
+*previous* invocation actually closed its sprint. The deadlock's own per-invocation event/token counters
+never crossed either safety net, so the harness just moved on to the next scripted message twice in a
+row, handing the identical irresolvable deadlock a fresh budget each time - the user had to cancel the
+run manually.
+
+A new `_dominant_repeated_rejection` finds the single (tool, truncated message) pair that failed
+identically most often within a sprint, if any pair repeated at least 3 times. Carried across sprint
+boundaries the same way `previously_blocked_ids` already is (GH issue #336): if a sprint produces no
+sprint report AND its dominant rejection matches the *previous* sprint's (which also produced no
+report), the run stops rather than resetting the budget and repeating the same bet a third time.
+Independent of whether agent.py's own in-sprint loop breakers (GH issue #408) fired - those can
+themselves keep re-tripping turn after turn without the team ever resolving the underlying cause, which
+still burns this harness's per-sprint budget same as the original rejection would.
 ### Sprint-closing deadlock: propose_steering_change was blocked exactly when create_sprint_report demanded it, and the ritual-budget exemption had no ceiling (GH issue #407)
 
 0.1.0-run53 had to be cancelled manually after ScrumMaster got stuck in an unrecoverable loop for two
