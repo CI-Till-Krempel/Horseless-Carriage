@@ -254,7 +254,29 @@ def test_sprint_should_not_abort_when_a_critical_halt_still_closed_out_cleanly()
     # (sprint_report_pending_release cleared), the sprint ended in a clean
     # state and the whole 5-sprint run shouldn't be abandoned over it.
     assert _sprint_should_abort_run({
-        "critical_halt": True, "stop_reason": "sprint_report_produced", "sprint_report_pending_release": False,
+        "critical_halt": True, "stop_reason": "sprint_report_produced",
+        "sprint_report": "a real report", "sprint_report_pending_release": False,
+    }) is False
+
+
+def test_sprint_should_not_abort_when_the_host_side_backstop_produced_the_report():
+    """
+    Acceptance Criteria (0.1.0-run60): _run_one_sprint's own host-side
+    backstop (right after the per-sprint loop: "if not sprint_report and
+    session.state.get('critical_halt_notified')...") exists precisely so a
+    report always gets produced even when the harness's own max_events/
+    max_duration cap - not the in-session budget grace - ends the sprint
+    first. That path genuinely populates sprint_report (and, in a real run,
+    the release PR went out too) but never revises stop_reason away from
+    "max_events_reached"/"max_duration_exceeded" - checking the stop_reason
+    STRING instead of whether a report actually exists wrongly treated this
+    as "no clean closeout" and aborted an otherwise-healthy run after just
+    one sprint.
+    """
+    assert _sprint_should_abort_run({
+        "critical_halt": True, "stop_reason": "max_events_reached",
+        "sprint_report": "a fallback report, produced by the host-side backstop",
+        "sprint_report_pending_release": False,
     }) is False
 
 
@@ -262,7 +284,9 @@ def test_sprint_should_abort_when_a_critical_halt_left_no_clean_close_out():
     # The pre-fix behavior (and still correct) for the case the grace
     # allowance doesn't cover: a real run previously hit an unrelated
     # transfer-loop crash in the *next* sprint after silently continuing
-    # from exactly this kind of unclean state (GH issue #167).
+    # from exactly this kind of unclean state (GH issue #167). No
+    # sprint_report at all here - genuinely nothing was ever produced,
+    # unlike the host-side-backstop case above.
     assert _sprint_should_abort_run({"critical_halt": True, "stop_reason": "max_nudges_exhausted"}) is True
     assert _sprint_should_abort_run({"critical_halt": True, "stop_reason": "max_events_reached"}) is True
 
@@ -274,11 +298,12 @@ def test_sprint_should_abort_when_the_report_was_produced_but_the_release_never_
     SAME invocation (an untracked-files checkout error, GH #419) -
     sprint_report_pending_release stayed True (only create_release_pr's own
     success path clears it), mechanically blocking the next sprint's
-    start_sprint call. stop_reason=="sprint_report_produced" alone is not
-    proof of a clean close-out - this must still abort.
+    start_sprint call. A report existing alone is not proof of a clean
+    close-out - this must still abort.
     """
     assert _sprint_should_abort_run({
-        "critical_halt": True, "stop_reason": "sprint_report_produced", "sprint_report_pending_release": True,
+        "critical_halt": True, "stop_reason": "sprint_report_produced",
+        "sprint_report": "a real report", "sprint_report_pending_release": True,
     }) is True
 
 
