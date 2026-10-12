@@ -149,6 +149,54 @@ def test_run_one_sprint_detects_a_genuinely_new_report_against_the_baseline():
     assert result["sprint_report"] == "Fresh report from this very call"
 
 
+def test_run_one_sprint_discards_identical_kpis_left_over_from_a_prior_sprint():
+    """Sibling to the stale-report case above, for sprint_report_kpis: a
+    session that already has a KPI dict sitting in state (kpi_update_count
+    never advanced this invocation) must not be mistaken for "this attempt
+    just recomputed them"."""
+    session_service = _StatefulSessionService({
+        "sprint_report_kpis": {"maintainability": {"test_coverage": 0.97}},
+        "kpi_update_count": 3,
+    })
+    result = _run(_run_one_sprint(
+        _NoProgressRunner(), session_service, "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+    ))
+
+    assert result["sprint_report_kpis"] is None
+
+
+def test_run_one_sprint_detects_fresh_kpis_even_when_identical_to_the_prior_value():
+    """
+    GH issue (0.1.0-run57): a real eval run had update_sprint_report
+    genuinely recompute KPIs in two separate sprints that happened to come
+    out byte-identical to the previous sprint's values (a simple fixed test
+    project's coverage/complexity/security-scan numbers don't necessarily
+    change sprint to sprint) - comparing the KPI dict's own value against a
+    baseline wrongly treated this as "nothing new", discarding real data.
+    kpi_update_count (bumped by every successful update_sprint_report call
+    regardless of whether the values changed) is the correct signal.
+    """
+    kpis = {"maintainability": {"test_coverage": 0.97}}
+    state = {"sprint_report_kpis": dict(kpis), "kpi_update_count": 3}
+    session_service = _StatefulSessionService(state)
+
+    class _RecomputesIdenticalKpisRunner:
+        async def run_async(self, user_id, session_id, new_message, state_delta=None):
+            # Same values as before, but update_sprint_report really did run.
+            state["sprint_report_kpis"] = dict(kpis)
+            state["kpi_update_count"] = 4
+            return
+            yield  # pragma: no cover
+
+    result = _run(_run_one_sprint(
+        _RecomputesIdenticalKpisRunner(), session_service, "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+    ))
+
+    assert result["sprint_report_kpis"] == kpis
+
+
 def test_run_one_sprint_never_passes_a_state_delta_to_the_runner():
     """GH #413: no harness-side state mutation at all any more - token
     budget/report/KPI resets are exclusively start_sprint's job now,

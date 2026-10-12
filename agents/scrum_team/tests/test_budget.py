@@ -23,6 +23,10 @@ from agents.scrum_team.tools.budget import (
     sprint_capacity_advisory,
     _render_retro_doc,
     _render_steering_doc,
+    _next_sprint_report_path,
+    _next_transcript_path,
+    _next_retro_doc_path,
+    _next_steering_doc_path,
 )
 from agents.scrum_team.tools.scrum import init_scrum_state
 from agents.scrum_team.state import ScrumState
@@ -2042,6 +2046,84 @@ class TestCreateSprintReportPersistsStateToRepo(unittest.TestCase):
         process_signals = len(fresh_context.state.get("retro_actions", [])) + len(fresh_context.state.get("impediment_log", []))
         self.assertFalse(process_signals > fresh_context.state["retro_baseline"])
         self.assertFalse(fresh_context.state["kpi_update_count"] > fresh_context.state["kpi_baseline"])
+
+
+class TestNextNumberedArtifactPathFloor(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue, 0.1.0-run57): _next_sprint_report_path/
+    _next_transcript_path/_next_retro_doc_path/_next_steering_doc_path pick
+    their next number by scanning specs/reports/ on disk - a real eval run
+    showed that scan can under-count (the shared working tree didn't yet
+    reflect the immediately-prior sprint's own committed file at the
+    moment this ran), silently reusing an earlier sprint's number and
+    overwriting its file. Each of these artifacts is written exactly once
+    per real sprint, so the allocated number must never come out lower
+    than state.sprint_number itself.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo_root = Path(self._tmp.name)
+        (self.repo_root / "specs" / "reports").mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _tool_context(self, sprint_number):
+        tool_context = MagicMock()
+        tool_context.state = {"sprint_number": sprint_number}
+        return tool_context
+
+    def _touch(self, name):
+        (self.repo_root / "specs" / "reports" / name).write_text("x")
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    def test_plain_scan_still_works_when_disk_and_sprint_number_agree(self, mock_repo_root):
+        mock_repo_root.return_value = self.repo_root
+        self._touch("SPRINT-REPORT-001.md")
+
+        path = _next_sprint_report_path(self._tool_context(sprint_number=2))
+
+        self.assertEqual(path, "specs/reports/SPRINT-REPORT-002.md")
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    def test_floors_at_sprint_number_when_the_disk_scan_under_counts(self, mock_repo_root):
+        """The actual bug: specs/reports/ is missing a prior sprint's file
+        (a transient git-sync gap, not a real absence) - without the floor,
+        this would allocate the SAME number as that missing sprint and
+        silently overwrite it once that file does reappear."""
+        mock_repo_root.return_value = self.repo_root
+        self._touch("SPRINT-REPORT-001.md")  # only sprint 1's file visible
+
+        path = _next_sprint_report_path(self._tool_context(sprint_number=3))
+
+        self.assertEqual(path, "specs/reports/SPRINT-REPORT-003.md")
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    def test_no_sprint_number_in_state_falls_back_to_pure_scan(self, mock_repo_root):
+        """A caller with no sprint_number in state (e.g. a unit test that
+        doesn't set it) must behave exactly as before this fix."""
+        mock_repo_root.return_value = self.repo_root
+        self._touch("SPRINT-REPORT-001.md")
+        tool_context = MagicMock()
+        tool_context.state = {}
+
+        path = _next_sprint_report_path(tool_context)
+
+        self.assertEqual(path, "specs/reports/SPRINT-REPORT-002.md")
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    def test_each_artifact_type_floors_independently(self, mock_repo_root):
+        mock_repo_root.return_value = self.repo_root
+        self._touch("TRANSCRIPT-001.md")
+        self._touch("RETRO-001.md")
+        self._touch("STEERING-001.md")
+        ctx = self._tool_context(sprint_number=4)
+
+        self.assertEqual(_next_transcript_path(ctx), "specs/reports/TRANSCRIPT-004.md")
+        self.assertEqual(_next_retro_doc_path(ctx), "specs/reports/RETRO-004.md")
+        self.assertEqual(_next_steering_doc_path(ctx), "specs/reports/STEERING-004.md")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,10 @@ on:
         description: "Number of sprints to run"
         required: false
         default: "5"
+      sprint_token_budget:
+        description: "Per-sprint token budget override (blank = use the eval-approval environment's EVAL_SPRINT_TOKEN_BUDGET variable, or 5000000)"
+        required: false
+        default: ""
 
 jobs:
   evaluate:
@@ -105,13 +109,22 @@ jobs:
             # "10.0") default never kicks in and float("") crashes the run.
             echo "PROCESS_OVERHEAD_PERCENTAGE=20"
             # Mirrors .env.example's "Eval Harness Budget Configuration" -
-            # override via repo/environment Settings -> Variables if these
-            # ever need recalibrating without a code change. GH issue #81:
-            # 2,600,000 was too tight for later, more complex sprints (a real
-            # run hit ~2.8M and truncated sprints 4-5) - bumped with headroom.
-            # 0.1.0-run25 then hit 4,072,826 in sprint 1 alone (see
-            # ISSUE-0045) - bumped again with real headroom above that.
-            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ vars.EVAL_SPRINT_TOKEN_BUDGET || '5000000' }}"
+            # override via repo/environment Settings -> Variables (every
+            # run) or this workflow's own sprint_token_budget dispatch
+            # input (one run, no setting to remember to revert) if these
+            # ever need recalibrating without a code change - the input
+            # wins when set, since a one-off manual run asking for a
+            # specific budget is clearly more deliberate than whatever the
+            # standing default happens to be. A tag-push trigger has no
+            # dispatch inputs at all (github.event.inputs is empty), so it
+            # always falls through to the repo/environment variable or the
+            # hardcoded default below, same as before this input existed.
+            # GH issue #81: 2,600,000 was too tight for later, more complex
+            # sprints (a real run hit ~2.8M and truncated sprints 4-5) -
+            # bumped with headroom. 0.1.0-run25 then hit 4,072,826 in sprint
+            # 1 alone (see ISSUE-0045) - bumped again with real headroom
+            # above that.
+            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ github.event.inputs.sprint_token_budget || vars.EVAL_SPRINT_TOKEN_BUDGET || '5000000' }}"
             echo "EVAL_USD_BUDGET_PER_SPRINT=${{ vars.EVAL_USD_BUDGET_PER_SPRINT || '3.0' }}"
             # ISSUE-0045: this fixed scenario's entire product backlog is 6
             # stories - the default READY_BACKLOG_SPRINTS_TARGET=2 (see

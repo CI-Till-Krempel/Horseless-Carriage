@@ -539,73 +539,74 @@ def _sprint_length_feedback(s: Dict[str, Any]) -> str:
 
 
 _SPRINT_REPORT_NUM_PATTERN = re.compile(r"SPRINT-REPORT-(\d+)\.md$")
+_TRANSCRIPT_NUM_PATTERN = re.compile(r"TRANSCRIPT-(\d+)\.md$")
+_RETRO_DOC_NUM_PATTERN = re.compile(r"RETRO-(\d+)\.md$")
+_STEERING_DOC_NUM_PATTERN = re.compile(r"STEERING-(\d+)\.md$")
+
+
+def _next_numbered_artifact_path(tool_context, prefix: str, pattern: "re.Pattern") -> str:
+    """
+    Shared implementation for _next_sprint_report_path/_next_transcript_path/
+    _next_retro_doc_path/_next_steering_doc_path below - picks the next
+    sequential specs/reports/<prefix>-NNN.md path by scanning what's
+    already there, self-healing like _generate_next_id (no separate
+    counter in state to drift out of sync).
+
+    Also floored at state.sprint_number: each of these four artifacts is
+    written exactly once per real sprint (reused on any later call that
+    same sprint - see each caller's own docstring), so a given sprint's
+    own number should never come out lower than the sprint number itself.
+    A real eval run (0.1.0-run57) hit exactly this with a plain scan-only
+    version of this function: the shared working tree's view of
+    specs/reports/ didn't yet reflect the immediately-prior sprint's own
+    committed file at the moment this ran (the same general class of
+    git-sync gap as GH #423, just for this file instead of .hc/state.json)
+    - the scan under-counted, allocated a number one behind the real sprint
+    count, and silently overwrote an earlier sprint's report/transcript/
+    retro/steering doc with this sprint's content instead of erroring or
+    skipping ahead. Flooring at sprint_number makes that specific failure
+    mode impossible regardless of whether the underlying git-sync gap is
+    ever fully root-caused: the number this sprint allocates can never be
+    less than the sprint it's for, so it can never collide with a real
+    earlier sprint's own file.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    reports_dir = repo_root / "specs" / "reports"
+    max_num = 0
+    if reports_dir.exists():
+        for fp in reports_dir.glob(f"{prefix}-*.md"):
+            m = pattern.match(fp.name)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+    state = getattr(tool_context, "state", None) or {}
+    sprint_number = state.get("sprint_number") or 0
+    next_num = max(max_num + 1, sprint_number)
+    return f"specs/reports/{prefix}-{next_num:03d}.md"
 
 
 def _next_sprint_report_path(tool_context) -> str:
     """
-    Picks the next sequential specs/reports/SPRINT-REPORT-NNN.md path by
-    scanning what's already there - self-healing like _generate_next_id,
-    no separate counter in state to drift out of sync. Previously every
-    sprint overwrote the same SPRINT-REPORT-LATEST.md, so only the final
-    sprint's report ever survived in the repo.
+    Picks the next sequential specs/reports/SPRINT-REPORT-NNN.md path -
+    see _next_numbered_artifact_path above. Previously every sprint
+    overwrote the same SPRINT-REPORT-LATEST.md, so only the final sprint's
+    report ever survived in the repo.
     """
-    repo_root = _configured_repo_root(tool_context)
-    reports_dir = repo_root / "specs" / "reports"
-    max_num = 0
-    if reports_dir.exists():
-        for fp in reports_dir.glob("SPRINT-REPORT-*.md"):
-            m = _SPRINT_REPORT_NUM_PATTERN.match(fp.name)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-    return f"specs/reports/SPRINT-REPORT-{max_num + 1:03d}.md"
-
-
-_TRANSCRIPT_NUM_PATTERN = re.compile(r"TRANSCRIPT-(\d+)\.md$")
+    return _next_numbered_artifact_path(tool_context, "SPRINT-REPORT", _SPRINT_REPORT_NUM_PATTERN)
 
 
 def _next_transcript_path(tool_context) -> str:
     """Mirrors _next_sprint_report_path, one sequence per artifact type."""
-    repo_root = _configured_repo_root(tool_context)
-    reports_dir = repo_root / "specs" / "reports"
-    max_num = 0
-    if reports_dir.exists():
-        for fp in reports_dir.glob("TRANSCRIPT-*.md"):
-            m = _TRANSCRIPT_NUM_PATTERN.match(fp.name)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-    return f"specs/reports/TRANSCRIPT-{max_num + 1:03d}.md"
-
-
-_RETRO_DOC_NUM_PATTERN = re.compile(r"RETRO-(\d+)\.md$")
+    return _next_numbered_artifact_path(tool_context, "TRANSCRIPT", _TRANSCRIPT_NUM_PATTERN)
 
 
 def _next_retro_doc_path(tool_context) -> str:
     """Mirrors _next_sprint_report_path, one sequence per artifact type."""
-    repo_root = _configured_repo_root(tool_context)
-    reports_dir = repo_root / "specs" / "reports"
-    max_num = 0
-    if reports_dir.exists():
-        for fp in reports_dir.glob("RETRO-*.md"):
-            m = _RETRO_DOC_NUM_PATTERN.match(fp.name)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-    return f"specs/reports/RETRO-{max_num + 1:03d}.md"
-
-
-_STEERING_DOC_NUM_PATTERN = re.compile(r"STEERING-(\d+)\.md$")
+    return _next_numbered_artifact_path(tool_context, "RETRO", _RETRO_DOC_NUM_PATTERN)
 
 
 def _next_steering_doc_path(tool_context) -> str:
     """Mirrors _next_sprint_report_path, one sequence per artifact type."""
-    repo_root = _configured_repo_root(tool_context)
-    reports_dir = repo_root / "specs" / "reports"
-    max_num = 0
-    if reports_dir.exists():
-        for fp in reports_dir.glob("STEERING-*.md"):
-            m = _STEERING_DOC_NUM_PATTERN.match(fp.name)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-    return f"specs/reports/STEERING-{max_num + 1:03d}.md"
+    return _next_numbered_artifact_path(tool_context, "STEERING", _STEERING_DOC_NUM_PATTERN)
 
 
 def _render_retro_doc(s: Dict[str, Any]) -> str:
