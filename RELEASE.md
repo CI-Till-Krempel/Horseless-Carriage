@@ -1266,6 +1266,30 @@ repeated token-budget halts, with nobody else ever getting a turn to even attemp
 session state), and `_sprint_should_abort_run` requires it to be `False` - true proof the release
 actually went out - before treating a produced report as a clean close-out, not just that one was
 authored at some point during the invocation.
+### seed_repository now creates a .gitignore - untracked build/test artifacts kept blocking GitFlow checkouts (GH issue #419)
+
+A follow-up eval run (0.1.0-run55, right after GH #413/#414/#415 merged) stalled permanently:
+`create_release_pr` failed with git's "untracked working tree files would be overwritten by checkout"
+on `.coverage`/`__pycache__/*.pyc`, which left the sprint's close-out sequence unable to ever complete
+(ProductOwner's own grace allowance exhausted retrying it, with no path left to ever call
+`start_sprint` again under GH #413's now-fully-mechanical reset). US-0004/US-0005/US-0006 had real
+code written for them but never reached `advance_story_stage` before the team pivoted to closing the
+sprint out, so `specs/ROADMAP.md`'s per-story checkboxes stayed stale - the exact symptom GH #415 had
+just fixed a different cause of, recurring from a new one.
+
+This is the same underlying class of failure 0.1.0-run54 hit on `instance/todo.db` (GH #415's own
+report flagged it): the generated project has no `.gitignore` at all, so DevTeam/QA's own ordinary
+local work (running tests, a local SQLite db) leaves real, untracked build/test artifacts in the
+working tree for a later GitFlow checkout to trip over. A `git_push` code comment (ISSUE-0050
+follow-up / 0.1.0-run34) had already diagnosed this exact root cause once before, for a different
+symptom (a commit failure, not a checkout failure).
+
+`seed_repository` now creates a `.gitignore` alongside README.md/specs/ as part of every project's
+very first commit - broad/multi-ecosystem (Python bytecode/coverage/venv, Node `node_modules`, local
+databases, editor/OS cruft), not narrowly scoped to whichever single artifact type caused the most
+recent incident. This prevents the whole class of failure at the source (these paths can no longer get
+accidentally committed via a careless `git add -A` before a `.gitignore` ever existed) instead of
+patching one call site or one artifact type at a time as new ones keep showing up.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
