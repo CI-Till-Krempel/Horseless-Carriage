@@ -1,4 +1,5 @@
 # agents/scrum_team/tests/test_docs.py
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ from agents.scrum_team.tools.docs import (
     upsert_adr,
     create_from_template,
     seed_repository,
+    _heal_gitignore_drift,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -274,6 +276,123 @@ class TestSeedRepositoryGitignore(unittest.TestCase):
 
         self.assertIn(".gitignore", result["seeded"])
         self.assertIn("__pycache__", gitignore_content)
+
+
+class TestHealGitignoreDrift(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue, 0.1.0-run58): seed_repository's own
+    .gitignore-on-first-seed fix (GH #419) only ever helps a brand-new
+    project's very first commit - it never re-visits a project that
+    already looks seeded. A long-lived project (the eval harness's own
+    standing target repo, reused run after run rather than recreated
+    fresh) can have been first seeded before .gitignore existed at all, or
+    accumulated a tracked build artifact before .gitignore started
+    covering it - that drift otherwise persists forever. _heal_gitignore_
+    drift is a mechanical, best-effort fix for exactly that: ensure
+    .gitignore exists and untrack anything already-tracked that it now
+    covers.
+    """
+
+    def setUp(self):
+        self.remote = Path(tempfile.mkdtemp(prefix="hc-test-remote-"))
+        self.clone = Path(tempfile.mkdtemp(prefix="hc-test-clone-"))
+        subprocess.run(["git", "init", "-q", "--bare"], cwd=self.remote, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.clone, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.clone, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.clone, check=True)
+        subprocess.run(["git", "remote", "add", "origin", str(self.remote)], cwd=self.clone, check=True)
+
+        # A tracked build artifact, as if it had been committed before this
+        # project ever had a .gitignore - the exact drift this heals.
+        pycache_dir = self.clone / "__pycache__"
+        pycache_dir.mkdir()
+        (pycache_dir / "app.cpython-311.pyc").write_bytes(b"not real bytecode")
+        (self.clone / "README.md").write_text("# Test project\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.clone, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "initial commit, no .gitignore yet"], cwd=self.clone, check=True)
+        subprocess.run(["git", "branch", "-M", "develop"], cwd=self.clone, check=True)
+        subprocess.run(["git", "push", "-q", "-u", "origin", "develop"], cwd=self.clone, check=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.remote, ignore_errors=True)
+        shutil.rmtree(self.clone, ignore_errors=True)
+
+    def _tool_context(self):
+        tool_context = MagicMock()
+        tool_context.state = {}
+        tool_context.agent_name = "ScrumMaster"
+        return tool_context
+
+    @patch("agents.scrum_team.tools.docs._configured_repo_root")
+    def test_heals_an_already_tracked_file_the_default_gitignore_now_covers(self, mock_repo_root):
+        mock_repo_root.return_value = self.clone
+
+        result = _heal_gitignore_drift(self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["healed"])
+        self.assertIn(".gitignore", result["changed"])
+        self.assertIn("__pycache__/app.cpython-311.pyc", result["changed"])
+
+        gitignore_content = (self.clone / ".gitignore").read_text()
+        self.assertIn("__pycache__", gitignore_content)
+
+        # Untracked from git's index, but the actual file is left alone on disk.
+        ls_files = subprocess.run(
+            ["git", "ls-files", "__pycache__/"], cwd=self.clone, capture_output=True, text=True
+        ).stdout
+        self.assertEqual(ls_files.strip(), "")
+        self.assertTrue((self.clone / "__pycache__" / "app.cpython-311.pyc").exists())
+
+        # And it actually reached origin, not just the local clone.
+        remote_log = subprocess.run(
+            ["git", "log", "--oneline", "origin/develop"], cwd=self.clone, capture_output=True, text=True
+        ).stdout
+        self.assertIn("untrack build/test artifacts", remote_log)
+
+    @patch("agents.scrum_team.tools.docs._configured_repo_root")
+    def test_is_a_no_op_once_already_healed(self, mock_repo_root):
+        mock_repo_root.return_value = self.clone
+
+        _heal_gitignore_drift(self._tool_context())
+        result = _heal_gitignore_drift(self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["healed"])
+
+    @patch("agents.scrum_team.tools.docs._configured_repo_root")
+    def test_no_op_when_theres_no_git_repo_yet(self, mock_repo_root):
+        with tempfile.TemporaryDirectory() as plain_dir:
+            mock_repo_root.return_value = Path(plain_dir)
+            result = _heal_gitignore_drift(self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["healed"])
+
+    @patch("agents.scrum_team.tools.docs._configured_repo_root")
+    def test_no_op_when_develop_does_not_exist_on_origin_yet(self, mock_repo_root):
+        """A brand-new project mid-bootstrap (configure_github_repo has run,
+        seed_repository/its first push hasn't yet) has no develop branch on
+        origin at all - that's normal setup, not drift, and must not error."""
+        fresh_remote = Path(tempfile.mkdtemp(prefix="hc-test-remote-empty-"))
+        fresh_clone = Path(tempfile.mkdtemp(prefix="hc-test-clone-empty-"))
+        try:
+            subprocess.run(["git", "init", "-q", "--bare"], cwd=fresh_remote, check=True)
+            subprocess.run(["git", "init", "-q"], cwd=fresh_clone, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=fresh_clone, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=fresh_clone, check=True)
+            subprocess.run(["git", "remote", "add", "origin", str(fresh_remote)], cwd=fresh_clone, check=True)
+
+            mock_repo_root.return_value = fresh_clone
+            result = _heal_gitignore_drift(self._tool_context())
+
+            self.assertEqual(result["status"], "ok")
+            self.assertFalse(result["healed"])
+        finally:
+            import shutil
+            shutil.rmtree(fresh_remote, ignore_errors=True)
+            shutil.rmtree(fresh_clone, ignore_errors=True)
 
 
 if __name__ == "__main__":

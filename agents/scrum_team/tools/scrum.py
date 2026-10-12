@@ -285,6 +285,24 @@ def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
                     state_json_corrupted = True
         except Exception:
             pass
+
+        # GH issue (0.1.0-run58): a long-lived project (the eval harness's
+        # own standing target repo, reused run after run rather than
+        # recreated fresh - see run_eval.py's _prepare_local_clone) can
+        # have been first seeded before seed_repository ever wrote a
+        # .gitignore, or accumulated a now-ignorable tracked file before
+        # .gitignore started covering it - seed_repository's own "only
+        # write what's missing" check never re-visits a project that
+        # already looks seeded, so this drift otherwise persists forever.
+        # Same first-init-only gating as the reload above: this is a
+        # one-time repo-hygiene check, not something worth re-running
+        # (and paying real git/network cost for) on every later call this
+        # same session.
+        try:
+            from .docs import _heal_gitignore_drift
+            _heal_gitignore_drift(tool_context)
+        except Exception:
+            pass
     s["_state_auto_initialized"] = True
 
     # hc_version always reflects the version actually running this session,
