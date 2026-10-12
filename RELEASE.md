@@ -1291,6 +1291,30 @@ recent incident. This prevents the whole class of failure at the source (these p
 accidentally committed via a careless `git add -A` before a `.gitignore` ever existed) instead of
 patching one call site or one artifact type at a time as new ones keep showing up.
 
+### init_scrum_state() could regress already-advanced backlog state when called mid-session (GH issue #423)
+
+A real eval run (0.1.0-run56) stopped early in Sprint 2 via the mechanical loop-breaker
+(`blocked_mechanically_detected`, GH #414 working exactly as designed) - but the root cause one layer
+down was a genuine state-corruption bug, not the ordering gate or loop-breaker misbehaving. In Sprint
+1, US-0003/US-0004/US-0005 all genuinely reached `Accepted` (`advance_story_stage` returned "ok" each
+time, with a successful git push of the updated state to `develop`). Sprint 2's very first tool call
+was ScrumMaster explicitly re-invoking `init_scrum_state()` ("Initializing Scrum state from disk") -
+available to every role, not just invoked automatically once by `ensure_state_initialized_callback`'s
+own `_state_auto_initialized` guard (agent.py). `init_scrum_state`'s "load from repo" step used to run
+unconditionally on every call, so this second, agent-initiated call wholesale-overwrote the live,
+already-advanced `product_backlog` with whatever snapshot happened to be sitting in `.hc/state.json`
+on disk - regressing all three stories back to `['Draft', 'Ready']`. That fed the one-story-at-a-time
+ordering gate stale data, which correctly-but-wrongly rejected `start_feature_branch` on the next
+story, cascading into a DevTeam/ProductOwner transfer loop and the eventual mechanical stop.
+
+`init_scrum_state` now only performs the "load from repo" step on this session's actual first-ever
+init (tracked via the same `_state_auto_initialized` flag), or when a caller explicitly passes
+`force=True` for the rare genuine case of picking up an out-of-band edit to `state.json` mid-session.
+The markdown-rebuild step (`sync_stories_from_markdown` et al.) stays unconditional - it merges
+per-field onto the existing backlog rather than replacing it wholesale, and doesn't carry
+`stages_completed` at all, so re-running it can only ever pick up a genuinely new story/doc, never
+regress an existing one's progress.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
