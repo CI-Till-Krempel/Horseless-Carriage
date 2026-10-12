@@ -594,6 +594,22 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
     against that snapshot afterward, a pure read that never mutates product
     state - instead of requiring a destructive clear first.
 
+    GH issue (0.1.0-run57): sprint_report_kpis specifically is NOT detected
+    by comparing the KPI dict's own VALUE against its baseline - a real run
+    had update_sprint_report genuinely recompute real KPIs in both Sprint 3
+    and Sprint 4, but the resulting dict happened to be byte-identical to
+    the previous sprint's (a simple fixed test project's test
+    coverage/code complexity/security scan numbers don't necessarily change
+    sprint to sprint), so the equality check wrongly concluded "nothing new
+    this sprint" and discarded real data - report.md's KPI Trends table
+    showed "n/a" for two sprints that had genuinely re-run this step.
+    kpi_update_count (bumped by every successful update_sprint_report call
+    regardless of whether the resulting values changed, see tools/
+    quality.py) is the correct "was it actually called this sprint" signal
+    - the same snapshot-a-counter pattern retro_baseline/kpi_baseline
+    already use internally (tools/budget.py) for their own "something new
+    since last time" gates.
+
     `deadline` (time.monotonic() seconds) is a wall-clock safety net,
     independent of the token/USD budget guardrails - if those don't
     actually stop things for whatever reason (a bug, an unexpected model
@@ -618,7 +634,7 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
     # "did a NEW report appear" is only ever a comparison against this
     # baseline, never a bare truthiness check.
     report_baseline = session.state.get("sprint_report")
-    kpis_baseline = session.state.get("sprint_report_kpis")
+    kpi_update_count_baseline = session.state.get("kpi_update_count", 0)
 
     for attempt in range(max_nudges + 1):
         if time.monotonic() >= deadline:
@@ -713,7 +729,8 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
             print(f"WARNING: host-side sprint report backstop failed (non-fatal): {type(e).__name__}: {e}", file=sys.stderr)
 
     current_kpis = session.state.get("sprint_report_kpis")
-    fresh_kpis = current_kpis if current_kpis and current_kpis != kpis_baseline else None
+    kpi_updated_this_sprint = session.state.get("kpi_update_count", 0) > kpi_update_count_baseline
+    fresh_kpis = current_kpis if current_kpis and kpi_updated_this_sprint else None
 
     return {
         "final_text": final_text,
@@ -729,11 +746,14 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # Say-Do Ratio/Quality/Test Coverage as a time series across sprints.
         # Only present if Scrum Master actually got to run this step this
         # sprint (cheap-model/budget-constrained sprints sometimes don't) -
-        # None otherwise, not a fabricated value. GH #413: compared against
-        # the baseline snapshotted above, not read bare - without that, a
-        # sprint where this step didn't run would silently inherit whatever
-        # the PREVIOUS sprint's KPIs were (GH issue #124's original failure
-        # mode, now prevented by comparison instead of a destructive clear).
+        # None otherwise, not a fabricated value. GH #413: gated on whether
+        # kpi_update_count advanced since the baseline snapshotted above,
+        # not read bare - without that, a sprint where this step didn't run
+        # would silently inherit whatever the PREVIOUS sprint's KPIs were
+        # (GH issue #124's original failure mode). Gated on the COUNTER,
+        # not the dict's own value (0.1.0-run57's fix) - comparing values
+        # wrongly discarded real KPIs whenever a sprint's recomputed numbers
+        # happened to coincide with the previous sprint's.
         "sprint_report_kpis": fresh_kpis,
         # GH issue #342: "human"-category retro/impediment findings
         # (add_retro_action/add_impediment's category param) - not tied to

@@ -1315,6 +1315,52 @@ per-field onto the existing backlog rather than replacing it wholesale, and does
 `stages_completed` at all, so re-running it can only ever pick up a genuinely new story/doc, never
 regress an existing one's progress.
 
+### Sprint report/transcript/retro/steering doc numbering now floors at the sprint number (GH issue #425)
+
+A real eval run (0.1.0-run57) showed `specs/reports/SPRINT-REPORT-001.md` written by
+**both** Sprint 1 and Sprint 2 (Sprint 2's content silently overwrote Sprint 1's), then
+`SPRINT-REPORT-002.md` by Sprint 3, `SPRINT-REPORT-003.md` by Sprint 4 - every sprint's
+report landed one number behind where it should have. `_next_sprint_report_path` and its
+three siblings (`_next_transcript_path`/`_next_retro_doc_path`/`_next_steering_doc_path`,
+all sharing the same underlying helper) pick their next number purely by scanning
+`specs/reports/*.md` on disk, and that scan evidently didn't always see the immediately-
+prior sprint's own already-committed file at the moment the current sprint allocated its
+own number - the same general class of "the shared working tree doesn't reliably reflect
+the last sprint's committed state" fragility as GH #423, just hitting a different file.
+
+Each of these four artifacts is written exactly once per real sprint, so the allocated
+number is now also floored at `state.sprint_number` - a sprint's own number can never come
+out lower than the sprint itself, regardless of whether the underlying git-sync gap is ever
+fully root-caused.
+
+### KPI data is no longer silently dropped when it coincides with the previous sprint's values (GH issue #426)
+
+The same eval run (0.1.0-run57) showed Sprints 3 and 4 reporting "n/a" for Say-Do Ratio/Test
+Coverage in `report.md`'s KPI Trends table, despite `create_sprint_report`'s own rendered
+output for both sprints containing a fully-populated KPI Dashboard - the data was genuinely
+computed both times. `run_eval.py`'s `_run_one_sprint` used to decide "did KPIs actually
+update this sprint" by comparing the whole `sprint_report_kpis` dict's own value against a
+baseline snapshot - this test project's own measurements (test coverage, security scan,
+code complexity) are sometimes identical sprint-to-sprint by coincidence, so the equality
+check false-negatived and discarded real, freshly-computed data.
+
+Now snapshots `kpi_update_count` (bumped by every successful `update_sprint_report` call
+regardless of whether the resulting values changed) instead of the KPI dict's value, and
+gates freshness on whether that counter advanced - the same snapshot-a-counter pattern
+`retro_baseline`/`kpi_baseline` already use internally for their own "something new since
+last time" gates.
+
+### The team performance eval workflow's per-sprint token budget is now configurable per run
+
+`.github/workflows/eval.yml`'s `workflow_dispatch` trigger gains a `sprint_token_budget`
+input, read into `EVAL_SPRINT_TOKEN_BUDGET` ahead of the existing repo/environment
+`vars.EVAL_SPRINT_TOKEN_BUDGET` fallback (then the `5000000` hardcoded default) - a one-off
+manual run asking for a specific budget (e.g. to check whether a change affects how far a
+tighter or looser budget lets the team get) no longer requires changing the standing repo
+variable and remembering to revert it afterward. A tag-push trigger has no dispatch inputs
+at all, so it's unaffected and keeps using the repo/environment variable or default exactly
+as before.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
