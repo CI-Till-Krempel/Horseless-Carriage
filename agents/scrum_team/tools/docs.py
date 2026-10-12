@@ -38,6 +38,7 @@ npm-debug.log*
 
 # Local databases
 *.db
+*.sqlite
 *.sqlite3
 
 # Editors / OS
