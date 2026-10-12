@@ -411,8 +411,26 @@ def _sprint_should_abort_run(sprint_result: dict) -> bool:
     in the *next* sprint after silently continuing from exactly that kind of
     unclean state (GH issue #167) - stop for real in that case, same as
     before this function existed.
+
+    GH #421: "stop_reason == sprint_report_produced" alone is NOT sufficient
+    proof the sprint ended cleanly - it only means create_sprint_report
+    succeeded at some point during the invocation, not that the REST of the
+    close-out sequence (create_release_pr) also did. A real eval run
+    (0.1.0-run55) had create_sprint_report succeed, then create_release_pr
+    fail (an untracked-files checkout error, GH #419) later in the SAME
+    invocation - sprint_report_pending_release stayed True (only
+    create_release_pr's own success path clears it), which mechanically
+    blocks the next sprint's start_sprint call, yet this function still
+    waved the sprint through as "clean", so the harness sent the next
+    scripted message into a team structurally unable to make further
+    progress. Requires sprint_report_pending_release to also already be
+    False - true proof the release actually went out, not just that a
+    report was authored at some point.
     """
-    return bool(sprint_result["critical_halt"]) and sprint_result["stop_reason"] != "sprint_report_produced"
+    return bool(sprint_result["critical_halt"]) and not (
+        sprint_result["stop_reason"] == "sprint_report_produced"
+        and not sprint_result.get("sprint_report_pending_release")
+    )
 
 
 def _blocked_stories(sprint_result: dict) -> dict:
@@ -733,6 +751,11 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # made the halted sprint look like it never happened). The caller
         # uses this to actually stop the whole run.
         "critical_halt": bool(session.state.get("critical_halt_notified")),
+        # GH #421: set True by create_sprint_report's own success path,
+        # cleared only by create_release_pr's own success path - "a report
+        # was produced" alone doesn't prove the release also went out.
+        # Captured here so _sprint_should_abort_run can tell the two apart.
+        "sprint_report_pending_release": bool(session.state.get("sprint_report_pending_release")),
     }
 
 

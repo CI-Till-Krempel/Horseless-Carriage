@@ -1249,6 +1249,24 @@ sprint after the first - mechanical, tied to the one real event that should trig
 invocation's own activity produce something new" by comparing against that snapshot afterward, a
 pure read that can never drift out of sync with the real sprint boundary again.
 
+### "A sprint report was produced" is not proof the sprint closed out cleanly - the harness now checks the release too (GH issue #421)
+
+Found while auditing for more gaps in the same family as GH #419, right after that fix: 0.1.0-run55's
+sprint 3 had `create_sprint_report` succeed, then `create_release_pr` fail later in the SAME
+invocation (the untracked-files checkout error GH #419 fixed) - `sprint_report_pending_release` stayed
+`True` (only `create_release_pr`'s own success path clears it), mechanically blocking the next
+sprint's `start_sprint` call. `_sprint_should_abort_run`'s own docstring stated the assumption
+plainly: "if [stop_reason is sprint_report_produced], the sprint ended in a clean state - safe to move
+on." That's false whenever the release fails after the report succeeds - the harness kept treating
+the sprint as closed and sent the next scripted message into a team now structurally unable to make
+further progress (ProductOwner exhausted its own grace retrying the release, then got nothing but
+repeated token-budget halts, with nobody else ever getting a turn to even attempt `start_sprint`).
+
+`_run_one_sprint` now also returns `sprint_report_pending_release` (read from end-of-invocation
+session state), and `_sprint_should_abort_run` requires it to be `False` - true proof the release
+actually went out - before treating a produced report as a clean close-out, not just that one was
+authored at some point during the invocation.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
