@@ -1361,6 +1361,50 @@ variable and remembering to revert it afterward. A tag-push trigger has no dispa
 at all, so it's unaffected and keeps using the repo/environment variable or default exactly
 as before.
 
+### ScrumMaster's ritual-budget halt no longer repeats once it's already produced its one fallback report (GH issue #428)
+
+A real eval run (0.1.0-run58) wasted 3 of its 5 sprints (60% of the run) stuck in an
+unrecoverable loop: Sprint 1 ran out of budget before calling `create_release_pr`; Sprint 2
+caught up on that overdue close-out (opening the release PR) but then couldn't start its own
+new sprint, because that just-opened PR wasn't merged yet - no in-session tool can actually
+merge a PR (GitHub refuses self-approval from the same bot identity), only the eval harness's
+own host-side `_merge_open_prs` can, and only *between* sprint invocations. The team spent
+the rest of Sprint 2 retrying `start_sprint` (still refused) until ScrumMaster's own
+ritual-budget check (`check_cost_budget_callback`, GH #395) tripped - and that check's
+`state.token_usage.agents["ScrumMaster"]` counter is only ever reset inside `start_sprint`'s
+own success path, which never ran. Every subsequent sprint's very first ScrumMaster turn hit
+the identical before-model halt, checking the same stale counter, before the model (and
+therefore `start_sprint`) ever got to run again - a genuine catch-22, even after the harness
+auto-merged the release PR between Sprints 2 and 3 and the real blocker was long since gone.
+
+The ritual-budget halt already calls `_ensure_sprint_report_on_final_halt_once`, which
+guarantees a fallback report exists and sets `sprint_report_safety_net_fired` so it never
+re-renders twice. Once that flag is already set, repeating the halt serves no further purpose
+(the report already exists) and only prevents recovery - the halt no longer repeats once it
+has, for both the main `ritual_limit` branch and the GH #407 `ritual_hard_ceiling` branch.
+ScrumMaster gets a genuine turn instead, free to retry `start_sprint`, which (if it succeeds)
+resets everything properly for good.
+
+### seed_repository's .gitignore fix can now heal a project that was already seeded before it existed (GH issue #429)
+
+The same eval run (0.1.0-run58) hit the exact pre-GH-#419 symptom again: `__pycache__/*.pyc`
+and `.coverage`, already tracked in git history, blocked a checkout with "local changes would
+be overwritten by checkout." GH #419's fix only ever helps a brand-new project's very first
+commit - `seed_repository` writes `.gitignore` only if one doesn't already exist, and nothing
+re-invokes it once a project already has `specs/`/`README.md` in place. The eval harness's
+own target repo is a standing, reused GitHub repo (`run_eval.py`'s `_prepare_local_clone`
+clones it fresh each run and branches from whatever its current tip is, rather than
+recreating the project from scratch) - first seeded long before GH #419 existed, so its
+`.gitignore` gap persisted forever regardless of how many times the seeding code itself got
+fixed.
+
+A new mechanical healing step (`_heal_gitignore_drift`, `tools/docs.py`) ensures `.gitignore`
+exists and untracks (`git rm --cached` - never deleted from disk) anything already-tracked
+that it now covers, committing and pushing the fix to `develop`. Called from
+`init_scrum_state()` on a session's genuine first init only (same gating as the GH #423 fix)
+- cheap/idempotent, and best-effort: never blocks session startup if the repo isn't
+configured yet or the healing itself fails for any reason.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

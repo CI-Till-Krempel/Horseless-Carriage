@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name
+from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name, _run
 
 # GH #419: seeded into every project from its very first commit (see
 # seed_repository below) - common build/test/editor artifacts that real
@@ -465,3 +465,87 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
         return {"status": "ok", "message": "No new files seeded.", "seeded": []}
     except Exception as e:
         return {"status": "error", "message": f"Seeding failed: {e}"}
+
+
+def _heal_gitignore_drift(tool_context) -> Dict[str, Any]:
+    """
+    Ensures the configured repo has a .gitignore covering the standard
+    build/test-artifact patterns (_DEFAULT_GITIGNORE above), and untracks
+    any file ALREADY committed to git history that a freshly-written
+    .gitignore would now cover.
+
+    This closes a gap GH #419's "seed_repository writes a .gitignore on
+    first seed" fix doesn't: that fix only ever helps a brand-new project's
+    very first commit (it skips writing .gitignore once one already
+    exists, same as every other seeded file). A long-lived project that
+    was first seeded before .gitignore existed at all - or that
+    accumulated a tracked build artifact before this file started covering
+    it - never gets a second chance to pick this up, since nothing ever
+    re-invokes seed_repository once specs/README.md etc. already exist. A
+    real eval run (0.1.0-run58) hit exactly the pre-#419 symptom again:
+    __pycache__/*.pyc and .coverage, already tracked from however this
+    particular project's history began, kept blocking every later
+    checkout with git's "local changes would be overwritten" - the eval
+    harness's own target repo (run_eval.py's _prepare_local_clone) is a
+    standing, reused GitHub repo, branched from whatever its current tip
+    happens to be each run, not recreated fresh - so this drift, once
+    introduced, persists forever regardless of how many times the seeding
+    code itself gets fixed.
+
+    Called mechanically from init_scrum_state() (this session's first
+    init only - see its own `force`/`already_initialized` gating), not
+    left for an agent to remember to call seed_repository again on a
+    project that already looks fully seeded. Best-effort: returns an "ok,
+    nothing to heal" result (never an error) whenever there's no git repo
+    yet, no develop branch pushed yet (a brand-new project mid-bootstrap,
+    not drift), or nothing tracked actually needs untracking - this must
+    never block a session's own startup over repo hygiene.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    if not (repo_root / ".git").exists():
+        return {"status": "ok", "healed": False, "message": "Not a git repo yet - nothing to heal."}
+
+    from .github import _checkout_develop_or_recover
+
+    develop = _develop_branch_name(tool_context)
+    remote_has_develop = _run(
+        ["git", "ls-remote", "--exit-code", "--heads", "origin", develop], cwd=str(repo_root), tool_context=tool_context,
+    ).get("returncode") == 0
+    if not remote_has_develop:
+        return {"status": "ok", "healed": False, "message": "No develop branch on origin yet - project still bootstrapping, not drift."}
+
+    recovery = _checkout_develop_or_recover(str(repo_root), develop, tool_context=tool_context)
+    if recovery.get("status") != "ok":
+        return {"status": "ok", "healed": False, "message": "Could not check out develop - skipping gitignore-drift healing for now.", "checkout": recovery}
+
+    changed = []
+    gitignore_path = repo_root / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path.write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
+        _run(["git", "add", ".gitignore"], cwd=str(repo_root), tool_context=tool_context)
+        changed.append(".gitignore")
+
+    tracked_ignored = _run(
+        ["git", "ls-files", "--cached", "--ignored", "--exclude-standard"],
+        cwd=str(repo_root), tool_context=tool_context,
+    )
+    offending = [line for line in (tracked_ignored.get("stdout") or "").splitlines() if line.strip()]
+    if offending:
+        _run(["git", "rm", "--cached", "-q", "--"] + offending, cwd=str(repo_root), tool_context=tool_context)
+        changed.extend(offending)
+
+    if not changed:
+        return {"status": "ok", "healed": False, "message": "No .gitignore drift to heal."}
+
+    commit_res = _run(
+        ["git", "commit", "-m", "chore: untrack build/test artifacts now covered by .gitignore"],
+        cwd=str(repo_root), tool_context=tool_context,
+    )
+    if commit_res.get("status") != "ok":
+        return {"status": "ok", "healed": False, "message": "Found drift but could not commit the fix.", "commit": commit_res}
+
+    push_res = _run(["git", "push", "origin", develop], cwd=str(repo_root), tool_context=tool_context)
+    if push_res.get("status") != "ok":
+        return {"status": "ok", "healed": False, "message": "Found drift but could not push the fix.", "push": push_res}
+
+    return {"status": "ok", "healed": True, "changed": changed}

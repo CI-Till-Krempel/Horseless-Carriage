@@ -2428,6 +2428,47 @@ class TestScrumMasterRitualBudget(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIn("RITUAL BUDGET HARD CEILING", result.content.parts[0].text)
 
+    def test_does_not_repeat_the_halt_once_the_safety_net_already_fired(self):
+        """
+        GH issue (0.1.0-run58): token_usage (and sm_usage) is only ever
+        reset by start_sprint's own mechanical reset, which requires
+        ScrumMaster to actually SUCCEED at calling start_sprint. A real
+        eval run got stuck unable to start_sprint for an entire sprint
+        (an unrelated release-PR gate only the harness's own between-
+        sprint auto-merge could clear) until this ritual budget tripped
+        and the fallback safety net fired once - after which sm_usage
+        stayed stuck over the ritual ceiling forever, since reaching
+        start_sprint again is the one thing this exact check kept
+        preventing. Every subsequent sprint hit the identical halt before
+        the model ever ran, for the rest of the run. Once the safety net
+        has already fired once for this stuck state, the halt must not
+        repeat - ScrumMaster needs a real turn to retry start_sprint.
+        """
+        mock_context = self._context(100, 150, 60)
+        mock_context.state["sprint_report_safety_net_fired"] = True
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "50"}, clear=True):
+            with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt_once") as mock_ensure:
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNone(result, "a repeat ritual-budget halt must let the real turn through, not loop forever")
+        mock_ensure.assert_not_called()
+
+    def test_hard_ceiling_also_does_not_repeat_the_halt_once_already_fired(self):
+        """Same fix, same reasoning, for the GH #407 hard-ceiling branch -
+        it calls the identical safety net and so carries the identical
+        permanent-lockout risk once that safety net has already fired."""
+        mock_context = self._context(100, 150, 60)
+        mock_context.state["retro_actions"] = [{"action": "did a thing"}]
+        mock_context.state["retro_baseline"] = 0
+        mock_context.state["kpi_update_count"] = 1
+        mock_context.state["kpi_baseline"] = 0
+        mock_context.state["sprint_report_pending_release"] = False
+        mock_context.state["sprint_report_safety_net_fired"] = True
+        with patch.dict("os.environ", {"PROCESS_OVERHEAD_PERCENTAGE": "1"}, clear=True):
+            with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt_once") as mock_ensure:
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        self.assertIsNone(result, "a repeat hard-ceiling halt must let the real turn through, not loop forever")
+        mock_ensure.assert_not_called()
+
     def test_not_uncapped_once_the_report_has_already_succeeded(self):
         """sprint_report_pending_release=True means the report already
         closed this sprint - the uncapped window must not still apply to

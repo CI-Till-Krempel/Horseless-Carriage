@@ -999,7 +999,32 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
         if not sprint_report_step_active(state):
             ritual_limit = ritual_token_budget(token_limit)
             sm_usage = state.token_usage.agents.get("ScrumMaster", 0)
-            if ritual_limit > 0 and sm_usage >= ritual_limit:
+            # GH issue (0.1.0-run58): this halt's whole point is to force a
+            # sprint report to exist even if ScrumMaster never gets a real
+            # turn to author one - but token_usage (and therefore sm_usage)
+            # is only ever reset by start_sprint's own mechanical reset
+            # (sprint_budget_reset_state_delta, tools/budget.py), which
+            # requires ScrumMaster to actually SUCCEED at calling
+            # start_sprint. A real eval run got stuck unable to start_sprint
+            # for an unrelated reason (a release PR only this harness's own
+            # host-side auto-merge could close, between sprint invocations -
+            # not something any in-session tool could do) for an entire
+            # sprint's turns, until this ritual budget tripped and the
+            # fallback safety net fired once - leaving sm_usage stuck over
+            # ritual_limit with no way to ever reset it, since reaching
+            # start_sprint again is the one thing this very check keeps
+            # preventing. Every subsequent sprint's first ScrumMaster turn
+            # hit this exact same halt again, before the model ever ran,
+            # for the rest of the run - 3 of 5 sprints wasted on an
+            # unrecoverable loop, even after the underlying blocker (the PR)
+            # was long since resolved. Once the safety net has already fired
+            # once for this stuck state, repeating the halt serves no
+            # purpose (a report already exists) and only prevents recovery
+            # - let this turn through for real instead, so ScrumMaster gets
+            # a genuine chance to retry start_sprint (which, if it succeeds,
+            # resets this properly for good).
+            already_halted_once = bool(callback_context.state.get("sprint_report_safety_net_fired"))
+            if ritual_limit > 0 and sm_usage >= ritual_limit and not already_halted_once:
                 # Mechanically guarantee a report still exists even if
                 # ScrumMaster's own ritual budget ran out before it ever
                 # reached a fresh retro + fresh KPI update - same backstop
@@ -1028,7 +1053,11 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
             # run, 0.1.0-run53, hit exactly that - see GH #407).
             hard_ceiling = ritual_hard_ceiling(token_limit)
             sm_usage = state.token_usage.agents.get("ScrumMaster", 0)
-            if hard_ceiling > 0 and sm_usage >= hard_ceiling:
+            # Same unrecoverable-loop risk as the ritual_limit branch above,
+            # and the same fix: don't repeat a halt that's already produced
+            # its one fallback report and go on blocking every future turn.
+            already_halted_once = bool(callback_context.state.get("sprint_report_safety_net_fired"))
+            if hard_ceiling > 0 and sm_usage >= hard_ceiling and not already_halted_once:
                 _ensure_sprint_report_on_final_halt_once(callback_context)
                 msg = (
                     f"🚫 [RITUAL BUDGET HARD CEILING] Scrum Master's usage during the sprint-report "
