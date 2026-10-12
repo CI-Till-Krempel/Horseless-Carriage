@@ -810,5 +810,111 @@ class TestInitScrumStateCorruptionSurfacing(unittest.TestCase):
         self.assertNotIn("state_json_corrupted", tool_context.state)
 
 
+class TestInitScrumStateReloadRegression(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #423): a real eval run (0.1.0-run56) had
+    ScrumMaster call init_scrum_state() again at the start of Sprint 2 (it's
+    available to every role, not just invoked automatically once by
+    ensure_state_initialized_callback) - the "load from repo" step used to
+    run unconditionally every call, and a stale .hc/state.json on disk
+    wholesale-overwrote three stories' already-Accepted progress back down
+    to Draft/Ready, cascading into a spurious ordering-gate block and a
+    transfer-loop stop.
+    """
+
+    def setUp(self):
+        self.test_repo = Path("test_repo_init_scrum_state_reload_regression")
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        self.test_repo.mkdir(exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.test_repo, check=True)
+
+        self.old_internal_path = os.environ.get("INTERNAL_STATE_REPO_PATH")
+        if "INTERNAL_STATE_REPO_PATH" in os.environ:
+            del os.environ["INTERNAL_STATE_REPO_PATH"]
+        os.environ["STATE_REPO_PATH"] = str(self.test_repo.absolute())
+
+    def tearDown(self):
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        if "STATE_REPO_PATH" in os.environ:
+            del os.environ["STATE_REPO_PATH"]
+        if self.old_internal_path:
+            os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
+
+    def _write_stale_state_json(self):
+        """Persists a product_backlog where the one story is still stuck at
+        Draft/Ready - standing in for a .hc/state.json on disk that lags
+        behind a live session's own in-memory progress."""
+        stale_context = MagicMock()
+        stale_context.state = {
+            "product_backlog": [
+                {"id": "US-0001", "title": "Stale story", "stages_completed": ["Draft", "Ready"]},
+            ],
+        }
+        save_state_to_repo(tool_context=stale_context)
+
+    def test_second_call_does_not_reload_stale_state_from_disk(self):
+        self._write_stale_state_json()
+
+        tool_context = MagicMock()
+        # Live session already past its first init, and has genuinely
+        # advanced US-0001 to Accepted since then - the disk snapshot above
+        # was never re-saved to reflect that.
+        tool_context.state = {
+            "_state_auto_initialized": True,
+            "product_backlog": [
+                {"id": "US-0001", "title": "Stale story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            ],
+        }
+        result = init_scrum_state(tool_context=tool_context)
+
+        self.assertFalse(result["reloaded_from_disk"])
+        self.assertTrue(result["already_initialized"])
+        self.assertEqual(
+            tool_context.state["product_backlog"][0]["stages_completed"],
+            ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"],
+        )
+
+    def test_force_true_reloads_even_when_already_initialized(self):
+        self._write_stale_state_json()
+
+        tool_context = MagicMock()
+        tool_context.state = {
+            "_state_auto_initialized": True,
+            "product_backlog": [
+                {"id": "US-0001", "title": "Stale story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            ],
+        }
+        result = init_scrum_state(tool_context=tool_context, force=True)
+
+        self.assertTrue(result["reloaded_from_disk"])
+        self.assertEqual(
+            tool_context.state["product_backlog"][0]["stages_completed"],
+            ["Draft", "Ready"],
+        )
+
+    def test_first_call_this_session_still_loads_persisted_state(self):
+        """Regression safety: a genuinely first-ever init (e.g. after a real
+        process restart, with no _state_auto_initialized flag yet) must
+        still pick up whatever was last persisted - this fix only skips the
+        reload once a session is already warm, never on its own first call.
+        """
+        self._write_stale_state_json()
+
+        tool_context = MagicMock()
+        tool_context.state = {}
+        result = init_scrum_state(tool_context=tool_context)
+
+        self.assertTrue(result["reloaded_from_disk"])
+        self.assertFalse(result["already_initialized"])
+        self.assertEqual(
+            tool_context.state["product_backlog"][0]["stages_completed"],
+            ["Draft", "Ready"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

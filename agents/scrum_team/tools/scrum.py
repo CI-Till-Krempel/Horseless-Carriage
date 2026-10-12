@@ -147,7 +147,7 @@ def sync_budgets_from_env(tool_context=None) -> Dict[str, Any]:
     return {"status": "ok", "budgets": budgets}
 
 
-def init_scrum_state(tool_context=None) -> Dict[str, Any]:
+def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
     """
     Initialize all Scrum artifacts in session.state if missing, then rebuild
     them from whatever specs/ already has on disk (epics, stories, issues,
@@ -156,6 +156,36 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     (story/epic/issue count, vision/goals/architecture booleans) is the
     trustworthy record of what got picked up - re-reading every doc by hand
     afterward "to check it's synced" is redundant and just burns budget.
+
+    GH issue #423: this tool is available to every role, not just invoked
+    automatically once per session (see ensure_state_initialized_callback,
+    agents/scrum_team/agent.py, and its own `_state_auto_initialized` guard,
+    which only protects *that* automatic first call). Nothing previously
+    stopped an agent from calling init_scrum_state() again later in an
+    already-live session - and the "load from repo" step below used to run
+    unconditionally every time, blindly overwriting whatever richer,
+    already-advanced in-memory state the live session had accumulated
+    (product_backlog, sprint_backlog, etc.) with a wholesale replacement
+    from .hc/state.json on disk. A real eval run (0.1.0-run56) hit exactly
+    this: ScrumMaster re-called init_scrum_state() at the start of Sprint 2
+    ("Initializing Scrum state from disk"), and three stories that had
+    already genuinely reached Accepted in Sprint 1 came back out of that
+    call showing only Draft/Ready - stale disk content silently clobbering
+    live state - which then made the one-story-at-a-time ordering gate
+    correctly-but-wrongly reject work on the next story, cascading into a
+    transfer-loop stop.
+
+    Now a no-op for that specific step once this session's own
+    `_state_auto_initialized` flag is already set (i.e. this isn't the
+    session's first-ever init) - unless `force=True` is passed explicitly,
+    for the rare genuine case of deliberately picking up an out-of-band
+    edit to state.json mid-session. The markdown rebuild below (step 3)
+    stays unconditional regardless: it merges per-field onto whatever's
+    already in product_backlog/sprint_backlog rather than replacing either
+    list wholesale, and doesn't carry stages_completed at all (see
+    sync_stories_from_markdown/_parse_story_markdown), so re-running it
+    can only ever add a genuinely new story/doc picked up from specs/, not
+    regress an existing one's progress.
     """
     from .github import configure_github_app
     from .requirements import sync_stories_from_markdown
@@ -226,24 +256,36 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("orchestrator_stall_count", 0)
 
     # 1. Try to load from repo if present first, so environment can override
+    #
+    # GH #423: only for this session's first-ever init (or an explicit
+    # force=True) - see this function's own docstring. Once
+    # _state_auto_initialized is set, live in-memory state is always at
+    # least as current as whatever snapshot happens to be sitting in
+    # .hc/state.json on disk, so reloading it here can only ever regress
+    # progress, never recover it.
+    already_initialized = bool(s.get("_state_auto_initialized"))
     state_json_corrupted = False
-    try:
-        repo_root = _configured_repo_root(tool_context)
-        fp = _state_file_path(repo_root)
-        if fp.exists():
-            load_result = load_state_from_repo(tool_context)
-            # GH issue #85: a corrupted-and-unrecoverable-even-from-git
-            # state.json used to be discarded silently here (this whole
-            # block only ever caught real exceptions, and load_state_from_repo
-            # returns an error dict rather than raising) - the session would
-            # just quietly start blank, with no indication anything was ever
-            # wrong or any chance to intervene. "not found" isn't corruption
-            # (a brand new state repo has no state.json at all - normal, not
-            # an error worth surfacing), so only flag the genuine case.
-            if load_result.get("status") == "error" and "not found" not in load_result.get("message", ""):
-                state_json_corrupted = True
-    except Exception:
-        pass
+    reloaded_from_disk = False
+    if force or not already_initialized:
+        try:
+            repo_root = _configured_repo_root(tool_context)
+            fp = _state_file_path(repo_root)
+            if fp.exists():
+                load_result = load_state_from_repo(tool_context)
+                reloaded_from_disk = load_result.get("status") == "ok"
+                # GH issue #85: a corrupted-and-unrecoverable-even-from-git
+                # state.json used to be discarded silently here (this whole
+                # block only ever caught real exceptions, and load_state_from_repo
+                # returns an error dict rather than raising) - the session would
+                # just quietly start blank, with no indication anything was ever
+                # wrong or any chance to intervene. "not found" isn't corruption
+                # (a brand new state repo has no state.json at all - normal, not
+                # an error worth surfacing), so only flag the genuine case.
+                if load_result.get("status") == "error" and "not found" not in load_result.get("message", ""):
+                    state_json_corrupted = True
+        except Exception:
+            pass
+    s["_state_auto_initialized"] = True
 
     # hc_version always reflects the version actually running this session,
     # never the (possibly older) value just loaded from the state repo -
@@ -335,7 +377,17 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
         except Exception:
             pass
 
-    return {"status": "ok", "initialized": True, "state_json_corrupted": state_json_corrupted, "doc_sync": doc_sync}
+    return {
+        "status": "ok",
+        "initialized": True,
+        "state_json_corrupted": state_json_corrupted,
+        "doc_sync": doc_sync,
+        # GH #423: lets a caller (or a test) see whether this call actually
+        # reloaded .hc/state.json over live state, versus being a no-op
+        # because this session was already initialized.
+        "reloaded_from_disk": reloaded_from_disk,
+        "already_initialized": already_initialized,
+    }
 
 def _write_state_atomically(state_path: Path, snapshot: dict) -> None:
     """Write-to-temp-file + os.replace (atomic on POSIX and Windows) rather
