@@ -170,6 +170,28 @@ def test_run_one_sprint_never_passes_a_state_delta_to_the_runner():
     assert "state_delta" not in calls[0]
 
 
+def test_run_one_sprint_reports_whether_the_release_is_still_pending():
+    """
+    Acceptance Criteria (GH #421): sprint_report_pending_release is read
+    straight from end-of-invocation session state and returned alongside
+    stop_reason, so _sprint_should_abort_run can tell "a report was
+    authored" apart from "the release also actually went out".
+    """
+    session_service = _StatefulSessionService({"sprint_report_pending_release": True})
+    result = _run(_run_one_sprint(
+        _NoProgressRunner(), session_service, "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+    ))
+    assert result["sprint_report_pending_release"] is True
+
+    session_service = _StatefulSessionService({"sprint_report_pending_release": False})
+    result = _run(_run_one_sprint(
+        _NoProgressRunner(), session_service, "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+    ))
+    assert result["sprint_report_pending_release"] is False
+
+
 def test_sprint_should_not_abort_when_no_critical_halt_occurred():
     assert _sprint_should_abort_run({"critical_halt": False, "stop_reason": "sprint_report_produced"}) is False
     assert _sprint_should_abort_run({"critical_halt": False, "stop_reason": "max_nudges_exhausted"}) is False
@@ -180,9 +202,12 @@ def test_sprint_should_not_abort_when_a_critical_halt_still_closed_out_cleanly()
     # SEQUENCE grace now redirects a frozen non-grace agent back to
     # ProductOwner (agent.py's _budget_halt_response) instead of leaving the
     # sprint permanently stuck - if that worked and a real sprint report came
-    # out the other end, the sprint ended in a clean state and the whole
-    # 5-sprint run shouldn't be abandoned over it.
-    assert _sprint_should_abort_run({"critical_halt": True, "stop_reason": "sprint_report_produced"}) is False
+    # out the other end, AND the release PR also actually succeeded
+    # (sprint_report_pending_release cleared), the sprint ended in a clean
+    # state and the whole 5-sprint run shouldn't be abandoned over it.
+    assert _sprint_should_abort_run({
+        "critical_halt": True, "stop_reason": "sprint_report_produced", "sprint_report_pending_release": False,
+    }) is False
 
 
 def test_sprint_should_abort_when_a_critical_halt_left_no_clean_close_out():
@@ -192,6 +217,30 @@ def test_sprint_should_abort_when_a_critical_halt_left_no_clean_close_out():
     # from exactly this kind of unclean state (GH issue #167).
     assert _sprint_should_abort_run({"critical_halt": True, "stop_reason": "max_nudges_exhausted"}) is True
     assert _sprint_should_abort_run({"critical_halt": True, "stop_reason": "max_events_reached"}) is True
+
+
+def test_sprint_should_abort_when_the_report_was_produced_but_the_release_never_went_out():
+    """
+    Acceptance Criteria (GH #421): a real eval run (0.1.0-run55) had
+    create_sprint_report succeed, then create_release_pr fail later in the
+    SAME invocation (an untracked-files checkout error, GH #419) -
+    sprint_report_pending_release stayed True (only create_release_pr's own
+    success path clears it), mechanically blocking the next sprint's
+    start_sprint call. stop_reason=="sprint_report_produced" alone is not
+    proof of a clean close-out - this must still abort.
+    """
+    assert _sprint_should_abort_run({
+        "critical_halt": True, "stop_reason": "sprint_report_produced", "sprint_report_pending_release": True,
+    }) is True
+
+
+def test_sprint_should_not_abort_without_a_critical_halt_even_if_release_is_still_pending():
+    """A non-critical-halt sprint ending mid-close-out is an entirely
+    different (and already-handled) signal - this function only ever fires
+    on critical_halt in the first place."""
+    assert _sprint_should_abort_run({
+        "critical_halt": False, "stop_reason": "sprint_report_produced", "sprint_report_pending_release": True,
+    }) is False
 
 
 def _story(story_id, blocked=None):
