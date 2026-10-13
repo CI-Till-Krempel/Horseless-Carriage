@@ -18,6 +18,37 @@ first-time or new-machine setup. Each step is still a fully standalone script (s
 if you'd rather run just one of them, or control the pace yourself; `setup_all.py` just chains them
 and adds a fix→retry loop around each one.
 
+## Installing into your own project instead: `new_project.py` (GH issue #288)
+
+Everything below assumes one checkout = one active project - `setup_llm.py`'s `.env`,
+`docker-compose.yaml`'s container names, and its fixed host ports (`4000`/`8000`) are all
+per-checkout. To use Horseless Carriage with more than one project (or to run several projects'
+stacks concurrently on one machine), add it as a git submodule of each project instead:
+
+```bash
+python3 new_project.py --target-repo /path/to/your-project
+```
+
+This creates `/path/to/your-project` (and `git init`s it) if it doesn't exist yet, adds Horseless
+Carriage there as a `horseless-carriage/` submodule, then pre-fills that submodule's `.env` with:
+
+- `STATE_REPO_PATH` -> the target project itself (not a sibling directory - the whole point of
+  installing *into* a project is that the project is what the team's specs/reports get written to).
+- `COMPOSE_PROJECT_NAME_PREFIX` -> derived from the target project's own directory name, so its
+  containers/images (`<prefix>-dev-litellm-1`, etc.) never collide with another installation's -
+  see `lib_docker.compose_project_args`.
+- `LITELLM_HOST_PORT`/`AGENT_WEB_HOST_PORT` -> auto-picked free ports if `4000`/`8000` are already
+  bound (e.g. another project's stack is already running).
+
+None of this ever overwrites an already-configured value, so re-running it (e.g. after pulling a
+newer Horseless Carriage into an existing submodule) is always safe. It then hands off to the same
+`setup_all.py` guided flow described below - everything from here on works identically whether
+you're in a traditional standalone checkout or an installed submodule.
+
+If you've already added the submodule yourself
+(`git submodule add <this-repo-url> horseless-carriage`, run from inside your project), skip
+`--target-repo` and just run `python3 new_project.py` from inside that submodule directory.
+
 ## 1. Guided LLM/project setup: `setup_llm.py`
 
 ```bash

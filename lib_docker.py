@@ -57,19 +57,35 @@ def compose_file_args(repo_root: Path) -> list:
     return args
 
 
-def compose_project_args(context: str) -> list:
-    """["-p", f"horseless-carriage-{context}"] - GH issue #169: with no
-    explicit project name, Compose derives one from the checkout directory's
-    basename alone, so the dev stack (run.py/setup_project.py/setup_llm.py),
-    the ADK eval-set runner (run_adk_eval.py) and the test suite
-    (run_tests.py) all resolve to the SAME project name - and therefore the
-    same container names (e.g. horseless-carriage-db-1) and built-image
-    names - even though they're independent stacks. That makes it impossible
-    to tell which container belongs to which if more than one runs at the
-    same time on the same machine (and risks one silently adopting/
-    recreating another's containers). context is one of "dev", "eval",
-    "test"."""
-    return ["-p", f"horseless-carriage-{context}"]
+def compose_project_args(context: str, repo_root: Optional[Path] = None) -> list:
+    """["-p", f"{prefix}-{context}"] (prefix defaults to "horseless-carriage")
+    - GH issue #169: with no explicit project name, Compose derives one from
+    the checkout directory's basename alone, so the dev stack (run.py/
+    setup_project.py/setup_llm.py), the ADK eval-set runner (run_adk_eval.py)
+    and the test suite (run_tests.py) all resolve to the SAME project name -
+    and therefore the same container names (e.g. horseless-carriage-db-1)
+    and built-image names - even though they're independent stacks. That
+    makes it impossible to tell which container belongs to which if more
+    than one runs at the same time on the same machine (and risks one
+    silently adopting/recreating another's containers). context is one of
+    "dev", "eval", "test".
+
+    GH issue #288: prefix itself is also overridable, via COMPOSE_PROJECT_
+    NAME_PREFIX in <repo_root>/.env - new_project.py sets this automatically
+    when installing Horseless Carriage as a submodule of a target repo, so
+    two DIFFERENT target projects (each their own HC submodule + .env) don't
+    collide on container/image names the same way #169 fixed collisions
+    between contexts within one checkout.
+
+    repo_root defaults to the current working directory - every caller
+    except doctor.py has already os.chdir()'d to the repo root by the time
+    this runs (doctor.py's own check()/run() take repo_root explicitly - see
+    its own docstring - and must pass it here too, or a configured prefix
+    would silently not apply when doctor.py is invoked with a different
+    cwd)."""
+    repo_root = Path(repo_root) if repo_root is not None else Path(".")
+    prefix = lib_env.read_env_var(repo_root / ".env", "COMPOSE_PROJECT_NAME_PREFIX") or "horseless-carriage"
+    return ["-p", f"{prefix}-{context}"]
 
 
 def compose_running_services(compose_args: list) -> list:

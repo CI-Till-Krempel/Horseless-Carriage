@@ -99,6 +99,25 @@ on Windows) — see [Setup](docs/SETUP.md) for the full guided walkthrough,
 including [Setting up on Windows](docs/SETUP.md#setting-up-on-windows) and
 [running fully local with no commercial LLM](docs/SETUP.md#running-fully-local-no-commercial-llm).
 
+### Using this in your own project (GH issue #288)
+
+A single checkout of this repo only ever supports one active project — running `setup_all.py` a
+second time against a different project's repo would overwrite the first project's `.env`,
+container names, and host ports. Add Horseless Carriage as a git submodule of your own project
+instead, and let `new_project.py` handle the per-project setup:
+
+```bash
+python3 new_project.py --target-repo /path/to/your-project
+```
+
+This adds Horseless Carriage as a `horseless-carriage/` submodule of that project (creating and
+`git init`-ing it first if it doesn't exist yet), then pre-fills `.env` with per-project defaults —
+`STATE_REPO_PATH` pointed at the project itself, a `COMPOSE_PROJECT_NAME_PREFIX` derived from its
+directory name, and free host ports if `4000`/`8000` are already taken by another running
+installation — before handing off to the same guided `setup_all.py` flow above. If you've already
+added the submodule yourself (`git submodule add <this-repo-url> horseless-carriage`), just run
+`python3 new_project.py` from inside it — same effect, no `--target-repo` needed.
+
 ## Documentation
 
 | Topic | What's there |
