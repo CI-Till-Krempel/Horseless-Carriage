@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0052
 - Title: `init_scrum_state` Must Not Be An Agent-Callable Tool - Exposing It Let ProductOwner's `force=True` Wipe US-0001's Accepted Progress Every Sprint In `0.1.0-run61`
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-10-13
@@ -164,3 +164,33 @@ kept hitting the same wall).
 - Full `agents/scrum_team/tests` suite should otherwise pass unchanged - `init_scrum_state` itself and
   `load_state_from_repo` keep their current signatures and behavior; only where they're reachable from
   changes.
+
+## Resolution
+- `agents/scrum_team/agent.py`: removed `init_scrum_state` from all six tool lists (`product_owner`,
+  `scrum_master`, `dev_team`, `qa_agent`, `architect`, `root_agent`) - it's no longer directly callable
+  by any role, with or without `force`. `ensure_state_initialized_callback` is unchanged and remains
+  the only path into `init_scrum_state()`, running it exactly once per session before the
+  Orchestrator's first real turn, never with `force=True`.
+- `agents/scrum_team/scripts/rebuild_state_from_specs.py` (new): the last-resort, host-operated rebuild
+  path. Points `_configured_repo_root` at the given state repo path, runs `init_scrum_state(force=True)`
+  against a blank in-memory context so its existing "load whatever's on disk, then sync stories/vision/
+  goals/architecture from specs/ on top" logic does the real work (nothing duplicated), then persists
+  the result via `save_state_to_repo`. Verified directly (no mocking): seeded a `specs/stories/` markdown
+  file in a fresh tmp dir, ran `rebuild()`, confirmed `.hc/state.json` was created with that story synced
+  into `product_backlog`; also exercised as a CLI (`python3 rebuild_state_from_specs.py <path>`) for both
+  the success and missing-argument cases.
+- `check_state_repo.py`: `_offer_state_repair` gained a 4th menu option ("Last resort: rebuild state.json
+  from specs/ on disk"), wired to a new `_rebuild_state_from_specs` helper that prefers Docker (same
+  preference order as the existing `validate_state.py` invocation) and falls back to local `python3`.
+  `run()` now threads `repo_root` through to `_offer_state_repair` so this helper can find the script and
+  pick the right invocation path.
+- `docs/STATE-REPOSITORY.md`: documented the new 4th repair option alongside the existing three.
+- Tests: `agents/scrum_team/tests/test_agent.py` gained a structural regression test asserting
+  `init_scrum_state` is absent from every role's `tools` list (also verified independently via a static
+  AST parse of `agent.py`, since this host environment can't import the ADK agent module directly -
+  `/app`-hardcoded paths in `agent.py`'s own logging setup require the Docker container). `tests/
+  test_check_state_repo.py` gained three tests for the new option 4 (Docker-preferred invocation,
+  local-python3 fallback, and script-failure propagation) - all 26 tests in that file, and all 518 tests
+  in the host-side `tests/` suite, pass. The Docker-dependent `agents/scrum_team/tests` suite (including
+  the new structural test above) could not be executed in this environment (Docker was not running) -
+  flagging this so a maintainer re-runs it before merging.

@@ -2664,7 +2664,6 @@ product_owner = LlmAgent(
     description="Owns product vision/goals, backlog ordering, acceptance criteria, scope tradeoffs.",
     instruction=PO_PROMPT,
     tools=[
-        init_scrum_state,
         upsert_story,
         upsert_epic,
         upsert_issue,
@@ -2700,7 +2699,6 @@ scrum_master = LlmAgent(
     description="Facilitates Scrum events, removes impediments, improves process, tracks actions.",
     instruction=SM_PROMPT,
     tools=[
-        init_scrum_state,
         start_sprint,
         add_impediment,
         add_retro_action,
@@ -2739,7 +2737,6 @@ dev_team = LlmAgent(
     description="Plans/estimates/implements stories, owns technical decisions, ensures DoD, creates sprint plan.",
     instruction=DEV_PROMPT,
     tools=[
-        init_scrum_state,
         plan_sprint_backlog_item,
         log_story_tokens,
         advance_story_stage,
@@ -2774,7 +2771,6 @@ qa_agent = LlmAgent(
     description="Improves test strategy and quality signals; proposes test cases and automation.",
     instruction=QA_PROMPT,
     tools=[
-        init_scrum_state,
         add_impediment,
         log_decision,
         gh_pr_comment,
@@ -2795,7 +2791,6 @@ architect = LlmAgent(
     description="Identifies architectural risks, proposes tradeoffs, writes ADR-like notes.",
     instruction=ARCH_PROMPT,
     tools=[
-        init_scrum_state,
         log_decision,
         gh_pr_comment,
         gh_pr_comments,
@@ -2820,7 +2815,6 @@ root_agent = LlmAgent(
     instruction=ORCHESTRATOR_PROMPT,
     tools=[
         # General state, setup, and high-level management tools
-        init_scrum_state,
         log_decision,
         configure_github_repo,
         configure_github_app,

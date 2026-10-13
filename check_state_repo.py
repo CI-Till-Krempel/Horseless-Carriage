@@ -114,7 +114,35 @@ def _walk_git_history_for_valid_state_json(state_repo_path: Path) -> str:
     return None
 
 
-def _offer_state_repair(state_file: Path, state_repo_path: Path, prompt=input) -> int:
+def _rebuild_state_from_specs(repo_root: Path, state_repo_path: Path) -> int:
+    """ISSUE-0052 last resort: re-derive state.json from whatever specs/
+    already has on disk (the same doc-sync step init_scrum_state() runs on
+    a session's first-ever init - see agents/scrum_team/scripts/
+    rebuild_state_from_specs.py), for when neither resetting to a git
+    checkpoint nor deleting-and-restarting actually recovers anything
+    useful. Prefers Docker (so pydantic/the agents package are guaranteed
+    present), same preference order as the state.json validation step in
+    run() above."""
+    script = "agents/scrum_team/scripts/rebuild_state_from_specs.py"
+    if shutil.which("docker") is not None and (repo_root / "docker-compose.yaml").is_file():
+        print("Running rebuild via Docker...")
+        result = subprocess.run([
+            "docker", "compose", "run", "--rm", "agent",
+            "python3", script, "/app/state_repo",
+        ], cwd=repo_root)
+    elif shutil.which("python3") is not None:
+        print("Running rebuild via local python3...")
+        result = subprocess.run(
+            ["python3", str(repo_root / script), str(state_repo_path)],
+            cwd=repo_root,
+        )
+    else:
+        print("ERROR: Could not find Docker or python3 to run the rebuild.")
+        return 1
+    return result.returncode
+
+
+def _offer_state_repair(state_file: Path, state_repo_path: Path, repo_root: Path = None, prompt=input) -> int:
     """GH issue #85 - "Offer options to repair or delete corrupted state":
     the interactive remediation menu for a state.json that just failed
     validation. `prompt` is injectable so tests can drive this without a
@@ -125,6 +153,9 @@ def _offer_state_repair(state_file: Path, state_repo_path: Path, prompt=input) -
     print("  2) Delete state.json and start fresh (the agent reinitializes on its next session)")
     print("  3) Leave it as-is (fix it manually, or start the agent and let the Orchestrator")
     print("     attempt an LLM-assisted repair in chat - see docs/STATE-REPOSITORY.md)")
+    print("  4) Last resort: rebuild state.json from specs/ on disk (re-derives stories/epics/")
+    print("     PRD vision+goals/architecture from the markdown already there - use this if")
+    print("     options 1 and 2 aren't viable, e.g. no usable git checkpoint exists either)")
     choice = prompt("Choice [3]: ").strip() or "3"
 
     if choice == "1":
@@ -140,6 +171,9 @@ def _offer_state_repair(state_file: Path, state_repo_path: Path, prompt=input) -
         state_file.unlink()
         print("Deleted the corrupted state.json - the team will start fresh next session.")
         return 0
+
+    if choice == "4":
+        return _rebuild_state_from_specs(repo_root, state_repo_path)
 
     print("Leaving state.json as-is.")
     return 1
@@ -234,7 +268,7 @@ def run(repo_root: Path, interactive: bool = None, prompt=input) -> int:
                 print("If you recently updated the project, you might need to manually fix the state.json")
                 print("or initialize a new one, or re-run this interactively for repair options.")
                 return 1
-            return _offer_state_repair(state_file, state_repo_path, prompt=prompt)
+            return _offer_state_repair(state_file, state_repo_path, repo_root=repo_root, prompt=prompt)
         elif validation_exit_code != 0:
             # Anything other than 0 (valid) or CORRUPTION_EXIT_CODE (genuine
             # content corruption) means the validation script itself
