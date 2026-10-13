@@ -1,7 +1,7 @@
 # Issue
 
 - Issue ID: ISSUE-0052
-- Title: `init_scrum_state(force=True)` At Every Sprint Start Overwrote `product_backlog` With A Stale `.hc/state.json` Snapshot, Permanently Un-Accepting US-0001 From Sprint 2 Onward In `0.1.0-run61`
+- Title: `init_scrum_state` Must Not Be An Agent-Callable Tool - Exposing It Let ProductOwner's `force=True` Wipe US-0001's Accepted Progress Every Sprint In `0.1.0-run61`
 - Status: Ready
 - Priority: Must
 - Owner: Architect
@@ -51,6 +51,32 @@ any of the three calls, so a failed `--ff-only` pull there is silently swallowed
 never had the later stages recorded, and this call re-asserted that stale snapshot over the richer
 in-memory state every time, permanently.
 
+**This is a recurrence, not a first occurrence - and it pins down exactly what's still missing.**
+`init_scrum_state`'s own docstring documents a near-identical prior incident, `0.1.0-run56` (GH issue
+#423): "ScrumMaster re-called `init_scrum_state()` at the start of Sprint 2 ... and three stories that
+had already genuinely reached Accepted in Sprint 1 came back out of that call showing only
+Draft/Ready." The fix that shipped for #423 was the `force or not already_initialized` gate itself -
+which *did* close the accidental/habitual re-init case (an agent calling the tool again without
+realizing it already ran). It deliberately left `force=True` open "for the rare genuine case of
+deliberately picking up an out-of-band edit to state.json mid-session" - a bar no in-session agent call
+can actually clear (an agent has no way to know whether a human edited `.hc/state.json` out-of-band;
+it can only ever be guessing), yet the tool remains callable by every role with that argument exposed.
+`0.1.0-run61` is simply the next time an agent reached for it: same mechanism, same blind overwrite,
+same regression, now via the one door GH #423 left open on purpose.
+
+**Root cause of the root cause: `init_scrum_state` should never have been an LLM-callable tool at
+all.** A mechanical, non-agent caller already exists and already runs it correctly exactly once per
+session - `ensure_state_initialized_callback` (`agents/scrum_team/agent.py:798`), a `BeforeModelCallback`
+registered on `root_agent`, calls `init_scrum_state()` (never with `force=True`) before the
+Orchestrator's very first turn, gated on the same `_state_auto_initialized` flag. That callback is the
+correct "mechanical setup" path end to end. The only reason `0.1.0-run61`'s ProductOwner could re-run
+initialization mid-session at all is that `init_scrum_state` is *also* separately registered as a
+directly-callable tool on every one of the six agents - `ProductOwner`, `ScrumMaster`, `DevTeam`, `QA`,
+`Architect`, and `ScrumOrchestrator` itself (`agents/scrum_team/agent.py:2667, 2703, 2742, 2777, 2798,
+2823`). Nothing about that registration is load-bearing: the callback already guarantees state is
+initialized before any role's first real turn, so no agent ever legitimately *needs* to call this tool
+itself - its presence in six tool lists is pure, unnecessary surface area for exactly this failure.
+
 **Downstream effect, also confirmed in `transcript.md`:** immediately after the Sprint 2 reload,
 DevTeam's `start_feature_branch("US-0002", ...)` is rejected: `"Cannot start work on 'US-0002' - the
 higher-priority story 'US-0001' must reach Accepted first."` (same rejection recurs identically in
@@ -64,44 +90,77 @@ planning output ... to publish this sprint yet" - ProductOwner stopped trying to
 kept hitting the same wall).
 
 ## Acceptance Criteria
-- `init_scrum_state(force=True)` (or `load_state_from_repo` directly) never regresses a story's
-  `stages_completed` (in `product_backlog` or `sprint_backlog`) to fewer completed stages than what's
-  already in live session state - the merge must be monotonic (same union semantics
-  `_story_stages_completed` already uses for *reading* stage progress, applied here when *loading* it),
-  not a blind per-key overwrite.
-- A test reproducing this run's exact shape: seed in-memory `state["product_backlog"]` with US-0001 at
-  `Accepted`, write a `.hc/state.json` on disk with US-0001 only at `Ready` (simulating a lagging/stale
-  snapshot), call `init_scrum_state(force=True)`, and assert US-0001's `stages_completed` in the
-  resulting state still includes `Accepted` afterward.
-- `_sync_local_clone_to_branch` (`agents/scrum_team/scripts/run_eval.py`) checks the status of its
-  `fetch`/`checkout`/`pull --ff-only` calls and at minimum logs (to the sprint's own event stream, not
-  just stderr) when the pull wasn't a clean fast-forward, so a divergence like this is visible in the
-  run's own report/transcript instead of only discoverable by diffing `manifest.json` snapshots by hand.
+- `init_scrum_state` is removed from every agent's tool list in `agents/scrum_team/agent.py`
+  (`ProductOwner`, `ScrumMaster`, `DevTeam`, `QA`, `Architect`, `ScrumOrchestrator`) - no role can
+  invoke it directly, with or without `force`, ever again. The function itself stays (it's still the
+  mechanical callback's and the repair path's implementation), only its exposure as an LLM tool goes.
+- `ensure_state_initialized_callback` keeps calling `init_scrum_state()` exactly once per session,
+  unchanged, `force` never set - this is already the correct "mechanical setup, not an agent action"
+  path (it runs before the Orchestrator's first real turn, gated on `_state_auto_initialized`) and
+  needs no behavior change, only to remain the *only* path into this function once the tool-list
+  entries above are gone.
+- The genuine "pick up an out-of-band edit to `.hc/state.json`" / "state is corrupted beyond git-history
+  recovery" case - the one `force=True` was actually meant for - gets a real, human-operated way to
+  invoke it, matching the design this codebase already uses for exactly this class of recovery (see
+  `docs/STATE-REPOSITORY.md` "If automatic recovery isn't possible either": `get_corrupted_state_raw_content`/
+  `save_repaired_state`/`reset_state_from_git`/`clear_corrupted_state` are all in-chat tools that
+  "refuse to run against a state.json that's currently perfectly fine - they only ever act on a
+  genuinely corrupted file, never as a way to reset good state"). `check_state_repo.py`'s
+  `_offer_state_repair()` menu already mirrors two of those host-side (reset-from-git-history,
+  delete-and-reinit-next-session) but has no equivalent to `init_scrum_state`'s doc-sync step - rebuild
+  `product_backlog`/`sprint_backlog`/vision/goals/architecture from whatever `specs/` already has on
+  disk - which is the one thing neither a git-history reset nor a delete-and-restart actually provides
+  (both only recover/clear `state.json` itself; neither re-derives backlog content from the markdown
+  specs). Add that as a genuinely new last-resort option - e.g. "4) Rebuild state from specs/ on disk"
+  in `check_state_repo.py` (host-side, invoked the same way `validate_state.py` already is - via
+  `docker compose run --rm agent python3 -m ...` so pydantic/ADK are available), and/or a narrow
+  `rebuild_scrum_state_from_specs()` in-chat tool that - like the four corruption-only tools above -
+  refuses to run unless `state_json_corrupted`/equivalent is actually set. Either way, this is reachable
+  only when the state is already known-bad, never a routine, always-available agent action.
+- A story's `stages_completed` regressing on any load (the actual damage mechanism, independent of who
+  triggers it) is still worth guarding monotonically at the `load_state_from_repo` level as defense in
+  depth, but it's no longer the primary fix - removing the tool exposure above means no agent can
+  trigger a reload at all, so there's no longer a live path by which a cheap model's own choice can
+  overwrite live progress mid-session.
 
 ## Notes
-- Not proposing to remove the `force` parameter or the reload path entirely - `init_scrum_state`'s
-  own docstring frames it as a deliberate, if dangerous, escape hatch (and `force=False`'s
-  first-init-only gating is correct and should stay). The fix is making the reload itself safe
-  (monotonic merge) rather than relying on agents never calling `force=True` after the first init -
-  the same "enforce in code, not by asking nicely in a prompt" principle this codebase already applies
-  to `advance_story_stage`'s own ordering/ownership gates.
+- This supersedes the originally-proposed fix shape here (a monotonic merge inside
+  `load_state_from_repo`). That would have papered over the real problem: the tool is only dangerous
+  *because* it's reachable from a role's own turn, and `force=True` exists specifically to let an
+  agent override the one safety gate (`_state_auto_initialized`) protecting against exactly this.
+  Removing the tool from every role's list closes the door this run (and `0.1.0-run56`/GH #423 before
+  it) walked through, rather than making the room on the other side of that door slightly safer.
 - This is a distinct mechanism from ISSUE-0050 (`_checkout_develop_or_recover`'s `checkout -B` hard
   reset discarding *local git commits*) even though the observable symptom rhymes closely ("a story's
   `stages_completed` regressed between sprints") - ISSUE-0050's fix doesn't cover this path at all,
   since `load_state_from_repo`'s overwrite happens in Python/session-state, not via that git helper.
-  Whether `.hc/state.json` on disk was stale because of `_sync_local_clone_to_branch`'s unchecked
-  `pull --ff-only`, or some other sync gap, is secondary - even a perfectly fresh on-disk snapshot
-  should never be allowed to regress progress on load, per `init_scrum_state`'s own stated invariant.
-- Likely why this wasn't caught before: `0.1.0-run61` is the first run (of the runs checked) where
-  ProductOwner's own turn pattern includes `init_scrum_state(force=True)` as the very first tool call of
-  every sprint, not just the first. Whether that's a new prompt nudge or the cheap model's own habit
-  wasn't determined here; either way the tool itself should not be one wrong agent choice away from
-  silently erasing a sprint's worth of delivered work.
+- Whether `.hc/state.json` on disk was actually stale because of `_sync_local_clone_to_branch`
+  (`agents/scrum_team/scripts/run_eval.py`) performing its `fetch`/`checkout`/`pull --ff-only` with zero
+  status checking on any of the three calls - so a failed `--ff-only` pull there would be silently
+  swallowed - wasn't pinned down further here, and doesn't need to be to close this issue: once
+  `init_scrum_state` can't be agent-triggered mid-session, whatever's on disk between sprints is
+  irrelevant to live session state either way. Worth a quick look as a follow-up, independent of this
+  fix.
+- `0.1.0-run56`'s GH #423 fix already correctly reasoned "nothing stopped an agent from calling
+  `init_scrum_state()` again later in an already-live session" and then only half-closed that gap (the
+  non-force path). This issue is that same sentence's other half.
 
 ## Test Approach
-- Unit test in `agents/scrum_team/tests/test_scrum.py` (or wherever `init_scrum_state`/
-  `load_state_from_repo` are currently tested): the regression scenario in Acceptance Criteria above,
-  plus a check that a *forward* disk snapshot (on-disk ahead of memory - the genuine recovery case
-  `force=True` exists for) still loads normally.
-- Full `agents/scrum_team/tests` suite should pass unchanged otherwise - this only changes
-  `load_state_from_repo`'s merge behavior, not `init_scrum_state`'s other doc-sync/env-override steps.
+- `agents/scrum_team/tests/test_agent.py`: new assertion that `init_scrum_state` does not appear in
+  the `tools` list of any of `product_owner`, `scrum_master`, `dev_team`, `qa_agent`, `architect`,
+  `root_agent` - a structural test that fails immediately if it's ever re-added to a role's tool list,
+  not just a behavioral test that happens to not exercise it.
+- Existing `ensure_state_initialized_callback` tests (`test_agent.py`, around
+  `test_calls_init_scrum_state_on_first_call`/`test_does_not_call_init_scrum_state_again_once_flagged`)
+  should pass unchanged - this issue doesn't touch that callback.
+- New test for `check_state_repo.py`'s added repair-menu option: given a corrupted/unrecoverable
+  `.hc/state.json`, choosing the new option invokes the rebuild step and leaves a valid state.json
+  behind, exercised the same way `_offer_state_repair`'s existing options are already tested (an
+  injectable `prompt` callable, no real terminal needed).
+- If a `rebuild_scrum_state_from_specs()` in-chat tool is added too: tests mirroring
+  `test_scrum.py`'s existing coverage of `clear_corrupted_state`/`reset_state_from_git`'s "refuses
+  unless `state_json_corrupted`" guard - both that it refuses against currently-good state, and that it
+  actually rebuilds (stories/epics/vision/goals synced) when state is genuinely corrupted.
+- Full `agents/scrum_team/tests` suite should otherwise pass unchanged - `init_scrum_state` itself and
+  `load_state_from_repo` keep their current signatures and behavior; only where they're reachable from
+  changes.
