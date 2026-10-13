@@ -71,7 +71,7 @@ import rebuild_images
 
 ROLES = [
     "scrum-orchestrator", "scrum-po", "scrum-sm", "scrum-dev",
-    "scrum-qa", "scrum-arch", "scrum-quality",
+    "scrum-qa", "scrum-arch",
 ]
 
 OLLAMA_CURATED_MODELS = [

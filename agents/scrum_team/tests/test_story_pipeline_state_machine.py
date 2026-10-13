@@ -42,10 +42,10 @@ from agents.scrum_team.tools.requirements import (
 from agents.scrum_team.tools.docs import upsert_prd, write_file
 from agents.scrum_team.tools.requirements import update_roadmap
 from agents.scrum_team.tools.budget import log_story_tokens
-from agents.scrum_team.tools.scrum import start_sprint
+from agents.scrum_team.tools.scrum import start_sprint, plan_sprint_backlog_item
 from agents.scrum_team.tools.github import (
     start_feature_branch, git_push, mark_pr_ready_for_review,
-    gh_pr_review, merge_story_pr, create_sprint_backlog_pr,
+    gh_pr_comment, gh_pr_review, gh_pr_checks, merge_story_pr, create_sprint_backlog_pr,
 )
 from agents.scrum_team.tools.quality import check_build
 
@@ -67,6 +67,18 @@ def _fake_run(cmd, cwd=None, tool_context=None, timeout=None, env_overrides=None
             "stdout": "TOTAL 100 10 90%\n5 passed in 0.42s",
             "stderr": "",
         }
+    # GH issue #379: create_sprint_backlog_pr now calls integrate_open_changes
+    # (scoped to specs/+.hc/, instead of the blast-radius "git add -A" it
+    # used before) before pushing - that function's "is there anything new
+    # to integrate" check reads real `git status --porcelain`/`git diff
+    # --cached --name-only` stdout, which this blanket mock otherwise always
+    # returns empty for regardless of the real files this file's own
+    # _plan_story (upsert_prd/update_roadmap/upsert_story) genuinely wrote to
+    # disk before ever reaching create_sprint_backlog_pr.
+    if cmd and cmd[:2] == ["git", "status"]:
+        return {"status": "ok", "returncode": 0, "stdout": "M specs/ROADMAP.md\n", "stderr": ""}
+    if cmd and cmd[:4] == ["git", "diff", "--cached", "--name-only"]:
+        return {"status": "ok", "returncode": 0, "stdout": "specs/ROADMAP.md\n", "stderr": ""}
     return dict(_OK_RUN_RESULT)
 
 
@@ -133,10 +145,22 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
             self.assertEqual(start_sprint("Ship this story end to end", tool_context=tc)["status"], "ok")
         _as(tc, "ProductOwner")
         self.assertEqual(create_sprint_backlog_pr(tool_context=tc)["status"], "ok")
+        # GH issue #357: start_feature_branch also mechanically requires
+        # Architect/DevTeam/QA to have each left real feedback on this
+        # sprint's Sprint Backlog PR before Dev Team can start any story.
+        for role in ("Architect", "DevTeam", "QA"):
+            _as(tc, role)
+            self.assertEqual(gh_pr_comment("Looks good, committing to this plan.", tool_context=tc)["status"], "ok")
 
     def _draft_to_ready(self, tc, story_id):
         self.assertEqual(advance_story_stage(story_id, "Draft", tool_context=tc)["status"], "ok")
         self.assertEqual(advance_story_stage(story_id, "Ready", tool_context=tc)["status"], "ok")
+        # GH issue #378: start_feature_branch mechanically refuses a story
+        # that was never planned into this sprint's sprint_backlog.
+        _as(tc, "DevTeam")
+        self.assertEqual(
+            plan_sprint_backlog_item(story_id, {"estimate": 5}, tool_context=tc)["status"], "ok"
+        )
         self._publish_sprint_backlog(tc)
 
     def _implement(self, tc, story_id, slug="add-login", source_path="src/app.py", content="def login(): ..."):
@@ -147,8 +171,11 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         self.assertEqual(write_file(source_path, content, overwrite=True, tool_context=tc)["status"], "ok")
         self.assertEqual(log_story_tokens(story_id, 1234, tool_context=tc)["status"], "ok")
         self.assertEqual(git_push(branch=branch, commit_message="feat: add login", tool_context=tc)["status"], "ok")
-        self.assertEqual(mark_pr_ready_for_review(tool_context=tc)["status"], "ok")
+        # GH issue #380: advance_story_stage's Implemented-stage gate now
+        # requires a fresh, passing gh_pr_checks() result since this push.
+        self.assertTrue(gh_pr_checks(tool_context=tc)["passing"])
         self.assertEqual(advance_story_stage(story_id, "Implemented", tool_context=tc)["status"], "ok")
+        self.assertEqual(mark_pr_ready_for_review(tool_context=tc)["status"], "ok")
         return branch
 
     def _dev_pushes_a_fix(self, tc, branch, content="def login(): ...  # fixed"):
@@ -341,5 +368,6 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
         _as(tc, "DevTeam")
         self.assertEqual(write_file("src/app.py", "def login(): ...", overwrite=True, tool_context=tc)["status"], "ok")
         self.assertEqual(log_story_tokens(story_a, 500, tool_context=tc)["status"], "ok")
+        self.assertTrue(gh_pr_checks(tool_context=tc)["passing"])
         result = advance_story_stage(story_a, "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")

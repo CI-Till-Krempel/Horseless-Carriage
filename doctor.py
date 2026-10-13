@@ -313,6 +313,14 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             print(f"LLM connectivity: OK - {detail}")
         else:
             warn(f"LLM connectivity test failed - {detail}")
+
+        # GH issue #298: a working chat completion above only proves the
+        # model id resolves and responds - it says nothing about whether
+        # LiteLLM's bundled pricing table actually has a price for it, so
+        # check that separately.
+        pricing_warnings = lib_llm_test.llm_check_model_pricing(proxy_base_url, env.get("LITELLM_MASTER_KEY", ""))
+        for pricing_warning in pricing_warnings:
+            warn(pricing_warning)
     else:
         print(f"NOTE: LiteLLM proxy not reachable at {proxy_base_url} (containers not running?).")
         # GH issue #169: match run.py's own dev-stack project name, so a

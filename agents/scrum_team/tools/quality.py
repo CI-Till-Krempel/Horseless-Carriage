@@ -1,12 +1,14 @@
 # agents/scrum_team/tools/quality.py
+import ast
 import json
 import os
 import re
 import requests
 import litellm
+from pathlib import Path
 from ..state import ScrumState
 from ..prompts import ROLE_NAMES, ROLE_PROMPT_TEXT
-from typing import Dict, Any
+from typing import Dict, Any, List
 from .base import _configured_repo_root, _run, _coerce_dict_arg
 
 # A real eval run had QualityGuardian retry update_sprint_report ~15 times in
@@ -30,7 +32,6 @@ _ROLE_MODEL_KEYS = {
     "DevTeam": "dev",
     "QA": "qa",
     "Architect": "arch",
-    "QualityGuardian": "quality",
 }
 
 
@@ -235,6 +236,77 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
     }
 
 
+def _is_trivial_test_body(node) -> bool:
+    """
+    GH issue #370: True if a test function's body carries no real
+    assertion at all - just `pass`, a bare docstring, `assert True`, or a
+    tautological `assert <literal> == <same literal>`. A real eval run
+    showed DevTeam hedge a genuinely flaky real test suite by also writing
+    separate stub test files alongside it with exactly this shape, so
+    check_build's pass/fail count always had *something* passing - these
+    functions verify nothing, but silently inflate the count the same way a
+    real test's pass does.
+
+    Deliberately a narrow, explicit heuristic (false positives are fine -
+    this only ever produces a non-blocking warning, never a refusal; false
+    negatives just mean the nudge doesn't fire) rather than deeper static
+    analysis - a test with a fixture argument, multiple statements, or any
+    non-tautological assertion is never flagged, even if it turns out to be
+    weak in some other way.
+    """
+    body = list(node.body)
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        body = body[1:]  # a leading docstring doesn't itself make a test non-trivial
+    if not body:
+        return True
+    if len(body) != 1:
+        return False
+    stmt = body[0]
+    if isinstance(stmt, ast.Pass):
+        return True
+    if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
+        return True
+    if not isinstance(stmt, ast.Assert):
+        return False
+    test = stmt.test
+    if isinstance(test, ast.Constant) and test.value is True:
+        return True
+    if (
+        isinstance(test, ast.Compare) and len(test.ops) == 1 and isinstance(test.ops[0], ast.Eq)
+        and isinstance(test.left, ast.Constant) and isinstance(test.comparators[0], ast.Constant)
+        and test.left.value == test.comparators[0].value
+    ):
+        return True
+    return False
+
+
+def detect_stubbed_tests(repo_root) -> List[Dict[str, str]]:
+    """
+    Scans test_*.py/*_test.py files under repo_root (pytest's own default
+    discovery convention) for suspiciously trivial test functions - see
+    _is_trivial_test_body. Returns a list of {"file": <relative path>,
+    "function": <name>} for each one found; empty if none. Best-effort: a
+    file that fails to parse is simply skipped, not an error.
+    """
+    repo_root = Path(repo_root)
+    findings: List[Dict[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(repo_root):
+        dirnames[:] = [d for d in dirnames if d not in _LANGUAGE_SKIP_DIRS and not d.startswith(".")]
+        for fname in filenames:
+            if not fname.endswith(".py") or not (fname.startswith("test_") or fname.endswith("_test.py")):
+                continue
+            fp = Path(dirpath) / fname
+            try:
+                tree = ast.parse(fp.read_text(encoding="utf-8", errors="replace"))
+            except (SyntaxError, OSError, ValueError):
+                continue
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
+                    if _is_trivial_test_body(node):
+                        findings.append({"file": str(fp.relative_to(repo_root)), "function": node.name})
+    return findings
+
+
 def _detect_primary_language(repo_root) -> str:
     """
     Best-effort detection of the target repo's primary language, used to
@@ -400,15 +472,28 @@ def check_build(tool_context=None) -> Dict[str, Any]:
             "message": "No requirements.txt or package.json found - no recognized dependency manifest to check.",
         }
         if tool_context and getattr(tool_context, "state", None):
-            tool_context.state["last_check_build"] = {"checked": None, "passing": None}
+            tool_context.state["last_check_build"] = {
+                "checked": None,
+                "passing": None,
+                "manifest_write_count_at_check": tool_context.state.get("dependency_manifest_write_count", 0),
+            }
         return result
 
     passing = result.get("status") == "ok"
     # Persisted so advance_story_stage's "Tested" gate (ISSUE-0004) can
     # verify check_build actually ran and passed, instead of trusting QA's
-    # own say-so that it did.
+    # own say-so that it did. manifest_write_count_at_check snapshots
+    # write_file's dependency-manifest counter (docs.py) at the moment this
+    # install actually ran - see the Tested gate's own freshness check for
+    # why: a real eval run kept trusting a stale passing=True after
+    # requirements.txt was rewritten (dropping Flask) with no re-run of
+    # check_build in between.
     if tool_context and getattr(tool_context, "state", None):
-        tool_context.state["last_check_build"] = {"checked": checked, "passing": passing}
+        tool_context.state["last_check_build"] = {
+            "checked": checked,
+            "passing": passing,
+            "manifest_write_count_at_check": tool_context.state.get("dependency_manifest_write_count", 0),
+        }
     return {
         "status": "ok" if passing else "error",
         "checked": checked,
@@ -418,6 +503,39 @@ def check_build(tool_context=None) -> Dict[str, Any]:
     }
 
 
+def _compute_say_do_ratio(tool_context=None) -> Dict[str, Any]:
+    """
+    Say-Do Ratio: how much of what this sprint committed to
+    (ScrumState.sprint_backlog, Epics excluded - not a committed delivery
+    unit themselves, same exclusion already used for the analysis harness's
+    own accepted/stories_implemented series in run_eval_analysis.py) was
+    actually delivered (reached Accepted) - a real ratio derived from
+    session state, not a fixed placeholder.
+
+    Previously hardcoded to 0.8 regardless of actual sprint outcome - a
+    real eval run (0.1.0-run39) showed this exact fixed value in the
+    report's KPI table next to 0 real stories accepted across every one of
+    its 5 sprints, reading as "things are fine" when they weren't.
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return {"say_do_ratio": None, "note": "no session state available"}
+    s = tool_context.state
+    sprint_backlog = s.get("sprint_backlog", []) or []
+    product_backlog = s.get("product_backlog", []) or []
+    committed = [item for item in sprint_backlog if item.get("type") != "Epic"]
+    if not committed:
+        return {"say_do_ratio": None, "note": "no stories committed to this sprint yet"}
+
+    from .requirements import _story_stages_completed
+    delivered = sum(
+        1 for item in committed
+        if "Accepted" in _story_stages_completed(
+            next((p for p in product_backlog if p.get("id") == item.get("id")), {}), item
+        )
+    )
+    return {"say_do_ratio": round(delivered / len(committed), 2), "note": None}
+
+
 def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     """
     Calculates and returns a dictionary of quality KPIs.
@@ -425,11 +543,25 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     test_coverage/tests_run/tests_failed are derived from actually executing
     the target repo's test suite (US-0005). code_complexity is derived from
     a real static analysis tool (US-0006). vulnerability_scan_results is
-    derived from a real security scan (US-0007).
+    derived from a real security scan (US-0007). say_do_ratio is derived
+    from the sprint's own committed-vs-accepted backlog (GH eval run39).
+
+    commitment_reliability/customer_satisfaction/defect_escape_rate remain
+    unavailable - no principled way to compute them exists in this system yet
+    (no separate estimate-accuracy tracking, human satisfaction survey, or
+    defect/bug-lifecycle data). GH issue #389: commitment_reliability/
+    customer_satisfaction used to be hardcoded to 1.0/4.5 - plausible-looking
+    fake numbers presented as real measurements in every sprint report,
+    contradicting this exact docstring's own admission that no real
+    computation exists. All three now consistently report unavailable
+    (None + an explanatory note) rather than a fabricated constant - the
+    same "never fabricate, report unavailable" rule already applied to
+    maintainability/security below.
     """
     coverage_result = _execute_test_suite_coverage(tool_context)
     complexity_result = _compute_code_complexity(tool_context)
     security_result = _scan_security_vulnerabilities(tool_context)
+    say_do_result = _compute_say_do_ratio(tool_context)
 
     maintainability = {
         "code_complexity": complexity_result["code_complexity"],
@@ -451,14 +583,35 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
     if security_result["note"]:
         security["vulnerability_scan_note"] = security_result["note"]
 
+    team_effectiveness = {
+        "say_do_ratio": say_do_result["say_do_ratio"],
+        # GH issue #389: previously hardcoded to 1.0 - no estimate-accuracy
+        # tracking exists in this system to compute a real reliability score
+        # from, so this was always a fabricated constant, never a
+        # measurement. Reported unavailable instead, same rule as
+        # defect_escape_rate below.
+        "commitment_reliability": None,
+        "commitment_reliability_note": "not available - no estimate-accuracy tracking exists yet",
+    }
+    if say_do_result["note"]:
+        team_effectiveness["say_do_ratio_note"] = say_do_result["note"]
+
     return {
-        "team_effectiveness": {
-            "say_do_ratio": 0.8,
-            "commitment_reliability": 1.0,
-        },
+        "team_effectiveness": team_effectiveness,
         "result_quality": {
-            "defect_escape_rate": 0.05,
-            "customer_satisfaction": 4.5,
+            # GH eval run39: no defect/bug-lifecycle tracking exists in this
+            # system to compute a real escape rate from - reported
+            # unavailable rather than swapped for a different, equally
+            # fabricated constant (the same "never fabricate, report
+            # unavailable" rule already applied to maintainability/security
+            # below).
+            "defect_escape_rate": None,
+            "defect_escape_rate_note": "not available - no defect/bug-lifecycle tracking exists yet",
+            # GH issue #389: previously hardcoded to 4.5 - no human
+            # satisfaction survey or equivalent signal exists in this system,
+            # so this was always a fabricated constant too.
+            "customer_satisfaction": None,
+            "customer_satisfaction_note": "not available - no user/customer satisfaction survey exists yet",
         },
         "maintainability": maintainability,
         "security": security,

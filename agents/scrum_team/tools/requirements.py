@@ -160,9 +160,108 @@ def _is_concrete_denial_reason(reason: str) -> bool:
 # silently pushed to the back of the queue.
 _PRIORITY_RANK = {"Must": 0, "Should": 1, "Could": 2, "Won't": 3}
 
+# GH issue #355: the one, canonical priority scale - MoSCoW, since it's
+# already what _PRIORITY_RANK/the whole backlog-sort mechanism is built
+# around. Enforced at write time (set_priority/upsert_backlog_item below)
+# so a different scale (a real eval run mixed "P0"/"P2" in alongside
+# "Must") can never reach _priority_rank's own lookup in the first place -
+# that lookup's "unrecognized value silently ranks as Must (highest)"
+# fallback was only ever meant to cover a genuinely *unset* priority (see
+# the comment above _PRIORITY_RANK), not a mistyped/wrong-scale one.
+VALID_PRIORITIES = tuple(_PRIORITY_RANK.keys())
+
 
 def _priority_rank(item: Dict[str, Any]) -> int:
     return _PRIORITY_RANK.get(item.get("priority"), _PRIORITY_RANK["Must"])
+
+
+def _validate_priority(priority: str) -> str | None:
+    """None if `priority` is a valid MoSCoW value, else an error message
+    naming the valid ones - shared by set_priority and upsert_backlog_item
+    so neither can drift out of sync with the other on what's accepted."""
+    if priority not in VALID_PRIORITIES:
+        return f"priority must be one of {list(VALID_PRIORITIES)} (MoSCoW), not {priority!r}."
+    return None
+
+
+# GH issue #355 (migration follow-up, PR review comment): a repo's
+# specs/stories/*.md or specs/requirements/ISSUE-*.md files may predate this
+# mechanical enforcement and still carry a pre-MoSCoW value in their own
+# "- Priority:" line - the old BACKLOG ITEM TEMPLATE literally taught
+# "P0/P1/P2 (or numeric)" before this fix. set_priority/upsert_backlog_item
+# refuse a *new* invalid write, but do nothing about data already on disk.
+_LEGACY_PRIORITY_MAP = {
+    "p0": "Must", "p1": "Should", "p2": "Could", "p3": "Won't",
+    "0": "Must", "1": "Should", "2": "Could", "3": "Won't",
+    "high": "Must", "medium": "Should", "low": "Could",
+}
+
+
+def _migrated_priority(raw_priority: Any) -> str | None:
+    """None if `raw_priority` is already a valid, correctly-cased MoSCoW
+    value (nothing to migrate) or isn't set at all (a genuinely unprioritized
+    item is a different, intentional case - see _priority_rank's own
+    comment - and is left alone). Otherwise the MoSCoW value it should be
+    rewritten to: a recognized legacy scale maps to its MoSCoW equivalent, a
+    merely-miscased already-valid value ("must") is corrected to canonical
+    casing, and anything else unrecognized falls back to "Must" - the same
+    fallback _priority_rank itself already uses for an unrecognized value,
+    so this never makes an item rank *worse* than it already silently did."""
+    if not isinstance(raw_priority, str) or not raw_priority.strip():
+        return None
+    normalized = raw_priority.strip().lower().replace("'", "")
+    for valid in VALID_PRIORITIES:
+        if normalized == valid.lower().replace("'", ""):
+            return None if raw_priority == valid else valid
+    return _LEGACY_PRIORITY_MAP.get(normalized, "Must")
+
+
+def _rewrite_priority_line(fp: Path, new_priority: str) -> None:
+    """Surgically replaces just the '- Priority: ...' line in an existing
+    story/issue markdown file in place - unlike _update_story_markdown
+    (which regenerates the whole file from the item dict and would silently
+    drop Notes/Test Approach/owner/tasks content _parse_story_markdown
+    never round-trips back into state at all), this touches nothing else in
+    the file."""
+    try:
+        content = fp.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    lines = content.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.strip().startswith("- Priority:"):
+            newline = "\n" if line.endswith("\n") else ""
+            lines[i] = f"- Priority: {new_priority}{newline}"
+            fp.write_text("".join(lines), encoding="utf-8")
+            return
+
+
+def _depends_on_cycle(backlog: List[Dict[str, Any]], item_id: str, depends_on: List[str]) -> bool:
+    """GH issue #343: True if saving `item_id`'s depends_on as `depends_on`
+    would create a cycle in the backlog's whole dependency graph (not just
+    a direct self-reference) - e.g. A depends on B, B depends on C, C
+    depends on A. Caught here, at write time, rather than only discovered
+    later as a permanent deadlock when advance_story_stage's own hard
+    dependency gate refuses every item in the cycle forever."""
+    graph = {x.get("id"): list(x.get("depends_on") or []) for x in backlog if x.get("id")}
+    graph[item_id] = list(depends_on)
+    visiting: set = set()
+    visited: set = set()
+
+    def has_cycle(node) -> bool:
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        for dep in graph.get(node) or []:
+            if has_cycle(dep):
+                return True
+        visiting.discard(node)
+        visited.add(node)
+        return False
+
+    return has_cycle(item_id)
 
 
 def _resort_backlog_by_priority(s: Dict[str, Any]) -> None:
@@ -593,6 +692,15 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
             ),
         }
 
+    # GH issue #355: same validation as set_priority - a priority set
+    # directly here (upsert_story/upsert_epic/upsert_issue) must use the
+    # one canonical MoSCoW scale too, not a different one that would
+    # silently misrank via _priority_rank's fallback.
+    if "priority" in item:
+        error = _validate_priority(item["priority"])
+        if error:
+            return {"status": "error", "message": error}
+
     s = tool_context.state
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))
     item_id = item.get("id")
@@ -609,6 +717,28 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
 
     if not item_id and not title:
         return {"status": "error", "message": "Backlog item needs at least 'id' or 'title'."}
+
+    # GH issue #343: validate depends_on before it's ever saved - a cycle
+    # (direct self-reference, or transitive: A depends on B depends on A)
+    # would otherwise only surface later as a permanent deadlock, once
+    # advance_story_stage's own dependency gate refuses every item in the
+    # cycle forever with no way out short of manually editing state.
+    depends_on = item.get("depends_on")
+    if depends_on is not None:
+        if not isinstance(depends_on, list) or not all(isinstance(d, str) for d in depends_on):
+            return {"status": "error", "message": "'depends_on' must be a list of backlog item ID strings."}
+        if item_id in depends_on:
+            return {"status": "error", "message": f"'{item_id}' cannot depend on itself."}
+        if _depends_on_cycle(backlog, item_id, depends_on):
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot save this dependency - '{item_id}' depending on {depends_on} would create "
+                    "a cycle in the backlog's dependency graph (one of them transitively depends back "
+                    f"on '{item_id}'). Dependencies must form a strict order, not a loop - check which "
+                    "item's own depends_on list is wrong."
+                ),
+            }
 
     def matches(x: Dict[str, Any]) -> bool:
         return (item_id and x.get("id") == item_id) or (title and x.get("title") == title)
@@ -712,7 +842,19 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
     (_preceding_story, which reads backlog order as priority order) actually
     reflects the change - a story newly marked "Must" now really does jump
     ahead of the lower-priority stories still blocking it.
+
+    GH issue #355: `priority` is validated against VALID_PRIORITIES - a
+    real eval run used "P0"/"P2" interchangeably with "Must" across
+    different items, and since those aren't real MoSCoW values,
+    _priority_rank's lookup silently ranked them as if "Must" (the highest
+    priority) regardless of what was actually intended. There is exactly
+    one priority scale in this codebase (MoSCoW); this refuses anything
+    else outright rather than silently misranking it.
     """
+    error = _validate_priority(priority)
+    if error:
+        return {"status": "error", "message": error}
+
     from .scrum import save_state_to_repo
     s = tool_context.state
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))
@@ -803,6 +945,15 @@ def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
         story_data = _parse_story_markdown(content)
         if not story_data.get("title"):
              continue
+        # GH issue #355 (migration follow-up): self-heal a pre-MoSCoW
+        # priority value left over from before this was mechanically
+        # enforced - see _migrated_priority's own docstring. Runs on every
+        # sync but is a no-op once a file's value is already valid, so this
+        # never re-touches a file twice.
+        migrated_priority = _migrated_priority(story_data.get("priority"))
+        if migrated_priority is not None:
+            story_data["priority"] = migrated_priority
+            _rewrite_priority_line(fp, migrated_priority)
         found_stories.append(story_data)
         match_idx = -1
         for i, item in enumerate(backlog):
@@ -1107,11 +1258,11 @@ NOT_IN_PRODUCT_BACKLOG = object()
 
 def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title: str):
     """
-    The nearest non-BLOCKED User Story before story_id/title in
-    product_backlog order - backlog order is priority order (see
-    RELEASE.md "Story workflow"). Epics are skipped: they aren't advanced
-    through the STORY_STAGES pipeline themselves, so they shouldn't block a
-    real story behind them.
+    The nearest non-BLOCKED item before story_id/title in product_backlog
+    order - backlog order is priority order (see RELEASE.md "Story
+    workflow"). Epics are skipped: they aren't advanced through the
+    STORY_STAGES pipeline themselves, so they shouldn't block a real story
+    behind them.
 
     A BLOCKED predecessor (see raise_story_blocker) is skipped too, not
     just Epics - a story stuck on an unresolved question shouldn't also
@@ -1120,6 +1271,28 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     The blocked story itself stays exactly where it is in product_backlog -
     only the ordering *check* looks past it, so its priority position is
     preserved for whenever it's resolved.
+
+    GH issue #368/#368-followup: an Issue (type == "Issue", e.g. a retro/
+    impediment finding auto-filed via _file_retro_items_as_issues, GH #164)
+    is deliberately NOT skipped here, even though an earlier version of
+    this function did exactly that. An Issue blocking ordering is the
+    mechanism that actually gets it resolved, not just planned: GH #164's
+    own enforcement (create_sprint_backlog_pr's Must-priority gate) only
+    ever demands an Issue reach Ready, never Accepted - once Ready, that
+    gate is satisfied permanently, even if the Issue then sits untouched
+    forever. Exempting Issues from ordering removed the *only* pressure
+    that was pushing a Ready Must-priority Issue all the way to Accepted,
+    recreating #164's original "never actually acted on" failure one stage
+    later in the pipeline. A real eval run (0.1.0-run45) did show this
+    gridlock on two abstract "fix test isolation" Issues ahead of a real
+    story - but Product Owner escaped it the intended way
+    (set_priority(..., "Won't") once it was clear neither genuinely
+    warranted blocking priority), which is the correct resolution: an
+    abstract process finding that can't be concretely implemented should be
+    explicitly reprioritized away from Must, not silently un-gated. See the
+    ordering gate's own refusal message (agents/scrum_team/tools/github.py,
+    requirements.py) for the explicit nudge toward that escape hatch when
+    the blocker is an Issue.
 
     Returns NOT_IN_PRODUCT_BACKLOG (not None) if story_id/title isn't in
     product_backlog at all - callers must treat that as "ordering can't be
@@ -1349,13 +1522,63 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     # above 1 permanently unsatisfiable.
     if target_idx >= STORY_STAGES.index("Implemented"):
         if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
+            preceding_ref = preceding.get('id') or preceding.get('title')
+            # GH issue #368: when the blocker is an Issue (an auto-filed
+            # retro/impediment finding, not a feature story), name BOTH
+            # paths explicitly - but resolving it for real is the lead
+            # instruction, not reprioritizing it away. A cheap model under
+            # budget pressure will reach for whichever option reads easiest;
+            # leading with "just deprioritize it" would turn this gate into
+            # a convenient dodge for every inconvenient finding, defeating
+            # the entire point of auto-filing these as Must-priority in the
+            # first place (GH #164). Reprioritization stays available - a
+            # real eval run showed Product Owner use it correctly - but only
+            # framed as the narrow exception for a finding that genuinely
+            # doesn't warrant blocking priority, not a shortcut around doing
+            # the work.
+            escape_hatch = (
+                f" '{preceding_ref}' is an auto-filed process finding - resolve it for real (advance "
+                "it through Implemented -> Reviewed -> Tested -> Accepted like any other item) rather "
+                f"than reaching for set_priority('{preceding_ref}', ...) to dodge it. Only reprioritize "
+                "away from 'Must' if, on genuine reflection, it turns out this finding never actually "
+                "warranted blocking priority - not because resolving it is inconvenient right now."
+            ) if preceding.get("type") == "Issue" else ""
             return {
                 "status": "error",
                 "message": (
                     f"Cannot advance '{story_id}' to {stage} - the higher-priority story "
-                    f"'{preceding.get('id') or preceding.get('title')}' must reach Accepted first. "
+                    f"'{preceding_ref}' must reach Accepted first. "
                     "Development happens one story at a time, top to bottom, in backlog priority "
-                    "order - Draft/Ready grooming may run ahead of it."
+                    "order - Draft/Ready grooming may run ahead of it." + escape_hatch
+                ),
+            }
+        # GH issue #343: same "actual DEVELOPMENT, not Draft/Ready grooming"
+        # scoping as the preceding-story check right above - an item can be
+        # groomed to Ready with an unmet depends_on (Product Owner still
+        # needs to be able to queue work up ahead of time), but real
+        # implementation work must not start on it until every item it
+        # depends on has actually reached Accepted.
+        depends_on = product_item.get("depends_on") or sprint_item.get("depends_on") or []
+        unmet = []
+        for dep_id in depends_on:
+            dep_product = next((x for x in product_backlog if x.get("id") == dep_id), None)
+            if dep_product is None:
+                # Unknown/removed dependency id - a data-integrity problem
+                # for upsert_story/upsert_issue to fix, not an ordering
+                # block this gate can usefully enforce.
+                continue
+            dep_sprint = next((x for x in sprint_backlog if x.get("id") == dep_id), {})
+            if "Accepted" not in _story_stages_completed(dep_product, dep_sprint):
+                unmet.append(dep_id)
+        if unmet:
+            plural = len(unmet) > 1
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot advance '{story_id}' to {stage} - it depends on {unmet}, which "
+                    f"{'have' if plural else 'has'} not reached Accepted yet (see its depends_on). "
+                    "Resolve the dependency first (or correct depends_on via upsert_story/upsert_issue "
+                    "if it no longer actually applies) before retrying."
                 ),
             }
 
@@ -1368,6 +1591,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     source_touch_count = None
     architect_review_count = None
     qa_review_count = None
+    stub_test_warning = None
     if stage == "Implemented":
         # Belt-and-suspenders alongside start_feature_branch's own check
         # (agents/scrum_team/tools/github.py) - covers spike stories, which
@@ -1453,6 +1677,44 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "logged yet. Call log_story_tokens(title_or_id, actual_tokens) first."
                 ),
             })
+        # GH issue #380: nothing previously required CI to actually be
+        # checked before a story could be marked Implemented at all -
+        # gh_pr_checks only ever gated mark_pr_ready_for_review, which
+        # happens AFTER. Same freshness pattern as check_build's
+        # dependency_manifest_write_count check right below Tested: a result
+        # recorded before this story's last feature-branch push doesn't
+        # count, since a later push could easily have broken what that
+        # result actually verified.
+        last_checks = s.get("last_pr_checks")
+        if not is_spike:
+            if not last_checks:
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Implemented - gh_pr_checks() hasn't been called "
+                        "yet for this story's PR. Call it first."
+                    ),
+                })
+            if last_checks.get("passing") is False:
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Implemented - the last gh_pr_checks() result was "
+                        "not passing. Fix the failing/pending checks and call gh_pr_checks() again "
+                        "until it passes before retrying."
+                    ),
+                })
+            current_push_count = s.get("git_push_count", 0)
+            checked_push_count = last_checks.get("git_push_count_at_check", 0)
+            if current_push_count > checked_push_count:
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Implemented - a feature-branch push happened "
+                        "since the last gh_pr_checks() result. Call gh_pr_checks() again against the "
+                        "current push before retrying - the passing result on file is stale."
+                    ),
+                })
     elif stage == "Reviewed":
         pr_calls = s.get("pr_review_calls", {}) or {}
         architect_review_count = pr_calls.get("Architect", 0)
@@ -1516,6 +1778,28 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "the build and call check_build() again until it passes before retrying."
                 ),
             })
+        # GH eval run39: a real eval run rewrote requirements.txt (dropping
+        # Flask) AFTER check_build had already passed, and nobody called
+        # check_build() again before QA ran the test suite - last_build
+        # above still read passing=True (it was, for the manifest that
+        # existed at the time), so this gate sailed past it straight into
+        # pytest's own ModuleNotFoundError, 11 times in a row. write_file
+        # (docs.py) bumps dependency_manifest_write_count on every write to
+        # requirements.txt/package.json; check_build() snapshots it into
+        # manifest_write_count_at_check the moment it actually runs - if
+        # that snapshot is behind the live counter, a dependency manifest
+        # write happened that this check_build result never saw.
+        current_manifest_writes = s.get("dependency_manifest_write_count", 0)
+        checked_manifest_writes = last_build.get("manifest_write_count_at_check", 0)
+        if current_manifest_writes > checked_manifest_writes:
+            return _reject_stage_transition(tool_context, story_id, stage, {
+                "status": "error",
+                "message": (
+                    f"Cannot mark '{story_id}' Tested - requirements.txt/package.json has changed "
+                    "since the last check_build() result. Call check_build() again against the "
+                    "current manifest before retrying - the passing result on file is stale."
+                ),
+            })
         # GH issue #114: check_build() only verifies the build/dependency
         # install, not that any tests actually ran or passed - this gate
         # previously accepted a clean build + a QA PR comment as sufficient
@@ -1562,6 +1846,23 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "retrying."
                 ),
             })
+        # GH issue #370: a non-blocking nudge, not a gate - a real eval run
+        # showed DevTeam hedge a genuinely flaky real test suite by also
+        # writing separate stub test functions (assert True-style) that
+        # always pass, silently inflating the pass count above without
+        # actually verifying anything. A real, intentional placeholder for
+        # not-yet-implemented coverage has legitimate uses too, so this only
+        # ever warns - it never refuses the Tested transition on its own.
+        from .quality import detect_stubbed_tests
+        stub_findings = detect_stubbed_tests(_configured_repo_root(tool_context))
+        if stub_findings:
+            named = ", ".join(f"{f['file']}::{f['function']}" for f in stub_findings[:5])
+            stub_test_warning = (
+                f"{len(stub_findings)} test function(s) look like trivial stubs ({named}) - a body of "
+                "just 'assert True'/'pass' with no other assertions. These still count toward the "
+                "pass total above without actually verifying anything - if a real test is flaky, fix "
+                "it rather than hedging with a stub alongside it."
+            )
     elif stage == "Accepted":
         # ISSUE-0043: Accepted previously had no evidence gate at all - any
         # role could call advance_story_stage(id, "Accepted") on assertion
@@ -1638,7 +1939,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     # reporting success while specs/ROADMAP.md stays stale is exactly the
     # failure mode this whole mechanism exists to close.
     synced = story_md_result.get("status") == "ok" and roadmap_result.get("status") == "ok"
-    return {
+    result = {
         "status": "ok" if synced else "error",
         "message": None if synced else (
             f"'{story_id}' is recorded as {stage} in state, but syncing specs/ROADMAP.md and/or "
@@ -1651,6 +1952,72 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
         "story_markdown": story_md_result,
         "roadmap_sync": roadmap_result,
     }
+
+    # GH issue #383: save_state_to_repo's own commit (_checkpoint_state_commit)
+    # is a deliberately LOCAL-ONLY safety net - it lands on whatever branch
+    # happens to be checked out at this exact moment. A real eval run
+    # (0.1.0-run48) showed exactly why that's not enough on its own: nothing
+    # previously pushed this commit anywhere, and the working tree routinely
+    # switches branches again later in the same sprint (QA's merge_story_pr,
+    # the next story's start_feature_branch, ...) - a local-only commit left
+    # behind on an abandoned branch is simply gone. US-0001's Tested/Accepted
+    # stages vanished from state between sprints this exact way, which then
+    # permanently blocked every later story via the one-story-at-a-time
+    # ordering gate. Pushing here, as part of this same atomic call - not a
+    # separate git_push the calling role has to remember - closes that gap
+    # at the only place that can reliably catch it: the moment the stage
+    # genuinely changes.
+    #
+    # Target branch depends on where this story's own work actually lives:
+    # Implemented/Reviewed/Tested still have an open feature-branch PR (QA's
+    # merge_story_pr, right after Tested, carries this same push's commit
+    # into develop as part of that same merge) - Accepted happens after that
+    # merge already landed, so it pushes straight to develop instead. Draft/
+    # Ready are deliberately left alone: they're Product Owner's own
+    # planning-doc edits, already covered by create_sprint_backlog_pr's own
+    # commit+push sweep - pushing them here too would land ad-hoc commits on
+    # develop ahead of (and bypassing) that reviewable sprint-backlog PR.
+    if synced:
+        push_target = None
+        allow_protected = False
+        if stage == "Accepted":
+            from .github import _develop_branch_name
+            push_target = _develop_branch_name(tool_context)
+            allow_protected = True
+        elif stage in ("Implemented", "Reviewed", "Tested"):
+            push_target = (s.get("active_feature_branches") or {}).get(story_id)
+
+        if push_target:
+            from .github import integrate_open_changes, _git_push_impl, _checkout_with_auto_integrate
+            repo_root = str(_configured_repo_root(tool_context))
+            checkout_res, _auto_integrated = _checkout_with_auto_integrate(
+                ["git", "checkout", push_target], repo_root, tool_context=tool_context
+            )
+            if checkout_res.get("status") == "ok":
+                integrate_open_changes(tool_context=tool_context)
+                push_res = _git_push_impl(
+                    branch=push_target,
+                    commit_message=f"chore: {story_id} -> {stage}",
+                    add_all=False,
+                    allow_protected=allow_protected,
+                    tool_context=tool_context,
+                )
+            else:
+                push_res = {"status": "error", "message": "Could not check out the target branch.", "checkout": checkout_res}
+            result["state_push"] = push_res
+            if push_res.get("status") != "ok":
+                result["status"] = "error"
+                result["message"] = (
+                    f"'{story_id}' is recorded as {stage} in state and specs/ROADMAP.md/story file "
+                    f"are synced locally, but pushing that update to '{push_target}' failed - see "
+                    "state_push for details. Retry so this doesn't silently fall out of sync the next "
+                    "time something switches branches - this exact gap is what caused a real run to "
+                    "permanently lose a story's Tested/Accepted stage between sprints."
+                )
+
+    if stub_test_warning:
+        result["warning"] = stub_test_warning
+    return result
 
 
 def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None) -> Dict[str, Any]:
@@ -1826,6 +2193,25 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
     merged_item = {**product_item, **sprint_item, **update, "id": story_id, "title": title}
     story_md_result = _update_story_markdown(merged_item, tool_context)
 
+    # GH issue #346: a real eval run showed QA posting "Approved for Tested
+    # stage" PR comments immediately alongside - sometimes right before,
+    # sometimes right after - a deny_review call denying that exact same
+    # review attempt. The denial reason was already mechanically written to
+    # the story's own Markdown file above, but never reached the PR itself,
+    # which is the one place a human reviewing the PR would actually look -
+    # so the only GitHub-visible trail said the opposite of what happened.
+    # Posting it here, from the denial itself, guarantees it reaches the PR
+    # every time rather than depending on a separate, independent free-text
+    # gh_pr_comment call the model might get wrong or skip. Best-effort,
+    # same as every other side-notification in this codebase (e.g.
+    # _notify_critical_halt) - a comment-post failure (no open PR yet, gh
+    # auth hiccup) must not turn an already-recorded denial into an error.
+    from .github import gh_pr_comment
+    pr_comment_result = gh_pr_comment(
+        f"⚠️ Review denied at {stage} for '{story_id}': {reason.strip()}",
+        tool_context=tool_context,
+    )
+
     return {
         "status": "ok",
         "story_id": story_id,
@@ -1836,6 +2222,7 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
             "(read_doc) for DevTeam's next steps."
         ),
         "story_markdown": story_md_result,
+        "pr_comment": pr_comment_result,
     }
 
 
@@ -1848,6 +2235,16 @@ def raise_story_blocker(title_or_id: str, question: str, category: str, tool_con
     _detect_transfer_loop/_detect_repeated_call_loop, which call this same
     function once a stuck story can be identified). advance_story_stage
     refuses every further call for this story while `blocked` is set.
+
+    GH #414: this function's own signature deliberately has no
+    "mechanically_detected" parameter - adding one would expose it directly
+    in every role's own tool schema (ADK builds each tool's schema straight
+    from the Python signature), making it agent-settable, which defeats the
+    whole point of a signal only our own breaker code should ever set. The
+    two loop-breaker call sites (agent.py) instead set
+    `blocked["mechanically_detected"] = True` directly on the story they
+    just blocked, as a separate step right after this call succeeds - see
+    their own code for exactly where.
 
     `category` is "technical" (routed to Architect) or "product" (routed to
     Product Owner - or, at the "Product" interaction level, escalated

@@ -49,10 +49,10 @@ MODEL_PRICING_LOOKUP = {
 
 def _total_tokens_used(manifest: dict) -> int:
     """
-    token_usage.total now resets at the start of every sprint (see
-    run_eval.py's _run_one_sprint state_delta / reset_sprint_budget) - each
-    sprint row reflects only that sprint's own consumption, so the run's
-    total is the SUM of every sprint row, not the last (biggest) one.
+    token_usage.total now resets at the start of every sprint (start_sprint's
+    own mechanical reset, GH #413) - each sprint row reflects only that
+    sprint's own consumption, so the run's total is the SUM of every sprint
+    row, not the last (biggest) one.
     """
     totals = [(s.get("token_usage") or {}).get("total", 0) for s in manifest.get("sprints", [])]
     return sum(totals)
@@ -108,14 +108,43 @@ def _collect_repo_snapshot(repo_path: Path) -> dict:
     }
 
 
+# GH issue #379: render_fallback_sprint_report (tools/budget.py) stamps
+# every mechanically-rendered report with this exact heading - the one
+# reliable way to tell "Product Owner's own create_sprint_report actually
+# ran" apart from "the budget ran out and the safety net rendered a stub
+# from whatever was logged so far". A real run (0.1.0-run47) had the
+# report table claim "Sprint Report? yes" for all 5 sprints even though 4
+# of them were this fallback stub, hiding exactly the distinction a reader
+# of this table would want.
+_FALLBACK_REPORT_MARKER = "## Mechanically-Rendered Report (Budget Used in Full)"
+
+
 def _sprint_metrics_table(manifest: dict) -> str:
+    """Stories Planned counts items newly added to sprint_backlog THIS
+    sprint (diffed against the previous sprint's sprint_backlog keys, same
+    approach as _kpi_time_series - see that function's own docstring for
+    why a raw len() here is wrong). sprint_backlog is never reset between
+    sprints, so a raw len() would just report the run's whole accumulated
+    scope so far, flat and identical, on every single row once initial
+    planning committed it all - exactly what a real run (0.1.0-run42)
+    showed: "6" on every one of its 5 sprint rows."""
     rows = ["| Sprint | Tokens Used | Stories Planned | Sprint Report? | PR Merges (after) |",
             "|---|---|---|---|---|"]
+    prev_backlog_keys = set()
     for sprint in manifest.get("sprints", []):
         n = sprint.get("sprint_number")
         tokens = (sprint.get("token_usage") or {}).get("total", "n/a")
-        planned = len(sprint.get("sprint_backlog") or [])
-        has_report = "yes" if sprint.get("sprint_report") else "no"
+        backlog = sprint.get("sprint_backlog") or []
+        backlog_keys = {_backlog_item_key(item, i) for i, item in enumerate(backlog)}
+        planned = len(backlog_keys - prev_backlog_keys)
+        prev_backlog_keys = backlog_keys
+        report_text = sprint.get("sprint_report")
+        if not report_text:
+            has_report = "no"
+        elif _FALLBACK_REPORT_MARKER in report_text:
+            has_report = "fallback"
+        else:
+            has_report = "yes"
         merges = [m for m in manifest.get("pr_merges", []) if m.get("after_sprint") == n]
         merged_count = sum(1 for m in merges if m.get("merged"))
         rows.append(f"| {n} | {tokens} | {planned} | {has_report} | {merged_count}/{len(merges)} |")
@@ -124,19 +153,55 @@ def _sprint_metrics_table(manifest: dict) -> str:
 
 # GH issue #124: which KPI each series is sourced from. The first four are
 # derived straight from each sprint's own backlog snapshot (sprint_backlog),
-# always present. The last three come from QualityGuardian's calculate_kpis/
-# update_sprint_report (see its prompt's "YOU DO" and tools/quality.py) via
-# sprint_report_kpis, which only exists for a sprint if QualityGuardian
-# actually got to run - a sprint that ran out of budget/events first simply
-# has no data point for these, reported honestly as missing rather than a
-# fabricated 0 or a repeat of the last known value.
+# always present. The last three come from Scrum Master's calculate_kpis/
+# update_sprint_report (formerly QualityGuardian's - see GH #395; see its
+# prompt's "YOU DO" and tools/quality.py) via sprint_report_kpis, which only
+# exists for a sprint if that step actually got to run - a sprint that ran
+# out of budget/events first simply has no data point for these, reported
+# honestly as missing rather than a fabricated 0 or a repeat of the last
+# known value.
 _ACCEPTED_STAGE = "Accepted"
 _IMPLEMENTED_STAGE = "Implemented"
 
 
+def _backlog_item_key(item: dict, index: int):
+    """id-else-title fallback (same pattern as budget.py's blocked-stories
+    collection), further falling back to `index` (this item's position in
+    its sprint_backlog list) so two distinct items that both lack an id
+    AND a title don't collapse into the same dedup key and undercount -
+    real backlog items always get an id via upsert_backlog_item, but
+    nothing here should silently miscount if a caller's data doesn't."""
+    return item.get("id") or item.get("title") or f"__index_{index}"
+
+
 def _kpi_time_series(manifest: dict) -> dict:
     """Returns {kpi_name: [(sprint_number, value), ...]} - one list per KPI,
-    containing only the sprints that actually have a value for it."""
+    containing only the sprints that actually have a value for it.
+
+    GH issue #378: sourced from product_backlog, not sprint_backlog.
+    advance_story_stage (requirements.py) only ever writes stages_completed
+    into sprint_backlog if the story was already planned into it via
+    plan_sprint_backlog_item first - a real run (0.1.0-run47) never called
+    plan_sprint_backlog_item a single time across 5 whole sprints, so
+    sprint_backlog stayed [] all run and every KPI sourced from it read a
+    flat 0 despite real stage progress (several stories reaching Accepted)
+    recorded in product_backlog the whole time. product_backlog is the
+    authoritative superset (see run_eval.py's _blocked_stories docstring for
+    the same distinction) - advance_story_stage always writes stage
+    progress there regardless of whether the story was ever planned into a
+    sprint_backlog at all.
+
+    product_backlog is NOT reset between sprints either (it's the run's
+    whole selected scope, accumulating stage progress sprint over sprint) -
+    so a raw per-sprint count of "items with stage X completed" is a running
+    total across the whole run, not that sprint's own throughput. A real
+    run (0.1.0-run42) showed exactly this: Velocity/Stories implemented
+    read 1, 3, 5, 6, 6 - monotonically non-decreasing, because sprint 3's
+    "5" still counted sprint 1 and 2's already-accepted items too. Diffing
+    each sprint's set of items-at-stage-X against the previous sprint's set
+    (by item key, not just the total count) gives the actual per-sprint
+    delta - how many items newly reached that stage THIS sprint - which is
+    what "velocity" means everywhere else this term is used."""
     series = {
         "Velocity (items accepted)": [],
         "Issues fixed": [],
@@ -146,25 +211,35 @@ def _kpi_time_series(manifest: dict) -> dict:
         "Quality (defect escape rate)": [],
         "Test Coverage": [],
     }
+    prev_accepted_keys = set()
+    prev_issue_accepted_keys = set()
+    prev_implemented_keys = set()
     for sprint in manifest.get("sprints", []):
         n = sprint.get("sprint_number")
-        backlog = sprint.get("sprint_backlog") or []
+        backlog = sprint.get("product_backlog") or []
 
-        accepted = sum(1 for item in backlog if _ACCEPTED_STAGE in (item.get("stages_completed") or []))
-        issues_fixed = sum(
-            1 for item in backlog
+        accepted_keys = {
+            _backlog_item_key(item, i) for i, item in enumerate(backlog)
+            if _ACCEPTED_STAGE in (item.get("stages_completed") or [])
+        }
+        issue_accepted_keys = {
+            _backlog_item_key(item, i) for i, item in enumerate(backlog)
             if item.get("type") == "Issue" and _ACCEPTED_STAGE in (item.get("stages_completed") or [])
-        )
-        stories_implemented = sum(
-            1 for item in backlog
+        }
+        implemented_keys = {
+            _backlog_item_key(item, i) for i, item in enumerate(backlog)
             if item.get("type") != "Issue" and _IMPLEMENTED_STAGE in (item.get("stages_completed") or [])
-        )
+        }
         scenarios = sum(len(item.get("acceptance_criteria") or []) for item in backlog)
 
-        series["Velocity (items accepted)"].append((n, accepted))
-        series["Issues fixed"].append((n, issues_fixed))
-        series["Stories implemented"].append((n, stories_implemented))
+        series["Velocity (items accepted)"].append((n, len(accepted_keys - prev_accepted_keys)))
+        series["Issues fixed"].append((n, len(issue_accepted_keys - prev_issue_accepted_keys)))
+        series["Stories implemented"].append((n, len(implemented_keys - prev_implemented_keys)))
         series["Testplan scenarios"].append((n, scenarios))
+
+        prev_accepted_keys = accepted_keys
+        prev_issue_accepted_keys = issue_accepted_keys
+        prev_implemented_keys = implemented_keys
 
         kpis = sprint.get("sprint_report_kpis") or {}
         say_do = (kpis.get("team_effectiveness") or {}).get("say_do_ratio")
@@ -181,6 +256,46 @@ def _kpi_time_series(manifest: dict) -> dict:
 
 def _format_kpi_value(value) -> str:
     return f"{value:g}" if isinstance(value, float) else str(value)
+
+
+# GH issue #347: which (parent dict, note key) inside a sprint's
+# sprint_report_kpis payload explains an empty series for each of the 3 KPIs
+# sourced from calculate_kpis (tools/quality.py) - used only to distinguish
+# "calculate_kpis never ran this run at all" from "it ran every sprint, but
+# this specific sub-metric has no underlying data source yet", which
+# calculate_kpis already reports honestly via its own *_note field in that
+# same payload. Confusing the two misrepresented a real run (0.1.0-run43):
+# the report claimed this KPI step "was not called in any sprint" for
+# defect escape rate, while the same run's Say-Do Ratio - sourced from the
+# exact same calculate_kpis calls - had real values for 4 of 5 sprints.
+_KPI_NOTE_LOCATIONS = {
+    "Say-Do Ratio": ("team_effectiveness", "say_do_ratio_note"),
+    "Quality (defect escape rate)": ("result_quality", "defect_escape_rate_note"),
+    "Test Coverage": ("maintainability", "test_coverage_note"),
+}
+
+
+def _kpi_unavailable_message(manifest: dict, name: str) -> str:
+    """Why `name`'s series ended up empty in _kpi_time_series - see
+    _KPI_NOTE_LOCATIONS' own comment for the exact distinction this draws."""
+    location = _KPI_NOTE_LOCATIONS.get(name)
+    if location:
+        parent_key, note_key = location
+        for sprint in manifest.get("sprints", []):
+            kpis = sprint.get("sprint_report_kpis") or {}
+            if not kpis:
+                continue
+            note = (kpis.get(parent_key) or {}).get(note_key)
+            if note:
+                return (
+                    f"No data available for this run - {note} (Scrum Master's "
+                    "calculate_kpis did run this run, this specific metric just has no "
+                    "data source yet)."
+                )
+    return (
+        "No data available for this run - never computed (Scrum Master's "
+        "calculate_kpis/update_sprint_report was not called in any sprint)."
+    )
 
 
 def _render_kpi_graphs(manifest: dict) -> str:
@@ -217,8 +332,7 @@ def _render_kpi_graphs(manifest: dict) -> str:
             lines += [
                 f"### {name}",
                 "",
-                "No data available for this run - never computed (QualityGuardian's "
-                "calculate_kpis/update_sprint_report was not called in any sprint).",
+                _kpi_unavailable_message(manifest, name),
                 "",
             ]
             continue
@@ -324,6 +438,130 @@ def _call_judge(prompt: str, model: str) -> dict:
         return {"error": f"Judge response was not valid JSON: {e}", "raw_response": raw_text}
 
 
+_STOP_REASON_EXPLANATIONS = {
+    "max_duration_exceeded": "the run's own wall-clock safety net (--max-duration-minutes) was reached",
+    "budget_critical_halt": "a sprint hit a critical token/USD budget halt with no clean close-out afterward",
+    "crashed": "the run crashed with an unhandled exception",
+    "blocked_needs_human": "a BLOCKED story's category escalates straight to a human this scripted driver has no way to provide",
+    "blocked_unresolved_across_sprint": "a BLOCKED story was still unresolved after a full sprint's own budget to fix it",
+    "human_blocker_unresolved": "a high-priority 'human'-category retro finding is unresolved and this scripted driver has no human to act on it",
+}
+
+
+def _render_stopped_early_callout(manifest: dict) -> list:
+    """
+    GH issue #336 (stop-on-blocker) exists precisely so a cancelled run
+    stops for a REASON, not just silently - but a real user still had to
+    dig through raw GitHub Actions logs to find out why a run only
+    completed 1 of 5 requested sprints (stop_reason was buried in
+    manifest.json, never surfaced in the human-facing report at all).
+    Rendered as the very first thing after the run header, before anything
+    else - this is the single most important fact about a cancelled run.
+    """
+    if not manifest.get("stopped_early"):
+        return []
+    stop_reason = manifest.get("stop_reason", "unknown")
+    explanation = _STOP_REASON_EXPLANATIONS.get(stop_reason, "see stop_reason below for the raw code")
+    lines = [
+        "## ⚠️ Evaluation Stopped Early",
+        "",
+        f"Only {len(manifest.get('sprints', []))} of {manifest.get('sprints_requested')} requested sprints "
+        f"completed - **{explanation}**.",
+        "",
+        f"- Stop reason: `{stop_reason}`",
+    ]
+    if manifest.get("crash_sprint") is not None:
+        lines.append(f"- Crashed during sprint: {manifest['crash_sprint']}")
+    if manifest.get("crash_error"):
+        lines.append(f"- Crash error: `{manifest['crash_error']}`")
+    blocked_story = manifest.get("blocked_story")
+    if blocked_story:
+        blocked = blocked_story.get("blocked", {}) or {}
+        lines.append(
+            f"- Blocked story: **{blocked_story.get('id')}** - {blocked.get('category', 'unknown')}: "
+            f"{blocked.get('question', '(no question recorded)')} "
+            f"(raised by {blocked.get('raised_by', 'unknown')})"
+        )
+    general_blocker = manifest.get("general_blocker")
+    if general_blocker:
+        lines.append(
+            f"- Human-only retro finding: {general_blocker.get('description', '(no description recorded)')} "
+            f"(raised by {general_blocker.get('raised_by', 'unknown')})"
+        )
+    lines.append("")
+    return lines
+
+
+def _collect_blockers(manifest: dict) -> list:
+    """
+    Every story BLOCKED (raise_story_blocker, agents/scrum_team/tools/
+    requirements.py) as of the LAST completed sprint's final state -
+    product_backlog is the full, cumulative backlog each sprint, so the
+    most recent one is the authoritative "still blocked as of run end"
+    view (the same semantics create_sprint_report's own "Open Questions
+    for Stakeholder (Blockers)" section already uses for a single sprint -
+    this is that same view, for whichever sprint the run actually ended on).
+    Returns a list of (story_id, title, blocked_dict) tuples.
+    """
+    sprints = manifest.get("sprints", [])
+    if not sprints:
+        return []
+    last_sprint = sprints[-1]
+    blockers = []
+    seen_ids = set()
+    for collection_name in ("product_backlog", "sprint_backlog"):
+        for item in last_sprint.get(collection_name) or []:
+            blocked = item.get("blocked")
+            if not blocked:
+                continue
+            story_id = item.get("id") or item.get("title")
+            if story_id in seen_ids:
+                continue
+            seen_ids.add(story_id)
+            blockers.append((story_id, item.get("title", story_id), blocked))
+    return blockers
+
+
+def _collect_general_blockers(manifest: dict) -> list:
+    """
+    GH issue #342: unresolved "human"-category retro/impediment findings
+    (add_retro_action/add_impediment's category param) as of the LAST
+    completed sprint - not tied to any one story, unlike _collect_blockers
+    above, so a general finding (e.g. "we need a decision on which auth
+    provider to standardize on") still surfaces here even when nothing in
+    product_backlog/sprint_backlog itself is BLOCKED. Returns the list of
+    general_blockers dicts that are still unresolved.
+    """
+    sprints = manifest.get("sprints", [])
+    if not sprints:
+        return []
+    return [e for e in (sprints[-1].get("general_blockers") or []) if not e.get("resolved")]
+
+
+def _render_blockers_section(manifest: dict) -> list:
+    blockers = _collect_blockers(manifest)
+    general_blockers = _collect_general_blockers(manifest)
+    lines = ["## Blockers", ""]
+    if not blockers and not general_blockers:
+        lines.append("No stories are blocked as of the last completed sprint.")
+        lines.append("")
+        return lines
+    for story_id, title, blocked in blockers:
+        lines.append(
+            f"- **{story_id}** ({title}) - {blocked.get('category', 'unknown')}: "
+            f"{blocked.get('question', '(no question recorded)')} "
+            f"(raised by {blocked.get('raised_by', 'unknown')})"
+        )
+    for entry in general_blockers:
+        lines.append(
+            f"- **(not tied to a specific story)** - human, {entry.get('priority', 'normal')} priority: "
+            f"{entry.get('description', '(no description recorded)')} "
+            f"(raised by {entry.get('raised_by', 'unknown')})"
+        )
+    lines.append("")
+    return lines
+
+
 def _render_report(manifest: dict, judgment: dict) -> str:
     lines = [
         "# Team Performance Evaluation Report",
@@ -336,6 +574,10 @@ def _render_report(manifest: dict, judgment: dict) -> str:
         f"- Started: {manifest.get('started_at')}",
         f"- Finished: {manifest.get('finished_at')}",
         "",
+    ]
+    lines += _render_stopped_early_callout(manifest)
+    lines += _render_blockers_section(manifest)
+    lines += [
         "## Methodology note",
         "This run used a scripted, unattended driver (`run_eval.py`) that pre-approves "
         "every sprint goal/backlog and auto-merges any PR that opens against the eval "

@@ -14,6 +14,10 @@ on:
         description: "Number of sprints to run"
         required: false
         default: "5"
+      sprint_token_budget:
+        description: "Per-sprint token budget override (blank = use the eval-approval environment's EVAL_SPRINT_TOKEN_BUDGET variable, or 5000000)"
+        required: false
+        default: ""
 
 jobs:
   evaluate:
@@ -105,13 +109,22 @@ jobs:
             # "10.0") default never kicks in and float("") crashes the run.
             echo "PROCESS_OVERHEAD_PERCENTAGE=20"
             # Mirrors .env.example's "Eval Harness Budget Configuration" -
-            # override via repo/environment Settings -> Variables if these
-            # ever need recalibrating without a code change. GH issue #81:
-            # 2,600,000 was too tight for later, more complex sprints (a real
-            # run hit ~2.8M and truncated sprints 4-5) - bumped with headroom.
-            # 0.1.0-run25 then hit 4,072,826 in sprint 1 alone (see
-            # ISSUE-0045) - bumped again with real headroom above that.
-            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ vars.EVAL_SPRINT_TOKEN_BUDGET || '5000000' }}"
+            # override via repo/environment Settings -> Variables (every
+            # run) or this workflow's own sprint_token_budget dispatch
+            # input (one run, no setting to remember to revert) if these
+            # ever need recalibrating without a code change - the input
+            # wins when set, since a one-off manual run asking for a
+            # specific budget is clearly more deliberate than whatever the
+            # standing default happens to be. A tag-push trigger has no
+            # dispatch inputs at all (github.event.inputs is empty), so it
+            # always falls through to the repo/environment variable or the
+            # hardcoded default below, same as before this input existed.
+            # GH issue #81: 2,600,000 was too tight for later, more complex
+            # sprints (a real run hit ~2.8M and truncated sprints 4-5) -
+            # bumped with headroom. 0.1.0-run25 then hit 4,072,826 in sprint
+            # 1 alone (see ISSUE-0045) - bumped again with real headroom
+            # above that.
+            echo "EVAL_SPRINT_TOKEN_BUDGET=${{ github.event.inputs.sprint_token_budget || vars.EVAL_SPRINT_TOKEN_BUDGET || '5000000' }}"
             echo "EVAL_USD_BUDGET_PER_SPRINT=${{ vars.EVAL_USD_BUDGET_PER_SPRINT || '3.0' }}"
             # ISSUE-0045: this fixed scenario's entire product backlog is 6
             # stories - the default READY_BACKLOG_SPRINTS_TARGET=2 (see
@@ -130,16 +143,23 @@ jobs:
 
       - name: Start dependency services
         run: |
-          docker compose --env-file .env.eval up -d db litellm
+          docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval up -d db litellm
           until curl -sf http://localhost:4000/health/readiness > /dev/null; do
             echo "Waiting for litellm..."
             sleep 2
           done
 
-      - name: Run evaluation sprints and analysis
+      - name: Run evaluation sprints
         run: |
-          docker compose --env-file .env.eval run --rm agent bash -c '
-            set -e
+          # GH issue #337: docker-compose.eval.yml swaps net-proxy's egress
+          # allowlist to also permit pypi.org/files.pythonhosted.org/
+          # registry.npmjs.org - the real generated product's own
+          # check_build() (pip install/npm install) has no route to a
+          # package registry at all under the default, narrower allowlist
+          # (GH issue #287), which a real eval run hit as an unfixable
+          # ModuleNotFoundError loop. Real end-user projects never pass
+          # this file, so they keep the default allowlist unconditionally.
+          docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval run --rm agent \
             python3 -m agents.scrum_team.scripts.run_eval \
               --sprints "${{ github.event.inputs.sprints || 5 }}" \
               --run-id "${{ steps.run_id.outputs.run_id }}" \
@@ -147,13 +167,30 @@ jobs:
               --local-path /app/eval-output/clone \
               --report-path /app/eval-output/manifest.json \
               --transcript-path /app/eval-output/transcript.md
+
+      # GH #414: a SEPARATE step, not chained with `&&`/`set -e` after the
+      # sprints step above - a real eval run (0.1.0-run53) was manually
+      # cancelled mid-sprint, and because analysis used to run as the
+      # second half of the SAME bash step, it never got a chance to run at
+      # all, leaving no report.md even though a usable manifest.json may
+      # still exist. `if: always()` (matching the tag/upload/teardown steps
+      # below, which already use it) means this step still runs - and still
+      # produces whatever report it can - regardless of whether the sprints
+      # step above succeeded, failed, or was cancelled.
+      - name: Run evaluation analysis
+        if: always()
+        run: |
+          if [ ! -s eval-output/manifest.json ]; then
+            echo "No manifest.json produced (sprints step crashed or was cancelled before writing one) - nothing to analyze." >&2
+            exit 0
+          fi
+          docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval run --rm agent \
             python3 -m agents.scrum_team.scripts.run_eval_analysis \
               --manifest /app/eval-output/manifest.json \
               --repo-path /app/eval-output/clone \
               --report-path /app/eval-output/report.md \
               --run-id "${{ steps.run_id.outputs.run_id }}" \
               --base-branch "${{ steps.run_id.outputs.branch }}"
-          '
 
       - name: Tag commit with run id
         if: always()
@@ -175,4 +212,4 @@ jobs:
 
       - name: Stop dependency services
         if: always()
-        run: docker compose --env-file .env.eval down -v
+        run: docker compose -f docker-compose.yaml -f docker-compose.eval.yml --env-file .env.eval down -v

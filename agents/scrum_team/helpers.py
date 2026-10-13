@@ -2,6 +2,7 @@
 from __future__ import annotations
 import logging
 import os
+import re
 import sys
 
 logger = logging.getLogger(__name__)
@@ -11,33 +12,128 @@ def get_process_overhead_percentage() -> float:
     return float(os.getenv("PROCESS_OVERHEAD_PERCENTAGE", "10.0"))
 
 
+def ritual_token_budget(token_limit: int) -> float:
+    """
+    GH #395: ScrumMaster's own budget for ritual work - facilitation, retro,
+    KPI calculation, authoring the sprint report - sized as
+    get_process_overhead_percentage() percent of the sprint's main token
+    budget. Checked (agent.py's check_cost_budget_callback) against
+    ScrumMaster's own token_usage.agents entry, never against the shared
+    total DevTeam/QA/Architect/ProductOwner spend down - see
+    main_budget_token_usage below for the other half of that separation.
+    Previously PROCESS_OVERHEAD_PERCENTAGE was purely cosmetic (only ever
+    printed in the sprint report/cost breakdown, never actually enforced) -
+    a real eval run showed why that wasn't enough: a verbose main sprint
+    could exhaust the shared budget before ScrumMaster ever got a turn to
+    run the retrospective or KPIs at all, and create_sprint_report
+    "repeatedly fails" across runs as a direct result.
+    """
+    if token_limit <= 0:
+        return 0.0
+    return token_limit * (get_process_overhead_percentage() / 100.0)
+
+
+def ritual_hard_ceiling(token_limit: int) -> float:
+    """
+    GH #407: an absolute backstop on ScrumMaster's own spend while
+    sprint_report_step_active (check_cost_budget_callback's "else" branch,
+    agent.py) - that window is deliberately uncapped relative to
+    ritual_token_budget (a sprint must never fail to close purely for lack
+    of budget), but "uncapped" was never meant to mean "literally
+    unbounded". A real eval run (0.1.0-run53) hit an unrelated code-level
+    deadlock (create_sprint_report's own steering-finding gate demanding a
+    propose_steering_change call that _restrict_to_sprint_report_step was
+    simultaneously refusing - see GH #407's other fix) that kept this window
+    open indefinitely; ScrumMaster's own usage ran to 11.17M tokens against
+    a 5,000,000 sprint budget with nothing ever stopping it, because nothing
+    in this window had any ceiling at all.
+
+    Sized as RITUAL_HARD_CEILING_PERCENT percent of the sprint's main token
+    budget (default 50%, i.e. half again on top of the main 100% ceiling
+    this window is already exempt from) - deliberately generous, since a
+    genuinely-working close-out sequence (retro already logged, KPIs,
+    propose_steering_change, the report itself) should essentially never
+    approach it. This is a backstop for the next unknown way this window
+    could get stuck, not a tuning knob meant to bind in normal operation.
+    """
+    if token_limit <= 0:
+        return 0.0
+    pct = float(os.getenv("RITUAL_HARD_CEILING_PERCENT", "50.0"))
+    return token_limit * (pct / 100.0)
+
+
+def main_budget_token_usage(state) -> int:
+    """
+    GH #395: the token usage the main per-sprint ceiling (DevTeam/QA/
+    Architect/ProductOwner) should actually be checked against -
+    state.token_usage.total MINUS ScrumMaster's own usage. ScrumMaster's
+    ritual work now draws on its own separate budget (ritual_token_budget
+    above); without this exclusion, its own spend would still silently
+    erode the shared ceiling everyone else is measured against, defeating
+    the entire point of giving it a separate pool.
+    """
+    total = state.token_usage.total
+    sm_usage = (state.token_usage.agents or {}).get("ScrumMaster", 0)
+    return max(0, total - sm_usage)
+
+
+def _retro_and_kpi_freshness(state) -> tuple:
+    """Shared by closeout_remaining_work_fraction and sprint_report_step_active below - whether a fresh add_retro_action/add_impediment and a fresh calculate_kpis/update_sprint_report have each happened since the last sprint report."""
+    process_signals = len(state.retro_actions or []) + len(state.impediment_log or [])
+    retro_fresh = process_signals > state.retro_baseline
+    kpi_fresh = state.kpi_update_count > state.kpi_baseline
+    return retro_fresh, kpi_fresh
+
+
+def sprint_report_step_active(state) -> bool:
+    """
+    GH #395: True once ScrumMaster has freshly logged this sprint's retro
+    action/impediment AND a fresh KPI update, but create_sprint_report
+    hasn't succeeded yet (sprint_report_pending_release not yet set) - i.e.
+    the one mechanical step left this sprint is create_sprint_report
+    itself. This window is deliberately both uncapped (ritual_token_budget
+    above doesn't apply while this is True - see check_cost_budget_callback)
+    and tool-gated (agent.py's before_tool_callback refuses anything that
+    isn't the report call sequence while this is True) - uncapping it alone
+    would just open a different way to never actually close the sprint.
+    """
+    retro_fresh, kpi_fresh = _retro_and_kpi_freshness(state)
+    return retro_fresh and kpi_fresh and not state.sprint_report_pending_release
+
+
 def closeout_grace_percent(state=None) -> float:
     """
     How much EXTRA token/USD budget (as a percentage of the main sprint
-    ceiling) ScrumMaster/ProductOwner/QualityGuardian/ScrumOrchestrator may
-    still spend, combined, after the main budget is exhausted - specifically
-    to finish the SPRINT CLOSE SEQUENCE (retro -> create_sprint_report ->
-    KPIs -> create_release_pr) for real, rather than skipping it entirely.
-    A real eval run produced no sprint report and no release PR at all on
-    exhaustion, since every subsequent model call for every agent was
-    replaced with a canned halt response the instant the main budget
-    tripped - see check_cost_budget_callback/SPRINT_CLOSEOUT_GRACE_ROLES,
-    agents/scrum_team/agent.py. DevTeam/QA/Architect get none of this grace -
-    their work is frozen at exhaustion; only closing the sprint out still
-    needs turns. Configurable via SPRINT_CLOSEOUT_GRACE_PERCENT; default 20.0
-    (20%, raised from an original 5.0 - see ISSUE-0046). 5% (a real run's
-    main sprint ceiling was 5,000,000, so 250,000 tokens of grace) wasn't
-    enough headroom in practice: the close-out sequence is several sequential
-    agent hops (a non-grace role's redirect to ProductOwner,
-    ProductOwner -> Scrum Master for retro, Scrum Master -> QualityGuardian
-    for KPIs, QualityGuardian -> ProductOwner for create_sprint_report/
-    create_release_pr), each of which costs real tokens purely to reason
+    ceiling) ProductOwner/ScrumOrchestrator may still spend, combined, after
+    the main budget is exhausted - specifically to finish the SPRINT CLOSE
+    SEQUENCE's remaining step (create_release_pr) for real, rather than
+    skipping it entirely. A real eval run produced no sprint report and no
+    release PR at all on exhaustion, since every subsequent model call for
+    every agent was replaced with a canned halt response the instant the
+    main budget tripped - see check_cost_budget_callback/
+    SPRINT_CLOSEOUT_GRACE_ROLES, agents/scrum_team/agent.py. DevTeam/QA/
+    Architect get none of this grace - their work is frozen at exhaustion;
+    only closing the sprint out still needs turns. Configurable via
+    SPRINT_CLOSEOUT_GRACE_PERCENT; default 20.0 (20%, raised from an
+    original 5.0 - see ISSUE-0046). 5% (a real run's main sprint ceiling was
+    5,000,000, so 250,000 tokens of grace) wasn't enough headroom in
+    practice: the close-out sequence used to be several sequential agent
+    hops (a non-grace role's redirect to ProductOwner, ProductOwner ->
+    Scrum Master for retro, Scrum Master -> QualityGuardian for KPIs,
+    QualityGuardian -> ProductOwner for create_sprint_report/
+    create_release_pr), each of which cost real tokens purely to reason
     about the next hand-off - a real run burned its entire 5% grace on two
     wrong guesses (an invalid stage transition, a stray transfer to
     Architect) before ever reaching Scrum Master's retro turn, then froze
     with nowhere left to redirect. Each agent's own LiteLLM virtual-key
     budget is still the ultimate financial backstop underneath this either
     way.
+
+    GH #395 update: ScrumMaster is no longer in SPRINT_CLOSEOUT_GRACE_ROLES
+    at all - its retro/KPI/sprint-report work now draws on its own separate,
+    uncapped-but-gated ritual budget (ritual_token_budget,
+    sprint_report_step_active) instead of sharing this one. What's left for
+    this grace to cover is just ProductOwner's create_release_pr call.
 
     GH issue #220: the flat percentage above must be sized for the worst
     case (the whole close-out sequence still outstanding) every time, even
@@ -64,7 +160,10 @@ def closeout_remaining_work_fraction(state) -> float:
     create_sprint_report -> create_release_pr) is still outstanding this
     sprint, as a fraction in [0.0, 1.0], purely from existing state signals
     - see GH issue #220. Used by closeout_grace_percent to scale its ceiling
-    down as less work remains, instead of a flat percentage.
+    down as less work remains, instead of a flat percentage. GH #395: retro
+    and KPIs are now gated by ScrumMaster's own separate ritual budget
+    rather than this one (see sprint_report_step_active), but still used
+    here as a progress signal for how much of the overall close-out is done.
 
     Mirrors the exact "fresh since baseline" checks create_sprint_report
     (tools/budget.py) and calculate_kpis (tools/quality.py) already enforce,
@@ -79,9 +178,7 @@ def closeout_remaining_work_fraction(state) -> float:
     configured grace - identical to closeout_grace_percent()'s behavior
     before this scaling existed.
     """
-    process_signals = len(state.retro_actions or []) + len(state.impediment_log or [])
-    retro_fresh = process_signals > state.retro_baseline
-    kpi_fresh = state.kpi_update_count > state.kpi_baseline
+    retro_fresh, kpi_fresh = _retro_and_kpi_freshness(state)
 
     TOTAL_STEPS = 4  # retro, KPIs, sprint report, release PR
     if state.sprint_report_pending_release:
@@ -106,26 +203,31 @@ NON_GRACE_FLOOR_ROLES = frozenset({"DevTeam", "QA", "Architect"})
 
 
 # The roles the SPRINT CLOSE SEQUENCE actually needs a real turn from once
-# the main budget trips (see closeout_grace_percent above) - ScrumMaster
-# (retro), ProductOwner (create_sprint_report/create_release_pr),
-# QualityGuardian (calculate_kpis/update_sprint_report), and
-# ScrumOrchestrator itself: run_eval.py's continuation nudges
-# (_run_one_sprint's _CONTINUE_NUDGE) are sent as a fresh top-level message
-# each time, which re-enters through the root agent - if ScrumOrchestrator
-# were hard-halted too, a nudge could never even route to ScrumMaster in the
-# first place, silently reproducing the exact failure this grace exists to
-# fix. ScrumOrchestrator has no code-writing tools, so including it adds
-# negligible cost risk.
-SPRINT_CLOSEOUT_GRACE_ROLES = frozenset({"ScrumMaster", "ProductOwner", "QualityGuardian", "ScrumOrchestrator"})
+# the main budget trips (see closeout_grace_percent above) - ProductOwner
+# (create_release_pr) and ScrumOrchestrator itself: run_eval.py's
+# continuation nudges (_run_one_sprint's _CONTINUE_NUDGE) are sent as a
+# fresh top-level message each time, which re-enters through the root agent
+# - if ScrumOrchestrator were hard-halted too, a nudge could never even
+# route to anyone in the first place, silently reproducing the exact
+# failure this grace exists to fix. ScrumOrchestrator has no code-writing
+# tools, so including it adds negligible cost risk.
+#
+# GH #395: ScrumMaster is deliberately NOT a member here anymore - its own
+# retro/KPI/sprint-report work now draws on a separate ritual budget
+# (ritual_token_budget) that is entirely independent of whether the main
+# budget has tripped, rather than sharing this grace allowance with
+# whatever's left of it.
+SPRINT_CLOSEOUT_GRACE_ROLES = frozenset({"ProductOwner", "ScrumOrchestrator"})
 
 
 # --- Budget env var naming (GH issue #81) ---
 # TOTAL_USD_BUDGET replaces SPRINT_USD_BUDGET as the canonical name for the
 # whole-engagement, never-reset-per-sprint USD ceiling - the old name looked
 # like a per-sprint value (same "SPRINT_" prefix as the genuinely-per-sprint
-# SPRINT_TOKEN_BUDGET, which *does* reset every sprint via reset_sprint_budget),
-# but actually behaves as a cumulative cap for the entire engagement (see
-# BUDGET.md, reset_sprint_budget's docstring in tools/budget.py). Read via
+# SPRINT_TOKEN_BUDGET, which *does* reset every sprint via start_sprint's own
+# mechanical reset, GH #413), but actually behaves as a cumulative cap for
+# the entire engagement (see BUDGET.md, sprint_budget_reset_state_delta's
+# docstring in tools/budget.py). Read via
 # get_env_with_deprecated_fallback so an existing .env using the old name
 # keeps working exactly as before - a silent drop here would fall back to
 # this module's own hardcoded default, which could be a *higher* ceiling
@@ -335,6 +437,94 @@ def is_low_quality_retro_text(text) -> bool:
     return len(cleaned) < _MIN_RETRO_FIELD_LEN or cleaned in _GENERIC_RETRO_PHRASES
 
 
+# GH issue #354: a real eval run showed the model categorizing every single
+# retro finding as "technical" across 5 sprints straight - including ones
+# that, by #342's own prompt guidance, are textbook role-behavior/process-
+# discipline gaps ("Maintain rigorous story sequencing...", "Keep feature
+# branches synchronized..."). Prompt-only guidance on what "steering" means
+# wasn't enough to get it actually used - this is a non-blocking mechanical
+# nudge, not a new gate: a "technical" finding whose text matches these
+# signals still succeeds, just with a warning suggesting category="steering"
+# instead. False positives are fine (a real code task happening to mention
+# "sequence" must not be refused); false negatives just mean no nudge fires.
+_ROLE_BEHAVIOR_SIGNAL_PHRASES = (
+    "discipline", "synchronized", "in strict sequence", "in sequence",
+    "sequencing", "rigorous", "consistently", "going forward", "recurring",
+    "repeatedly", "every sprint", "each sprint", "adhere to", "stay in sync",
+    # GH issue #381: a real run (0.1.0-run47) filed 4 of 5 retro findings as
+    # "technical" despite reading as team-process reminders, not one-time
+    # code tasks - none of the phrases above happened to appear in any of
+    # them (e.g. "Ensure automated tests are fully stable before starting
+    # sprint test execution phases", "Recreate clean PRs promptly when merge
+    # conflicts arise to avoid stale branch blocking", "Ensure all stories in
+    # sprint backlog reach accepted stage before sprint finalization").
+    # These generalize the imperative "do X before/promptly during Y"
+    # process-gating shape those share, rather than overfitting to their
+    # exact wording.
+    "before starting", "before story implementation", "finalization",
+    "promptly", "stale branch",
+)
+_ROLE_NAMES_FOR_BEHAVIOR_SIGNAL = (
+    "devteam", "dev team", "architect", "qa", "scrummaster", "scrum master",
+    "productowner", "product owner",
+)
+
+
+def looks_like_role_behavior_finding(text) -> bool:
+    """Heuristic (GH issue #354): does `text` read like a finding about how
+    a role/the team behaves or follows process, rather than a concrete
+    code/process task - see the module comment above this for why."""
+    if not isinstance(text, str):
+        return False
+    lowered = text.lower()
+    if any(phrase in lowered for phrase in _ROLE_BEHAVIOR_SIGNAL_PHRASES):
+        return True
+    return any(role in lowered for role in _ROLE_NAMES_FOR_BEHAVIOR_SIGNAL)
+
+
+_MIN_SHARED_KEYWORDS_FOR_RECURRENCE = 2
+_RETRO_STOPWORDS = {
+    "that", "this", "with", "from", "have", "been", "were", "will", "into",
+    "before", "after", "during", "should", "would", "could", "about", "their",
+    "there", "these", "those", "ensure", "ensuring", "maintain", "maintaining",
+}
+
+
+_NON_ALNUM_RE_FOR_RETRO = re.compile(r"[^a-z0-9]+")
+
+
+def _retro_keywords(text: str) -> set:
+    words = _NON_ALNUM_RE_FOR_RETRO.sub(" ", (text or "").lower()).split()
+    return {w for w in words if len(w) >= 5 and w not in _RETRO_STOPWORDS}
+
+
+def recurring_technical_finding_sprint(existing_entries, new_text: str, new_sprint_number, text_field: str) -> int | None:
+    """
+    GH issue #354 (recurrence escalation): among `existing_entries` (prior
+    add_retro_action/add_impediment entries, each a dict with a category and
+    a sprint_number), returns the sprint_number of the most recent
+    STRICTLY-EARLIER-sprint "technical" entry whose text shares at least
+    `_MIN_SHARED_KEYWORDS_FOR_RECURRENCE` significant keywords with
+    `new_text` - i.e. the same kind of finding logged again without ever
+    being escalated to a steering change. None if nothing recurs.
+    """
+    new_keywords = _retro_keywords(new_text)
+    if len(new_keywords) < _MIN_SHARED_KEYWORDS_FOR_RECURRENCE:
+        return None
+    best_sprint = None
+    for entry in existing_entries or []:
+        if entry.get("category") != "technical":
+            continue
+        entry_sprint = entry.get("sprint_number")
+        if entry_sprint is None or entry_sprint >= new_sprint_number:
+            continue
+        existing_keywords = _retro_keywords(entry.get(text_field, ""))
+        if len(new_keywords & existing_keywords) >= _MIN_SHARED_KEYWORDS_FOR_RECURRENCE:
+            if best_sprint is None or entry_sprint > best_sprint:
+                best_sprint = entry_sprint
+    return best_sprint
+
+
 # --- BLOCKED stories (agents stuck on an unresolved question or loop) ---
 # raise_story_blocker/resolve_story_blocker (agents/scrum_team/tools/
 # requirements.py) mark a story BLOCKED - orthogonal to STORY_STAGES, since
@@ -501,10 +691,23 @@ def new_sprint_item_blocked(state: dict) -> str | None:
     """
     Returns a rejection message if a previous sprint's close sequence was
     left incomplete, else None. "Incomplete" here means
-    `sprint_report_pending_release` is set (create_sprint_report succeeded -
-    so the retro/report step did happen, see retro_baseline - but
-    create_release_pr never followed) and that prior sprint still has
-    planned stories short of Accepted. See ISSUE-0010.
+    `sprint_report_pending_release` is still set - create_sprint_report
+    succeeded (so the retro/report step did happen, see retro_baseline) but
+    create_release_pr never followed, regardless of whether that prior
+    sprint's stories all reached Accepted. See ISSUE-0010.
+
+    GH issue #401: this used to return None the moment every planned story
+    reached Accepted, even with sprint_report_pending_release still set -
+    meaning a sprint that finished *cleanly* (every story Accepted, exactly
+    the common/success case) let the next one start without its release PR
+    ever having been opened. A real eval run (0.1.0-run52) showed exactly
+    this: a sprint's release PR only ever got opened retroactively, inside
+    the NEXT sprint's own window (forced by start_sprint's own
+    release_pr_still_open check reacting to the prompt's own close-sequence
+    guidance) - and for the last sprint of a run, with no next sprint to
+    force it, no release PR ever went out at all despite every story being
+    genuinely done. sprint_report_pending_release alone - not "and stories
+    are unfinished" - is the actual signal this gate exists to catch.
 
     Only meant to gate genuinely *new* sprint_backlog items - an ongoing
     sprint planning several stories before any of them reach Accepted is
@@ -517,13 +720,98 @@ def new_sprint_item_blocked(state: dict) -> str | None:
         x for x in (state.get("sprint_backlog") or [])
         if x.get("type", "User Story") != "Epic" and "Accepted" not in (x.get("stages_completed") or [])
     ]
-    if not unfinished:
-        return None
-    unfinished_ids = [x.get("id") or x.get("title") for x in unfinished]
+    if unfinished:
+        unfinished_ids = [x.get("id") or x.get("title") for x in unfinished]
+        return (
+            "Cannot plan new sprint work - the previous sprint's retrospective/report was completed "
+            "but create_release_pr was never called (or didn't succeed) for it, and it still has "
+            f"stories short of Accepted ({unfinished_ids}). Finish the previous sprint's release "
+            "(create_release_pr) before starting new work - see ORCHESTRATOR_PROMPT SPRINT CLOSE "
+            "SEQUENCE."
+        )
     return (
-        "Cannot plan new sprint work - the previous sprint's retrospective/report was completed "
-        "but create_release_pr was never called (or didn't succeed) for it, and it still has "
-        f"stories short of Accepted ({unfinished_ids}). Finish the previous sprint's release "
-        "(create_release_pr) before starting new work - see ORCHESTRATOR_PROMPT SPRINT CLOSE "
-        "SEQUENCE."
+        "Cannot plan new sprint work - the previous sprint's retrospective/report was completed, "
+        "and every one of its planned stories reached Accepted, but create_release_pr was never "
+        "called (or didn't succeed) for it. A finished sprint is not actually closed until its "
+        "release PR is opened - call create_release_pr before starting new work - see "
+        "ORCHESTRATOR_PROMPT SPRINT CLOSE SEQUENCE."
     )
+
+
+# --- Sprint-phase awareness (GH issue #403) ---
+# The ritual the team is meant to follow - conceptual work (groom the
+# backlog to Ready) -> plan & start the sprint -> development -> review,
+# retro & release - was previously enforced only REACTIVELY: a tool call
+# made out of phase gets mechanically rejected after the fact
+# (new_sprint_item_blocked/sprint_backlog_pr_missing/ready_backlog_shortfall
+# above), but nothing proactively told the team which phase it's actually
+# in before that happens. A real eval run (0.1.0-run52) showed DevTeam try
+# to jump straight to implementation, get rejected, and only then have
+# Product Owner backfill the planning work that should have come first.
+#
+# current_sprint_phase below derives one of SPRINT_PHASES purely from
+# existing state signals (nothing new to track) so it can be surfaced
+# proactively - as a one-line system-context nudge every role sees every
+# turn (agent.py's phase_awareness_injection_callback), and as a console-
+# log prefix a human watching a live run can see at a glance. Nudging
+# only: nothing here may ever refuse a tool call - the existing mechanical
+# gates above remain the only real enforcement.
+SPRINT_PHASES = (
+    "Conceptual Work",
+    "Plan & Start Sprint",
+    "Development",
+    "Review, Retro & Release",
+)
+
+SPRINT_PHASE_GUIDANCE = {
+    "Conceptual Work": (
+        "The Ready backlog isn't deep enough yet - groom it (upsert_prd/upsert_epic/upsert_story, "
+        "then advance_story_stage(..., 'Ready')) until it is. Starting a sprint, publishing a Sprint "
+        "Backlog PR, or implementation work don't belong in this phase yet."
+    ),
+    "Plan & Start Sprint": (
+        "The Ready backlog is deep enough - Scrum Master calls start_sprint(goal) if that hasn't "
+        "happened yet this sprint, then Product Owner publishes it via create_sprint_backlog_pr(). "
+        "More backlog grooming belongs here only for a specific, stated reason, not as a default."
+    ),
+    "Development": (
+        "This sprint's Sprint Backlog is published - implement/review/test/accept its stories. New "
+        "backlog grooming or re-planning belongs in Conceptual Work/Plan & Start Sprint, not here."
+    ),
+    "Review, Retro & Release": (
+        "This sprint's planned work is done (or its budget is spent) - run the retrospective, KPIs, "
+        "sprint report, and release PR (Scrum Master's own SPRINT CLOSE SEQUENCE). Starting new "
+        "implementation work does not belong here."
+    ),
+}
+
+
+def current_sprint_phase(state: dict) -> str:
+    """
+    One of SPRINT_PHASES, derived purely from existing state - see the
+    module comment above for why this exists and what it's for (nudging
+    only, never a gate).
+    """
+    if sprint_backlog_pr_missing(state) is None:
+        # Sprint started AND this sprint's own Sprint Backlog PR already
+        # published - either doing the work, or already wrapping it up.
+        if state.get("sprint_report_pending_release"):
+            return "Review, Retro & Release"
+        sprint_stories = [
+            x for x in (state.get("sprint_backlog") or [])
+            if x.get("type", "User Story") != "Epic"
+        ]
+        all_accepted = bool(sprint_stories) and all(
+            "Accepted" in (x.get("stages_completed") or []) for x in sprint_stories
+        )
+        budgets = state.get("budgets") or {}
+        usage = state.get("token_usage") or {}
+        token_limit = budgets.get("total") or 0
+        token_usage = usage.get("total") or 0
+        budget_exhausted = token_limit > 0 and token_usage >= token_limit
+        if all_accepted or budget_exhausted:
+            return "Review, Retro & Release"
+        return "Development"
+    if ready_backlog_shortfall(state.get("product_backlog") or [], state.get("backlog_scope_complete", False)) <= 0:
+        return "Plan & Start Sprint"
+    return "Conceptual Work"

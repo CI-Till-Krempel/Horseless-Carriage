@@ -405,6 +405,44 @@ class TestLlmConfigurationSection:
         assert "401" in out
         assert code == 0  # a failed live test is a warning, not a hard failure
 
+    def test_warns_when_a_configured_alias_resolves_to_zero_cost(self, valid_repo, mock_proxy, capsys):
+        """
+        Acceptance Criteria (GH issue #298): a chat completion succeeding
+        (LLM connectivity: OK) says nothing about whether LiteLLM's bundled
+        pricing table actually has a price for that model id - doctor.py
+        must check that separately and warn if it doesn't.
+        """
+        base_url, behavior = mock_proxy
+        behavior["model_info"] = [
+            {
+                "model_name": "scrum-po",
+                "litellm_params": {"model": "gemini/gemini-1.5-pro"},
+                "model_info": {"input_cost_per_token": 0, "output_cost_per_token": 0},
+            }
+        ]
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace('LITELLM_MASTER_KEY="testkey"\n', f'LITELLM_MASTER_KEY="{behavior["valid_key"]}"\n'))
+        code = doctor.run(valid_repo, proxy_base_url=base_url)
+        out = capsys.readouterr().out
+        assert "resolves to $0 cost per token" in out
+        assert "gemini/gemini-1.5-pro" in out
+        assert code == 0  # a pricing gap is a warning, not a hard failure
+
+    def test_no_pricing_warning_when_every_alias_is_priced(self, valid_repo, mock_proxy, capsys):
+        base_url, behavior = mock_proxy
+        behavior["model_info"] = [
+            {
+                "model_name": "scrum-po",
+                "litellm_params": {"model": "gemini/gemini-flash-lite-latest"},
+                "model_info": {"input_cost_per_token": 0.0000001, "output_cost_per_token": 0.0000004},
+            }
+        ]
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace('LITELLM_MASTER_KEY="testkey"\n', f'LITELLM_MASTER_KEY="{behavior["valid_key"]}"\n'))
+        doctor.run(valid_repo, proxy_base_url=base_url)
+        out = capsys.readouterr().out
+        assert "resolves to $0 cost per token" not in out
+
 
 class TestStateRepoStructureChecks:
     """Acceptance Criteria (GH issue #60): doctor.py now runs the cheap,
@@ -455,7 +493,7 @@ class TestStateRepoStructureChecks:
         doctor.check(valid_repo)
         for role in ROLE_NAMES:
             assert (state_repo / f"{role}-identity.md").is_file()
-        assert "Created default identity.md in the state repository for 7 role(s)" in capsys.readouterr().out
+        assert "Created default identity.md in the state repository for 6 role(s)" in capsys.readouterr().out
 
     def test_existing_identity_file_survives_a_doctor_run(self, valid_repo, monkeypatch, capsys):
         _patch_proxy_unreachable(monkeypatch)
@@ -467,7 +505,7 @@ class TestStateRepoStructureChecks:
 
         assert (state_repo / "ProductOwner-identity.md").read_text(encoding="utf-8") == custom
         note_line = next(line for line in capsys.readouterr().out.splitlines() if "Created default identity.md" in line)
-        assert "6 role(s)" in note_line
+        assert "5 role(s)" in note_line
         assert "ProductOwner" not in note_line
 
     def test_already_migrated_repo_produces_no_note(self, valid_repo, monkeypatch, capsys):

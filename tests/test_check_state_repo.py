@@ -115,8 +115,8 @@ class TestRoleIdentityDefaultsMigration:
             assert identity_path.is_file(), f"{role}-identity.md was not created"
             assert identity_path.read_text(encoding="utf-8").strip()
         out = capsys.readouterr().out
-        assert "Created default identity.md for 7 role(s)" in out
-        assert "ScrumOrchestrator" in out and "QualityGuardian" in out
+        assert "Created default identity.md for 6 role(s)" in out
+        assert "ScrumOrchestrator" in out and "DevTeam" in out
 
     def test_created_content_matches_the_role_default(self, repo_with_state):
         from agents.scrum_team.prompts import load_role_identity_default
@@ -341,3 +341,77 @@ class TestInteractiveStateRepair:
 
         assert code == 1
         assert (state_repo / ".hc" / "state.json").exists()
+
+    def test_rebuild_from_specs_option_prefers_docker_when_available(self, repo_with_state, monkeypatch, capsys):
+        """
+        ISSUE-0052: option 4 is the new "rebuild state.json from specs/ on
+        disk" last resort, invoking agents/scrum_team/scripts/
+        rebuild_state_from_specs.py the same way state.json validation
+        itself already prefers Docker (so pydantic/the agents package are
+        guaranteed present) - see _rebuild_state_from_specs.
+        """
+        repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{not valid json")
+        (repo_root / "docker-compose.yaml").write_text("services: {}\n")
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if any("validate_state.py" in str(part) for part in cmd):
+                return subprocess.CompletedProcess(cmd, check_state_repo.VALIDATE_STATE_CORRUPTION_EXIT_CODE)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(check_state_repo.shutil, "which", lambda cmd: f"/usr/bin/{cmd}")
+        monkeypatch.setattr(check_state_repo.subprocess, "run", fake_run)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "4")
+
+        assert code == 0
+        assert calls[-1][:3] == ["docker", "compose", "run"]
+        assert "rebuild_state_from_specs.py" in " ".join(calls[-1])
+        assert "/app/state_repo" in calls[-1]
+
+    def test_rebuild_from_specs_option_falls_back_to_local_python3(self, repo_with_state, monkeypatch, capsys):
+        repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{not valid json")
+        # No docker-compose.yaml in repo_root -> validation itself already
+        # falls back to local python3 (see test_validation_success_via_local_python3);
+        # this asserts the rebuild option does the same.
+        monkeypatch.setattr(check_state_repo.shutil, "which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "python3" else None)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if any("validate_state.py" in str(part) for part in cmd):
+                return subprocess.CompletedProcess(cmd, check_state_repo.VALIDATE_STATE_CORRUPTION_EXIT_CODE)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(check_state_repo.subprocess, "run", fake_run)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "4")
+
+        assert code == 0
+        assert calls[-1][0] == "python3"
+        assert "rebuild_state_from_specs.py" in calls[-1][1]
+        assert calls[-1][2] == str(state_repo)
+
+    def test_rebuild_from_specs_option_reports_script_failure(self, repo_with_state, monkeypatch, capsys):
+        repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir()
+        (state_repo / ".hc" / "state.json").write_text("{not valid json")
+        monkeypatch.setattr(check_state_repo.shutil, "which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "python3" else None)
+
+        def fake_run(cmd, **kwargs):
+            if any("validate_state.py" in str(part) for part in cmd):
+                return subprocess.CompletedProcess(cmd, check_state_repo.VALIDATE_STATE_CORRUPTION_EXIT_CODE)
+            return subprocess.CompletedProcess(cmd, 1)
+
+        monkeypatch.setattr(check_state_repo.subprocess, "run", fake_run)
+
+        code = check_state_repo.run(repo_root, interactive=True, prompt=lambda _msg: "4")
+
+        assert code == 1

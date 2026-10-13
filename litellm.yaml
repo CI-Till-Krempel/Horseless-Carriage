@@ -92,20 +92,6 @@ model_list:
       api_key: sk-123
       mock_response: "This is a permanent mock response for integration testing."
 
-  - model_name: scrum-quality
-    litellm_params:
-      model: gemini/gemini-1.5-pro
-      api_key: os.environ/GOOGLE_API_KEY
-      safety_settings:
-        - category: HARM_CATEGORY_HARASSMENT
-          threshold: BLOCK_NONE
-        - category: HARM_CATEGORY_HATE_SPEECH
-          threshold: BLOCK_NONE
-        - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
-          threshold: BLOCK_NONE
-        - category: HARM_CATEGORY_DANGEROUS_CONTENT
-          threshold: BLOCK_NONE
-
   # -----------------------------------------
   # Team performance evaluation harness (see RELEASE.md, run_eval.py)
   # A single cheap/fast alias every role is pointed at during an automated

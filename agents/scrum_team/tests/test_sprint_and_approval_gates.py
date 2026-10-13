@@ -32,7 +32,7 @@ from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.requirements import (
     upsert_story, set_priority, advance_story_stage,
 )
-from agents.scrum_team.tools.scrum import start_sprint, record_human_approval
+from agents.scrum_team.tools.scrum import start_sprint, record_human_approval, plan_sprint_backlog_item
 from agents.scrum_team.tools.github import (
     start_feature_branch, create_sprint_backlog_pr, create_story_spec_pr,
 )
@@ -75,6 +75,20 @@ class _FakeGhRuns:
                 branch = cmd[cmd.index("--head") + 1]
                 self.pr_states.setdefault(branch, "OPEN")
             return {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
+        # GH issue #379: create_sprint_backlog_pr now calls
+        # integrate_open_changes (scoped to specs/+.hc/, instead of the
+        # blast-radius "git add -A" it used before) before pushing - that
+        # function's "is there anything new to integrate" check reads real
+        # `git status --porcelain`/`git diff --cached --name-only` stdout,
+        # which this blanket mock otherwise always returns empty for
+        # regardless of the real files this test suite's own upsert_story/
+        # upsert_prd/update_roadmap calls genuinely wrote to disk - every
+        # test in this file does real planning writes before ever reaching
+        # create_sprint_backlog_pr, so report real content consistently.
+        if cmd and cmd[:2] == ["git", "status"]:
+            return {"status": "ok", "returncode": 0, "stdout": "M specs/ROADMAP.md\n", "stderr": ""}
+        if cmd and cmd[:4] == ["git", "diff", "--cached", "--name-only"]:
+            return {"status": "ok", "returncode": 0, "stdout": "specs/ROADMAP.md\n", "stderr": ""}
         return {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
 
 
@@ -146,6 +160,25 @@ class TestSprintBacklogPrGate(unittest.TestCase):
         self.assertEqual(publish["status"], "ok")
         self.assertTrue(publish["merged"])
         self.assertEqual(tc.state["sprint_backlog_pr_sprint"], 1)
+
+        # GH issue #378: start_feature_branch also refuses a story that was
+        # never planned into this sprint's sprint_backlog - plan it in so
+        # this test stays focused on the engagement gate below.
+        _as(tc, "DevTeam")
+        self.assertEqual(
+            plan_sprint_backlog_item(story_id, {"estimate": 5}, tool_context=tc)["status"], "ok"
+        )
+
+        # GH issue #357: the backlog PR merging isn't by itself the team's
+        # commitment to it - Architect/DevTeam/QA each need to have left
+        # real feedback on it first, so start_feature_branch still refuses
+        # until that's recorded too.
+        _as(tc, "DevTeam")
+        still_blocked = start_feature_branch(story_id, "add-login", tool_context=tc)
+        self.assertEqual(still_blocked["status"], "error")
+        self.assertIn("Architect", still_blocked["message"])
+
+        tc.state["pr_review_calls"] = {"Architect": 1, "DevTeam": 1, "QA": 1}
 
         _as(tc, "DevTeam")
         result = start_feature_branch(story_id, "add-login", tool_context=tc)

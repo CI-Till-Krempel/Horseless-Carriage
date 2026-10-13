@@ -22,7 +22,7 @@ ROLE_AVATARS = {
     "ProductOwner": ("\U0001f4cb", "Product Owner"),
     "ScrumMaster": ("\U0001f9ed", "Scrum Master"),
     "DevTeam": ("\U0001f6e0", "Dev Team"),
-    "QualityGuardian": ("\U0001f50d", "QA"),
+    "QA": ("\U0001f50d", "QA"),
     "Architect": ("\U0001f3db", "Architect"),
 }
 DEFAULT_AVATAR = ("\U0001f916", "Agent")

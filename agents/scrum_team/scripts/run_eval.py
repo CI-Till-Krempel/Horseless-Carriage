@@ -36,16 +36,16 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import requests
 
 from agents.scrum_team.scripts._eval_git_utils import get_github_token, run_git, eval_repo_slug
 from agents.scrum_team.helpers import get_env_with_deprecated_fallback
 from agents.scrum_team.tools.base import _hc_version
-from agents.scrum_team.tools.budget import sprint_budget_reset_state_delta
 
 DEFAULT_EVAL_REPO_URL = "git@github.com:CI-Till-Krempel/horseless-carriage-eval-todo-app.git"
-EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH", "QUALITY"]
+EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH"]
 SCENARIO_PATH = Path(__file__).resolve().parents[3] / "eval" / "scenario" / "PRODUCT-VISION.md"
 
 
@@ -295,7 +295,53 @@ def _merge_open_prs(local_path: Path, base_branch: str, sprint_result: dict | No
     return results
 
 
-_SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect", "QualityGuardian"]
+def _merge_open_steering_prs(local_path: Path, develop_branch: str) -> list:
+    """
+    Auto-merges open `propose_steering_change` PRs (GH #405) - these also
+    target develop_branch, but _merge_open_prs above is deliberately never
+    called with base_branch=develop_branch (see the comment at its own call
+    site), so without this they just accumulate unmerged for the whole run;
+    a real eval run (0.1.0-run52) left 5 of them open across 5 sprints, with
+    nothing in the harness or the team's own tools able to act on them.
+
+    Unlike _merge_open_prs, this is NOT a blanket develop-targeted sweep -
+    that would risk force-merging incomplete/unreviewed feature->develop
+    PRs too (the exact risk _merge_open_prs's own narrow scoping avoids).
+    Instead this filters to PRs whose head branch was created by
+    propose_steering_change itself (`steering/{role_slug}-identity-...`,
+    see workflow.py), which is the eval harness's stand-in for the human
+    review propose_steering_change's own PR body asks for - the same
+    stand-in role _merge_open_prs already plays for the release PR.
+    Returns a list of {number, merged, message} for the report.
+    """
+    results = []
+    list_res = subprocess.run(
+        ["gh", "pr", "list", "--base", develop_branch, "--state", "open", "--json", "number,headRefName"],
+        cwd=str(local_path), capture_output=True, text=True,
+    )
+    if list_res.returncode != 0:
+        return [{"error": f"gh pr list failed: {list_res.stderr.strip()}"}]
+    try:
+        prs = json.loads(list_res.stdout or "[]")
+    except json.JSONDecodeError:
+        prs = []
+    for pr in prs:
+        if "/steering/" not in (pr.get("headRefName") or ""):
+            continue
+        number = pr["number"]
+        merge_res = subprocess.run(
+            ["gh", "pr", "merge", str(number), "--merge", "--admin"],
+            cwd=str(local_path), capture_output=True, text=True,
+        )
+        results.append({
+            "number": number,
+            "merged": merge_res.returncode == 0,
+            "message": (merge_res.stdout + merge_res.stderr).strip(),
+        })
+    return results
+
+
+_SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect"]
 
 
 def _kickoff_message(scenario_text: str) -> str:
@@ -365,8 +411,179 @@ def _sprint_should_abort_run(sprint_result: dict) -> bool:
     in the *next* sprint after silently continuing from exactly that kind of
     unclean state (GH issue #167) - stop for real in that case, same as
     before this function existed.
+
+    GH #421: "stop_reason == sprint_report_produced" alone is NOT sufficient
+    proof the sprint ended cleanly - it only means create_sprint_report
+    succeeded at some point during the invocation, not that the REST of the
+    close-out sequence (create_release_pr) also did. A real eval run
+    (0.1.0-run55) had create_sprint_report succeed, then create_release_pr
+    fail (an untracked-files checkout error, GH #419) later in the SAME
+    invocation - sprint_report_pending_release stayed True (only
+    create_release_pr's own success path clears it), which mechanically
+    blocks the next sprint's start_sprint call, yet this function still
+    waved the sprint through as "clean", so the harness sent the next
+    scripted message into a team structurally unable to make further
+    progress. Requires sprint_report_pending_release to also already be
+    False - true proof the release actually went out, not just that a
+    report was authored at some point.
+
+    GH issue (0.1.0-run60): checking the stop_reason STRING, rather than
+    whether a report actually exists, missed a real "clean closeout" case
+    and aborted an otherwise-healthy run after just one sprint.
+    _run_one_sprint's own host-side backstop (this file, right after the
+    per-sprint loop: "if not sprint_report and
+    session.state.get('critical_halt_notified')...") exists precisely so a
+    report always gets produced even when the harness's own max_events/
+    max_duration cap - not the in-session budget grace - is what ends the
+    sprint first (see that backstop's own docstring, GH issue eval-run41).
+    That path genuinely populates sprint_result["sprint_report"] - a real
+    run confirmed both the fallback report AND its release PR actually
+    went out - but never revises stop_reason away from whatever the
+    per-sprint loop already set ("max_events_reached" here), since
+    rewriting a reason that was already true (the loop really did exit
+    that way) isn't this backstop's job. Checking sprint_report directly
+    is a strict superset of the old stop_reason check (stop_reason is
+    only ever set to "sprint_report_produced" right after sprint_report
+    itself is populated - never the other way around), so this also
+    covers every case the old check already handled correctly.
     """
-    return bool(sprint_result["critical_halt"]) and sprint_result["stop_reason"] != "sprint_report_produced"
+    return bool(sprint_result["critical_halt"]) and not (
+        bool(sprint_result.get("sprint_report"))
+        and not sprint_result.get("sprint_report_pending_release")
+    )
+
+
+def _blocked_stories(sprint_result: dict) -> dict:
+    """{story_id_or_title: blocked_dict} for every story currently BLOCKED
+    (raise_story_blocker, agents/scrum_team/tools/requirements.py) at the
+    end of this sprint - via product_backlog, the authoritative superset
+    (sprint_backlog is just this sprint's committed subset)."""
+    blocked = {}
+    for item in sprint_result.get("product_backlog") or []:
+        b = item.get("blocked")
+        if b:
+            blocked[item.get("id") or item.get("title")] = b
+    return blocked
+
+
+def _unresolved_high_priority_general_blocker(sprint_result: dict) -> Optional[dict]:
+    """
+    GH issue #342: a "human"-category retro/impediment finding
+    (add_retro_action/add_impediment's category param) raised with
+    priority="high" is, by definition, something genuinely outside the
+    team's own authority to resolve - this scripted, unattended harness has
+    no human to actually act on it (same reasoning as
+    _sprint_needs_human_this_harness_cannot_provide's "needs_human" case
+    for story-level blockers, just not tied to any one story). Continuing
+    to burn further sprints' budget on work that can't resolve a
+    high-priority human-only blocker is the same wasted-budget bet #336
+    already stops for story-level blockers.
+    """
+    for entry in sprint_result.get("general_blockers") or []:
+        if entry.get("priority") == "high" and not entry.get("resolved"):
+            return entry
+    return None
+
+
+def _sprint_needs_human_this_harness_cannot_provide(sprint_result: dict, previously_blocked_ids: set) -> Optional[tuple]:
+    """
+    GH issue #336: a real eval run (0.1.0-run39) had a story get BLOCKED by
+    the mechanical loop-breaker (agent.py's _detect_transfer_loop/
+    _detect_repeated_call_loop) in sprint 2, then sat blocked through
+    sprints 3-5 with no resolution - this scripted driver has no way to
+    call resolve_story_blocker itself (it "pre-approves every sprint goal/
+    backlog... standing in for the human review gate real usage requires"
+    - see the report's own Methodology note), so those 3 remaining sprints
+    burned real tokens/budget on a story that could never move forward.
+
+    Returns (story_id, blocked_dict, reason) the first time either holds,
+    else None:
+    - reason="needs_human": the blocker's own category escalates straight to
+      the human User (should_escalate_blocker_to_user, agents/scrum_team/
+      helpers.py) - explicitly checked as if this were "Product" interaction
+      level regardless of the actually-configured INTERACTION_LEVEL (GH
+      #414): should_escalate_blocker_to_user's own "no human available"
+      reasoning is about THIS harness specifically (it never has a human to
+      answer anything, in any mode), not about whatever level a real
+      deployment happens to run at - checking against the real configured
+      level meant an EVAL-mode run never escalated a "product"-category
+      blocker immediately, no matter how clearly only a human could answer
+      it, and instead always paid the "unresolved_across_sprint" grace
+      below first.
+    - reason="mechanically_detected": the blocker was raised by one of
+      agent.py's own loop breakers (_detect_transfer_loop/
+      _detect_repeated_call_loop calling raise_story_blocker with
+      mechanically_detected=True), not from an agent's own judgment call -
+      by definition, the breaker only fires after the team already proved
+      itself unable to make progress through repeated attempts. Treating
+      this the same as an ordinary blocker (worth one more sprint's benefit
+      of the doubt, see "unresolved_across_sprint" below) wastes a full
+      sprint's budget re-confirming something already demonstrated
+      unresolvable - a real eval run (0.1.0-run54) did exactly that.
+    - reason="unresolved_across_sprint": the SAME story was already BLOCKED
+      at the end of the *previous* sprint and still is now - the team had a
+      full sprint's own budget to resolve it themselves (a "technical"
+      blocker doesn't require a human) and didn't, so further sprints are
+      the same bet with no new information. One full sprint's grace before
+      concluding this, not an immediate stop, since Architect/whoever owns
+      it may genuinely still be working it when the sprint just happens to
+      end.
+    """
+    from agents.scrum_team.helpers import should_escalate_blocker_to_user
+    current_blocked = _blocked_stories(sprint_result)
+    for story_id, blocked in current_blocked.items():
+        if should_escalate_blocker_to_user(blocked.get("category"), level="Product"):
+            return (story_id, blocked, "needs_human")
+        if blocked.get("mechanically_detected"):
+            return (story_id, blocked, "mechanically_detected")
+    for story_id in previously_blocked_ids:
+        if story_id in current_blocked:
+            return (story_id, current_blocked[story_id], "unresolved_across_sprint")
+    return None
+
+
+_DOMINANT_REJECTION_MIN_COUNT = 3
+_DOMINANT_REJECTION_MESSAGE_KEY_LEN = 80
+
+
+def _dominant_repeated_rejection(sprint_result: dict) -> Optional[tuple]:
+    """
+    GH #409: finds the single (tool_name, message_prefix) pair that failed
+    with the exact same (truncated) rejection message most often this
+    sprint, if any pair repeated at least _DOMINANT_REJECTION_MIN_COUNT
+    times - a content-based "the team is stuck on this specific rejection"
+    signal, checked here across sprint boundaries (see
+    _sprint_stuck_on_the_same_rejection_as_last_sprint below). Independent
+    of whether agent.py's own in-sprint loop breakers
+    (_detect_transfer_loop/_detect_repeated_rejection_loop, GH #408) fired -
+    those can themselves keep re-tripping turn after turn without the team
+    ever actually resolving the underlying cause, which still burns this
+    harness's per-sprint event/token budget same as the original rejection
+    would.
+
+    A real eval run (0.1.0-run53, GH issue #407) hit the identical
+    "Cannot close the sprint report: ..." rejection from create_sprint_report
+    75+ times across two separate per-sprint harness invocations - at the
+    time, each invocation's own event/token budget reset fresh regardless of
+    whether a real sprint boundary had occurred (since fixed, GH #413), so
+    neither ever accumulated enough within a single invocation to look stuck
+    on its own.
+    """
+    counts: dict = {}
+    for event in sprint_result.get("events") or []:
+        for tr in event.get("tool_responses") or []:
+            response = tr.get("response")
+            if not isinstance(response, dict) or response.get("status") != "error":
+                continue
+            message = str(response.get("message") or response.get("error") or "")
+            key = (tr.get("name"), message[:_DOMINANT_REJECTION_MESSAGE_KEY_LEN])
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    dominant_key, dominant_count = max(counts.items(), key=lambda kv: kv[1])
+    if dominant_count < _DOMINANT_REJECTION_MIN_COUNT:
+        return None
+    return dominant_key
 
 
 async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, session_id: str, message_text: str, max_events: int, deadline: float, max_nudges: int = 4) -> dict:
@@ -379,14 +596,39 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
     turn; a single scripted message per sprint isn't always enough to get
     through a full plan -> build -> review -> release cycle unattended.
 
-    ScrumState.sprint_report is never cleared between sprints by the
-    product code itself (it's just whatever the last create_sprint_report
-    call produced) - so "is a report present" is only a valid completion
-    signal for *this* sprint if it's explicitly reset first. Passed as a
-    state_delta on the very first message of this sprint, rather than
-    mutating session.state directly (ADK session state is meant to be
-    updated via events/state_delta, not poked from outside the
-    conversation).
+    GH #413: this function no longer mutates session state via state_delta
+    at all - token_usage/sprint_report/sprint_report_kpis and their sibling
+    guard flags are now reset mechanically, in sync with the real sprint
+    boundary, by start_sprint itself (sprint_budget_reset_state_delta,
+    tools/budget.py) rather than being blindly reset here at the start of
+    every scripted message regardless of whether a real new sprint actually
+    started. A real eval run (0.1.0-run53) showed exactly why that was
+    wrong: a sprint stuck mid-close-out got a completely fresh token/event
+    budget purely because this harness happened to send its next scripted
+    message, letting an unresolved deadlock run again from scratch.
+
+    ScrumState.sprint_report/sprint_report_kpis are just whatever the last
+    create_sprint_report/update_sprint_report call produced - this function
+    snapshots both BEFORE sending anything, and detects "did this
+    invocation's own agent activity produce something new" by comparing
+    against that snapshot afterward, a pure read that never mutates product
+    state - instead of requiring a destructive clear first.
+
+    GH issue (0.1.0-run57): sprint_report_kpis specifically is NOT detected
+    by comparing the KPI dict's own VALUE against its baseline - a real run
+    had update_sprint_report genuinely recompute real KPIs in both Sprint 3
+    and Sprint 4, but the resulting dict happened to be byte-identical to
+    the previous sprint's (a simple fixed test project's test
+    coverage/code complexity/security scan numbers don't necessarily change
+    sprint to sprint), so the equality check wrongly concluded "nothing new
+    this sprint" and discarded real data - report.md's KPI Trends table
+    showed "n/a" for two sprints that had genuinely re-run this step.
+    kpi_update_count (bumped by every successful update_sprint_report call
+    regardless of whether the resulting values changed, see tools/
+    quality.py) is the correct "was it actually called this sprint" signal
+    - the same snapshot-a-counter pattern retro_baseline/kpi_baseline
+    already use internally (tools/budget.py) for their own "something new
+    since last time" gates.
 
     `deadline` (time.monotonic() seconds) is a wall-clock safety net,
     independent of the token/USD budget guardrails - if those don't
@@ -406,6 +648,13 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
     # deadline is already past before the first attempt runs (e.g. a
     # prior sprint used up the whole time budget).
     session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session_id)
+    # GH #413: snapshots, not clears - see this function's own docstring.
+    # Whatever's here already may be a genuinely-finished PREVIOUS sprint's
+    # report (if the team hasn't called start_sprint for this one yet), so
+    # "did a NEW report appear" is only ever a comparison against this
+    # baseline, never a bare truthiness check.
+    report_baseline = session.state.get("sprint_report")
+    kpi_update_count_baseline = session.state.get("kpi_update_count", 0)
 
     for attempt in range(max_nudges + 1):
         if time.monotonic() >= deadline:
@@ -414,39 +663,9 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
 
         text = message_text if attempt == 0 else _CONTINUE_NUDGE
         message = types.Content(role="user", parts=[types.Part(text=text)])
-        # token_usage (and its sibling guard flags) reset here too, at the
-        # first attempt of THIS sprint - SPRINT_TOKEN_BUDGET/
-        # EVAL_SPRINT_TOKEN_BUDGET is a per-sprint allowance, not cumulative
-        # for the whole run (see check_cost_budget_callback in agent.py);
-        # without this, one expensive sprint silently starves every later
-        # sprint of further LLM calls. Harness-side equivalent of the
-        # reset_sprint_budget tool Scrum Master calls in interactive/real
-        # usage - sprint_budget_reset_state_delta (budget.py, ISSUE-0049) is
-        # the actual shared key list, so this can't independently drift out
-        # of sync with reset_sprint_budget's own copy again (which is
-        # exactly what happened in 0.1.0-run33: this dict used to hand-copy
-        # only token_usage/budget_exhaustion_synced and was missing
-        # critical_halt_notified/sprint_report_safety_net_fired, so a sprint
-        # that ended via the final-halt safety net left
-        # sprint_report_safety_net_fired=True stuck into the next sprint,
-        # which then silently produced no sprint report - not even a
-        # fallback one - on its own final halt).
-        state_delta = (
-            {
-                **sprint_budget_reset_state_delta(),
-                "sprint_report": "",
-                # GH issue #124: sprint_report_kpis is never cleared by the
-                # product code itself either (same as sprint_report above) -
-                # without this reset, a sprint where QualityGuardian doesn't
-                # get to run would silently inherit the previous sprint's
-                # KPI values instead of correctly having none.
-                "sprint_report_kpis": {},
-            }
-            if attempt == 0 else None
-        )
 
         try:
-            async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=message, state_delta=state_delta):
+            async for event in runner.run_async(user_id=user_id, session_id=session_id, new_message=message):
                 record = {"author": event.author, "text": None, "tool_calls": [], "tool_responses": []}
                 if event.content and event.content.parts:
                     for part in event.content.parts:
@@ -485,12 +704,14 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
             print(f"WARNING: ADK rejected a self-transfer mid-turn ({e}) - ending this sprint's turn early.", file=sys.stderr)
             stop_reason = "adk_self_transfer_error"
             session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session_id)
-            sprint_report = session.state.get("sprint_report")
+            current_report = session.state.get("sprint_report")
+            sprint_report = current_report if current_report and current_report != report_baseline else None
             break
 
         session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session_id)
-        sprint_report = session.state.get("sprint_report")
-        if sprint_report:
+        current_report = session.state.get("sprint_report")
+        if current_report and current_report != report_baseline:
+            sprint_report = current_report
             stop_reason = "sprint_report_produced"
             break
         if len(events) >= max_events:
@@ -500,6 +721,37 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
             stop_reason = "max_duration_exceeded"
             break
 
+    if not sprint_report and session.state.get("critical_halt_notified"):
+        # GH issue (eval run41): a real run's SPRINT CLOSE SEQUENCE grace
+        # was making genuine progress (retro logged, KPIs computed) but got
+        # cut off by THIS HARNESS'S OWN max_events/max_duration cap one
+        # turn before ProductOwner's create_sprint_report - agent.py's own
+        # safety net (_ensure_sprint_report_on_final_halt_once) only fires
+        # once a grace-eligible role's own turn ALSO exceeds its (shrunk)
+        # grace allowance, which never happened here; the sprint just ran
+        # out of *host-side* turns first. These are two independent
+        # stopping mechanisms - the in-agent budget grace, and this
+        # harness's own event/time caps - and "a sprint report always
+        # exists" needs a backstop that doesn't depend on which one fires
+        # first. Calls the exact same mechanism agent.py's own safety net
+        # uses, from here, against a minimal state-only shim (everything
+        # it touches only ever reads/writes .state).
+        from agents.scrum_team.agent import _ensure_sprint_report_on_final_halt
+
+        class _HostToolContext:
+            def __init__(self, state):
+                self.state = state
+
+        try:
+            _ensure_sprint_report_on_final_halt(_HostToolContext(session.state))
+            sprint_report = session.state.get("sprint_report")
+        except Exception as e:
+            print(f"WARNING: host-side sprint report backstop failed (non-fatal): {type(e).__name__}: {e}", file=sys.stderr)
+
+    current_kpis = session.state.get("sprint_report_kpis")
+    kpi_updated_this_sprint = session.state.get("kpi_update_count", 0) > kpi_update_count_baseline
+    fresh_kpis = current_kpis if current_kpis and kpi_updated_this_sprint else None
+
     return {
         "final_text": final_text,
         "event_count": len(events),
@@ -508,13 +760,29 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         "sprint_report": sprint_report,
         "sprint_backlog": session.state.get("sprint_backlog"),
         "product_backlog": session.state.get("product_backlog"),
-        # GH issue #124: QualityGuardian's calculate_kpis/update_sprint_report
-        # (see its prompt's "YOU DO") stores its findings here - captured so
-        # run_eval_analysis.py can plot Say-Do Ratio/Quality/Test Coverage as
-        # a time series across sprints. Only present if QualityGuardian
-        # actually got to run this sprint (cheap-model/budget-constrained
-        # sprints sometimes don't) - None otherwise, not a fabricated value.
-        "sprint_report_kpis": session.state.get("sprint_report_kpis"),
+        # GH issue #124: Scrum Master's calculate_kpis/update_sprint_report
+        # (formerly QualityGuardian's - see GH #395; see its prompt's "YOU DO")
+        # stores its findings here - captured so run_eval_analysis.py can plot
+        # Say-Do Ratio/Quality/Test Coverage as a time series across sprints.
+        # Only present if Scrum Master actually got to run this step this
+        # sprint (cheap-model/budget-constrained sprints sometimes don't) -
+        # None otherwise, not a fabricated value. GH #413: gated on whether
+        # kpi_update_count advanced since the baseline snapshotted above,
+        # not read bare - without that, a sprint where this step didn't run
+        # would silently inherit whatever the PREVIOUS sprint's KPIs were
+        # (GH issue #124's original failure mode). Gated on the COUNTER,
+        # not the dict's own value (0.1.0-run57's fix) - comparing values
+        # wrongly discarded real KPIs whenever a sprint's recomputed numbers
+        # happened to coincide with the previous sprint's.
+        "sprint_report_kpis": fresh_kpis,
+        # GH issue #342: "human"-category retro/impediment findings
+        # (add_retro_action/add_impediment's category param) - not tied to
+        # any one story, unlike product_backlog/sprint_backlog's own
+        # `blocked` fields, so captured separately here for
+        # run_eval_analysis.py's Blockers section and this harness's own
+        # stop-early check (_sprint_needs_human_this_harness_cannot_provide)
+        # right below.
+        "general_blockers": session.state.get("general_blockers"),
         "stop_reason": stop_reason,
         # Set by _notify_critical_halt (agent.py) whenever
         # check_cost_budget_callback halts this sprint on a token/USD
@@ -523,6 +791,11 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # made the halted sprint look like it never happened). The caller
         # uses this to actually stop the whole run.
         "critical_halt": bool(session.state.get("critical_halt_notified")),
+        # GH #421: set True by create_sprint_report's own success path,
+        # cleared only by create_release_pr's own success path - "a report
+        # was produced" alone doesn't prove the release also went out.
+        # Captured here so _sprint_should_abort_run can tell the two apart.
+        "sprint_report_pending_release": bool(session.state.get("sprint_report_pending_release")),
     }
 
 
@@ -573,6 +846,19 @@ async def _main_async(args: argparse.Namespace) -> dict:
     # into the manifest/report afterwards.
     print(f"--- Horseless Carriage v{_hc_version()} (commit {manifest['hc_commit']}) ---", file=sys.stderr)
 
+    # GH issue #336: carried across sprint boundaries so
+    # _sprint_needs_human_this_harness_cannot_provide can tell "still
+    # blocked, same as last sprint" apart from "just got blocked this
+    # sprint" - see that function's own docstring.
+    previously_blocked_ids = set()
+    # GH #409: carried across sprint boundaries so a sprint whose own
+    # dominant repeated rejection (_dominant_repeated_rejection) matches the
+    # PREVIOUS sprint's - with no sprint report produced by either - can be
+    # told apart from "stuck on this rejection for the first time, may just
+    # need another sprint's budget". See the check right after
+    # _sprint_needs_human_this_harness_cannot_provide below.
+    previously_dominant_rejection = None
+
     for sprint_number in range(1, args.sprints + 1):
         if time.monotonic() >= deadline:
             print(f"--- max duration ({args.max_duration_minutes}m) reached before sprint {sprint_number}/{args.sprints} - stopping ---", file=sys.stderr)
@@ -598,6 +884,12 @@ async def _main_async(args: argparse.Namespace) -> dict:
             # merged by QA's own merge_story_pr call during the sprint instead.
             merges = _merge_open_prs(args.local_path, args.branch, sprint_result=sprint_result)
             manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number} for m in merges])
+            # GH #405: steering proposals are the one develop-targeted PR
+            # type the eval harness treats as "reviewed" on the team's
+            # behalf (see _merge_open_steering_prs's own docstring) - swept
+            # separately from the release-PR merge above, every sprint.
+            steering_merges = _merge_open_steering_prs(args.local_path, args.develop_branch)
+            manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number, "steering": True} for m in steering_merges])
             _sync_local_clone_to_branch(args.develop_branch, args.local_path, args.github_token)
         except Exception as e:
             # Whatever crashed (a real run hit an uncaught litellm.RateLimitError
@@ -631,6 +923,74 @@ async def _main_async(args: argparse.Namespace) -> dict:
                 "cleanly via the grace allowance - continuing ---",
                 file=sys.stderr,
             )
+
+        general_blocker = _unresolved_high_priority_general_blocker(sprint_result)
+        if general_blocker:
+            print(
+                f"--- sprint {sprint_number}/{args.sprints}: a high-priority human-only retro finding "
+                f"is unresolved ({general_blocker.get('description')!r}) - this scripted harness has no "
+                "human to act on it. Continuing would just burn further sprints' budget - stopping run ---",
+                file=sys.stderr,
+            )
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = "human_blocker_unresolved"
+            manifest["general_blocker"] = general_blocker
+            break
+
+        blocker = _sprint_needs_human_this_harness_cannot_provide(sprint_result, previously_blocked_ids)
+        if blocker:
+            story_id, blocked, reason = blocker
+            if reason == "needs_human":
+                explanation = (
+                    f"'{story_id}' is blocked on a {blocked.get('category')}-category question that "
+                    f"would escalate straight to a human: {blocked.get('question')!r} - this scripted "
+                    "harness has no human to answer it, regardless of configured INTERACTION_LEVEL."
+                )
+            elif reason == "mechanically_detected":
+                explanation = (
+                    f"'{story_id}' was blocked by a mechanical loop breaker, not an agent's own "
+                    f"judgment call: {blocked.get('question')!r} - the team already proved itself "
+                    "unable to make progress through repeated attempts before this blocker was raised."
+                )
+            else:
+                explanation = (
+                    f"'{story_id}' was already blocked at the end of the previous sprint and still is "
+                    f"now ({blocked.get('question')!r}) - a full sprint's own budget didn't resolve it."
+                )
+            print(
+                f"--- sprint {sprint_number}/{args.sprints}: {explanation} Continuing would just burn "
+                "further sprints' budget on a story that can't move forward - stopping run ---",
+                file=sys.stderr,
+            )
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = f"blocked_{reason}"
+            manifest["blocked_story"] = {"id": story_id, "blocked": blocked}
+            break
+
+        # GH #409: a sprint that produced no sprint report, dominated by the
+        # exact same rejection (tool + truncated message) as the PREVIOUS
+        # sprint - also produced no sprint report - across a sprint
+        # boundary. Resetting the token/event budget and sending the next
+        # scripted message has already been tried once for this exact
+        # symptom; a real eval run (0.1.0-run53) hit this across two sprint
+        # boundaries before it had to be cancelled manually, each reset
+        # just giving the identical stuck pattern a fresh lease on life.
+        dominant_rejection = None if sprint_result.get("sprint_report") else _dominant_repeated_rejection(sprint_result)
+        if dominant_rejection and dominant_rejection == previously_dominant_rejection:
+            tool_name, message_key = dominant_rejection
+            print(
+                f"--- sprint {sprint_number}/{args.sprints}: dominated by the same rejection as the "
+                f"previous sprint ({tool_name}: {message_key!r}), with no sprint report produced by "
+                "either - resetting the budget again would just repeat this. Stopping run ---",
+                file=sys.stderr,
+            )
+            manifest["stopped_early"] = True
+            manifest["stop_reason"] = "repeated_sprint_closing_deadlock"
+            manifest["dominant_rejection"] = {"tool": tool_name, "message_prefix": message_key}
+            break
+        previously_dominant_rejection = dominant_rejection
+
+        previously_blocked_ids = set(_blocked_stories(sprint_result).keys())
 
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
     return manifest
@@ -708,7 +1068,7 @@ def main() -> None:
             )
         args.token_budget = int(per_sprint_token_budget)
     # The USD budget, unlike the token budget above, stays a whole-run
-    # cumulative ceiling by design (see BUDGET.md/reset_sprint_budget) -
+    # cumulative ceiling by design (see BUDGET.md/sprint_budget_reset_state_delta) -
     # enforced by the LiteLLM proxy's shared scrum-sprint-budget object, not
     # reset per sprint - so this scaling is unchanged. EVAL_USD_BUDGET_PER_SPRINT
     # is the canonical name (GH issue #81 - "per sprint" in the name makes
@@ -764,9 +1124,38 @@ def main() -> None:
     args.github_token = get_github_token()
 
     _configure_env(args)
-    _prepare_local_clone(args.eval_repo_url, args.branch, args.develop_branch, args.local_path, args.github_token)
 
-    manifest = asyncio.run(_main_async(args))
+    # GH #414: an eval report should exist in any case - _main_async's own
+    # per-sprint try/except already turns a crash DURING a sprint into a
+    # clean "crashed" manifest entry, but anything that raises BEFORE or
+    # AROUND that loop (clone setup, ADK session/runner bootstrap, a bug in
+    # harness code that runs between sprints) would previously propagate
+    # straight out of main() with no manifest written at all - the
+    # .github/workflows/eval.yml analysis step genuinely has nothing to
+    # analyze in that case. This is the last-resort backstop: whatever
+    # metadata is already known gets written out, with the actual
+    # exception recorded, rather than nothing at all.
+    try:
+        _prepare_local_clone(args.eval_repo_url, args.branch, args.develop_branch, args.local_path, args.github_token)
+        manifest = asyncio.run(_main_async(args))
+    except Exception as e:
+        print(f"--- run crashed outside the per-sprint loop: {type(e).__name__}: {e} ---", file=sys.stderr)
+        manifest = {
+            "run_id": args.run_id,
+            "branch": args.branch,
+            "develop_branch": args.develop_branch,
+            "eval_repo_url": args.eval_repo_url,
+            "model": args.model,
+            "hc_commit": os.environ.get("HC_COMMIT_SHA", "unknown"),
+            "sprints_requested": args.sprints,
+            "max_duration_minutes": args.max_duration_minutes,
+            "sprints": [],
+            "pr_merges": [],
+            "stopped_early": True,
+            "stop_reason": "crashed_outside_sprint_loop",
+            "crash_error": f"{type(e).__name__}: {e}",
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     Path(args.report_path).write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
     print(f"Run manifest written to {args.report_path}")

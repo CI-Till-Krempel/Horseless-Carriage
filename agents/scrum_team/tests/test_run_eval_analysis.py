@@ -14,6 +14,11 @@ from agents.scrum_team.scripts.run_eval_analysis import (
     _kpi_time_series,
     _render_kpi_graphs,
     _render_report,
+    _collect_blockers,
+    _collect_general_blockers,
+    _render_blockers_section,
+    _render_stopped_early_callout,
+    _sprint_metrics_table,
 )
 
 _BASE_MANIFEST = {
@@ -49,7 +54,12 @@ def test_render_report_defaults_hc_commit_to_unknown_when_absent():
 def _sprint(number, backlog=None, kpis=None):
     return {
         "sprint_number": number,
-        "sprint_backlog": backlog or [],
+        # GH issue #378: _kpi_time_series sources from product_backlog (the
+        # authoritative superset), not sprint_backlog (only populated if a
+        # story was explicitly planned into the sprint via
+        # plan_sprint_backlog_item, which a real run went an entire 5
+        # sprints without ever calling even once).
+        "product_backlog": backlog or [],
         "sprint_report_kpis": kpis,
     }
 
@@ -89,6 +99,25 @@ class TestKpiTimeSeries:
 
         assert series["Stories implemented"] == [(1, 1)]
 
+    def test_reads_product_backlog_even_when_sprint_backlog_was_never_planned(self):
+        """GH issue #378 regression: a real run (0.1.0-run47) never called
+        plan_sprint_backlog_item, leaving sprint_backlog permanently [] while
+        product_backlog recorded real Accepted/Implemented progress - the
+        KPIs must reflect that real progress, not a sprint_backlog that was
+        never populated in the first place."""
+        backlog = [_story(["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"])]
+        manifest = {"sprints": [{
+            "sprint_number": 1,
+            "product_backlog": backlog,
+            "sprint_backlog": [],
+            "sprint_report_kpis": None,
+        }]}
+
+        series = _kpi_time_series(manifest)
+
+        assert series["Velocity (items accepted)"] == [(1, 1)]
+        assert series["Stories implemented"] == [(1, 1)]
+
     def test_sprint_report_kpis_missing_omits_the_data_point(self):
         manifest = {"sprints": [_sprint(1, kpis=None), _sprint(2, kpis={})]}
 
@@ -111,6 +140,38 @@ class TestKpiTimeSeries:
         assert series["Say-Do Ratio"] == [(1, 0.8)]
         assert series["Quality (defect escape rate)"] == [(1, 0.05)]
         assert series["Test Coverage"] == [(1, 0.72)]
+
+
+class TestSprintMetricsTable:
+    """GH issue #379: a real run (0.1.0-run47) had the table claim 'Sprint
+    Report? yes' for every sprint even though 4 of 5 were the mechanically-
+    rendered budget-exhaustion fallback stub, not a real Product Owner
+    report - hiding exactly the distinction a reader would want."""
+
+    def test_no_report_reads_no(self):
+        manifest = {"sprints": [{"sprint_number": 1, "sprint_backlog": []}]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | n/a | 0 | no | 0/0 |" in table
+
+    def test_real_report_reads_yes(self):
+        manifest = {"sprints": [{
+            "sprint_number": 1, "sprint_backlog": [],
+            "sprint_report": "# Sprint Review Report\n\nShipped the login flow.",
+        }]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | n/a | 0 | yes | 0/0 |" in table
+
+    def test_fallback_report_reads_fallback_not_yes(self):
+        manifest = {"sprints": [{
+            "sprint_number": 1, "sprint_backlog": [],
+            "sprint_report": (
+                "# Sprint Review Report\n\n"
+                "## Mechanically-Rendered Report (Budget Used in Full)\n"
+                "This sprint's token/USD budget was used in full..."
+            ),
+        }]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | n/a | 0 | fallback | 0/0 |" in table
 
 
 class TestRenderKpiGraphs:
@@ -153,6 +214,34 @@ class TestRenderKpiGraphs:
 
         assert "### Say-Do Ratio" in rendered
         assert "No data available for this run" in rendered
+        assert "never computed" in rendered
+
+    def test_kpi_called_but_null_reports_the_specific_note_not_never_called(self):
+        """GH issue #347: a real run (0.1.0-run43) showed calculate_kpis
+        running every sprint and correctly returning
+        defect_escape_rate=None with its own explanatory note, but the
+        report claimed it "was not called in any sprint" - factually wrong,
+        and disprovable by the same run's own Say-Do Ratio data (sourced
+        from the exact same calculate_kpis calls)."""
+        kpis = {
+            "team_effectiveness": {"say_do_ratio": 1.0},
+            "result_quality": {
+                "defect_escape_rate": None,
+                "defect_escape_rate_note": "not available - no defect/bug-lifecycle tracking exists yet",
+            },
+        }
+        manifest = {"sprints": [_sprint(1, kpis=kpis), _sprint(2, kpis=kpis)]}
+
+        rendered = _render_kpi_graphs(manifest)
+
+        section_start = rendered.index("### Quality (defect escape rate)")
+        section_end = rendered.index("### Test Coverage")
+        section = rendered[section_start:section_end]
+        assert "not available - no defect/bug-lifecycle tracking exists yet" in section
+        assert "never computed" not in section
+        assert "was not called in any sprint" not in section
+        # Say-Do Ratio itself DID have data - still rendered as a real chart, unaffected.
+        assert "line [1, 1]" in rendered
 
 
 def test_render_report_includes_kpi_trends_section():
@@ -170,3 +259,183 @@ def test_render_report_includes_kpi_trends_section():
     report = _render_report(manifest, _JUDGMENT)
 
     assert "## KPI Trends" in report
+
+
+def _sprint_with_backlog(number, product_backlog=None, sprint_backlog=None, general_blockers=None):
+    return {
+        "sprint_number": number,
+        "product_backlog": product_backlog or [],
+        "sprint_backlog": sprint_backlog or [],
+        "sprint_report_kpis": None,
+        "general_blockers": general_blockers or [],
+    }
+
+
+class TestCollectBlockers:
+    def test_empty_with_no_sprints(self):
+        assert _collect_blockers({"sprints": []}) == []
+
+    def test_finds_blocked_stories_in_the_last_sprint(self):
+        manifest = {
+            "sprints": [
+                _sprint_with_backlog(1, product_backlog=[{"id": "US-0001"}]),
+                _sprint_with_backlog(2, product_backlog=[
+                    {"id": "US-0001", "title": "Add login", "blocked": {"category": "technical", "question": "why?", "raised_by": "Architect"}},
+                    {"id": "US-0002"},
+                ]),
+            ]
+        }
+        blockers = _collect_blockers(manifest)
+        assert len(blockers) == 1
+        story_id, title, blocked = blockers[0]
+        assert story_id == "US-0001"
+        assert blocked["category"] == "technical"
+
+    def test_only_looks_at_the_last_sprint_not_earlier_ones(self):
+        """product_backlog is the full, cumulative backlog each sprint - an
+        earlier sprint's now-resolved blocker must not still show up just
+        because it was blocked at some point in the past."""
+        manifest = {
+            "sprints": [
+                _sprint_with_backlog(1, product_backlog=[
+                    {"id": "US-0001", "blocked": {"category": "technical", "question": "why?"}},
+                ]),
+                _sprint_with_backlog(2, product_backlog=[
+                    {"id": "US-0001", "blocked": None},  # resolved since sprint 1
+                ]),
+            ]
+        }
+        assert _collect_blockers(manifest) == []
+
+
+class TestCollectGeneralBlockers:
+    """GH issue #342: unresolved "human"-category retro/impediment findings
+    (add_retro_action/add_impediment's category param) - not tied to any
+    one story, unlike _collect_blockers above."""
+
+    def test_empty_with_no_sprints(self):
+        assert _collect_general_blockers({"sprints": []}) == []
+
+    def test_finds_unresolved_general_blockers_in_the_last_sprint(self):
+        manifest = {"sprints": [_sprint_with_backlog(1, general_blockers=[
+            {"description": "Need a product decision", "priority": "high", "resolved": False, "raised_by": "ScrumMaster"},
+            {"description": "Already handled", "priority": "normal", "resolved": True, "raised_by": "ScrumMaster"},
+        ])]}
+        result = _collect_general_blockers(manifest)
+        assert len(result) == 1
+        assert result[0]["description"] == "Need a product decision"
+
+
+class TestRenderBlockersSection:
+    def test_no_blockers_message_when_nothing_is_blocked(self):
+        manifest = {"sprints": [_sprint_with_backlog(1)]}
+        rendered = "\n".join(_render_blockers_section(manifest))
+        assert "## Blockers" in rendered
+        assert "No stories are blocked" in rendered
+
+    def test_lists_each_blocked_story(self):
+        manifest = {
+            "sprints": [
+                _sprint_with_backlog(1, product_backlog=[
+                    {"id": "US-0001", "title": "Add login", "blocked": {"category": "product", "question": "which color?", "raised_by": "ProductOwner"}},
+                ]),
+            ]
+        }
+        rendered = "\n".join(_render_blockers_section(manifest))
+        assert "US-0001" in rendered
+        assert "which color?" in rendered
+        assert "ProductOwner" in rendered
+
+    def test_lists_general_blockers_alongside_story_blockers(self):
+        manifest = {
+            "sprints": [
+                _sprint_with_backlog(
+                    1,
+                    product_backlog=[{"id": "US-0001", "blocked": {"category": "technical", "question": "why?", "raised_by": "Architect"}}],
+                    general_blockers=[{"description": "Need a product decision on auth provider", "priority": "high", "resolved": False, "raised_by": "ScrumMaster"}],
+                ),
+            ]
+        }
+        rendered = "\n".join(_render_blockers_section(manifest))
+        assert "US-0001" in rendered
+        assert "Need a product decision on auth provider" in rendered
+        assert "high priority" in rendered
+
+
+class TestRenderStoppedEarlyCallout:
+    def test_empty_when_the_run_completed_normally(self):
+        assert _render_stopped_early_callout({"stopped_early": False}) == []
+
+    def test_surfaces_the_stop_reason_prominently(self):
+        manifest = {"stopped_early": True, "stop_reason": "budget_critical_halt", "sprints_requested": 5, "sprints": [1]}
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "⚠️ Evaluation Stopped Early" in rendered
+        assert "budget_critical_halt" in rendered
+        assert "1" in rendered and "5" in rendered
+
+    def test_surfaces_the_blocked_story_when_present(self):
+        manifest = {
+            "stopped_early": True,
+            "stop_reason": "blocked_needs_human",
+            "sprints_requested": 5,
+            "sprints": [1],
+            "blocked_story": {"id": "US-0003", "blocked": {"category": "product", "question": "which color?", "raised_by": "ProductOwner"}},
+        }
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "US-0003" in rendered
+        assert "which color?" in rendered
+
+    def test_surfaces_crash_details_when_present(self):
+        manifest = {
+            "stopped_early": True,
+            "stop_reason": "crashed",
+            "sprints_requested": 5,
+            "sprints": [1],
+            "crash_sprint": 2,
+            "crash_error": "RateLimitError: rate limited",
+        }
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "2" in rendered
+        assert "RateLimitError" in rendered
+
+    def test_surfaces_the_general_blocker_when_present(self):
+        """GH issue #342: a high-priority 'human'-category retro finding
+        stopping the run must be as visible as a BLOCKED story's own stop
+        reasons already are."""
+        manifest = {
+            "stopped_early": True,
+            "stop_reason": "human_blocker_unresolved",
+            "sprints_requested": 5,
+            "sprints": [1],
+            "general_blocker": {"description": "Need a product decision on auth provider", "priority": "high", "resolved": False, "raised_by": "ScrumMaster"},
+        }
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "human_blocker_unresolved" in rendered
+        assert "Need a product decision on auth provider" in rendered
+
+
+def test_render_report_includes_stopped_early_callout_and_blockers_section():
+    manifest = {
+        "run_id": "test-run",
+        "branch": "eval/test-run/main",
+        "model": "scrum-eval-cheap",
+        "sprints_requested": 5,
+        "stopped_early": True,
+        "stop_reason": "budget_critical_halt",
+        "sprints": [_sprint_with_backlog(1, product_backlog=[
+            {"id": "US-0001", "title": "Add login", "blocked": {"category": "technical", "question": "why?", "raised_by": "Architect"}},
+        ])],
+        "pr_merges": [],
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "finished_at": "2026-01-01T01:00:00+00:00",
+    }
+
+    report = _render_report(manifest, _JUDGMENT)
+
+    assert "## ⚠️ Evaluation Stopped Early" in report
+    assert "## Blockers" in report
+    assert "US-0001" in report
+    # The callout/blockers must appear before the methodology note - the
+    # single most important fact about a cancelled run belongs at the top,
+    # not buried after everything else.
+    assert report.index("Evaluation Stopped Early") < report.index("Methodology note")

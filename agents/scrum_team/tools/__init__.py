@@ -42,6 +42,7 @@ from .github import (
     gh_release_create,
     create_release_pr,
     gh_pr_comment,
+    gh_pr_comments,
     gh_pr_review,
     gh_pr_check_logs,
     repo_status,
@@ -50,10 +51,12 @@ from .github import (
     create_story_spec_pr,
     mark_pr_ready_for_review,
     merge_story_pr,
+    resolve_feature_branch_conflicts,
     integrate_open_changes,
 )
 from .docs import (
     write_file,
+    delete_file,
     read_doc,
     list_docs,
     upsert_prd,
@@ -67,7 +70,6 @@ from .budget import (
     update_budgets,
     get_budget_status,
     log_token_usage,
-    reset_sprint_budget,
     log_story_tokens,
     create_litellm_virtual_key,
     create_sprint_report,

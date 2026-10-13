@@ -40,11 +40,6 @@ model_list:
       model: openai/gpt-4o
       api_key: os.environ/OPENAI_API_KEY
 
-  - model_name: scrum-quality
-    litellm_params:
-      model: openai/gpt-4o
-      api_key: os.environ/OPENAI_API_KEY
-
   # Cheap/fast alias every role is pointed at during an automated eval run
   # (see agents/scrum_team/scripts/run_eval.py, RELEASE.md).
   - model_name: scrum-eval-cheap

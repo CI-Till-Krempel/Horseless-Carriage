@@ -1,7 +1,9 @@
 # agents/scrum_team/tests/test_quality.py
 import json
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from agents.scrum_team.tools.quality import (
@@ -11,6 +13,8 @@ from agents.scrum_team.tools.quality import (
     _execute_test_suite_coverage,
     _compute_code_complexity,
     _scan_security_vulnerabilities,
+    _compute_say_do_ratio,
+    detect_stubbed_tests,
 )
 from agents.scrum_team.tools.budget import create_sprint_report
 from agents.scrum_team.state import ScrumState
@@ -569,7 +573,10 @@ class TestQualityTools(unittest.TestCase):
             mock_repo_root.return_value = Path(tmp_dir)
             check_build(tool_context=tool_context)
 
-        self.assertEqual(tool_context.state["last_check_build"], {"checked": "requirements.txt", "passing": True})
+        self.assertEqual(
+            tool_context.state["last_check_build"],
+            {"checked": "requirements.txt", "passing": True, "manifest_write_count_at_check": 0},
+        )
 
     @patch("agents.scrum_team.tools.quality._configured_repo_root")
     def test_check_build_persists_not_checked_result(self, mock_repo_root):
@@ -583,7 +590,126 @@ class TestQualityTools(unittest.TestCase):
             mock_repo_root.return_value = Path(tmp_dir)
             check_build(tool_context=tool_context)
 
-        self.assertEqual(tool_context.state["last_check_build"], {"checked": None, "passing": None})
+        self.assertEqual(
+            tool_context.state["last_check_build"],
+            {"checked": None, "passing": None, "manifest_write_count_at_check": 0},
+        )
+
+    @patch("agents.scrum_team.tools.quality._configured_repo_root")
+    @patch("agents.scrum_team.tools.quality._run")
+    def test_check_build_snapshots_the_current_manifest_write_count(self, mock_run, mock_repo_root):
+        """
+        Acceptance Criteria (GH eval run39): check_build's snapshot must
+        reflect whatever the live dependency_manifest_write_count is AT THE
+        TIME it runs, not always 0 - otherwise a later write after this
+        check_build would look "fresh" (0 == 0) even though it genuinely
+        happened afterward.
+        """
+        from pathlib import Path
+        import tempfile
+
+        mock_run.return_value = {"status": "ok", "stdout": "", "stderr": ""}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["dependency_manifest_write_count"] = 3
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "requirements.txt").write_text("pytest\n")
+            mock_repo_root.return_value = Path(tmp_dir)
+            check_build(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["last_check_build"]["manifest_write_count_at_check"], 3)
+
+
+class TestComputeSayDoRatio(unittest.TestCase):
+    """
+    Acceptance Criteria (GH eval run39): say_do_ratio must reflect this
+    sprint's actual committed-vs-accepted outcome, not a fixed 0.8 - a real
+    eval run showed that exact constant in the report's KPI table next to
+    0 stories accepted across every one of its 5 sprints.
+    """
+
+    def test_none_with_no_state(self):
+        result = _compute_say_do_ratio(tool_context=None)
+        self.assertIsNone(result["say_do_ratio"])
+
+    def test_none_with_empty_sprint_backlog(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = _compute_say_do_ratio(tool_context=tool_context)
+        self.assertIsNone(result["say_do_ratio"])
+        self.assertIn("no stories committed", result["note"])
+
+    def test_zero_when_nothing_committed_was_accepted(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+        tool_context.state["sprint_backlog"] = [
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+        result = _compute_say_do_ratio(tool_context=tool_context)
+        self.assertEqual(result["say_do_ratio"], 0.0)
+
+    def test_partial_ratio_when_some_stories_accepted(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            {"id": "US-0002", "title": "B", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+        tool_context.state["sprint_backlog"] = [
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            {"id": "US-0002", "title": "B", "stages_completed": ["Draft", "Ready", "Implemented"]},
+        ]
+        result = _compute_say_do_ratio(tool_context=tool_context)
+        self.assertEqual(result["say_do_ratio"], 0.5)
+
+    def test_epics_excluded_from_the_committed_count(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "EP-0001", "title": "An epic", "type": "Epic", "stages_completed": []},
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+        ]
+        tool_context.state["sprint_backlog"] = [
+            {"id": "EP-0001", "title": "An epic", "type": "Epic", "stages_completed": []},
+            {"id": "US-0001", "title": "A", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+        ]
+        result = _compute_say_do_ratio(tool_context=tool_context)
+        self.assertEqual(result["say_do_ratio"], 1.0)
+
+    def test_calculate_kpis_reports_defect_escape_rate_as_unavailable_not_fabricated(self):
+        """The other half of GH eval run39's KPI fix: no fake number in its
+        place, an honest 'not available' matching how maintainability/
+        security already handle a metric this system can't compute yet."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        with patch("agents.scrum_team.tools.quality._run", return_value=_TOOL_NOT_INSTALLED), \
+             patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={}), \
+             patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="unknown"):
+            kpis = calculate_kpis(tool_context=tool_context)
+        self.assertIsNone(kpis["result_quality"]["defect_escape_rate"])
+        self.assertIn("not available", kpis["result_quality"]["defect_escape_rate_note"])
+
+    def test_calculate_kpis_reports_customer_satisfaction_and_commitment_reliability_as_unavailable_not_fabricated(self):
+        """GH issue #389: these two used to be hardcoded to 4.5/1.0 - a
+        plausible-looking fake number presented as a real measurement in
+        every sprint report, despite this exact function's own docstring
+        admitting no principled way to compute either exists. Same fix as
+        defect_escape_rate (GH eval run39): honest 'not available', not a
+        different fabricated constant."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        with patch("agents.scrum_team.tools.quality._run", return_value=_TOOL_NOT_INSTALLED), \
+             patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={}), \
+             patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="unknown"):
+            kpis = calculate_kpis(tool_context=tool_context)
+        self.assertIsNone(kpis["result_quality"]["customer_satisfaction"])
+        self.assertIn("not available", kpis["result_quality"]["customer_satisfaction_note"])
+        self.assertIsNone(kpis["team_effectiveness"]["commitment_reliability"])
+        self.assertIn("not available", kpis["team_effectiveness"]["commitment_reliability_note"])
 
 
 class TestPromptContextUsage(unittest.TestCase):
@@ -682,6 +808,84 @@ class TestPromptContextUsage(unittest.TestCase):
             kpis = calculate_kpis(tool_context=tool_context)
 
         self.assertEqual(set(kpis["prompt_context_usage"].keys()), set(ROLE_NAMES))
+
+
+class TestDetectStubbedTests(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #370): check_build/the Tested gate
+    doesn't inspect what a test actually asserts - a real eval run showed
+    DevTeam hedge a genuinely flaky real test suite by also writing stub
+    test functions ('assert True'-style) alongside it, so the pass count
+    always has something passing regardless of whether real coverage
+    exists. detect_stubbed_tests flags these (non-blocking - see its own
+    docstring for why false positives are acceptable).
+    """
+
+    def _write(self, tmp, filename, content):
+        fp = Path(tmp) / filename
+        fp.write_text(content, encoding="utf-8")
+        return fp
+
+    def test_flags_assert_true_stub(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_dummy():\n    assert True\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["function"], "test_dummy")
+        self.assertEqual(findings[0]["file"], "test_app.py")
+
+    def test_flags_bare_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_dummy():\n    pass\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(len(findings), 1)
+
+    def test_flags_tautological_assert(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_dummy():\n    assert 1 == 1\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(len(findings), 1)
+
+    def test_flags_docstring_only_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_dummy():\n    '''placeholder'''\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(len(findings), 1)
+
+    def test_does_not_flag_a_real_assertion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_real():\n    result = 1 + 1\n    assert result == 2\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_does_not_flag_a_test_with_a_docstring_and_a_real_assertion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_real():\n    '''Covers the add route.'''\n    assert add(1, 2) == 3\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_does_not_flag_a_test_using_a_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_app.py", "def test_real(client):\n    response = client.get('/')\n    assert response.status_code == 200\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_ignores_non_test_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "app.py", "def test_dummy():\n    assert True\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_skips_a_file_that_fails_to_parse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, "test_broken.py", "def test_dummy(:\n    assert True\n")
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
+
+    def test_no_test_files_at_all_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            findings = detect_stubbed_tests(tmp)
+        self.assertEqual(findings, [])
 
 
 if __name__ == "__main__":

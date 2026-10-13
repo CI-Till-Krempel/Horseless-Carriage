@@ -110,7 +110,7 @@ class TestDetectCheapHint:
 class TestWriteLitellmYaml:
     ROLES_PLUS_EXTRAS = [
         "scrum-orchestrator", "scrum-po", "scrum-sm", "scrum-dev", "scrum-qa",
-        "scrum-arch", "scrum-quality", "scrum-eval-cheap", "scrum-test-mock",
+        "scrum-arch", "scrum-eval-cheap", "scrum-test-mock",
     ]
 
     def _models_by_alias(self, out_file):
@@ -144,7 +144,7 @@ class TestWriteLitellmYaml:
         setup_llm.write_litellm_yaml("openai", "gpt-4o", "gpt-4o-mini", out_file)
         models = self._models_by_alias(out_file)
         for role in ["scrum-orchestrator", "scrum-po", "scrum-sm", "scrum-dev",
-                     "scrum-qa", "scrum-arch", "scrum-quality"]:
+                     "scrum-qa", "scrum-arch"]:
             assert models[role] == "openai/gpt-4o"
         assert models["scrum-eval-cheap"] == "openai/gpt-4o-mini"
 

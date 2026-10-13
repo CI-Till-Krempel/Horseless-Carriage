@@ -34,6 +34,8 @@ fork again
         - Facilitate events
         - Remove impediments
         - Monitor budget
+        - Calculate KPIs
+        - Author sprint report
     end note
 fork again
     :DevTeam;
@@ -53,12 +55,6 @@ fork again
     note right
         - Review pull requests
         - Propose ADRs
-    end note
-fork again
-    :QualityGuardian;
-    note right
-        - Calculate KPIs
-        - Update sprint report
     end note
 end fork
 
@@ -141,8 +137,8 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
     guardrails/workflow rules live.
 
     - role: one of ROLE_NAMES (prompts.py) - ScrumOrchestrator, ProductOwner,
-      ScrumMaster, DevTeam, QA, Architect, or QualityGuardian. Anything else
-      is refused outright.
+      ScrumMaster, DevTeam, QA, or Architect. Anything else is refused
+      outright.
     - new_content: the full replacement content for that role's
       `<role>-identity.md` (like write_file - not a unified diff, simpler
       and safer to validate/apply).
@@ -230,8 +226,29 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
         draft=True,
         tool_context=tool_context,
     )
+    ok = pr_res.get("status") == "ok"
+    if ok and tool_context and getattr(tool_context, "state", None):
+        # GH issue #342: create_sprint_report's own gate demands a *fresh*
+        # proposal (steering_proposal_count past steering_baseline) since
+        # the last report whenever an open "steering"-category retro
+        # finding exists - mirrors retro_baseline/kpi_baseline exactly, so
+        # a steering gap can't just be logged once and never actually acted
+        # on, the same failure this whole category-triage design fixes.
+        tool_context.state["steering_proposal_count"] = tool_context.state.get("steering_proposal_count", 0) + 1
+        # GH issue #356: a durable, structured record of this proposal -
+        # rendered into specs/reports/STEERING-NNN.md alongside the sprint
+        # report, since the PR body itself may be lost once the PR
+        # merges/closes.
+        tool_context.state["steering_proposals"] = list(tool_context.state.get("steering_proposals", [])) + [{
+            "role": role,
+            "proposed_by": agent_name or "an agent",
+            "rationale": rationale.strip(),
+            "new_content": new_content,
+            "pr_url": (pr_res.get("stdout") or "").strip(),
+            "branch": actual_branch,
+        }]
     return {
-        "status": "ok" if pr_res.get("status") == "ok" else "error",
+        "status": "ok" if ok else "error",
         "proposed": True,
         "role": role,
         "branch": actual_branch,

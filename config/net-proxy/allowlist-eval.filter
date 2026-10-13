@@ -1,0 +1,30 @@
+# GH issue #337: the team-performance evaluation harness (run_eval.py, via
+# .github/workflows/eval.yml) generates and builds a REAL target product
+# (a To-Do List Web App with real pip/npm dependencies - Flask, pytest-cov,
+# etc.) inside the same network-isolated `agent` container #287 locked down
+# to github.com/api.github.com only. check_build()'s `pip install -r
+# requirements.txt`/`npm install` has no route to a package registry at all
+# under that default allowlist, so every real dependency install fails
+# outright - this is what a real eval run (0.1.0-run39) hit: a
+# ModuleNotFoundError loop that no amount of retrying could ever fix,
+# because the actual problem was the network layer, not the agent's code.
+#
+# This file is used ONLY by docker-compose.eval.yml, which ONLY the eval
+# workflow's own `docker compose` invocations reference via an extra `-f`
+# flag - real end-user projects (docker-compose.yaml/.local.yaml/
+# .local-hostollama.yaml) are completely untouched by this file and keep
+# the default, narrower allowlist.filter. Per the issue's own decision,
+# this is a checked-in file requiring a normal human-reviewed PR to change
+# - there is no runtime/agent-driven mechanism that can broaden it.
+#
+# Same matching rules as allowlist.filter: one regex per line, matched
+# against the CONNECT (HTTPS) target host[:port].
+^github\.com(:[0-9]+)?$
+^api\.github\.com(:[0-9]+)?$
+# PyPI - pip's index lookup and the actual package-file download host
+# (package files are served from files.pythonhosted.org, not pypi.org
+# itself).
+^pypi\.org(:[0-9]+)?$
+^files\.pythonhosted\.org(:[0-9]+)?$
+# npm's package registry.
+^registry\.npmjs\.org(:[0-9]+)?$

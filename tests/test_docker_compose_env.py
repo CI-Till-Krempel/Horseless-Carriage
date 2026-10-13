@@ -161,6 +161,33 @@ class TestAgentContainerEnvironmentCompleteness:
             assert "INTERACTION_LEVEL" in _agent_service_env_var_names(Path(compose_file)), compose_file
 
 
+class TestAgentContainerDoesNotOverexposeProviderSecrets:
+    """
+    Regression test for GH issue #296: the `agent` container never calls a
+    provider API directly - only the LiteLLM proxy (via
+    LITELLM_MASTER_KEY/LITELLM_PROXY_API_KEY) - so raw provider keys
+    (GOOGLE_API_KEY/ANTHROPIC_API_KEY/OPENAI_API_KEY) belong only on the
+    `litellm` service's own environment list, never `agent`'s. Guards
+    against a future change re-adding one of these to `agent` "just in
+    case" without deliberate review - each one an agent's own tool calls
+    (e.g. a generated test/app it then executes) could otherwise read
+    straight out of the container's process environment for no operational
+    reason, since the agent process itself never uses them.
+    """
+
+    _OVEREXPOSED_PROVIDER_KEYS = {"GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"}
+
+    def test_agent_service_does_not_carry_raw_provider_keys(self):
+        for compose_file in ("docker-compose.yaml", "docker-compose.local.yaml", "docker-compose.local-hostollama.yaml"):
+            actual = _agent_service_env_var_names(Path(compose_file))
+            leaked = actual & self._OVEREXPOSED_PROVIDER_KEYS
+            assert not leaked, (
+                f"{compose_file}'s agent service environment: list carries {sorted(leaked)} - "
+                "the agent process never calls a provider API directly, only litellm's own "
+                "service block needs these (GH issue #296)."
+            )
+
+
 class TestNoSpuriousComposeWarningsForVarsWithSafeDefaults:
     """
     GH issue #82: "Warnings about not set environment variables" - Compose

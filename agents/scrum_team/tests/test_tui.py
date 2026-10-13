@@ -11,6 +11,16 @@ class TestAvatarFor(unittest.TestCase):
         self.assertEqual(label, "Dev Team")
         self.assertTrue(icon)
 
+    def test_qa_has_its_own_avatar(self):
+        """GH #395: QA previously had no entry at all (the magnifying-glass
+        icon was mistakenly keyed to the now-removed QualityGuardian role
+        instead), so avatar_for("QA") silently fell back to the generic
+        default - fixed alongside the QualityGuardian->ScrumMaster merge."""
+        icon, label = tui.avatar_for("QA")
+        self.assertEqual(label, "QA")
+        self.assertTrue(icon)
+        self.assertNotEqual((icon, label), tui.DEFAULT_AVATAR)
+
     def test_unknown_role_falls_back_to_default(self):
         self.assertEqual(tui.avatar_for("SomeFutureRole"), tui.DEFAULT_AVATAR)
 
@@ -44,7 +54,7 @@ class TestSpeechBubble(unittest.TestCase):
             self.assertTrue(line.startswith("│") and line.endswith("│"))
 
     def test_empty_message_does_not_crash(self):
-        bubble = tui.speech_bubble("QualityGuardian", "")
+        bubble = tui.speech_bubble("QA", "")
         self.assertIn("no message", bubble)
 
     def test_unrecognized_role_uses_default_avatar(self):

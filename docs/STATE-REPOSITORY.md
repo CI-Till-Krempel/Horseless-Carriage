@@ -14,7 +14,7 @@ Unlike the session history (which is transient and internal), the State Reposito
 
 - **`state.json`**: The internal machine-readable state of the Scrum artifacts (backlog, impediments, etc.).
 - **`specs/`**: A directory containing the actual generated documents (PRDs, ADRs, Stories) based on the templates in `spec-templates/`. See [Architecture § Repository documentation structure](ARCHITECTURE.md#repository-documentation-structure) for what goes in here and the story-workflow rules that govern it.
-- **`<Role>-identity.md`** (one per role - `ScrumOrchestrator-identity.md`, `ProductOwner-identity.md`, `ScrumMaster-identity.md`, `DevTeam-identity.md`, `QA-identity.md`, `Architect-identity.md`, `QualityGuardian-identity.md`): that role's own customization - tone, conventions, emphasis. This is the *only* part of any role's prompt a project can change; everything else (guardrails, mechanically-enforced workflow, the Definition of Done/Ready) lives in Horseless-Carriage's own repo and is never a target of any tool - see [Agent Prompt Composition](AGENT-PROMPTS.md) for the full picture. Proposed via `propose_steering_change(role, new_content, rationale)` (a ScrumMaster tool that always opens a draft PR here for human review, never a direct write), though a human can edit a role's file directly too. If a role has no identity.md yet, `agent.py`'s `role_identity_injection_callback` falls back to that role's built-in default at runtime - `check_state_repo.py`/`doctor.py` also migrate a repo that predates this convention by materializing each missing role's default as a real file here, purely additive (never overwrites an existing one).
+- **`<Role>-identity.md`** (one per role - `ScrumOrchestrator-identity.md`, `ProductOwner-identity.md`, `ScrumMaster-identity.md`, `DevTeam-identity.md`, `QA-identity.md`, `Architect-identity.md`): that role's own customization - tone, conventions, emphasis. (GH #395: the former `QualityGuardian` role - and its `QualityGuardian-identity.md` - was folded into `ScrumMaster`; a repo from before that change may still have a stale, now-unused `QualityGuardian-identity.md` file lying around, harmless to delete.) This is the *only* part of any role's prompt a project can change; everything else (guardrails, mechanically-enforced workflow, the Definition of Done/Ready) lives in Horseless-Carriage's own repo and is never a target of any tool - see [Agent Prompt Composition](AGENT-PROMPTS.md) for the full picture. Proposed via `propose_steering_change(role, new_content, rationale)` (a ScrumMaster tool that always opens a draft PR here for human review, never a direct write), though a human can edit a role's file directly too. If a role has no identity.md yet, `agent.py`'s `role_identity_injection_callback` falls back to that role's built-in default at runtime - `check_state_repo.py`/`doctor.py` also migrate a repo that predates this convention by materializing each missing role's default as a real file here, purely additive (never overwrites an existing one).
 
 ## Usage
 
@@ -73,3 +73,11 @@ script runs before the agent/container even exist, so it has no LLM access) - re
 usable checkpoint anywhere in git history, delete state.json and start fresh, or leave it as-is (and
 let the Orchestrator attempt an LLM-assisted repair once you do start a session). Non-interactive
 runs (CI, `doctor.py`) are unaffected - they still just report the failure.
+
+A fourth, last-resort option rebuilds state.json from whatever `specs/` already has on disk instead -
+re-deriving stories/epics/issues, the PRD's vision/goals, and the architecture vision doc straight from
+those markdown files (`agents/scrum_team/scripts/rebuild_state_from_specs.py`), for when neither a git
+checkpoint nor starting fresh actually gets you anywhere (e.g. `specs/` is further along than any
+`.hc/state.json` you have a checkpoint for). This is deliberately only reachable from this script, not
+as an agent tool - see ISSUE-0052 for why `init_scrum_state()`'s own equivalent rebuild step is no
+longer something any role can trigger mid-session.

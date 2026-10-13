@@ -14,9 +14,9 @@ if you haven't renamed it in your own `.env` yet.
 - **Unit**: Total tokens (e.g., 5,000,000 - the default as of GH issue #220; a real "product mode"
   test-drive showed planning alone, before Dev/QA ever ran, can use just over 1,000,000, the
   previous default).
-- **Scope**: **Per sprint.** Resets automatically at the start of every new sprint
-  (`reset_sprint_budget`, or the eval harness's own per-sprint reset) - a sprint that used most of
-  its budget doesn't starve every later sprint.
+- **Scope**: **Per sprint.** Resets automatically whenever `start_sprint` actually starts a new one
+  (mechanical, GH #413 - no separate tool call or harness-side reset involved) - a sprint that used
+  most of its budget doesn't starve every later sprint.
 - **Enforcement**: Hard-blocked locally, purely from session state/`SPRINT_TOKEN_BUDGET` — no
   call to LiteLLM is involved, so this guardrail applies **even if the LiteLLM proxy isn't
   running**. See step 1 of `check_cost_budget_callback` in `agents/scrum_team/agent.py`
@@ -32,8 +32,23 @@ if you haven't renamed it in your own `.env` yet.
   a role logs any real usage, it hard-halts on the next exhausted call exactly as before.
 - **Scaled close-out grace (GH issue #220)**: `SPRINT_CLOSEOUT_GRACE_PERCENT`'s ceiling
   (`closeout_grace_percent`, `agents/scrum_team/helpers.py`) now scales down as less of the SPRINT
-  CLOSE SEQUENCE (retro -> KPIs -> sprint report -> release PR) remains outstanding, instead of
-  always granting the full configured percentage regardless of how much work is actually left.
+  CLOSE SEQUENCE remains outstanding, instead of always granting the full configured percentage
+  regardless of how much work is actually left. GH #395: this grace now only covers Product Owner's
+  `create_release_pr` call (and ScrumOrchestrator's routing) after the main budget trips - it no
+  longer applies to Scrum Master, which has its own separate ritual budget instead (see below).
+- **Scrum Master's separate ritual budget (GH #395)**: facilitating events, the retrospective, KPI
+  calculation, and authoring the sprint report are process overhead, not feature/implementation
+  work - they're checked against Scrum Master's own token usage and a ceiling sized at
+  `PROCESS_OVERHEAD_PERCENTAGE` percent of `SPRINT_TOKEN_BUDGET` (`ritual_token_budget`,
+  `agents/scrum_team/helpers.py`), entirely independent of whether the shared budget below has
+  tripped for DevTeam/QA/Architect/Product Owner. Previously `PROCESS_OVERHEAD_PERCENTAGE` was
+  purely cosmetic (only ever printed in the sprint report); a verbose main sprint could exhaust the
+  shared budget before Scrum Master ever got a turn to run the retrospective or KPIs at all, which is
+  exactly why `create_sprint_report` kept failing across real eval runs. Once a fresh retro action
+  and a fresh KPI update both exist this sprint, the one remaining step (`create_sprint_report`
+  itself) is mechanically uncapped - and simultaneously tool-gated (`agent.py`'s
+  `before_tool_callback`) to refuse anything that isn't the report call sequence - so a sprint can
+  never fail to produce its required KPIs/report purely for lack of remaining ritual budget.
 - **Automatic Tracking**: The system automatically tracks token usage after every LLM call and attributes it to the specific agent role.
 - **Purpose**: Prevents long-running loops or runaway agent conversations within a single sprint.
   LiteLLM natively supports rate limits (tokens per minute) but does not provide a hard-stop for a
@@ -50,8 +65,8 @@ if you haven't renamed it in your own `.env` yet.
 ## 2. USD Budget (LiteLLM Layer)
 - **Unit**: US Dollars (e.g., $0.50).
 - **Scope**: **Whole engagement.** Never resets automatically, unlike the token budget above -
-  `reset_sprint_budget` deliberately does not touch it (see its docstring in
-  `agents/scrum_team/tools/budget.py`).
+  `start_sprint`'s own mechanical per-sprint reset (`sprint_budget_reset_state_delta`,
+  `agents/scrum_team/tools/budget.py`) deliberately does not touch it.
 - **Enforcement**: Hard-blocked by the LiteLLM Proxy, plus a real-time pre-call check
   against current spend on the shared `scrum-sprint-budget` object.
 - **Purpose**: Provides financial guardrails and visibility in the LiteLLM Admin UI via
@@ -90,6 +105,28 @@ if you haven't renamed it in your own `.env` yet.
   token budget above is the only guardrail that applies to a local/Ollama sprint** — set
   `SPRINT_TOKEN_BUDGET` accordingly.
 - **Tools**: `update_budgets(total_usd=0.50)`, `create_litellm_virtual_key()`.
+- **Depends on LiteLLM's bundled pricing table being current** (GH issue #298): every USD
+  figure above - `scrum-sprint-budget` spend, and the "Actual USD Spend" line in the sprint
+  report - is only as accurate as the per-token price LiteLLM's own bundled table has on
+  file for each configured model id. A newly-released or retired/renamed model id can
+  silently resolve to **zero cost** instead of an error - the chat completion still
+  succeeds normally, so nothing about a running sprint looks wrong; only the derived USD
+  figure is. Two defenses against this, both from GH issue #298:
+  - The `litellm` image is pinned to a digest (not the floating `main-stable` tag) in all
+    three `docker-compose*.yaml` files, so picking up LiteLLM's latest pricing-table
+    updates is a deliberate, visible re-pin rather than whatever happened to be latest on
+    a given pull. Re-pin with `docker pull docker.litellm.ai/berriai/litellm:main-stable
+    && docker inspect docker.litellm.ai/berriai/litellm:main-stable --format
+    '{{json .RepoDigests}}'`.
+  - `doctor.py` queries the live proxy's `/model/info` endpoint and warns about any
+    non-local (`ollama/`-prefixed aliases are expected to be free) configured alias whose
+    resolved input/output cost-per-token both come back zero or missing. The sprint report
+    itself (`create_sprint_report`/`render_fallback_sprint_report` in
+    `agents/scrum_team/tools/budget.py`) also carries a runtime version of the same check -
+    a ⚠️ SAFETY WARNING line if "Actual USD Spend" reports $0.00 alongside a substantial
+    amount of real token usage this session (and the sprint isn't a local/Ollama one),
+    since that combination is almost always this pricing gap rather than genuinely free
+    usage.
 
 ## Monitoring & Reporting
 
@@ -112,8 +149,10 @@ The system tracks performance indicators to provide visibility into team health:
   reported as such rather than a guessed number.
 
 ### Sprint Report
-At the end of each sprint, the Product Owner generates a report via `create_sprint_report`, which
-includes a detailed breakdown of token usage per agent, total USD spend, and quality metrics.
+At the end of each sprint, the Scrum Master generates a report via `create_sprint_report`
+(GH #395 - previously Product Owner's tool, with KPI calculation split off to a separate
+QualityGuardian role; both now consolidated into Scrum Master), which includes a detailed
+breakdown of token usage per agent, total USD spend, and quality metrics.
 Every sprint's report is kept — written to a sequentially numbered
 `specs/reports/SPRINT-REPORT-NNN.md` (`001`, `002`, ...; the number is derived by scanning what's
 already there, the same way story/ADR IDs are generated, so there's no separate counter to drift

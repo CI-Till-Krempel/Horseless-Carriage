@@ -246,12 +246,19 @@ from . import tui
 from .helpers import (
     get_process_overhead_percentage,
     is_story_done,
+    is_source_file,
     get_interaction_level,
     STORY_STAGES,
     get_env_with_deprecated_fallback,
     closeout_grace_percent,
     SPRINT_CLOSEOUT_GRACE_ROLES,
     NON_GRACE_FLOOR_ROLES,
+    ritual_token_budget,
+    ritual_hard_ceiling,
+    main_budget_token_usage,
+    sprint_report_step_active,
+    current_sprint_phase,
+    SPRINT_PHASE_GUIDANCE,
 )
 from .prompts import (
     ORCHESTRATOR_PROMPT,
@@ -260,7 +267,6 @@ from .prompts import (
     DEV_PROMPT,
     QA_PROMPT,
     ARCH_PROMPT,
-    QUALITY_GUARDIAN_PROMPT,
     ROLE_NAMES,
     load_role_identity_default,
 )
@@ -292,9 +298,11 @@ from .tools import (
     gh_pr_status,
     gh_pr_checks,
     gh_pr_comment,
+    gh_pr_comments,
     gh_pr_review,
     gh_release_create,
     write_file,
+    delete_file,
     create_from_template,
     configure_github_repo,
     configure_github_app,
@@ -309,7 +317,6 @@ from .tools import (
     update_budgets,
     get_budget_status,
     log_token_usage,
-    reset_sprint_budget,
     log_story_tokens,
     create_sprint_report,
     create_release_pr,
@@ -318,6 +325,7 @@ from .tools import (
     create_story_spec_pr,
     mark_pr_ready_for_review,
     merge_story_pr,
+    resolve_feature_branch_conflicts,
     integrate_open_changes,
     gh_pr_check_logs,
     create_litellm_virtual_key,
@@ -559,6 +567,13 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
     with no sprint report attached at all because the sprint ran out of
     budget before anything ever pushed one.
 
+    Also attempts create_release_pr itself (GH issue #379) once the report
+    is committed - guaranteeing a report but never trying to release it
+    just moves the "nothing merged" failure one step later, as a real run
+    (0.1.0-run47) showed: 4 of 5 sprints hit this exact safety net and NONE
+    of them got a release PR, since Product Owner never got a turn to open
+    one either. See that call's own best-effort framing below.
+
     Also lands everything else the grace period itself produced, via
     integrate_open_changes (tools/github.py) - not just the report. A
     second real incident: by the time THIS safety net fires (only after
@@ -581,9 +596,10 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
     exhausted (the one case that function doesn't redirect to
     ProductOwner for another attempt) - not on the very first halt any
     role hits, which may just hand off to a still-has-grace ProductOwner
-    who goes on to author the real report. Firing this any earlier would
-    risk committing this degraded stand-in and then never updating it once
-    - and if - the real one succeeds moments later during grace.
+    who goes on to author a report themselves. Firing this any earlier
+    would risk committing this state-rendered report and then never
+    updating it if Product Owner's own create_sprint_report succeeds
+    moments later during grace.
 
     Best-effort, same as its sibling: any failure here must not prevent
     the caller from still returning its own canned budget-exceeded
@@ -611,6 +627,26 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
                 allow_protected=True,
                 tool_context=callback_context,
             )
+
+        # GH issue #379: this safety net already guarantees a sprint report
+        # always exists, but a real run (0.1.0-run47) showed that wasn't
+        # enough - every budget-exhausted sprint (4 of 5) still had NO
+        # release PR at all, because nothing after this point ever calls
+        # create_release_pr for it; Product Owner simply never got a turn
+        # to. Best-effort, same as everything else here: if this interaction
+        # level requires a fresh pre-release human approval that isn't
+        # available mechanically, or develop/main are already in sync,
+        # create_release_pr just errors and sprint_report_pending_release
+        # stays set for a future sprint to clear, exactly like today.
+        create_release_pr(
+            title=f"Sprint {callback_context.state.get('sprint_number', '?')}: budget-exhaustion close-out",
+            body=(
+                "Mechanically-triggered release PR - this sprint's token/USD budget (including its "
+                "grace allowance) ran out before Product Owner's own create_release_pr call could "
+                "run. See the sprint report for what was actually accomplished this sprint."
+            ),
+            tool_context=callback_context,
+        )
     except Exception as e:
         logging.getLogger(__name__).warning(f"Sprint report safety net on budget exhaustion failed (non-fatal): {e}")
 
@@ -622,8 +658,9 @@ def _ensure_sprint_report_on_final_halt_once(callback_context: CallbackContext) 
     right below, using its own flag (sprint_report_safety_net_fired) since
     this fires later/less often than that one (only on the true final
     halt, not on the very first grace-eligible halt - see this function's
-    own docstring). Cleared by reset_sprint_budget, so a halt in a later
-    sprint is guaranteed a report again too."""
+    own docstring). Cleared by start_sprint's own mechanical reset (GH #413,
+    sprint_budget_reset_state_delta), so a halt in a later sprint is
+    guaranteed a report again too."""
     if callback_context.state.get("sprint_report_safety_net_fired"):
         return
     _ensure_sprint_report_on_final_halt(callback_context)
@@ -636,9 +673,9 @@ def _sync_roadmap_on_exhaustion_once(callback_context: CallbackContext) -> None:
     sprint - every call after the first exhaustion this sprint hits this same
     callback again (the canned response repeats on every subsequent turn), so
     without this guard it would redundantly re-sync/re-push on every single
-    one of those. Cleared by reset_sprint_budget / the eval harness's
-    per-sprint state_delta at the start of each new sprint, so exhaustion in
-    a later sprint syncs again.
+    one of those. Cleared by start_sprint's own mechanical reset (GH #413)
+    at the start of each new sprint, so exhaustion in a later sprint syncs
+    again.
     """
     if callback_context.state.get("budget_exhaustion_synced"):
         return
@@ -669,8 +706,9 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str, detail: s
     canned halt response repeats on every turn once the budget's exhausted),
     appending a new blocking_interactions entry and re-firing every
     configured notifier again and again, undoing the alert-fatigue fix
-    ISSUE-0025 was meant to deliver. Cleared by reset_sprint_budget, same as
-    budget_exhaustion_synced, so a halt in a later sprint notifies again."""
+    ISSUE-0025 was meant to deliver. Cleared by start_sprint's own
+    mechanical reset (GH #413), same as budget_exhaustion_synced, so a halt
+    in a later sprint notifies again."""
     if callback_context.state.get("critical_halt_notified"):
         return
     from .tools.notifications import record_blocking_interaction
@@ -728,12 +766,13 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
         parts = [
             types.Part(text=msg + (
                 " Handing off to ProductOwner. While over budget: go straight through the SPRINT "
-                "CLOSE SEQUENCE's remaining steps - transfer to Scrum Master for the retrospective "
-                "(if not already logged this sprint), Scrum Master transfers to QualityGuardian for "
-                "calculate_kpis()/update_sprint_report(kpis=...), QualityGuardian transfers back to "
-                "ProductOwner for create_sprint_report then create_release_pr. Do not attempt any "
-                "other action first (no story-stage transitions, no other transfers) - the grace "
-                "allowance is small and every wrong guess spends it without making progress."
+                "CLOSE SEQUENCE's remaining steps - transfer to Scrum Master for the retrospective, "
+                "KPIs, and the sprint report (if not already logged this sprint - Scrum Master now "
+                "owns all three end to end, on its own separate ritual budget that this main-budget "
+                "exhaustion does not affect), then Scrum Master transfers back to ProductOwner for "
+                "create_release_pr. Do not attempt any other action first (no story-stage "
+                "transitions, no other transfers) - your own grace allowance is small and every "
+                "wrong guess spends it without making progress."
             )),
             types.Part(function_call=types.FunctionCall(name="transfer_to_agent", args={"agent_name": "ProductOwner"})),
         ]
@@ -744,8 +783,8 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
         # unambiguous "no more turns for anyone this sprint" moment - see
         # _ensure_sprint_report_on_final_halt_once's own docstring for why
         # firing any earlier (e.g. the non-grace branch above) would risk
-        # committing a degraded fallback report and then never updating it
-        # even if the real one goes on to succeed during grace.
+        # committing this state-rendered report and then never updating it
+        # if Product Owner's own report goes on to succeed during grace.
         _ensure_sprint_report_on_final_halt_once(callback_context)
     return LlmResponse(
         content=types.Content(role="model", parts=parts),
@@ -753,7 +792,7 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
     )
 
 
-SPECIALIST_AGENT_NAMES = ("ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect", "QualityGuardian")
+SPECIALIST_AGENT_NAMES = ("ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect")
 
 
 def ensure_state_initialized_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
@@ -870,8 +909,8 @@ def _maybe_inject_budget_warning(
     SPRINT_TOKEN_BUDGET, so a human watching the console - and the model
     itself - gets advance notice instead. Gated by a single "highest
     threshold already warned" flag in state so each threshold fires at most
-    once per sprint; reset_sprint_budget clears it for the next one (see
-    sprint_budget_reset_state_delta, tools/budget.py).
+    once per sprint; start_sprint's own mechanical reset (GH #413) clears it
+    for the next one (see sprint_budget_reset_state_delta, tools/budget.py).
     """
     if token_limit <= 0:
         return
@@ -885,9 +924,9 @@ def _maybe_inject_budget_warning(
         f"\n[SYSTEM WARNING: SPRINT TOKEN BUDGET AT {crossed}%] {token_usage:,} / {token_limit:,} "
         "tokens used this sprint. Work efficiently from here - once the budget is fully "
         "exhausted, DevTeam/QA/Architect halt immediately (aside from a one-time reserved turn "
-        "each if they haven't had one yet this sprint); only ScrumMaster/ProductOwner/"
-        "QualityGuardian/ScrumOrchestrator get a small extra allowance to finish the SPRINT "
-        "CLOSE SEQUENCE (retro -> KPIs -> sprint report -> release PR)."
+        "each if they haven't had one yet this sprint); only ProductOwner/ScrumOrchestrator get a "
+        "small extra allowance to finish the release PR. Scrum Master's own retro/KPIs/sprint "
+        "report run on a separate ritual budget and are not affected by this at all."
     )
     llm_request.contents.insert(0, types.Content(role="system", parts=[types.Part(text=msg)]))
     logger.info(
@@ -949,47 +988,130 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
         except (ValueError, TypeError):
             token_limit = 5000000
 
-    token_usage = state.token_usage.total
-    if token_limit > 0 and token_usage < token_limit:
-        _maybe_inject_budget_warning(callback_context, llm_request, token_usage, token_limit)
-    if token_limit > 0 and token_usage >= token_limit:
-        _sync_roadmap_on_exhaustion_once(callback_context)
-        # SPRINT CLOSE SEQUENCE grace (see closeout_grace_percent/
-        # SPRINT_CLOSEOUT_GRACE_ROLES, helpers.py): a real eval run produced
-        # no sprint report and no release PR at all, since every subsequent
-        # call for every agent was hard-halted the instant the main budget
-        # tripped - nobody ever got a turn to run retro/create_sprint_report/
-        # KPIs/create_release_pr. DevTeam/QA/Architect still halt immediately
-        # here, unconditionally - their work is frozen; only closing the
-        # sprint out for real still needs turns. closeout_grace_percent(state)
-        # (not the bare no-arg form) scales that allowance down as less of
-        # the close-out sequence remains outstanding - see GH issue #220.
-        grace_limit = token_limit * (1 + closeout_grace_percent(state) / 100.0)
-        if agent_name in SPRINT_CLOSEOUT_GRACE_ROLES and token_usage < grace_limit:
-            pass
-        elif agent_name in NON_GRACE_FLOOR_ROLES and state.token_usage.agents.get(agent_name, 0) == 0:
-            # GH issue #220: reserved floor - a verbose planning phase can
-            # burn the entire sprint's budget before DevTeam/QA/Architect
-            # ever get a single turn, exactly the failure this issue
-            # reported. Guarantee each of them at least one real call this
-            # sprint even if the total is already exhausted; the instant
-            # this role logs any real usage (update_token_usage_callback),
-            # this branch no longer applies and the plain hard-halt below
-            # resumes for it, same as today - this is a one-time floor, not
-            # a standing exemption.
-            pass
+    if agent_name == "ScrumMaster":
+        # GH #395: ScrumMaster's own ritual work (facilitation, retro, KPIs,
+        # the sprint report) draws on its own separate budget instead of the
+        # shared one below - see ritual_token_budget/sprint_report_step_active,
+        # helpers.py. Checked against its OWN usage only, entirely
+        # independent of whether the main budget (checked below, for every
+        # other role) has tripped - a verbose main sprint must never again
+        # starve the retro/KPI/report step of a turn the way it used to.
+        if not sprint_report_step_active(state):
+            ritual_limit = ritual_token_budget(token_limit)
+            sm_usage = state.token_usage.agents.get("ScrumMaster", 0)
+            # GH issue (0.1.0-run58): this halt's whole point is to force a
+            # sprint report to exist even if ScrumMaster never gets a real
+            # turn to author one - but token_usage (and therefore sm_usage)
+            # is only ever reset by start_sprint's own mechanical reset
+            # (sprint_budget_reset_state_delta, tools/budget.py), which
+            # requires ScrumMaster to actually SUCCEED at calling
+            # start_sprint. A real eval run got stuck unable to start_sprint
+            # for an unrelated reason (a release PR only this harness's own
+            # host-side auto-merge could close, between sprint invocations -
+            # not something any in-session tool could do) for an entire
+            # sprint's turns, until this ritual budget tripped and the
+            # fallback safety net fired once - leaving sm_usage stuck over
+            # ritual_limit with no way to ever reset it, since reaching
+            # start_sprint again is the one thing this very check keeps
+            # preventing. Every subsequent sprint's first ScrumMaster turn
+            # hit this exact same halt again, before the model ever ran,
+            # for the rest of the run - 3 of 5 sprints wasted on an
+            # unrecoverable loop, even after the underlying blocker (the PR)
+            # was long since resolved. Once the safety net has already fired
+            # once for this stuck state, repeating the halt serves no
+            # purpose (a report already exists) and only prevents recovery
+            # - let this turn through for real instead, so ScrumMaster gets
+            # a genuine chance to retry start_sprint (which, if it succeeds,
+            # resets this properly for good).
+            already_halted_once = bool(callback_context.state.get("sprint_report_safety_net_fired"))
+            if ritual_limit > 0 and sm_usage >= ritual_limit and not already_halted_once:
+                # Mechanically guarantee a report still exists even if
+                # ScrumMaster's own ritual budget ran out before it ever
+                # reached a fresh retro + fresh KPI update - same backstop
+                # the shared-budget exhaustion path below relies on.
+                _ensure_sprint_report_on_final_halt_once(callback_context)
+                msg = (
+                    f"🚫 [RITUAL BUDGET EXCEEDED] Scrum Master's own ritual budget "
+                    f"({ritual_limit:,.0f} tokens, {get_process_overhead_percentage():.0f}% of the "
+                    f"{token_limit:,}-token sprint budget) is exhausted ({sm_usage:,} used) - a "
+                    "fallback sprint report has been generated mechanically instead. Agent "
+                    "execution halted."
+                )
+                return LlmResponse(
+                    content=types.Content(role="model", parts=[types.Part(text=msg)]),
+                    model_version=llm_request.model or "unknown",
+                )
         else:
-            msg = (
-                f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
-                f"Current usage: {token_usage:,}. Agent execution halted."
-            )
-            detail = (
-                "To resume immediately: raise SPRINT_TOKEN_BUDGET in .env and restart the agent "
-                "container. To let this sprint close out as-is: no action needed - the team has a "
-                "small grace allowance left to finish the sprint report and release PR; check "
-                "list_blocking_interactions() or this log for confirmation once it does."
-            )
-            return _budget_halt_response(callback_context, llm_request, msg, agent_name, detail=detail)
+            # GH #407: the sprint report step itself is mechanically uncapped
+            # relative to ritual_token_budget above (see
+            # sprint_report_step_active's own docstring) - a
+            # before_tool_callback gate (see _restrict_to_sprint_report_step
+            # below) is what stops this window from being spent on anything
+            # other than the report itself. But "uncapped" is not "unbounded" -
+            # ritual_hard_ceiling (helpers.py) is the absolute backstop for
+            # when something keeps this window open indefinitely (a real eval
+            # run, 0.1.0-run53, hit exactly that - see GH #407).
+            hard_ceiling = ritual_hard_ceiling(token_limit)
+            sm_usage = state.token_usage.agents.get("ScrumMaster", 0)
+            # Same unrecoverable-loop risk as the ritual_limit branch above,
+            # and the same fix: don't repeat a halt that's already produced
+            # its one fallback report and go on blocking every future turn.
+            already_halted_once = bool(callback_context.state.get("sprint_report_safety_net_fired"))
+            if hard_ceiling > 0 and sm_usage >= hard_ceiling and not already_halted_once:
+                _ensure_sprint_report_on_final_halt_once(callback_context)
+                msg = (
+                    f"🚫 [RITUAL BUDGET HARD CEILING] Scrum Master's usage during the sprint-report "
+                    f"close-out window ({sm_usage:,} tokens) has passed the absolute backstop "
+                    f"({hard_ceiling:,.0f} tokens) - something is stuck, not just slow. A fallback "
+                    "sprint report has been generated mechanically instead. Agent execution halted."
+                )
+                return LlmResponse(
+                    content=types.Content(role="model", parts=[types.Part(text=msg)]),
+                    model_version=llm_request.model or "unknown",
+                )
+    else:
+        token_usage = main_budget_token_usage(state)
+        if token_limit > 0 and token_usage < token_limit:
+            _maybe_inject_budget_warning(callback_context, llm_request, token_usage, token_limit)
+        if token_limit > 0 and token_usage >= token_limit:
+            _sync_roadmap_on_exhaustion_once(callback_context)
+            # SPRINT CLOSE SEQUENCE grace (see closeout_grace_percent/
+            # SPRINT_CLOSEOUT_GRACE_ROLES, helpers.py): a real eval run produced
+            # no sprint report and no release PR at all, since every subsequent
+            # call for every agent was hard-halted the instant the main budget
+            # tripped - nobody ever got a turn to run create_release_pr. DevTeam/
+            # QA/Architect still halt immediately here, unconditionally - their
+            # work is frozen; only closing the sprint out for real still needs
+            # turns. closeout_grace_percent(state) (not the bare no-arg form)
+            # scales that allowance down as less of the close-out sequence
+            # remains outstanding - see GH issue #220.
+            grace_limit = token_limit * (1 + closeout_grace_percent(state) / 100.0)
+            if agent_name in SPRINT_CLOSEOUT_GRACE_ROLES and token_usage < grace_limit:
+                pass
+            elif agent_name in NON_GRACE_FLOOR_ROLES and state.token_usage.agents.get(agent_name, 0) == 0:
+                # GH issue #220: reserved floor - a verbose planning phase can
+                # burn the entire sprint's budget before DevTeam/QA/Architect
+                # ever get a single turn, exactly the failure this issue
+                # reported. Guarantee each of them at least one real call this
+                # sprint even if the total is already exhausted; the instant
+                # this role logs any real usage (update_token_usage_callback),
+                # this branch no longer applies and the plain hard-halt below
+                # resumes for it, same as today - this is a one-time floor, not
+                # a standing exemption.
+                pass
+            else:
+                msg = (
+                    f"🚫 [TOKEN BUDGET EXCEEDED] Sprint token limit ({token_limit:,}) reached. "
+                    f"Current usage: {token_usage:,}. Agent execution halted."
+                )
+                detail = (
+                    "To resume immediately: raise SPRINT_TOKEN_BUDGET in .env and restart the agent "
+                    "container. To let this sprint close out as-is: no action needed - Scrum Master's "
+                    "own ritual budget lets it close the sprint out (retro/KPIs/report) regardless, "
+                    "and Product Owner has a small grace allowance left to finish the release PR; "
+                    "check list_blocking_interactions() or this log for confirmation once it does."
+                )
+                return _budget_halt_response(callback_context, llm_request, msg, agent_name, detail=detail)
 
     # 2. Check USD Budget (Remote Guardrail via LiteLLM Proxy)
     if os.environ.get("LLM_LOCAL_PROVIDER") == "true":
@@ -1511,6 +1633,48 @@ def _trim_transcript(transcript: List[Dict[str, Any]], max_entries: Optional[int
     }
     return [marker] + transcript[-max_entries:]
 
+def _phase_and_tokens_prefix(state: dict) -> str:
+    """
+    Shared by phase_awareness_injection_callback below and
+    log_tool_invocation_callback's own console-log line - GH issue #403
+    asks for both the system-injected nudge and the human-facing log to
+    show the same phase/budget snapshot, so this is the one place that
+    actually reads state for it.
+    """
+    phase = current_sprint_phase(state)
+    budgets = state.get("budgets") or {}
+    usage = state.get("token_usage") or {}
+    token_limit = budgets.get("total") or 0
+    token_usage = usage.get("total") or 0
+    tokens_str = f"{token_usage:,}/{token_limit:,}" if token_limit > 0 else f"{token_usage:,}"
+    return f"[Phase: {phase} | Tokens: {tokens_str}]"
+
+
+def phase_awareness_injection_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
+    """
+    BeforeModelCallback (every role, every turn): injects a one-line
+    "[SPRINT PHASE: ...]" system-context message stating which of
+    SPRINT_PHASES (helpers.py) the team is currently in, plus that phase's
+    own short goal/scope reminder - see current_sprint_phase's own module
+    comment in helpers.py for the real eval run (0.1.0-run52) this responds
+    to: DevTeam jumping straight to implementation, getting mechanically
+    rejected, and only then having Product Owner backfill the planning
+    work that should have come first.
+
+    Nudging only, same spirit as _maybe_inject_budget_warning above -
+    informs every role, but SM_PROMPT's own WORKFLOW section is the one
+    actually told to intervene on a mismatch. This never refuses a tool
+    call itself; the existing mechanical gates (new_sprint_item_blocked,
+    sprint_backlog_pr_missing, ready_backlog_shortfall, ...) are untouched
+    and remain the only real enforcement.
+    """
+    state = callback_context.state
+    phase = current_sprint_phase(state)
+    guidance = SPRINT_PHASE_GUIDANCE.get(phase, "")
+    msg = f"\n[SPRINT PHASE: {phase}] {guidance}\n"
+    llm_request.contents.insert(0, types.Content(role="system", parts=[types.Part(text=msg)]))
+
+
 def history_management_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
     """
     BeforeModelCallback: recovers persisted conversation history into a
@@ -1771,6 +1935,38 @@ _READ_ONLY_STATUS_TOOLS = frozenset({
 })
 
 
+def _mark_blocker_mechanically_detected(tool_context: ToolContext, story_id: str) -> None:
+    """
+    GH #414: flags a just-raised story blocker as mechanically detected -
+    called only by this module's own loop breakers (_detect_transfer_loop,
+    _detect_repeated_call_loop), right after their own raise_story_blocker
+    call succeeds. Deliberately not a parameter on raise_story_blocker
+    itself (see that function's own docstring for why) - this reaches back
+    into state and sets the flag as a separate step instead, so it can
+    never be set by anything other than our own breaker code.
+
+    The eval harness (run_eval.py's _sprint_needs_human_this_harness_
+    cannot_provide) treats this as an immediate-stop signal: a loop breaker
+    firing only happens after the team already proved itself unable to
+    make progress through repeated attempts, unlike an ordinary blocker
+    (which still gets one more sprint's benefit of the doubt).
+
+    Best-effort: a failure here must never surface as an error from the
+    breaker itself - the story is already BLOCKED either way by this
+    point, this is purely an extra signal for the harness.
+    """
+    try:
+        from .tools.scrum import save_state_to_repo
+        state = tool_context.state
+        for key in ("product_backlog", "sprint_backlog"):
+            for item in state.get(key) or []:
+                if (item.get("id") or item.get("title")) == story_id and item.get("blocked"):
+                    item["blocked"]["mechanically_detected"] = True
+        save_state_to_repo(tool_context)
+    except Exception:
+        pass
+
+
 def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: str) -> Optional[Dict[str, Any]]:
     """
     Breaks an unproductive transfer_to_agent ping-pong between exactly two
@@ -1825,12 +2021,25 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     ping-pong would have (that stays the fast path), and stays well clear
     of legitimate short routing chains (Orchestrator handing off to a
     specialist, who immediately hands off again) while still breaking a
-    3+-agent rotation in well under one eval case's call budget. Like
-    _broken_transfer_pairs above, once this fires the counter is pinned at
-    the threshold (not reset to 0) so it keeps refusing every further
-    transfer_to_agent call - regardless of target - until a real tool call
-    actually happens; a rotation that already burned this many hops with no
-    progress isn't a pattern worth letting restart from zero.
+    3+-agent rotation in well under one eval case's call budget.
+
+    GH issue #367: this counter resets to 0 once it fires - NOT pinned at
+    the threshold the way an earlier version of this function did. A real
+    eval run showed pinning it causes a permanent, session-wide deadlock:
+    the only way to ever clear the pin is a non-transfer tool call
+    succeeding, but the pin itself refuses every transfer_to_agent call -
+    to literally any target, by any agent - so no role can ever be reached
+    to make one. This fired on the mandatory budget-exhaustion SPRINT CLOSE
+    SEQUENCE's own correct, system-instructed hand-off chain (not a genuine
+    stuck rotation) and then no agent could transfer to anyone for the rest
+    of the run. Resetting to 0 still breaks an actively-spinning rotation
+    in the moment (this function's actual job) without permanently banning
+    every future hand-off; a genuinely recurring rotation simply trips this
+    again, which is correct. Also reset here when the *pair* breaker fires
+    (the `count >= TRANSFER_LOOP_THRESHOLD` branch below) - that streak's
+    hops would otherwise double-count against this independent budget too,
+    which is exactly how the run45 deadlock's rotation count reached
+    threshold one pair-break-and-3-hop-chain sooner than it should have.
     """
     state = tool_context.state
     pair = tuple(sorted((from_agent, to_agent)))
@@ -1857,6 +2066,9 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     if count >= TRANSFER_LOOP_THRESHOLD:
         state["_transfer_loop"] = {"pair": None, "count": 0}
         state["_broken_transfer_pairs"] = broken_pairs + [list(pair)]
+        # GH issue #367: this streak's hops must not also count against the
+        # independent rotation budget - see this function's own docstring.
+        state["_transfer_rotation_count"] = 0
         hop_count = count
         msg = (
             f"🔁 [TRANSFER LOOP DETECTED] {from_agent} and {to_agent} have handed off to each other "
@@ -1865,7 +2077,10 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
             "you're both routing around), or explain the blocker instead of handing off again."
         )
     else:
-        state["_transfer_rotation_count"] = TRANSFER_ROTATION_THRESHOLD
+        # GH issue #367: reset to 0, not pinned at the threshold - see this
+        # function's own docstring for why pinning causes a permanent,
+        # unrecoverable deadlock.
+        state["_transfer_rotation_count"] = 0
         hop_count = rotation_count
         msg = (
             f"🔁 [TRANSFER LOOP DETECTED] {rotation_count} transfer_to_agent hops in a row with no "
@@ -1895,6 +2110,8 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
                 infer_blocker_category(from_agent, to_agent),
                 tool_context=tool_context,
             )
+            if (result or {}).get("status") == "ok":
+                _mark_blocker_mechanically_detected(tool_context, result["story_id"])
         if not story or (result or {}).get("status") != "ok":
             from .tools.notifications import record_blocking_interaction
             record_blocking_interaction(
@@ -1911,15 +2128,75 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
 REPEATED_CALL_LOOP_THRESHOLD = 3
 
 
+def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str, target_agent: str) -> Optional[Dict[str, Any]]:
+    """
+    GH issue #344: advance_story_stage already refuses to mark a story
+    Implemented without a real write_file since the last successful
+    Implemented transition (dev_touch_baseline/sprint_files_touched, see
+    that function) - but nothing previously caught the opposite: DevTeam
+    writing the real implementation, then transferring away (to Architect,
+    QA, back to the Orchestrator, ...) without ever calling
+    advance_story_stage("Implemented") for it. A story whose code is
+    actually done but whose stage silently stays at Ready/earlier blocks
+    that story - and, via the one-story-at-a-time ordering gate, every
+    lower-priority story behind it - from ever reaching Accepted, with no
+    mechanical signal anything is wrong.
+
+    Reuses the exact same source_touch_count/dev_touch_baseline signal
+    advance_story_stage's own gate already tracks - "more source files
+    touched than were touched as of the last successful Implemented" -
+    rather than inventing a second, parallel notion of "real work
+    happened". Fires only for DevTeam transferring to a genuinely
+    different role (not a self-transfer, already handled separately).
+
+    Nudges once per new increment of untracked work, not forever: once
+    fired, `unadvanced_write_nudge_baseline` snapshots the current touch
+    count, so an immediate retry of the SAME transfer (no new write_file in
+    between) is let through - DevTeam may have a real reason to transfer
+    before finishing (e.g. a design question for Architect mid-story), and
+    a reminder it has already seen once must not become a permanent
+    deadlock. Further new write_file activity re-arms the nudge.
+    """
+    if agent_name != "DevTeam" or target_agent == "DevTeam":
+        return None
+
+    s = tool_context.state
+    touched = s.get("sprint_files_touched", []) or []
+    source_touch_count = sum(1 for f in touched if is_source_file(f))
+    dev_touch_baseline = s.get("dev_touch_baseline", 0)
+    nudge_baseline = s.get("unadvanced_write_nudge_baseline", 0)
+    if source_touch_count <= dev_touch_baseline or source_touch_count <= nudge_baseline:
+        return None
+
+    s["unadvanced_write_nudge_baseline"] = source_touch_count
+
+    from .tools.requirements import _current_story_in_progress
+    story = _current_story_in_progress(s.get("product_backlog", []) or [])
+    story_ref = f"'{story.get('id') or story.get('title')}'" if story else "the story you were working on"
+    return {
+        "status": "error",
+        "message": (
+            f"Before transferring away: real source code has been written (write_file) since the "
+            f"last story reached Implemented, but no advance_story_stage call has marked {story_ref} "
+            "Implemented yet. If the implementation is actually done, call "
+            "advance_story_stage(title_or_id, \"Implemented\") now, before transferring. If you "
+            "genuinely need to transfer first (e.g. a design question for Architect) and the story "
+            "really isn't done yet, call transfer_to_agent again - this reminder will not repeat "
+            "until further new code is written."
+        ),
+    }
+
+
 def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_name: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Sibling to _detect_transfer_loop, for every OTHER tool: breaks an agent
     calling the exact same tool with the exact same arguments over and over
     with no other distinct call in between - real eval runs hit this
-    repeatedly and in more than one shape (QualityGuardian calling
-    calculate_kpis()/update_sprint_report(kpis=...) back to back a dozen+
-    times even after each call *succeeded*, apparently unable to tell it had
-    already made progress; ProductOwner calling
+    repeatedly and in more than one shape (the former QualityGuardian role -
+    now ScrumMaster, GH #395 - calling calculate_kpis()/
+    update_sprint_report(kpis=...) back to back a dozen+ times even after
+    each call *succeeded*, apparently unable to tell it had already made
+    progress; ProductOwner calling
     advance_story_stage(title_or_id="US-0006", stage="Ready") with
     identical args repeatedly after the same rejection each time). Unlike
     the transfer-loop breaker (which only cares about the pair of agents,
@@ -1994,6 +2271,8 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
                 infer_blocker_category(agent_name),
                 tool_context=tool_context,
             )
+            if (result or {}).get("status") == "ok":
+                _mark_blocker_mechanically_detected(tool_context, result["story_id"])
         if not story_id or (result or {}).get("status") != "ok":
             from .tools.notifications import record_blocking_interaction
             record_blocking_interaction(
@@ -2005,6 +2284,53 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
     except Exception:
         pass
     return {"status": "error", "message": msg}
+
+
+REPEATED_REJECTION_LOOP_THRESHOLD = 3
+
+
+def _detect_repeated_rejection_loop(tool_context: ToolContext, agent_name: str, tool_name: str) -> Optional[Dict[str, Any]]:
+    """
+    BeforeToolCallback helper (GH #408): complements _detect_repeated_call_loop
+    above, which only catches an agent repeating the EXACT SAME arguments. A
+    real eval run (0.1.0-run53) reworded create_sprint_report's
+    summary/accomplishments text almost every attempt while hitting the
+    identical underlying rejection 37+ times across two sprints - genuinely
+    different arguments every time, so the exact-args breaker almost never
+    matched (it fired twice, by coincidence, when two consecutive attempts
+    happened to reuse identical wording).
+
+    This tracks the TOOL's OWN rejection message instead of the caller's
+    arguments: log_tool_result_callback (the after-tool callback, which
+    actually sees the response) records a streak whenever the same agent
+    gets the same tool rejected with the same (truncated) error message
+    again - regardless of what else, including any number of
+    transfer_to_agent hops, happens in between. Once that streak reaches
+    REPEATED_REJECTION_LOOP_THRESHOLD, this before-the-call check refuses
+    any further call to that exact tool outright, without even running it -
+    the same "stop retrying, the wording isn't the problem" signal
+    _detect_repeated_call_loop already gives for the exact-args case, just
+    reachable even when the agent varies its wording every time.
+
+    The streak itself is cleared by a later SUCCESSFUL non-transfer call
+    (see log_tool_result_callback) - a different, successful action is real
+    evidence something changed, worth letting the team try this tool again.
+    """
+    streak = tool_context.state.get("_repeated_rejection_loop") or {}
+    if (
+        streak.get("agent") == agent_name
+        and streak.get("tool") == tool_name
+        and streak.get("count", 0) >= REPEATED_REJECTION_LOOP_THRESHOLD
+    ):
+        msg = (
+            f"🔁 [REPEATED REJECTION DETECTED] {agent_name} has had {tool_name} rejected with the same "
+            f"underlying error {streak['count']} times in a row - the wording of the call varied, the "
+            "actual rejection did not. Rewording will not fix this: read and address what the error "
+            "message actually says, or transfer to whichever role can act on it, instead of retrying "
+            f"{tool_name} again."
+        )
+        return {"status": "error", "message": msg}
+    return None
 
 
 TOOL_LOG_ARG_VALUE_MAX_LEN = 20
@@ -2030,6 +2356,67 @@ def _format_tool_call(tool_name: str, args: Dict[str, Any]) -> str:
         return f"{tool_name}()"
     rendered = ", ".join(f"{k}={_format_tool_log_arg_value(v)}" for k, v in args.items())
     return f"{tool_name}({rendered})"
+
+
+# GH #395: the only tool calls allowed while sprint_report_step_active(state)
+# is True for ScrumMaster - see _restrict_to_sprint_report_step below.
+# transfer_to_agent stays allowed so it can still hand off to Product Owner
+# once the report actually succeeds (sprint_report_step_active then goes
+# False on its own, see that function's own docstring), or escalate if it
+# genuinely gets stuck - this gate blocks scope creep, not every possible
+# escape hatch.
+#
+# GH #407: propose_steering_change is also allowed, for a narrower but
+# critical reason - create_sprint_report's own gate (tools/budget.py) hard-
+# refuses to close the sprint while an open "steering"-category finding (or
+# 2+ "technical" findings that read like role-behavior gaps) has no fresh
+# propose_steering_change call behind it, and its own error message says to
+# call propose_steering_change next. But sprint_report_step_active is true
+# under that exact same precondition (fresh retro + fresh KPI, report not
+# yet successful) - so without this exception, ScrumMaster is told to call
+# the one tool this gate has just made impossible to call: a genuine,
+# code-level catch-22 with no mechanical escape. A real eval run
+# (0.1.0-run53) hit this twice, each time retrying create_sprint_report with
+# reworded text ~37 times (it can never work - the rejection has nothing to
+# do with wording) before burning millions of tokens and requiring a manual
+# cancellation. propose_steering_change itself still only ever opens a
+# draft PR for human review (see its own docstring) - allowing it here adds
+# no new write path, it just un-blocks the one tool the other gate already
+# demands.
+_SPRINT_REPORT_STEP_ALLOWED_TOOLS = frozenset({
+    "calculate_kpis", "update_sprint_report", "create_sprint_report", "transfer_to_agent",
+    "propose_steering_change",
+})
+
+
+def _restrict_to_sprint_report_step(tool_context: ToolContext, agent_name: str, tool_name: str) -> Optional[Dict[str, Any]]:
+    """
+    BeforeToolCallback helper (GH #395): check_cost_budget_callback uncaps
+    ScrumMaster's ritual-budget ceiling entirely once sprint_report_step_active
+    (helpers.py) is True - a fresh retro and a fresh KPI update both already
+    logged this sprint, with only create_sprint_report itself left. Uncapping
+    the budget alone would just open a different way to never actually close
+    the sprint (spending the now-unlimited window on anything else); this is
+    the other half - while that window is open, refuses every ScrumMaster
+    tool call except the report sequence itself and propose_steering_change
+    (_SPRINT_REPORT_STEP_ALLOWED_TOOLS, see GH #407 note there). Not gated at
+    all for any other agent/role.
+    """
+    if agent_name != "ScrumMaster" or tool_name in _SPRINT_REPORT_STEP_ALLOWED_TOOLS:
+        return None
+    state = get_scrum_state(tool_context.state)
+    if not sprint_report_step_active(state):
+        return None
+    return {
+        "status": "error",
+        "message": (
+            f"This sprint's retro and KPI update are both already fresh - only "
+            "calculate_kpis/update_sprint_report/create_sprint_report/propose_steering_change (or "
+            f"transfer_to_agent) may run until the sprint report actually exists. '{tool_name}' is "
+            "refused for now - finish closing this sprint out first (call create_sprint_report, or "
+            "propose_steering_change first if it's rejecting over an open steering finding)."
+        ),
+    }
 
 
 def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_context: ToolContext) -> Optional[Dict[str, Any]]:
@@ -2068,6 +2455,11 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
     """
     agent_name = getattr(tool_context, "agent_name", None) or "?"
     call_desc = _format_tool_call(tool.name, args)
+
+    restricted = _restrict_to_sprint_report_step(tool_context, agent_name, tool.name)
+    if restricted is not None:
+        print(f"🚫 [{agent_name}] sprint-report step active - refused {call_desc}", file=sys.stderr)
+        return restricted
 
     transcript_logger.info(f"[{agent_name}] TOOL CALL: {call_desc}")
     try:
@@ -2115,42 +2507,47 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
                 )
                 print(f"⚠️ [{agent_name}] blocked self-transfer (agent_name={target_agent})", file=sys.stderr)
                 return {"status": "error", "message": msg}
+            unadvanced_result = _detect_unadvanced_implementation(tool_context, agent_name, target_agent)
+            if unadvanced_result is not None:
+                print(f"⚠️ [{agent_name}] blocked transfer - unadvanced implementation (-> {target_agent})", file=sys.stderr)
+                return unadvanced_result
     else:
-        # Any non-transfer tool call is real progress against the
-        # transfer-loop breaker - reset that streak so it only fires on
-        # genuinely unproductive bouncing. EXCEPT the read-only status
-        # tools in _READ_ONLY_STATUS_TOOLS: a real eval run
-        # (create_release_pr_rejects_without_release_approval) showed a
-        # rotation that never repeated the same pair 3x running (dodging
-        # TRANSFER_LOOP_THRESHOLD) and never sustained 6 transfer_to_agent
-        # hops in a row either (dodging TRANSFER_ROTATION_THRESHOLD,
-        # GH issue #191's fix) - because it slipped in exactly one
-        # list_blocking_interactions()/get_budget_status() call per lap,
-        # just often enough to reset both counters before either could
-        # fire, and burned the entire ADK_EVAL_MAX_LLM_CALLS budget without
-        # ever calling create_release_pr. These tools can never make actual
-        # progress on their own (nothing about the story/sprint/backlog
-        # changes from calling them) - only genuinely state-changing calls
-        # should count as evidence the team is unstuck.
-        if tool.name not in _READ_ONLY_STATUS_TOOLS:
-            try:
-                tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
-                tool_context.state["_transfer_rotation_count"] = 0
-            except Exception:
-                pass
-        # But it can itself be a loop: see _detect_repeated_call_loop.
+        # GH #408: the transfer-loop/rotation counters (and the content-
+        # aware repeated-rejection streak just below) are now only reset on
+        # a SUCCESSFUL non-transfer call - see log_tool_result_callback,
+        # which is where that reset actually happens now (it needs the
+        # tool's response to know whether this call succeeded). This
+        # before-the-call callback only runs the checks that can block the
+        # call outright.
+        rejection_loop_result = _detect_repeated_rejection_loop(tool_context, agent_name, tool.name)
+        if rejection_loop_result is not None:
+            print(f"\U0001f501 [{agent_name}] repeated-rejection loop broken (-> {tool.name})", file=sys.stderr)
+            return rejection_loop_result
         loop_result = _detect_repeated_call_loop(tool_context, agent_name, tool.name, args)
         if loop_result is not None:
             print(f"\U0001f501 [{agent_name}] repeated-call loop broken (-> {tool.name})", file=sys.stderr)
             return loop_result
 
+    # GH issue #403: a human watching a live run (console or
+    # `docker compose logs agent`) previously had no quick way to tell which
+    # sprint phase a given tool call happened in, or how close the sprint
+    # was to its token budget, without cross-referencing the sprint report -
+    # prefixing every tool-call line with both, from the same state this
+    # turn's phase_awareness_injection_callback already read.
+    try:
+        phase_prefix = _phase_and_tokens_prefix(tool_context.state)
+    except Exception:
+        phase_prefix = ""
     if os.getenv("AGENT_MODE", "web") == "cli":
         try:
+            if phase_prefix:
+                print(phase_prefix, file=sys.stderr)
             print(tui.speech_bubble(agent_name, call_desc), file=sys.stderr)
             return None
         except Exception:
             pass
-    print(f"\U0001f527 [{agent_name}] {call_desc}", file=sys.stderr)
+    prefix = f"{phase_prefix} " if phase_prefix else ""
+    print(f"{prefix}\U0001f527 [{agent_name}] {call_desc}", file=sys.stderr)
     return None
 
 
@@ -2169,14 +2566,48 @@ def log_tool_result_callback(
     run's console gave no way to tell, without reading the full transcript,
     which calls this repo's own code-level gates actually rejected.
 
+    GH #408: also the single place that decides whether a non-transfer call
+    counts as "real progress" against the transfer-loop/rotation breakers
+    (_detect_transfer_loop) and the content-aware repeated-rejection streak
+    (_detect_repeated_rejection_loop) - moved here from
+    log_tool_invocation_callback's before-the-call reset, which used to fire
+    on ANY non-transfer, non-read-only call regardless of whether it
+    actually succeeded. A real eval run (0.1.0-run53) had a REJECTED
+    create_sprint_report call reset the rotation counter just as readily as
+    a real success would, letting a ~140-hop stuck rotation (through 5
+    roles, a failing create_sprint_report interspersed every cycle) never
+    accumulate past 1-2 - this is the fix: only a call that actually
+    succeeded resets anything.
+
     Only ever observes; never modifies the tool's real response (always
     returns None) - a genuine tool bug should still surface exactly as it
     would without this callback."""
-    if isinstance(tool_response, dict) and tool_response.get("status") == "error":
-        agent_name = getattr(tool_context, "agent_name", None) or "?"
+    agent_name = getattr(tool_context, "agent_name", None) or "?"
+    failed = isinstance(tool_response, dict) and tool_response.get("status") == "error"
+    if failed:
         message = str(tool_response.get("message") or tool_response.get("error") or "no message")
         short_message = message[:TOOL_LOG_ERROR_MESSAGE_MAX_LEN] + ("..." if len(message) > TOOL_LOG_ERROR_MESSAGE_MAX_LEN else "")
         print(f"❌ [{agent_name}] {tool.name} failed: {short_message}", file=sys.stderr)
+        if tool.name != "transfer_to_agent":
+            try:
+                message_key = message[:TOOL_LOG_ERROR_MESSAGE_MAX_LEN]
+                streak = tool_context.state.get("_repeated_rejection_loop") or {}
+                if streak.get("agent") == agent_name and streak.get("tool") == tool.name and streak.get("message_key") == message_key:
+                    count = streak.get("count", 0) + 1
+                else:
+                    count = 1
+                tool_context.state["_repeated_rejection_loop"] = {
+                    "agent": agent_name, "tool": tool.name, "message_key": message_key, "count": count,
+                }
+            except Exception:
+                pass
+    elif tool.name != "transfer_to_agent" and tool.name not in _READ_ONLY_STATUS_TOOLS:
+        try:
+            tool_context.state["_transfer_loop"] = {"pair": None, "count": 0}
+            tool_context.state["_transfer_rotation_count"] = 0
+            tool_context.state["_repeated_rejection_loop"] = {}
+        except Exception:
+            pass
     return None
 
 # --- Tool Dispatch Error Handling ---
@@ -2185,7 +2616,7 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
     """
     OnToolErrorCallback: without this, a model calling a tool name that isn't
     in its *own* role's tools=[...] list (e.g. ProductOwner hallucinating
-    write_file, which only DevTeam/QualityGuardian actually have) crashes the
+    write_file, which only DevTeam/Architect actually have) crashes the
     entire ADK run with a bare ValueError - a single hallucinated tool name
     from one sub-agent otherwise aborts the whole multi-sprint session. ADK
     itself already distinguishes this exact case: when tool dispatch fails
@@ -2219,7 +2650,7 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
 
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
-    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, role_identity_injection_callback, agent_thinking_start_callback],
+    "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, role_identity_injection_callback, phase_awareness_injection_callback, agent_thinking_start_callback],
     "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
     "after_tool_callback": log_tool_result_callback,
@@ -2233,7 +2664,6 @@ product_owner = LlmAgent(
     description="Owns product vision/goals, backlog ordering, acceptance criteria, scope tradeoffs.",
     instruction=PO_PROMPT,
     tools=[
-        init_scrum_state,
         upsert_story,
         upsert_epic,
         upsert_issue,
@@ -2249,7 +2679,6 @@ product_owner = LlmAgent(
         log_decision,
         create_from_template,
         gh_release_create,
-        create_sprint_report,
         create_release_pr,
         create_sprint_backlog_pr,
         create_story_spec_pr,
@@ -2270,7 +2699,6 @@ scrum_master = LlmAgent(
     description="Facilitates Scrum events, removes impediments, improves process, tracks actions.",
     instruction=SM_PROMPT,
     tools=[
-        init_scrum_state,
         start_sprint,
         add_impediment,
         add_retro_action,
@@ -2284,10 +2712,10 @@ scrum_master = LlmAgent(
         update_budgets,
         get_budget_status,
         log_token_usage,
-        reset_sprint_budget,
         gh_pr_status,
         gh_pr_checks,
         gh_pr_comment,
+        gh_pr_comments,
         gh_pr_review,
         integrate_open_changes,
         generate_workflow_diagram,
@@ -2296,6 +2724,9 @@ scrum_master = LlmAgent(
         calculate_cost_breakdown,
         recommend_sprint_budget,
         optimize_process_for_budget,
+        calculate_kpis,
+        update_sprint_report_with_kpis,
+        create_sprint_report,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
@@ -2306,7 +2737,6 @@ dev_team = LlmAgent(
     description="Plans/estimates/implements stories, owns technical decisions, ensures DoD, creates sprint plan.",
     instruction=DEV_PROMPT,
     tools=[
-        init_scrum_state,
         plan_sprint_backlog_item,
         log_story_tokens,
         advance_story_stage,
@@ -2314,6 +2744,7 @@ dev_team = LlmAgent(
         add_impediment,
         log_decision,
         write_file,
+        delete_file,
         read_doc,
         list_docs,
         create_from_template,
@@ -2321,10 +2752,12 @@ dev_team = LlmAgent(
         mark_pr_ready_for_review,
         integrate_open_changes,
         git_push,
+        resolve_feature_branch_conflicts,
         gh_pr_create,
         gh_pr_status,
         gh_pr_checks,
         gh_pr_comment,
+        gh_pr_comments,
         gh_pr_review,
         gh_pr_check_logs,
         upsert_adr,
@@ -2338,10 +2771,10 @@ qa_agent = LlmAgent(
     description="Improves test strategy and quality signals; proposes test cases and automation.",
     instruction=QA_PROMPT,
     tools=[
-        init_scrum_state,
         add_impediment,
         log_decision,
         gh_pr_comment,
+        gh_pr_comments,
         gh_pr_review,
         check_build,
         advance_story_stage,
@@ -2358,30 +2791,18 @@ architect = LlmAgent(
     description="Identifies architectural risks, proposes tradeoffs, writes ADR-like notes.",
     instruction=ARCH_PROMPT,
     tools=[
-        init_scrum_state,
         log_decision,
         gh_pr_comment,
+        gh_pr_comments,
         gh_pr_review,
         write_file,
+        delete_file,
         upsert_adr,
         upsert_architecture_vision,
         advance_story_stage,
         deny_review,
         raise_story_blocker,
         resolve_story_blocker,
-    ],
-    **COMMON_AGENT_CALLBACKS,
-)
-
-quality_guardian = LlmAgent(
-    name="QualityGuardian",
-    model=LiteLlm(get_model_name("quality")),
-    description="Objectively assess and report on team effectiveness, result quality, maintainability, and security KPIs.",
-    instruction=QUALITY_GUARDIAN_PROMPT,
-    tools=[
-        calculate_kpis,
-        update_sprint_report_with_kpis,
-        upsert_issue,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
@@ -2394,7 +2815,6 @@ root_agent = LlmAgent(
     instruction=ORCHESTRATOR_PROMPT,
     tools=[
         # General state, setup, and high-level management tools
-        init_scrum_state,
         log_decision,
         configure_github_repo,
         configure_github_app,
@@ -2415,12 +2835,13 @@ root_agent = LlmAgent(
         list_docs,
         upsert_adr,
     ],
-    sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect, quality_guardian],
+    sub_agents=[product_owner, scrum_master, dev_team, qa_agent, architect],
     before_model_callback=[
         ensure_state_initialized_callback,
         inject_litellm_key_callback,
         check_cost_budget_callback,
         role_identity_injection_callback,
+        phase_awareness_injection_callback,
         sprint_status_injection_callback,
         history_management_callback,
         agent_thinking_start_callback

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import json
 import re
+from pathlib import Path
 from typing import Any, Dict
 from .base import _configured_repo_root, _run, _default_push_branch, _develop_branch_name, _with_eval_branch_prefix, _with_eval_title_prefix
 from ..helpers import (
@@ -11,6 +12,13 @@ from ..helpers import (
     sprint_backlog_pr_missing,
     ready_backlog_shortfall,
 )
+
+# GH #415: the version a newly-committed sprint story defaults to if it has
+# none assigned yet - matches spec-templates/ROADMAP.md's own first real
+# release section ("### v0.1 — MVP (target: YYYY-MM)"), so stories actually
+# land there instead of the generic "Backlog (unplanned)" bucket forever.
+# See create_sprint_backlog_pr's own mechanical roadmap sync.
+DEFAULT_RELEASE_VERSION = "v0.1"
 
 def release_pr_still_open(tool_context=None) -> bool:
     """
@@ -120,7 +128,53 @@ def integrate_open_changes(tool_context=None) -> Dict[str, Any]:
     )
     if commit.get("status") != "ok":
         return {"status": "error", "message": "Failed to commit open planning-doc changes.", "files": files, "commit": commit}
+    # GH issue #399: a real eval run (0.1.0-run51) showed start_sprint's own
+    # "clean working copy" sweep (tools/scrum.py) committing this sprint's
+    # own not-yet-published planning output directly, onto whatever branch
+    # happened to be checked out - bypassing create_sprint_backlog_pr's
+    # reviewable PR entirely. create_sprint_backlog_pr's own "nothing to
+    # integrate" check then had no way to tell "nothing was ever written"
+    # apart from "it was already committed by this exact function, just not
+    # right this instant" - this counter is that memory, bumped on every
+    # successful integration regardless of which caller (or branch)
+    # triggered it, so create_sprint_backlog_pr can compare against its own
+    # baseline instead of only ever checking the live working tree.
+    if tool_context and getattr(tool_context, "state", None):
+        tool_context.state["planning_output_commit_count"] = tool_context.state.get("planning_output_commit_count", 0) + 1
     return {"status": "ok", "integrated": True, "files": files, "commit": commit}
+
+
+def _checkout_with_auto_integrate(checkout_cmd: list, repo_root: str, tool_context=None) -> tuple:
+    """
+    Runs a git checkout command; on the specific "local changes would be
+    overwritten" failure, self-heals by calling integrate_open_changes()
+    (committing dangling specs/.hc writes out of the way onto whatever
+    branch is currently checked out) and retrying the checkout once. Any
+    other failure (network, auth, a real content conflict) is returned
+    as-is, unretried - this only ever recovers the one specific, safe-to-
+    auto-resolve failure mode _checkout_develop_or_recover's own docstring
+    already documents in depth.
+
+    Shared by every checkout call site in this module (GH eval run41:
+    start_feature_branch's own feature-branch checkout hit exactly this and
+    had no self-heal at all, unlike _checkout_develop_or_recover's develop
+    checkout right next to it - DevTeam had to notice the failure and call
+    integrate_open_changes itself before retrying by hand) - see
+    _checkout_develop_or_recover for the original of this exact pattern,
+    now factored out here so a new checkout call site can't reintroduce the
+    same gap by simply forgetting to copy it.
+
+    Returns (checkout_result, auto_integrated_result_or_None) - callers
+    should surface auto_integrated in their own error message when present,
+    same convention _checkout_develop_or_recover already established.
+    """
+    checkout = _run(checkout_cmd, cwd=repo_root, tool_context=tool_context)
+    auto_integrated = None
+    if checkout.get("status") == "error" and "would be overwritten" in (checkout.get("stderr") or "").lower():
+        auto_integrated = integrate_open_changes(tool_context)
+        if auto_integrated.get("integrated"):
+            checkout = _run(checkout_cmd, cwd=repo_root, tool_context=tool_context)
+    return checkout, auto_integrated
 
 
 def _preserve_local_only_develop_commits(repo_root: str, develop: str, tool_context=None) -> Dict[str, Any] | None:
@@ -262,14 +316,10 @@ def _checkout_develop_or_recover(repo_root: str, develop: str, tool_context=None
         # (a no-op, since they now match) but a plain checkout also avoids
         # any risk of a race between this push and the reset re-reading a
         # not-yet-visible origin ref.
-        checkout = _run(["git", "checkout", develop], cwd=repo_root, tool_context=tool_context)
+        checkout_cmd = ["git", "checkout", develop]
     else:
-        checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
-    auto_integrated = None
-    if checkout.get("status") == "error" and "would be overwritten" in (checkout.get("stderr") or "").lower():
-        auto_integrated = integrate_open_changes(tool_context)
-        if auto_integrated.get("integrated"):
-            checkout = _run(["git", "checkout", "-B", develop, f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
+        checkout_cmd = ["git", "checkout", "-B", develop, f"origin/{develop}"]
+    checkout, auto_integrated = _checkout_with_auto_integrate(checkout_cmd, repo_root, tool_context=tool_context)
     return {
         "status": checkout.get("status"),
         "fetch": fetch,
@@ -433,7 +483,17 @@ def git_push(branch: str, commit_message: str = "chore: update", add_all: bool =
     _git_push_impl directly instead, which isn't registered as a tool for
     any role and therefore isn't something any prompt can reach at all.
     """
-    return _git_push_impl(branch, commit_message, add_all, allow_protected=False, tool_context=tool_context)
+    result = _git_push_impl(branch, commit_message, add_all, allow_protected=False, tool_context=tool_context)
+    # GH issue #380: only a push to a story's own feature branch can change
+    # what gh_pr_checks is actually reporting on - a sprint-backlog-PR push
+    # (create_sprint_backlog_pr) touches a completely different branch and
+    # shouldn't make an already-fresh CI result for an unrelated story look
+    # stale. See last_pr_checks/git_push_count in state.py for the freshness
+    # check this feeds (advance_story_stage's Implemented-stage gate).
+    if result.get("status") == "ok" and result.get("branch", branch).startswith("feature/") \
+            and tool_context and getattr(tool_context, "state", None):
+        tool_context.state["git_push_count"] = tool_context.state.get("git_push_count", 0) + 1
+    return result
 
 
 def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: bool = True, allow_protected: bool = False, tool_context=None) -> Dict[str, Any]:
@@ -501,13 +561,49 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
         _run(["git", "fetch", "origin", branch], cwd=repo_root, tool_context=tool_context)
         preserved = _preserve_local_only_develop_commits(repo_root, branch, tool_context=tool_context)
         if preserved is not None and preserved.get("in_sync"):
-            checkout = _run(["git", "checkout", branch], cwd=repo_root, tool_context=tool_context)
+            checkout_cmd = ["git", "checkout", branch]
         else:
-            checkout = _run(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_root, tool_context=tool_context)
+            checkout_cmd = ["git", "checkout", "-B", branch, f"origin/{branch}"]
     else:
-        checkout = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+        # GH eval run39: a feature branch has the exact same origin-
+        # divergence risk #317 fixed for protected branches - it can pick
+        # up local commits across sprint/session boundaries (a fresh
+        # working-copy state that's lost track of what was already pushed
+        # for this same branch earlier) that a plain `checkout -B branch`
+        # (no origin sync at all) never reconciles against origin's own
+        # copy. A real eval run saw one feature branch diverge by 26
+        # commits this way, and every subsequent push kept getting
+        # rejected non-fast-forward. Only applies when origin actually has
+        # a copy of this branch already - a brand-new feature branch has
+        # nothing to sync against yet, so falls through to the plain
+        # checkout unchanged.
+        _run(["git", "fetch", "origin", branch], cwd=repo_root, tool_context=tool_context)
+        remote_exists = _run(
+            ["git", "rev-parse", "--verify", "--quiet", f"origin/{branch}"], cwd=repo_root, tool_context=tool_context
+        ).get("returncode") == 0
+        if remote_exists:
+            preserved = _preserve_local_only_develop_commits(repo_root, branch, tool_context=tool_context)
+            if preserved is not None and preserved.get("in_sync"):
+                checkout_cmd = ["git", "checkout", branch]
+            else:
+                checkout_cmd = ["git", "checkout", "-B", branch, f"origin/{branch}"]
+        else:
+            checkout_cmd = ["git", "checkout", "-B", branch]
+    # GH issue (eval run41): whichever checkout was chosen above, a dangling
+    # uncommitted write under specs/.hc (from a prior story's advance_story_
+    # stage roadmap update, upsert_story, etc. - none of those commit, see
+    # integrate_open_changes' own docstring) can make it fail outright with
+    # "local changes would be overwritten" - a real eval run hit exactly
+    # this on start_feature_branch's own equivalent checkout. Self-heal via
+    # the same commit-out-of-the-way-then-retry-once pattern
+    # _checkout_develop_or_recover already uses for its own checkout.
+    checkout, auto_integrated = _checkout_with_auto_integrate(checkout_cmd, repo_root, tool_context=tool_context)
     if checkout.get("status") == "error":
-        return {"status": "error", "message": f"Could not check out branch '{branch}': {checkout.get('stderr') or checkout.get('message')}", "steps": {"checkout": checkout}}
+        return {
+            "status": "error",
+            "message": f"Could not check out branch '{branch}': {checkout.get('stderr') or checkout.get('message')}",
+            "steps": {"checkout": checkout, "auto_integrated": auto_integrated},
+        }
 
     r1 = None
     if add_all:
@@ -618,6 +714,117 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
     if missing_msg:
         return {"status": "error", "message": missing_msg}
 
+    # GH issue #358: advance_story_stage already refuses to let a story
+    # reach Implemented-onward before the higher-priority story immediately
+    # ahead of it (in product_backlog order, skipping BLOCKED predecessors)
+    # has reached Accepted - but nothing stopped the real WORK (this call)
+    # from starting on a lower-priority story first, wasting effort if the
+    # higher-priority one later needs rework or gets blocked. Mirrors that
+    # same gate here, one step earlier, at the point work actually begins.
+    from .requirements import _preceding_story, _story_stages_completed, NOT_IN_PRODUCT_BACKLOG
+    product_backlog = state.get("product_backlog", []) or []
+    preceding = _preceding_story(product_backlog, story_id, story_id)
+    if preceding is NOT_IN_PRODUCT_BACKLOG:
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot start work on '{story_id}' - it isn't in product_backlog, so its priority "
+                "order relative to other stories can't be verified. Add it via "
+                "plan_backlog_item/upsert_story first."
+            ),
+        }
+
+    # GH issue #378: advance_story_stage only ever records stage progress
+    # into sprint_backlog if the story was already planned into it via
+    # plan_sprint_backlog_item - a real run (0.1.0-run47) never called that
+    # tool a single time across 5 whole sprints, so sprint_backlog stayed []
+    # all run, every "Stories Planned" count read 0, and the KPIs sourced
+    # from it (now fixed to read product_backlog instead, see
+    # run_eval_analysis.py's _kpi_time_series) had nothing to show for real
+    # work that was genuinely happening. Planning the story into the sprint
+    # is also what gives this sprint's own backlog a record of estimate vs.
+    # actual effort (log_story_tokens) - skipping it isn't just a reporting
+    # gap, it's work nobody ever actually committed the sprint to.
+    sprint_backlog = state.get("sprint_backlog", []) or []
+    if not any(item.get("id") == story_id or item.get("title") == story_id for item in sprint_backlog):
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot start work on '{story_id}' - it hasn't been planned into this sprint yet. "
+                f"Call plan_sprint_backlog_item('{story_id}', plan) first (estimate, approach, etc.) "
+                "so the sprint backlog actually reflects what the team committed to, then retry."
+            ),
+        }
+
+    if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
+        preceding_ref = preceding.get('id') or preceding.get('title')
+        # GH issue #368: when the blocker is an Issue (an auto-filed retro/
+        # impediment finding, not a feature story), resolving it for real is
+        # the lead instruction, not reprioritizing it away - see
+        # _preceding_story's own docstring for why leading with "just
+        # deprioritize it" would turn this gate into a convenient dodge.
+        escape_hatch = (
+            f" '{preceding_ref}' is an auto-filed process finding - resolve it for real (advance it "
+            "through Implemented -> Reviewed -> Tested -> Accepted like any other item) rather than "
+            f"reaching for set_priority('{preceding_ref}', ...) to dodge it. Only reprioritize away "
+            "from 'Must' if, on genuine reflection, it turns out this finding never actually warranted "
+            "blocking priority - not because resolving it is inconvenient right now."
+        ) if preceding.get("type") == "Issue" else ""
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot start work on '{story_id}' - the higher-priority story "
+                f"'{preceding_ref}' must reach Accepted first. "
+                "Development happens one story at a time, top to bottom, in backlog priority order." + escape_hatch
+            ),
+        }
+
+    # GH issue #359: a story cannot be resolved in reasonable effort gets
+    # marked BLOCKED with a specific reason (raise_story_blocker) - work on
+    # it should stop there until the reason is actually resolved
+    # (resolve_story_blocker), not continue regardless. advance_story_stage
+    # already refuses every further stage transition while `blocked` is
+    # set; nothing previously stopped the real work (this call) from
+    # starting/continuing on it anyway.
+    for item in product_backlog:
+        if (item.get("id") == story_id or item.get("title") == story_id) and item.get("blocked"):
+            blocked = item["blocked"]
+            return {
+                "status": "error",
+                "message": (
+                    f"Cannot start work on '{story_id}' - it is BLOCKED ({blocked.get('category')}): "
+                    f"{blocked.get('question')}. Call resolve_story_blocker('{story_id}', resolution) "
+                    "once this has been answered, then retry."
+                ),
+            }
+
+    # GH issue #357: the Sprint Backlog PR merging isn't by itself proof the
+    # team actually weighed in on it - Product Owner proposes the priority/
+    # sequencing, but Architect/DevTeam/QA each need to have left real
+    # feedback (gh_pr_comment/gh_pr_review) on it before implementation
+    # starts, not just rubber-stamp it by starting work. Reuses the same
+    # pr_review_calls counter the Reviewed/Tested stage gates already rely
+    # on, compared against the baseline snapshotted when this sprint's
+    # backlog PR first merged (see create_sprint_backlog_pr above).
+    pr_calls = state.get("pr_review_calls", {}) or {}
+    engagement_baseline = state.get("sprint_backlog_engagement_baseline", {}) or {}
+    missing_roles = [
+        role for role in ("Architect", "DevTeam", "QA")
+        if pr_calls.get(role, 0) <= engagement_baseline.get(role, 0)
+    ]
+    if missing_roles:
+        plural = len(missing_roles) > 1
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot start work on '{story_id}' - {', '.join(missing_roles)} "
+                f"{'have' if plural else 'has'} not yet left a gh_pr_comment/gh_pr_review on this "
+                "sprint's Sprint Backlog PR. The team gives feedback and commits to the backlog "
+                "Product Owner proposed before implementation begins - have each missing role leave "
+                "real feedback (even an explicit sign-off) on it first."
+            ),
+        }
+
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)
     branch = f"feature/{story_id}-{_slugify(slug)}"
@@ -632,11 +839,20 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
             "auto_integrated": recovery["auto_integrated"],
         }
 
-    checkout_feature = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    # GH issue (eval run41): this checkout has the exact same "dangling
+    # uncommitted specs/.hc write" exposure as the develop checkout right
+    # above it - a real eval run hit this here specifically (a previous
+    # story's advance_story_stage roadmap update was still uncommitted when
+    # DevTeam tried to branch off for the next one) and had no self-heal at
+    # all, unlike the develop checkout next to it. Same helper, same fix.
+    checkout_feature, feature_auto_integrated = _checkout_with_auto_integrate(
+        ["git", "checkout", "-B", branch], repo_root, tool_context=tool_context
+    )
     if checkout_feature.get("status") == "error":
         return {
             "status": "error",
             "message": f"Could not create branch '{branch}': {checkout_feature.get('stderr') or checkout_feature.get('message')}",
+            "auto_integrated": feature_auto_integrated,
         }
 
     push_res = git_push(branch=branch, commit_message=f"chore: start {story_id}", tool_context=tool_context)
@@ -705,6 +921,39 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
             ),
         }
 
+    # GH issue (0.1.0-run42): _file_retro_items_as_issues (budget.py) files
+    # every retro action/impediment as a real, Must-priority Issue in
+    # product_backlog specifically "so it can't be silently starved" - but
+    # nothing mechanically forced Sprint Planning to ever pick one back up.
+    # A real eval run showed exactly that: a dependency-pinning Issue filed
+    # in Sprint 1 sat at Draft, unaddressed, through Sprints 2-5 - every
+    # later sprint's own retro just filed MORE Issues on top, none of them
+    # ever planned in either. This is the same choke point as the Ready-
+    # backlog shortfall check right below (Dev Team can't start until this
+    # PR merges), extended so a filed Must Issue can't be silently ignored
+    # forever the way a merely-thin backlog already couldn't be.
+    unaddressed_must_issues = [
+        item for item in (state.get("product_backlog", []) or [])
+        if item.get("type") == "Issue"
+        and item.get("priority") == "Must"
+        and not item.get("blocked")
+        and "Ready" not in (item.get("stages_completed") or [])
+        and "Accepted" not in (item.get("stages_completed") or [])
+    ]
+    if unaddressed_must_issues:
+        ids = ", ".join(sorted(i.get("id") or i.get("title") or "(no id)" for i in unaddressed_must_issues))
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot create the Sprint Backlog PR yet - {len(unaddressed_must_issues)} Must-priority "
+                f"Issue(s) filed from a previous sprint's retrospective/impediment log are still sitting "
+                f"unaddressed at Draft, never planned into a sprint: {ids}. Call "
+                "advance_story_stage(id_or_title, 'Ready') for each one (then plan_sprint_backlog_item "
+                "to actually queue it for this sprint), or set_priority(id_or_title, ...) to something "
+                "other than 'Must' if it turns out not to actually warrant that, before retrying."
+            ),
+        }
+
     # A real eval run showed "start implementing" was only ever a prompt
     # instruction away from "the backlog barely has any Ready work at all" -
     # this is the single choke point (Dev Team can't start until this PR
@@ -761,14 +1010,98 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 "auto_integrated": recovery["auto_integrated"],
             }
 
-        checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+        checkout_branch, branch_auto_integrated = _checkout_with_auto_integrate(
+            ["git", "checkout", "-B", branch], repo_root, tool_context=tool_context
+        )
         if checkout_branch.get("status") == "error":
             return {
                 "status": "error",
                 "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}",
+                "auto_integrated": branch_auto_integrated,
             }
 
-        push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", tool_context=tool_context)
+        # GH issue #379: this used to call git_push with its default
+        # add_all=True ("git add -A"), which stages every pending write in
+        # the shared checkout, not just this sprint's own planning output -
+        # whichever PR-creating tool's commit lands FIRST wins everyone
+        # else's not-yet-committed writes too. A real run (0.1.0-run47)
+        # showed this exact race: upsert_story had already written
+        # US-0003/4/5's story files to disk when this ran, swept them into
+        # the sprint-backlog commit via "-A", and merged them into develop -
+        # so create_story_spec_pr's own later, deliberately-scoped `git add
+        # <rel_path>` found nothing left to stage and opened an empty PR.
+        # integrate_open_changes is scoped to specs/+.hc/ only (same
+        # pattern create_release_pr already uses for exactly this reason)
+        # - this tool is only ever responsible for planning docs, never a
+        # feature branch's code.
+        integrate_res = integrate_open_changes(tool_context=tool_context)
+        if not integrate_res.get("integrated"):
+            # GH issue #399: a real eval run (0.1.0-run51) showed
+            # start_sprint's own "clean working copy" sweep (tools/scrum.py)
+            # commit this sprint's own not-yet-published planning output
+            # directly onto whatever branch was checked out, BEFORE this
+            # call ever ran - bypassing this PR's review entirely. By the
+            # time this integrate_open_changes call above runs, there's
+            # genuinely nothing left dirty, indistinguishable at a glance
+            # from "nothing was ever written this sprint" - the exact
+            # rejection below. planning_output_commit_count (bumped by every
+            # successful integrate_open_changes call, github.py, regardless
+            # of which caller or branch triggered it) is the memory that
+            # tells the two apart: if it's moved since this PR's own last
+            # successful publish, SOMETHING landed - just not reviewably.
+            content_already_landed = (
+                tool_context.state.get("planning_output_commit_count", 0)
+                > state.get("sprint_backlog_pr_content_baseline", 0)
+                if tool_context and getattr(tool_context, "state", None) else False
+            )
+            if not content_already_landed:
+                # ISSUE-0050/0.1.0-run34: git_push's own --allow-empty fallback
+                # exists so a DIFFERENT caller (create_release_pr, after
+                # integrate_open_changes already committed everything itself)
+                # doesn't hard-fail on "nothing staged" - reusing that same
+                # fallback here would instead silently open/merge a content-free
+                # "Sprint Backlog" PR, which is exactly what a real run showed
+                # (nothing new planned yet, but the PR still opened and merged
+                # with zero roadmap/story edits in it). This tool is the one
+                # place that distinction matters, so it checks for itself
+                # instead of leaning on git_push's generic behavior.
+                return {
+                    "status": "error",
+                    "message": (
+                        "Cannot create the Sprint Backlog PR - there's no new planning output (roadmap/"
+                        "PRD/epics/stories) to publish this sprint yet. Write some via upsert_prd/"
+                        "upsert_epic/upsert_story/update_roadmap first, then retry."
+                    ),
+                }
+            # Content already landed on develop directly (this sprint's own
+            # branch, just created from origin/develop's current tip, so it
+            # already includes that commit - there's nothing left to push or
+            # open a PR for; a PR comparing identical branches would be
+            # empty/refused by GitHub anyway). Recognize the sprint backlog
+            # as effectively published rather than rejecting forever with no
+            # way for Product Owner to ever satisfy this gate again - but say
+            # so plainly, since this did skip the normal review step.
+            tool_context.state["sprint_backlog_pr_content_baseline"] = tool_context.state.get("planning_output_commit_count", 0)
+            if tool_context.state.get("sprint_backlog_pr_sprint") != sprint_number:
+                tool_context.state["sprint_backlog_engagement_baseline"] = dict(
+                    tool_context.state.get("pr_review_calls", {}) or {}
+                )
+            tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
+            from .scrum import save_state_to_repo
+            save_state_to_repo(tool_context)
+            return {
+                "status": "ok",
+                "merged": True,
+                "sprint_number": sprint_number,
+                "warning": (
+                    "This sprint's planning output (roadmap/PRD/epics/stories) was already committed "
+                    "directly to develop by an earlier step (most likely start_sprint's own cleanup "
+                    "sweep), before this call ever ran - there was nothing left to open a reviewable "
+                    "Sprint Backlog PR for. Treating it as published so the sprint isn't permanently "
+                    "stuck, but note this means it went to develop without the usual team review."
+                ),
+            }
+        push_res = git_push(branch=branch, commit_message=f"chore: sprint {sprint_number} backlog", add_all=False, tool_context=tool_context)
         if push_res.get("status") != "ok":
             return {"status": "error", "message": "Failed to push the sprint backlog branch.", "push": push_res}
         actual_branch = push_res.get("branch", branch)
@@ -826,7 +1159,65 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
         # Only set once the merge actually succeeded - this is exactly what
         # sprint_backlog_pr_missing (agents/scrum_team/helpers.py) checks
         # before letting Dev Team start any story this sprint.
+        if tool_context.state.get("sprint_backlog_pr_sprint") != sprint_number:
+            # GH issue #357: snapshot pr_review_calls the first time THIS
+            # sprint's Sprint Backlog PR merges. start_feature_branch then
+            # requires each of Architect/DevTeam/QA's count to grow past
+            # this baseline before implementation can begin - at this point
+            # in the sprint, this PR is the only one that could possibly
+            # exist yet, so a role's gh_pr_comment/gh_pr_review call is
+            # necessarily real engagement with it.
+            tool_context.state["sprint_backlog_engagement_baseline"] = dict(
+                tool_context.state.get("pr_review_calls", {}) or {}
+            )
         tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
+        # GH issue #399: snapshot the same "has anything landed under specs/
+        # since I last published" counter the early-return shortcut above
+        # checks, so a later sprint's own content-already-landed detection
+        # compares against THIS publish, not a stale one from sprints ago.
+        tool_context.state["sprint_backlog_pr_content_baseline"] = tool_context.state.get("planning_output_commit_count", 0)
+
+        # GH #415: mechanically keep specs/ROADMAP.md's release goals and
+        # Kanban version-grouping populated - previously entirely optional
+        # (update_roadmap's own `goals` param is never supplied unless an
+        # agent happens to pass it, and a story defaults to
+        # version="Backlog (unplanned)" forever unless something explicitly
+        # assigns a real one). A real eval run (0.1.0-run54) showed
+        # ROADMAP.md's release goals and "### v0.1 Kanban" sections left
+        # permanently empty despite stories actually being tracked - just
+        # under the generic unplanned bucket, never grouped into a real
+        # release. Every non-Epic story newly committed to THIS sprint's
+        # backlog defaults to DEFAULT_RELEASE_VERSION if it has none yet,
+        # and this sprint's own goal (state.sprint_goal, set by
+        # start_sprint) is appended to that version's Goals - no separate
+        # agent action required, same "make it mechanical" philosophy as
+        # GH #413's sprint-budget reset.
+        from .requirements import update_roadmap
+        sprint_story_ids = {x.get("id") or x.get("title") for x in (state.get("sprint_backlog") or [])}
+        product_backlog = tool_context.state.get("product_backlog", []) or []
+        versions_touched = {}
+        for item in product_backlog:
+            story_key = item.get("id") or item.get("title")
+            if story_key not in sprint_story_ids or item.get("type") == "Epic":
+                continue
+            if not item.get("version") or item.get("version") == "Backlog (unplanned)":
+                item["version"] = DEFAULT_RELEASE_VERSION
+            versions_touched.setdefault(item["version"], []).append(story_key)
+        # update_roadmap's own `goals` REPLACES a version's Goals section
+        # wholesale on every call (it has no "append" mode) - accumulated
+        # here in state instead (deduped) and passed as the full list every
+        # time, so a later sprint's own goal doesn't erase earlier sprints'
+        # already-recorded ones for the same version.
+        sprint_goal = tool_context.state.get("sprint_goal")
+        version_goals = dict(tool_context.state.get("version_goals") or {})
+        for version, story_keys in versions_touched.items():
+            goals = list(version_goals.get(version, []))
+            if sprint_goal and sprint_goal not in goals:
+                goals.append(sprint_goal)
+            version_goals[version] = goals
+            update_roadmap(version, goals=goals, stories=story_keys, tool_context=tool_context)
+        tool_context.state["version_goals"] = version_goals
+
         from .scrum import save_state_to_repo
         save_state_to_repo(tool_context)
 
@@ -899,11 +1290,14 @@ def create_story_spec_pr(title_or_id: str, tool_context=None) -> Dict[str, Any]:
             "fetch": recovery["fetch"],
             "auto_integrated": recovery["auto_integrated"],
         }
-    checkout_branch = _run(["git", "checkout", "-B", branch], cwd=repo_root, tool_context=tool_context)
+    checkout_branch, branch_auto_integrated = _checkout_with_auto_integrate(
+        ["git", "checkout", "-B", branch], repo_root, tool_context=tool_context
+    )
     if checkout_branch.get("status") == "error":
         return {
             "status": "error",
             "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}",
+            "auto_integrated": branch_auto_integrated,
         }
 
     add_res = _run(["git", "add", rel_path], cwd=repo_root, tool_context=tool_context)
@@ -990,6 +1384,138 @@ def merge_story_pr(pr_id: str | int | None = None, admin: bool = False, tool_con
         _run(["git", "merge", "--ff-only", f"origin/{develop}"], cwd=repo_root, tool_context=tool_context)
     return result
 
+_CONFLICT_MARKERS = ("<<<<<<<", "=======", ">>>>>>>")
+
+
+def resolve_feature_branch_conflicts(story_id: str, tool_context=None) -> Dict[str, Any]:
+    """
+    GH issue #382: a real eval run showed a story's feature-branch PR go
+    "not mergeable" (merge_story_pr) because it had diverged from develop -
+    DevTeam was transferred to "resolve merge conflicts" 5 times in a row,
+    but git_push (its only repair tool) only ever re-fetches/re-pushes the
+    SAME branch; it never actually runs `git merge`/rebase against develop.
+    Every retry hit the identical error, and the team eventually gave up and
+    recreated the PR from scratch - only survivable because that story's
+    diff happened to be small enough to cheaply redo.
+
+    Merges the current `develop` into story_id's active feature branch
+    (active_feature_branches[story_id], set by start_feature_branch) to
+    resolve exactly that failure:
+    - No real conflict (clean merge, or already up to date): commits
+      (if anything to commit) and pushes immediately - retry merge_story_pr.
+    - Real conflicts: returns each conflicted file's current on-disk content
+      (with git's own <<<<<<</=======/>>>>>>> markers) so DevTeam can
+      resolve them via write_file, then call this again - it detects which
+      files still contain marker lines (not yet actually resolved) versus
+      which are clean now, stages+commits+pushes once none remain, and
+      reports the still-unresolved ones again otherwise. Safe to call
+      repeatedly as resolution progresses one file at a time.
+    """
+    state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
+    branch = (state.get("active_feature_branches") or {}).get(story_id)
+    if not branch:
+        return {
+            "status": "error",
+            "message": (
+                f"No active feature branch recorded for '{story_id}' - call start_feature_branch "
+                "first, or check the story_id is correct."
+            ),
+        }
+
+    repo_root = str(_configured_repo_root(tool_context))
+    develop = _develop_branch_name(tool_context)
+
+    checkout, auto_integrated = _checkout_with_auto_integrate(
+        ["git", "checkout", branch], repo_root, tool_context=tool_context
+    )
+    if checkout.get("status") == "error":
+        return {
+            "status": "error",
+            "message": f"Could not check out '{branch}': {checkout.get('stderr') or checkout.get('message')}",
+            "auto_integrated": auto_integrated,
+        }
+
+    merge_in_progress = _run(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=repo_root, tool_context=tool_context
+    ).get("returncode") == 0
+
+    if not merge_in_progress:
+        _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
+        merge_res = _run(
+            ["git", "merge", f"origin/{develop}", "--no-commit", "--no-ff"],
+            cwd=repo_root, tool_context=tool_context,
+        )
+        if "up to date" in (merge_res.get("stdout") or "").lower() and merge_res.get("status") == "ok":
+            return {
+                "status": "ok",
+                "merged": False,
+                "message": f"'{branch}' is already up to date with '{develop}' - nothing to resolve.",
+            }
+
+    conflicted = _run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_root, tool_context=tool_context
+    )
+    conflicted_paths = [p for p in (conflicted.get("stdout") or "").splitlines() if p.strip()]
+
+    if not conflicted_paths:
+        # A clean merge pending commit (--no-commit above), or a previously
+        # in-progress merge whose last conflicted file was just resolved.
+        _run(["git", "add", "-A"], cwd=repo_root, tool_context=tool_context)
+        commit_res = _run(
+            ["git", "commit", "--no-edit"], cwd=repo_root, tool_context=tool_context
+        )
+        if commit_res.get("status") != "ok" and "nothing to commit" not in (commit_res.get("stdout") or "").lower():
+            return {"status": "error", "message": "Merge resolved but commit failed.", "commit": commit_res}
+        push_res = git_push(branch=branch, commit_message=f"merge: resolve conflicts with {develop}", add_all=False, tool_context=tool_context)
+        if push_res.get("status") != "ok":
+            return {"status": "error", "message": "Merge resolved and committed, but push failed.", "push": push_res}
+        return {
+            "status": "ok",
+            "merged": True,
+            "message": f"Merged '{develop}' into '{branch}' and pushed - retry merge_story_pr.",
+        }
+
+    unresolved = {}
+    for rel_path in conflicted_paths:
+        abs_path = (Path(repo_root) / rel_path).resolve()
+        try:
+            content = abs_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            unresolved[rel_path] = f"(could not read file: {e})"
+            continue
+        if any(marker in content for marker in _CONFLICT_MARKERS):
+            unresolved[rel_path] = content
+        else:
+            # Already rewritten (by a prior write_file call) with no marker
+            # lines left - stage it now so it doesn't show as conflicted
+            # the next time this is called.
+            _run(["git", "add", "--", rel_path], cwd=repo_root, tool_context=tool_context)
+
+    if unresolved:
+        return {
+            "status": "conflict",
+            "conflicted_files": unresolved,
+            "message": (
+                f"{len(unresolved)} file(s) still have real conflict markers - resolve each via "
+                "write_file (replacing the <<<<<<</=======/>>>>>>> sections with the real, correct "
+                "content), then call resolve_feature_branch_conflicts again."
+            ),
+        }
+
+    # Every previously-conflicted file is now staged with no markers left.
+    commit_res = _run(["git", "commit", "--no-edit"], cwd=repo_root, tool_context=tool_context)
+    if commit_res.get("status") != "ok":
+        return {"status": "error", "message": "All conflicts resolved but commit failed.", "commit": commit_res}
+    push_res = git_push(branch=branch, commit_message=f"merge: resolve conflicts with {develop}", add_all=False, tool_context=tool_context)
+    if push_res.get("status") != "ok":
+        return {"status": "error", "message": "Conflicts resolved and committed, but push failed.", "push": push_res}
+    return {
+        "status": "ok",
+        "merged": True,
+        "message": f"All conflicts resolved, merged '{develop}' into '{branch}', and pushed - retry merge_story_pr.",
+    }
+
+
 def gh_pr_status(tool_context=None) -> Dict[str, Any]:
     """
     Check the status of Pull Requests for the current repository and user/app.
@@ -1031,21 +1557,33 @@ def gh_pr_checks(pr_id: str | int | None = None, watch: bool = False, interval: 
     cmd.append("state,bucket")
 
     r = _run(cmd, cwd=repo_root, tool_context=tool_context)
-    
+
     if r.get("status") == "error":
         stderr = r.get("stderr", "")
         stdout = r.get("stdout", "")
         # No checks case
         if "no checks reported" in stderr.lower() or "no checks reported" in stdout.lower():
-            return {"status": "ok", "passing": True, "message": "No checks defined.", "details": r}
-        
+            result = {"status": "ok", "passing": True, "message": "No checks defined.", "details": r}
         # Pending case (exit code 8)
-        if r.get("returncode") == 8:
-            return {"status": "pending", "passing": False, "message": "Checks are pending.", "details": r}
-            
-        return {"status": "error", "passing": False, "message": "Checks are failing or another error occurred.", "details": r}
+        elif r.get("returncode") == 8:
+            result = {"status": "pending", "passing": False, "message": "Checks are pending.", "details": r}
+        else:
+            result = {"status": "error", "passing": False, "message": "Checks are failing or another error occurred.", "details": r}
+    else:
+        result = {"status": "ok", "passing": True, "message": "All checks passing.", "details": r}
 
-    return {"status": "ok", "passing": True, "message": "All checks passing.", "details": r}
+    # GH issue #380: advance_story_stage's Implemented-stage gate requires a
+    # gh_pr_checks() result recorded here - same "last tool result, snapshot
+    # the staleness counter at call time" pattern check_build() already uses
+    # (last_check_build/dependency_manifest_write_count) - before this,
+    # nothing anywhere actually required CI to be checked at all before a
+    # story could be marked Implemented.
+    if tool_context and getattr(tool_context, "state", None):
+        tool_context.state["last_pr_checks"] = {
+            "passing": result.get("passing"),
+            "git_push_count_at_check": tool_context.state.get("git_push_count", 0),
+        }
+    return result
 
 def gh_release_create(tag: str, title: str | None = None, notes: str | None = None, generate_notes: bool = False, draft: bool = False, prerelease: bool = False, tool_context=None) -> Dict[str, Any]:
     """
@@ -1190,6 +1728,22 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         if required_approval and release_approvals is not None:
             state["release_approval_baseline"] = release_approvals
         state["sprint_report_pending_release"] = False
+        # GH issue #397: this (and create_sprint_report's own baseline
+        # bumps) previously only ever landed in the live in-memory session
+        # state - neither function persisted it, unlike nearly every other
+        # state-mutating tool. A stale .hc/state.json left over from a
+        # mid-sprint save (e.g. advance_story_stage, after an earlier
+        # rejected create_sprint_report attempt) could then get reloaded by
+        # a later init_scrum_state() call - it runs unconditionally
+        # whenever the file exists, including at the start of every sprint
+        # - clobbering the correctly-cleared sprint_report_pending_release
+        # with a stale True/False mismatch and resurrecting a false
+        # sprint_report_step_active() condition (helpers.py) that locked
+        # Scrum Master out of every tool but transfer_to_agent, bouncing
+        # with Product Owner until the loop breaker tripped (0.1.0-run50).
+        if tool_context and getattr(tool_context, "state", None):
+            from .scrum import save_state_to_repo
+            save_state_to_repo(tool_context)
     return {
         "status": "ok" if ok else "error",
         "fetch": fetch_res,
@@ -1211,6 +1765,61 @@ def _record_pr_review_call(tool_context) -> None:
     calls = dict(tool_context.state.get("pr_review_calls", {}))
     calls[agent_name] = calls.get(agent_name, 0) + 1
     tool_context.state["pr_review_calls"] = calls
+
+def gh_pr_comments(pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Reads back the comments and reviews already left on a Pull Request -
+    the read counterpart to gh_pr_comment/gh_pr_review, which only ever
+    write. Every comment this codebase posts is prefixed with the posting
+    role's own name (`**Architect:**`, `**QA:**`, ...) regardless of the
+    underlying GitHub account they all share, so that prefix - not the raw
+    GitHub username - is how a caller tells who said what.
+
+    Without this, a role has no way to see what another role actually said
+    on a PR - only whether the mechanical team-engagement gate (GH #357)
+    considers them to have commented at all. A real eval run showed DevTeam
+    unable to tell whether QA/Architect had already left feedback worth
+    reading before deciding whether to repeat work or wait, and separately
+    tried (and failed) to satisfy QA's own missing-engagement requirement
+    by posting a comment itself worded as QA's sign-off - gh_pr_comment
+    attributes by the real calling agent, never by what the text claims,
+    so this is also how a role can *verify* that before assuming it worked.
+
+    - pr_id: optional PR number, URL, or branch. If None, uses current branch.
+    Returns `comments` (general PR conversation) and `reviews` (formal
+    gh_pr_review submissions), each as a list of {author, body, created_at}
+    in chronological order - empty lists, not an error, if none exist yet.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    cmd = ["gh", "pr", "view"]
+    if pr_id:
+        cmd.append(str(pr_id))
+    cmd += ["--json", "comments,reviews"]
+    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+    if r.get("status") != "ok":
+        return r
+    try:
+        data = json.loads(r.get("stdout") or "{}")
+    except ValueError:
+        return {"status": "error", "message": "Could not parse gh pr view output.", "details": r}
+    comments = [
+        {
+            "author": (c.get("author") or {}).get("login"),
+            "body": c.get("body"),
+            "created_at": c.get("createdAt"),
+        }
+        for c in data.get("comments", []) or []
+    ]
+    reviews = [
+        {
+            "author": (rv.get("author") or {}).get("login"),
+            "state": rv.get("state"),
+            "body": rv.get("body"),
+            "submitted_at": rv.get("submittedAt"),
+        }
+        for rv in data.get("reviews", []) or []
+    ]
+    return {"status": "ok", "comments": comments, "reviews": reviews}
 
 def gh_pr_comment(body: str, pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
     """

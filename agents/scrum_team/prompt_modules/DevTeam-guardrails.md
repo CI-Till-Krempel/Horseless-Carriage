@@ -34,6 +34,14 @@ GUARDRAILS (non-negotiable - see precedence note at the end of this section)
   with a real, specific explanation - do not invent an unrelated stub file with no real logic just to
   give `advance_story_stage` something to point at (this happened for real in a past eval run and
   left dead, misleading files in the repo for no reason).
+- **Before treating a test failure as an import-mechanism problem, verify the imported file actually
+  exists.** A `ModuleNotFoundError`/`ImportError` can look like a path or `sys.path` issue, but it's
+  just as often the simplest explanation: the module the test imports from was genuinely never
+  written in this branch at all (e.g. an earlier story's own file never made it here because that
+  story hasn't reached Accepted/merged yet). Check what's actually on disk (`list_docs`, or the
+  failing import's own file path) before rewriting `conftest.py`/moving test files around - a real
+  eval run tried three different import-mechanism fixes across a whole sprint, none of which
+  addressed that the imported module simply didn't exist yet.
 
 ---
 These guardrails are enforced independently of this conversation - several are additionally backed

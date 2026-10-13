@@ -6,7 +6,10 @@ from typing import Any, Dict, List
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _hc_version, _run
 from .migrations import migrate_state
-from ..helpers import blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked, get_env_with_deprecated_fallback
+from ..helpers import (
+    blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked, get_env_with_deprecated_fallback,
+    looks_like_role_behavior_finding, recurring_technical_finding_sprint,
+)
 
 DEFAULT_DOD = [
     "Code reviewed",
@@ -28,6 +31,8 @@ REPO_STATE_KEYS = [
     "sprint_goal",
     "sprint_number",
     "sprint_backlog_pr_sprint",
+    "planning_output_commit_count",
+    "sprint_backlog_pr_content_baseline",
     "sprint_backlog",
     "impediment_log",
     "retro_actions",
@@ -48,16 +53,26 @@ REPO_STATE_KEYS = [
     "sprint_approval_baseline",
     "release_approval_baseline",
     "dev_touch_baseline",
+    "unadvanced_write_nudge_baseline",
     "sprint_files_touched",
     "last_check_build",
+    "last_pr_checks",
+    "git_push_count",
     "pr_review_calls",
     "architect_review_baseline",
     "qa_review_baseline",
     "qa_tested_baseline",
+    "sprint_backlog_engagement_baseline",
     "sprint_report_pending_release",
     "blocking_interactions",
-    "budget_reset_since_last_sprint_start",
     "overclaim_rejection_counts",
+    "general_blockers",
+    "steering_proposal_count",
+    "steering_baseline",
+    "steering_proposals",
+    "blocked_story_ids_as_of_last_report",
+    "accepted_count_baseline",
+    "version_goals",
 ]
 # Deliberately excluded from the above: github_token, github_app,
 # litellm_keys, last_auto_auth_error - these are real secrets/session-only
@@ -132,7 +147,7 @@ def sync_budgets_from_env(tool_context=None) -> Dict[str, Any]:
     return {"status": "ok", "budgets": budgets}
 
 
-def init_scrum_state(tool_context=None) -> Dict[str, Any]:
+def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
     """
     Initialize all Scrum artifacts in session.state if missing, then rebuild
     them from whatever specs/ already has on disk (epics, stories, issues,
@@ -141,6 +156,36 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     (story/epic/issue count, vision/goals/architecture booleans) is the
     trustworthy record of what got picked up - re-reading every doc by hand
     afterward "to check it's synced" is redundant and just burns budget.
+
+    GH issue #423: this tool is available to every role, not just invoked
+    automatically once per session (see ensure_state_initialized_callback,
+    agents/scrum_team/agent.py, and its own `_state_auto_initialized` guard,
+    which only protects *that* automatic first call). Nothing previously
+    stopped an agent from calling init_scrum_state() again later in an
+    already-live session - and the "load from repo" step below used to run
+    unconditionally every time, blindly overwriting whatever richer,
+    already-advanced in-memory state the live session had accumulated
+    (product_backlog, sprint_backlog, etc.) with a wholesale replacement
+    from .hc/state.json on disk. A real eval run (0.1.0-run56) hit exactly
+    this: ScrumMaster re-called init_scrum_state() at the start of Sprint 2
+    ("Initializing Scrum state from disk"), and three stories that had
+    already genuinely reached Accepted in Sprint 1 came back out of that
+    call showing only Draft/Ready - stale disk content silently clobbering
+    live state - which then made the one-story-at-a-time ordering gate
+    correctly-but-wrongly reject work on the next story, cascading into a
+    transfer-loop stop.
+
+    Now a no-op for that specific step once this session's own
+    `_state_auto_initialized` flag is already set (i.e. this isn't the
+    session's first-ever init) - unless `force=True` is passed explicitly,
+    for the rare genuine case of deliberately picking up an out-of-band
+    edit to state.json mid-session. The markdown rebuild below (step 3)
+    stays unconditional regardless: it merges per-field onto whatever's
+    already in product_backlog/sprint_backlog rather than replacing either
+    list wholesale, and doesn't carry stages_completed at all (see
+    sync_stories_from_markdown/_parse_story_markdown), so re-running it
+    can only ever add a genuinely new story/doc picked up from specs/, not
+    regress an existing one's progress.
     """
     from .github import configure_github_app
     from .requirements import sync_stories_from_markdown
@@ -161,6 +206,8 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("sprint_goal", "")
     s.setdefault("sprint_number", 0)
     s.setdefault("sprint_backlog_pr_sprint", 0)
+    s.setdefault("planning_output_commit_count", 0)
+    s.setdefault("sprint_backlog_pr_content_baseline", 0)
     s.setdefault("sprint_backlog", [])
     s.setdefault("impediment_log", [])
     s.setdefault("retro_actions", [])
@@ -174,11 +221,19 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     s.setdefault("kpi_update_count", 0)
     s.setdefault("kpi_baseline", 0)
     s.setdefault("overclaim_rejection_counts", {})
+    s.setdefault("general_blockers", [])
+    s.setdefault("steering_proposal_count", 0)
+    s.setdefault("blocked_story_ids_as_of_last_report", [])
+    s.setdefault("accepted_count_baseline", 0)
+    s.setdefault("steering_baseline", 0)
+    s.setdefault("steering_proposals", [])
+    s.setdefault("version_goals", {})
     s.setdefault("backlog_scope_complete", False)
     s.setdefault("human_approvals", [])
     s.setdefault("sprint_approval_baseline", 0)
     s.setdefault("release_approval_baseline", 0)
     s.setdefault("dev_touch_baseline", 0)
+    s.setdefault("unadvanced_write_nudge_baseline", 0)
     # GH issue #119: previously only dev_touch_baseline was persisted
     # (REPO_STATE_KEYS), not the running sprint_files_touched list it's
     # compared against - after any state reload mid-sprint (a restart, a
@@ -189,37 +244,66 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
     # sprint.
     s.setdefault("sprint_files_touched", [])
     s.setdefault("last_check_build", None)
+    s.setdefault("last_pr_checks", None)
+    s.setdefault("git_push_count", 0)
     s.setdefault("pr_review_calls", {})
     s.setdefault("architect_review_baseline", 0)
     s.setdefault("qa_review_baseline", 0)
     s.setdefault("qa_tested_baseline", 0)
+    s.setdefault("sprint_backlog_engagement_baseline", {})
     s.setdefault("sprint_report_pending_release", False)
     s.setdefault("blocking_interactions", [])
     s.setdefault("orchestrator_stall_count", 0)
-    # True by default: the very first sprint needs no reset_sprint_budget()
-    # call (see GH issue #110) - there's no previous sprint's token usage to
-    # clear yet.
-    s.setdefault("budget_reset_since_last_sprint_start", True)
 
     # 1. Try to load from repo if present first, so environment can override
+    #
+    # GH #423: only for this session's first-ever init (or an explicit
+    # force=True) - see this function's own docstring. Once
+    # _state_auto_initialized is set, live in-memory state is always at
+    # least as current as whatever snapshot happens to be sitting in
+    # .hc/state.json on disk, so reloading it here can only ever regress
+    # progress, never recover it.
+    already_initialized = bool(s.get("_state_auto_initialized"))
     state_json_corrupted = False
-    try:
-        repo_root = _configured_repo_root(tool_context)
-        fp = _state_file_path(repo_root)
-        if fp.exists():
-            load_result = load_state_from_repo(tool_context)
-            # GH issue #85: a corrupted-and-unrecoverable-even-from-git
-            # state.json used to be discarded silently here (this whole
-            # block only ever caught real exceptions, and load_state_from_repo
-            # returns an error dict rather than raising) - the session would
-            # just quietly start blank, with no indication anything was ever
-            # wrong or any chance to intervene. "not found" isn't corruption
-            # (a brand new state repo has no state.json at all - normal, not
-            # an error worth surfacing), so only flag the genuine case.
-            if load_result.get("status") == "error" and "not found" not in load_result.get("message", ""):
-                state_json_corrupted = True
-    except Exception:
-        pass
+    reloaded_from_disk = False
+    if force or not already_initialized:
+        try:
+            repo_root = _configured_repo_root(tool_context)
+            fp = _state_file_path(repo_root)
+            if fp.exists():
+                load_result = load_state_from_repo(tool_context)
+                reloaded_from_disk = load_result.get("status") == "ok"
+                # GH issue #85: a corrupted-and-unrecoverable-even-from-git
+                # state.json used to be discarded silently here (this whole
+                # block only ever caught real exceptions, and load_state_from_repo
+                # returns an error dict rather than raising) - the session would
+                # just quietly start blank, with no indication anything was ever
+                # wrong or any chance to intervene. "not found" isn't corruption
+                # (a brand new state repo has no state.json at all - normal, not
+                # an error worth surfacing), so only flag the genuine case.
+                if load_result.get("status") == "error" and "not found" not in load_result.get("message", ""):
+                    state_json_corrupted = True
+        except Exception:
+            pass
+
+        # GH issue (0.1.0-run58): a long-lived project (the eval harness's
+        # own standing target repo, reused run after run rather than
+        # recreated fresh - see run_eval.py's _prepare_local_clone) can
+        # have been first seeded before seed_repository ever wrote a
+        # .gitignore, or accumulated a now-ignorable tracked file before
+        # .gitignore started covering it - seed_repository's own "only
+        # write what's missing" check never re-visits a project that
+        # already looks seeded, so this drift otherwise persists forever.
+        # Same first-init-only gating as the reload above: this is a
+        # one-time repo-hygiene check, not something worth re-running
+        # (and paying real git/network cost for) on every later call this
+        # same session.
+        try:
+            from .docs import _heal_gitignore_drift
+            _heal_gitignore_drift(tool_context)
+        except Exception:
+            pass
+    s["_state_auto_initialized"] = True
 
     # hc_version always reflects the version actually running this session,
     # never the (possibly older) value just loaded from the state repo -
@@ -311,7 +395,17 @@ def init_scrum_state(tool_context=None) -> Dict[str, Any]:
         except Exception:
             pass
 
-    return {"status": "ok", "initialized": True, "state_json_corrupted": state_json_corrupted, "doc_sync": doc_sync}
+    return {
+        "status": "ok",
+        "initialized": True,
+        "state_json_corrupted": state_json_corrupted,
+        "doc_sync": doc_sync,
+        # GH #423: lets a caller (or a test) see whether this call actually
+        # reloaded .hc/state.json over live state, versus being a no-op
+        # because this session was already initialized.
+        "reloaded_from_disk": reloaded_from_disk,
+        "already_initialized": already_initialized,
+    }
 
 def _write_state_atomically(state_path: Path, snapshot: dict) -> None:
     """Write-to-temp-file + os.replace (atomic on POSIX and Windows) rather
@@ -582,9 +676,103 @@ def log_decision(title: str, decision: str, rationale: str, owner: str, tool_con
     _ = save_state_to_repo(tool_context)
     return {"status": "ok", "decision": entry}
 
-def add_impediment(description: str, owner: str, tool_context=None) -> Dict[str, Any]:
+# GH issue #342: a retro finding must be triaged into exactly one of these -
+# a technical task the team can fix itself (filed as a plannable Issue, see
+# _file_retro_items_as_issues in budget.py), a steering change (how a role
+# behaves/is prompted - requires a propose_steering_change call, see
+# create_sprint_report's own gate), or something genuinely outside the
+# team's own authority (raised as a general_blockers entry below, not tied
+# to any one story). Before this, every retro/impediment finding was
+# auto-filed as a Must-priority Issue uniformly, regardless of what kind of
+# gap it actually was - correct for the first kind, wrong for the other two.
+_RETRO_CATEGORIES = ("technical", "steering", "human")
+_RETRO_PRIORITIES = ("normal", "high")
+
+
+def _technical_category_nudge(text: str, existing_entries, sprint_number, text_field: str) -> str | None:
+    """
+    GH issue #354: a "technical" finding whose text reads like a role-
+    behavior/process-discipline gap, or that recurs (shares significant
+    keywords with) an earlier sprint's unresolved "technical" finding of
+    the same kind - either is a signal prompt-only guidance alone wasn't
+    enough to get the model to act on (see this module's own docstring
+    link). Returns a non-blocking warning string to surface on the ADD
+    call's own response, or None if neither signal fires.
+    """
+    recurs_since_sprint = recurring_technical_finding_sprint(existing_entries, text, sprint_number, text_field)
+    behavior_signal = looks_like_role_behavior_finding(text)
+    if recurs_since_sprint is not None and behavior_signal:
+        return (
+            f"This reads like a role-behavior/process-discipline finding, and a similar one was "
+            f"already logged as 'technical' back in sprint {recurs_since_sprint} with no resolution "
+            "since - if a specific role should act differently going forward, this is exactly what "
+            "category='steering' plus a propose_steering_change call is for, not another one-off "
+            "'technical' Issue nobody will ever close."
+        )
+    if recurs_since_sprint is not None:
+        return (
+            f"A similar finding was already logged as 'technical' back in sprint {recurs_since_sprint} "
+            "with no resolution since - if this keeps recurring because of how a role behaves rather "
+            "than a one-time code task, consider category='steering' and a propose_steering_change "
+            "call instead."
+        )
+    if behavior_signal:
+        return (
+            "This reads like a role-behavior finding, not a one-time code task - if a specific role "
+            "should act differently going forward, consider category='steering' and a "
+            "propose_steering_change call instead, or category='human' if this is genuinely outside "
+            "the team's own authority to fix."
+        )
+    return None
+
+
+def _file_general_blocker_if_human(category: str, priority: str, text: str, owner: str, tool_context) -> None:
+    """
+    A "human" category retro finding is something genuinely outside the
+    team's own authority to resolve - raised immediately as a
+    general_blockers entry (not story-scoped, unlike raise_story_blocker)
+    so it's visible right away, not just funneled into the same Issue
+    pipeline as a technical task nobody on the team can actually act on.
+    Always records a blocking_interaction too, same "absolutely necessary
+    human feedback" visibility raise_story_blocker already gives story-level
+    blockers (GH issue #53). Best-effort: a notification failure here must
+    never turn an already-logged retro/impediment entry into an error.
+    """
+    if category != "human":
+        return
+    from .notifications import record_blocking_interaction
+
+    s = tool_context.state
+    agent_name = getattr(tool_context, "agent_name", None)
+    entry = {
+        "description": text.strip(),
+        "owner": owner.strip(),
+        "priority": priority,
+        "raised_by": agent_name or "unknown",
+        "resolved": False,
+    }
+    s["general_blockers"] = list(s.get("general_blockers", [])) + [entry]
+    try:
+        record_blocking_interaction(
+            "general_blocker",
+            f"Human-only retro finding ({priority} priority): {text.strip()}",
+            detail=f"Raised by {agent_name or 'unknown'}. Not tied to any one story - see state.general_blockers.",
+            tool_context=tool_context,
+        )
+    except Exception:
+        pass
+
+
+def add_impediment(description: str, owner: str, category: str, priority: str = "normal", tool_context=None) -> Dict[str, Any]:
     """
     Add an impediment to impediment_log.
+
+    `category` (GH issue #342, MANDATORY): "technical" (a real gap the team
+    can fix - gets filed as a plannable Issue), "steering" (a role-behavior
+    gap - requires a propose_steering_change call before the sprint report
+    can close), or "human" (genuinely outside the team's own authority -
+    immediately raised as a general_blockers entry, escalated to the human
+    if `priority="high"`). See _RETRO_CATEGORIES' own comment above.
     """
     if is_low_quality_retro_text(description):
         return {
@@ -595,15 +783,43 @@ def add_impediment(description: str, owner: str, tool_context=None) -> Dict[str,
                 "blocked the process this sprint."
             ),
         }
+    if category not in _RETRO_CATEGORIES:
+        return {
+            "status": "error",
+            "message": f"category must be one of {list(_RETRO_CATEGORIES)}, not {category!r}.",
+        }
+    if priority not in _RETRO_PRIORITIES:
+        return {
+            "status": "error",
+            "message": f"priority must be one of {list(_RETRO_PRIORITIES)}, not {priority!r}.",
+        }
     s = tool_context.state
-    imp = {"description": description.strip(), "owner": owner.strip(), "status": "open"}
+    sprint_number = s.get("sprint_number", 0)
+    imp = {
+        "description": description.strip(), "owner": owner.strip(), "status": "open", "category": category,
+        "sprint_number": sprint_number,
+    }
+    warning = None
+    if category == "technical":
+        warning = _technical_category_nudge(description, s.get("impediment_log", []), sprint_number, "description")
     s["impediment_log"] = list(s.get("impediment_log", [])) + [imp]
+    _file_general_blocker_if_human(category, priority, description, owner, tool_context)
     _ = save_state_to_repo(tool_context)
-    return {"status": "ok", "impediment": imp}
+    result = {"status": "ok", "impediment": imp}
+    if warning:
+        result["warning"] = warning
+    return result
 
-def add_retro_action(action: str, owner: str, success_metric: str, tool_context=None) -> Dict[str, Any]:
+def add_retro_action(action: str, owner: str, success_metric: str, category: str, priority: str = "normal", tool_context=None) -> Dict[str, Any]:
     """
     Add an action item from retrospectives.
+
+    `category` (GH issue #342, MANDATORY): "technical" (a real gap the team
+    can fix - gets filed as a plannable Issue), "steering" (a role-behavior
+    gap - requires a propose_steering_change call before the sprint report
+    can close), or "human" (genuinely outside the team's own authority -
+    immediately raised as a general_blockers entry, escalated to the human
+    if `priority="high"`). See _RETRO_CATEGORIES' own comment above.
     """
     if is_low_quality_retro_text(action) or is_low_quality_retro_text(success_metric):
         return {
@@ -615,16 +831,36 @@ def add_retro_action(action: str, owner: str, success_metric: str, tool_context=
                 "formality to unblock create_sprint_report."
             ),
         }
+    if category not in _RETRO_CATEGORIES:
+        return {
+            "status": "error",
+            "message": f"category must be one of {list(_RETRO_CATEGORIES)}, not {category!r}.",
+        }
+    if priority not in _RETRO_PRIORITIES:
+        return {
+            "status": "error",
+            "message": f"priority must be one of {list(_RETRO_PRIORITIES)}, not {priority!r}.",
+        }
     s = tool_context.state
+    sprint_number = s.get("sprint_number", 0)
     entry = {
         "action": action.strip(),
         "owner": owner.strip(),
         "success_metric": success_metric.strip(),
         "status": "open",
+        "category": category,
+        "sprint_number": sprint_number,
     }
+    warning = None
+    if category == "technical":
+        warning = _technical_category_nudge(action, s.get("retro_actions", []), sprint_number, "action")
     s["retro_actions"] = list(s.get("retro_actions", [])) + [entry]
+    _file_general_blocker_if_human(category, priority, action, owner, tool_context)
     _ = save_state_to_repo(tool_context)
-    return {"status": "ok", "retro_action": entry}
+    result = {"status": "ok", "retro_action": entry}
+    if warning:
+        result["warning"] = warning
+    return result
 
 _APPROVAL_TYPES = ("sprint", "release", "budget")
 
@@ -682,15 +918,26 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
       clears the instant it *opens* the PR, not once it's actually merged
       - so that gate alone stops firing well before the real close-out is
       done.
-    - Refuses to start a SECOND (or later) sprint unless reset_sprint_budget
-      has been called since the previous one started (see GH issue #110) -
-      previously this was "MANDATORY" only in SM_PROMPT's text, with no code
-      backing it at all, so a forgotten call silently carried over whatever
+    - Mechanically resets the sprint token/event budget and its sibling
+      guard flags (sprint_budget_reset_state_delta, tools/budget.py) for
+      every sprint after the first (GH issues #110, #413). This used to
+      need a separate reset_sprint_budget() tool call ScrumMaster had to
+      remember to make first - "MANDATORY" only in prompt text, with no
+      code backing it, so a forgotten call silently carried over whatever
       token budget headroom the previous sprint left (or didn't leave),
       shrinking or eliminating the new sprint's real budget with no error
-      until an unexplained early halt partway through. The very first sprint
-      needs no reset (there's no previous sprint's leftover usage to clear),
-      detected by sprint_goal still being unset.
+      until an unexplained early halt partway through. GH #413 removed that
+      tool entirely and folded the reset in here instead: the eval harness
+      (run_eval.py) used to ALSO reset this same state independently, at the
+      start of every scripted per-sprint message regardless of whether a
+      real sprint boundary had actually occurred - a real eval run
+      (0.1.0-run53) hit exactly this, with a sprint stuck mid-close-out
+      getting a completely fresh budget purely because the harness sent its
+      next scripted message. One mechanical reset, tied to the one real
+      event that should trigger it, replaces both forgettable/out-of-sync
+      paths. The very first sprint needs no reset (there's no previous
+      sprint's leftover usage to clear), detected by sprint_goal still being
+      unset.
     """
     if is_low_quality_retro_text(goal):
         return {
@@ -723,27 +970,36 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
                     "increment's work - see ORCHESTRATOR_PROMPT SPRINT CLOSE SEQUENCE."
                 ),
             }
-    if s.get("sprint_goal") and not s.get("budget_reset_since_last_sprint_start", True):
-        return {
-            "status": "error",
-            "message": (
-                "Cannot start a new sprint - reset_sprint_budget() must be called first. "
-                "SPRINT_TOKEN_BUDGET is a per-sprint allowance, not cumulative; without a fresh "
-                "reset, this sprint would silently inherit whatever token budget headroom the "
-                "previous sprint left over."
-            ),
-        }
+    if s.get("sprint_goal"):
+        # GH #413: mechanical reset, not an agent-invoked tool call this
+        # relies on remembering - see sprint_budget_reset_state_delta's own
+        # docstring. Only for a real second-or-later sprint; the very first
+        # has no previous sprint's leftover usage/report to clear.
+        from .budget import sprint_budget_reset_state_delta
+        for key, value in sprint_budget_reset_state_delta().items():
+            s[key] = value
     s["sprint_goal"] = goal.strip()
-    # Consumed by this start - a fresh reset_sprint_budget() call is required
-    # again before the *next* sprint can start (same "must be NEW since last
-    # time" pattern as create_sprint_report's retro_baseline).
-    s["budget_reset_since_last_sprint_start"] = False
     # Used by create_sprint_backlog_pr (tools/github.py) to name that
     # sprint's "Sprint Backlog #<N>" PR - the only place a sprint number is
     # tracked in agent state at all (run_eval.py's own sprint counter is a
     # harness-only concept, invisible to the agents' own state/tools).
     s["sprint_number"] = s.get("sprint_number", 0) + 1
     _ = save_state_to_repo(tool_context)
+    # GH issue (eval run41): a dangling uncommitted specs/.hc write left
+    # over from the previous sprint's close-out (or this call's own
+    # save_state_to_repo above) used to just sit in the working tree until
+    # whichever checkout happened to run first tripped over it ("local
+    # changes would be overwritten") - see _checkout_with_auto_integrate's
+    # own docstring for the reactive fix. Sweeping here too means the new
+    # sprint actually starts from a clean working copy, not just recovers
+    # from a dirty one on the first branch switch. Best-effort: this must
+    # never block a sprint from starting over a git hiccup unrelated to the
+    # sprint-start gates above.
+    from .github import integrate_open_changes
+    try:
+        integrate_open_changes(tool_context)
+    except Exception:
+        pass
     return {"status": "ok", "sprint_goal": s["sprint_goal"], "sprint_number": s["sprint_number"]}
 
 

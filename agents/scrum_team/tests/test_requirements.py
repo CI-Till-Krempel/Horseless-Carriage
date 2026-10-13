@@ -10,6 +10,7 @@ from agents.scrum_team.tools.requirements import (
     set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
     raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
     update_roadmap, _strip_story_block_from_other_versions,
+    sync_stories_from_markdown, _migrated_priority,
 )
 
 
@@ -167,6 +168,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["specs/stories/US-0001-Add-real-feature.md"]
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         justification = "Already implemented as part of US-0000's app.py edit in commit abc123."
 
         result = advance_story_stage(
@@ -190,11 +192,49 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["app/main.py"]
         tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["dev_touch_baseline"], 1)
 
+    def test_implemented_requires_gh_pr_checks_to_have_been_called(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("gh_pr_checks", result["message"])
+
+    def test_implemented_rejects_a_failing_gh_pr_checks_result(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": False, "git_push_count_at_check": 0}
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("not passing", result["message"])
+
+    def test_implemented_rejects_a_stale_gh_pr_checks_result_after_a_later_push(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #380: a feature-branch push after the last passing
+        gh_pr_checks() result could easily have broken what that result
+        actually verified - the result on file must be fresher than the
+        latest push, not just passing at some point in the past."""
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
+        tc.state["git_push_count"] = 1
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("stale", result["message"])
+
     def test_implemented_spike_story_bypasses_file_write_gate(self, mock_save, mock_md, mock_roadmap):
+        """A spike has no code/PR at all - also exempt from the gh_pr_checks
+        gate below, not just the source-file-write gate (no last_pr_checks
+        set here at all, confirming that)."""
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["product_backlog"][0]["spike"] = True
         tc.state["sprint_backlog"][0]["spike"] = True
@@ -212,6 +252,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             tc = _tool_context("DevTeam", ["Ready"])
             tc.state["sprint_files_touched"] = ["app/main.py"]
             tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+            tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
 
             tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
             result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
@@ -228,6 +269,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             tc = _tool_context("DevTeam", ["Ready"])
             tc.state["sprint_files_touched"] = ["app/main.py"]
             tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+            tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
             result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
             self.assertEqual(result["status"], "ok")
 
@@ -268,6 +310,43 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("check_build", result["message"])
+
+    def test_tested_blocked_when_check_build_is_stale_against_a_later_manifest_write(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (GH eval run39): a real eval run rewrote
+        requirements.txt (dropping Flask) AFTER check_build had already
+        passed, and nobody re-ran check_build before QA's pytest attempt -
+        this gate must catch that instead of trusting a stale passing=True
+        against a manifest that's since changed.
+        """
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {
+            "checked": "requirements.txt",
+            "passing": True,
+            "manifest_write_count_at_check": 1,
+        }
+        tc.state["dependency_manifest_write_count"] = 2  # a later rewrite happened
+        result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("check_build", result["message"])
+        self.assertIn("changed", result["message"])
+
+    def test_tested_succeeds_when_check_build_matches_the_current_manifest(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {
+            "checked": "requirements.txt",
+            "passing": True,
+            "manifest_write_count_at_check": 2,
+        }
+        tc.state["dependency_manifest_write_count"] = 2
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
 
     def test_tested_blocked_when_no_tests_actually_ran(self, mock_save, mock_md, mock_roadmap):
         """
@@ -317,9 +396,30 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
             return_value={"available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("warning", result)
+
+    def test_tested_surfaces_a_non_blocking_warning_for_stubbed_tests(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #370: detect_stubbed_tests finding a trivial 'assert
+        True'-style test must not block Tested - it's a nudge, not a gate -
+        but the result should still name it so a human reviewing the report
+        can tell real coverage from a hedge."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch(
+            "agents.scrum_team.tools.quality.detect_stubbed_tests",
+            return_value=[{"file": "tests/test_app.py", "function": "test_dummy"}],
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
+        self.assertIn("warning", result)
+        self.assertIn("test_app.py::test_dummy", result["warning"])
 
     def test_accepted_requires_a_recorded_acceptance_check(self, mock_save, mock_md, mock_roadmap):
         """Acceptance Criteria (ISSUE-0043): Accepted previously had no
@@ -333,7 +433,10 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
     def test_accepted_succeeds_once_acceptance_check_is_recorded(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
         record_acceptance_check("US-0001", "Verified all AC met.", tool_context=tc)
-        result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "develop"}):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
     def test_blocked_story_refuses_any_stage_advance(self, mock_save, mock_md, mock_roadmap):
@@ -354,6 +457,111 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("BLOCKED", result["message"])
         self.assertIn("resolve_story_blocker", result["message"])
+
+
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestStageAdvancePushesStateToTheCorrectBranch(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #388): a real run (0.1.0-run48) showed
+    US-0001's Tested/Accepted stages silently vanish from state between
+    sprints - save_state_to_repo's own commit is local-only (never
+    pushed), and nothing else pushed the roadmap/story/state update either,
+    so a later branch switch orphaned it. advance_story_stage must now
+    push that update itself, as part of the same atomic call, to the
+    correct branch for each stage.
+    """
+
+    def _accepted_ready_context(self):
+        tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
+        record_acceptance_check("US-0001", "Verified all AC met.", tool_context=tc)
+        return tc
+
+    def test_implemented_pushes_to_the_active_feature_branch(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
+        tc.state["active_feature_branches"] = {"US-0001": "feature/US-0001-add-login"}
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)) as mock_checkout, \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "feature/US-0001-add-login"}) as mock_push:
+            result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_checkout.assert_called_once_with(
+            ["git", "checkout", "feature/US-0001-add-login"], unittest.mock.ANY, tool_context=tc,
+        )
+        mock_push.assert_called_once_with(
+            branch="feature/US-0001-add-login", commit_message=unittest.mock.ANY,
+            add_all=False, allow_protected=False, tool_context=tc,
+        )
+
+    def test_implemented_skips_the_push_with_no_active_feature_branch(self, mock_save, mock_md, mock_roadmap):
+        """A spike story (or any story with no tracked feature branch) has
+        nowhere to push to - the state/roadmap update stays local-only,
+        same as before this fix, rather than erroring out."""
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["product_backlog"][0]["spike"] = True
+        tc.state["sprint_backlog"][0]["spike"] = True
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        with patch("agents.scrum_team.tools.github._git_push_impl") as mock_push:
+            result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("state_push", result)
+        mock_push.assert_not_called()
+
+    def test_accepted_pushes_directly_to_develop(self, mock_save, mock_md, mock_roadmap):
+        tc = self._accepted_ready_context()
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)) as mock_checkout, \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "develop"}) as mock_push:
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_checkout.assert_called_once_with(["git", "checkout", "develop"], unittest.mock.ANY, tool_context=tc)
+        mock_push.assert_called_once_with(
+            branch="develop", commit_message=unittest.mock.ANY, add_all=False, allow_protected=True, tool_context=tc,
+        )
+
+    def test_accepted_reports_error_when_the_push_itself_fails(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #388's whole point: a push failure must not be
+        silently swallowed - that's exactly how a real run lost a story's
+        Accepted stage without anyone noticing."""
+        tc = self._accepted_ready_context()
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "error", "message": "network error"}):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("pushing", result["message"])
+        self.assertIn("develop", result["message"])
+
+    def test_accepted_reports_error_when_the_checkout_itself_fails(self, mock_save, mock_md, mock_roadmap):
+        tc = self._accepted_ready_context()
+        with patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "error", "stderr": "no such ref"}, None)):
+            result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("pushing", result["message"])
+
+    def test_draft_and_ready_never_attempt_a_push(self, mock_save, mock_md, mock_roadmap):
+        """Draft/Ready are Product Owner's own planning-doc edits, already
+        covered by create_sprint_backlog_pr's own commit+push sweep -
+        pushing them here too would land ad-hoc commits on develop ahead
+        of that reviewable sprint-backlog PR."""
+        tc = _tool_context("ProductOwner", [])
+        with patch("agents.scrum_team.tools.github._git_push_impl") as mock_push:
+            result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("state_push", result)
+        mock_push.assert_not_called()
 
 
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
@@ -505,6 +713,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["app/main.py"]
         tc.state["story_estimates"] = {"US-0002": {"estimate": 10, "actual": 5}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         tc.agent_name = "DevTeam"
         result = advance_story_stage("US-0002", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -514,8 +723,48 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         tc.state["sprint_files_touched"] = ["app/main.py"]
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
+
+    def test_a_preceding_issue_still_blocks_advancement_but_names_the_escape_hatch(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (GH issue #368, reconsidered): an auto-filed
+        retro/impediment Issue (_file_retro_items_as_issues, GH #164)
+        sitting ahead of a real story in product_backlog order DOES still
+        gate that story's own ordering check - an earlier version of this
+        fix exempted Issues entirely, but that removed the only mechanical
+        pressure actually pushing a Ready Must-priority Issue all the way to
+        Accepted (GH #164's own enforcement, create_sprint_backlog_pr's
+        Must-priority gate, only ever demands it reach Ready, which is
+        permanently satisfied the moment it does - recreating #164's
+        original "never actually acted on" failure one stage later). A real
+        eval run (0.1.0-run45) did hit this gridlock, but Product Owner
+        escaped it the intended way (set_priority to something other than
+        Must, once it was clear the finding didn't warrant blocking
+        priority) - the refusal message now names that escape hatch
+        explicitly so it doesn't take real trial and error to find.
+        """
+        tc = self._two_story_context("DevTeam", ["Ready"])
+        tc.state["product_backlog"].insert(0, {
+            "id": "ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue",
+            "priority": "Must", "stages_completed": ["Draft"],
+        })
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ISSUE-0001", result["message"])
+        self.assertIn("must reach Accepted first", result["message"])
+        self.assertIn("resolve it for real", result["message"])
+        self.assertIn("set_priority('ISSUE-0001'", result["message"])
+        self.assertIn("warranted blocking priority", result["message"])
+        # "Resolve it for real" must be the lead instruction, named before
+        # the reprioritization escape hatch - not the other way around.
+        self.assertLess(result["message"].index("resolve it for real"), result["message"].index("set_priority"))
 
     def test_sprint_only_story_without_product_backlog_entry_is_refused(self, mock_save, mock_md, mock_roadmap):
         """
@@ -532,6 +781,125 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("US-0002", result["message"])
         self.assertIn("product_backlog", result["message"])
+
+
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestDependsOnGate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #343): a story/issue whose depends_on
+    list names another backlog item not yet Accepted must be mechanically
+    refused when it would start real development (Implemented onward) -
+    same "actual DEVELOPMENT, not Draft/Ready grooming" scoping as the
+    one-story-at-a-time ordering gate (TestOneStoryAtATimeOrdering above).
+    """
+
+    def _context_with_dependency(self, depends_on_stages):
+        """US-0001 (depends_on=["US-0002"]) listed FIRST in product_backlog
+        - so _preceding_story returns None for it, isolating this gate's
+        own check from the unrelated one-story-at-a-time ordering gate."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        dependent = _base_story(["Draft", "Ready"])
+        dependent["id"] = "US-0001"
+        dependent["depends_on"] = ["US-0002"]
+        dependency = _base_story(["Draft"] + list(depends_on_stages))
+        dependency["id"] = "US-0002"
+        dependency["title"] = "The dependency"
+
+        tc.state["product_backlog"] = [dependent, dependency]
+        tc.state["sprint_backlog"] = [dict(dependent), dict(dependency)]
+        tc.agent_name = "DevTeam"
+        tc.state["sprint_number"] = 1
+        tc.state["sprint_backlog_pr_sprint"] = 1
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
+        return tc
+
+    def test_blocks_implemented_while_dependency_not_yet_accepted(self, mock_save, mock_md, mock_roadmap):
+        tc = self._context_with_dependency(["Ready", "Implemented", "Reviewed", "Tested"])
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0002", result["message"])
+        self.assertIn("depends on", result["message"])
+
+    def test_does_not_block_ready_while_dependency_not_yet_accepted(self, mock_save, mock_md, mock_roadmap):
+        """Draft/Ready grooming is exempt - Product Owner must be able to
+        queue work up ahead of time even with an unmet dependency."""
+        tc = self._context_with_dependency([])
+        tc.agent_name = "ProductOwner"
+        result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_allows_implemented_once_dependency_is_accepted(self, mock_save, mock_md, mock_roadmap):
+        tc = self._context_with_dependency(["Ready", "Implemented", "Reviewed", "Tested", "Accepted"])
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_unknown_dependency_id_does_not_block_forever(self, mock_save, mock_md, mock_roadmap):
+        """A removed/typo'd dependency id is a data-integrity problem for
+        upsert_story/upsert_issue to fix, not an ordering block this gate
+        can usefully enforce - must not deadlock the story forever."""
+        tc = self._context_with_dependency([])
+        tc.state["product_backlog"][0]["depends_on"] = ["US-9999"]
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+
+class TestDependsOnCycleDetection(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #343): a depends_on edge that would
+    create a cycle (direct self-reference, or transitive: A -> B -> C -> A)
+    must be refused at write time - caught here, not discovered later as a
+    permanent mutual deadlock in advance_story_stage's dependency gate.
+    """
+
+    def _tc_with_backlog(self, backlog):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = backlog
+        return tc
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_rejects_direct_self_dependency(self, mock_save):
+        tc = self._tc_with_backlog([{"id": "US-0001", "title": "A"}])
+        result = upsert_story({"id": "US-0001", "depends_on": ["US-0001"]}, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("cannot depend on itself", result["message"])
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_rejects_transitive_cycle(self, mock_save):
+        tc = self._tc_with_backlog([
+            {"id": "US-0001", "title": "A", "depends_on": ["US-0002"]},
+            {"id": "US-0002", "title": "B", "depends_on": ["US-0003"]},
+            {"id": "US-0003", "title": "C"},
+        ])
+        # US-0003 depending back on US-0001 closes the loop A -> B -> C -> A.
+        result = upsert_story({"id": "US-0003", "depends_on": ["US-0001"]}, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("cycle", result["message"])
+        # The rejected edge must never have been saved.
+        self.assertEqual(tc.state["product_backlog"][2].get("depends_on"), None)
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_accepts_a_real_non_cyclical_chain(self, mock_save, mock_md):
+        tc = self._tc_with_backlog([
+            {"id": "US-0001", "title": "A"},
+            {"id": "US-0002", "title": "B", "depends_on": ["US-0001"]},
+        ])
+        result = upsert_story({"id": "US-0003", "title": "C", "depends_on": ["US-0002"]}, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_depends_on_must_be_a_list_of_strings(self, mock_save):
+        tc = self._tc_with_backlog([{"id": "US-0001", "title": "A"}])
+        result = upsert_story({"id": "US-0001", "depends_on": "US-0002"}, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("list", result["message"])
 
 
 @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
@@ -655,6 +1023,7 @@ class TestRecordAcceptanceCheck(unittest.TestCase):
         self.assertIn("no other story", result["message"])
 
 
+@patch("agents.scrum_team.tools.github.gh_pr_comment", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestDenyReview(unittest.TestCase):
@@ -669,7 +1038,7 @@ class TestDenyReview(unittest.TestCase):
 
     _VALID_REASON = "The pagination logic off-by-one errors on the last page - fix the loop bound."
 
-    def test_architect_denies_reviewed_with_concrete_reason(self, mock_save, mock_md):
+    def test_architect_denies_reviewed_with_concrete_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -679,58 +1048,58 @@ class TestDenyReview(unittest.TestCase):
             self.assertEqual(denial["reason"], self._VALID_REASON)
             self.assertEqual(denial["by"], "Architect")
 
-    def test_qa_denies_tested_with_concrete_reason(self, mock_save, mock_md):
+    def test_qa_denies_tested_with_concrete_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         result = deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Tested")
 
-    def test_product_owner_denies_accepted_with_concrete_reason(self, mock_save, mock_md):
+    def test_product_owner_denies_accepted_with_concrete_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
         result = deny_review("US-0001", "Accepted", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Accepted")
 
-    def test_rejects_empty_reason(self, mock_save, mock_md):
+    def test_rejects_empty_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = deny_review("US-0001", "Reviewed", "", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertNotIn("review_denial", tc.state["product_backlog"][0])
 
-    def test_rejects_too_short_reason(self, mock_save, mock_md):
+    def test_rejects_too_short_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = deny_review("US-0001", "Reviewed", "bad code", tool_context=tc)
         self.assertEqual(result["status"], "error")
 
-    def test_rejects_generic_reason(self, mock_save, mock_md):
+    def test_rejects_generic_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         for generic in ("not good", "denied", "needs work", "does not meet criteria"):
             with self.subTest(generic=generic):
                 result = deny_review("US-0001", "Tested", generic, tool_context=tc)
                 self.assertEqual(result["status"], "error")
 
-    def test_rejects_placeholder_reason(self, mock_save, mock_md):
+    def test_rejects_placeholder_reason(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
         result = deny_review("US-0001", "Accepted", "<describe what's wrong here>", tool_context=tc)
         self.assertEqual(result["status"], "error")
 
-    def test_rejects_wrong_role(self, mock_save, mock_md):
+    def test_rejects_wrong_role(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("DevTeam", ["Ready", "Implemented"])
         result = deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("Architect", result["message"])
 
-    def test_rejects_non_deniable_stage(self, mock_save, mock_md):
+    def test_rejects_non_deniable_stage(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("ProductOwner", [])
         result = deny_review("US-0001", "Draft", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "error")
 
-    def test_unknown_story_errors(self, mock_save, mock_md):
+    def test_unknown_story_errors(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         result = deny_review("US-9999", "Reviewed", self._VALID_REASON, tool_context=tc)
         self.assertEqual(result["status"], "error")
 
-    def test_advancing_past_denied_stage_clears_the_denial(self, mock_save, mock_md):
+    def test_advancing_past_denied_stage_clears_the_denial(self, mock_save, mock_md, mock_pr_comment):
         """A resolved denial shouldn't linger as stale feedback once the
         story actually advances past the stage it was denied at."""
         tc = _tool_context("Architect", ["Ready", "Implemented"])
@@ -745,14 +1114,14 @@ class TestDenyReview(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 
-    def test_denying_a_different_stage_does_not_clear_an_unrelated_denial(self, mock_save, mock_md):
+    def test_denying_a_different_stage_does_not_clear_an_unrelated_denial(self, mock_save, mock_md, mock_pr_comment):
         tc = _tool_context("Architect", ["Ready", "Implemented"])
         deny_review("US-0001", "Reviewed", self._VALID_REASON, tool_context=tc)
         # Some other, unrelated progress happens (e.g. re-review not yet done) -
         # the denial must survive until the SAME stage actually advances.
         self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["stage"], "Reviewed")
 
-    def test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md):
+    def test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md, mock_pr_comment):
         """
         Acceptance Criteria (ISSUE-0044): the Reviewed/Tested gate's own
         evidence check is sprint-wide (pr_review_calls), not scoped to one
@@ -786,7 +1155,7 @@ class TestDenyReview(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 
-    def test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md):
+    def test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md, mock_pr_comment):
         """Same ISSUE-0044 fix, QA/Tested side."""
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         tc.state["pr_review_calls"] = {"QA": 1}
@@ -812,7 +1181,7 @@ class TestDenyReview(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 
-    def test_accepted_denial_blocks_advance_even_if_already_checked_once(self, mock_save, mock_md):
+    def test_accepted_denial_blocks_advance_even_if_already_checked_once(self, mock_save, mock_md, mock_pr_comment):
         """Same ISSUE-0044 fix, Accepted/record_acceptance_check side
         (ISSUE-0043): a denial must require a genuinely NEW
         record_acceptance_check call, not just reuse of the check that led
@@ -834,10 +1203,43 @@ class TestDenyReview(unittest.TestCase):
 
         # A genuinely fresh acceptance check after the denial resolves it.
         record_acceptance_check("US-0001", "Re-checked after fix", tool_context=tc)
-        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
+        with patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}), \
+             patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "develop"}):
             result = advance_story_stage("US-0001", "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
+
+    def test_denial_posts_a_pr_comment_with_the_reason(self, mock_save, mock_md, mock_pr_comment):
+        """GH issue #346: a real eval run showed QA posting "Approved for
+        Tested stage" PR comments immediately alongside a deny_review call
+        denying that exact same attempt - the only GitHub-visible trail said
+        the opposite of what actually happened, since the denial reason
+        only ever reached the story's own Markdown file. Posting it from
+        deny_review itself guarantees the PR reflects the real outcome."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        result = deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_pr_comment.assert_called_once()
+        posted_body = mock_pr_comment.call_args.args[0] if mock_pr_comment.call_args.args else mock_pr_comment.call_args.kwargs["body"]
+        self.assertIn("US-0001", posted_body)
+        self.assertIn("Tested", posted_body)
+        self.assertIn(self._VALID_REASON, posted_body)
+        self.assertEqual(result["pr_comment"], {"status": "ok"})
+
+    def test_denial_still_succeeds_if_the_pr_comment_post_fails(self, mock_save, mock_md, mock_pr_comment):
+        """Best-effort, same as every other side-notification in this
+        codebase - a comment-post failure must not turn an already-recorded
+        denial into an error."""
+        mock_pr_comment.return_value = {"status": "error", "message": "no open PR for this branch"}
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        result = deny_review("US-0001", "Tested", self._VALID_REASON, tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["review_denial"]["reason"], self._VALID_REASON)
+        self.assertEqual(result["pr_comment"]["status"], "error")
 
 
 class TestDenyReviewSurfacesInStoryMarkdown(unittest.TestCase):
@@ -1246,7 +1648,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
     def test_unknown_item_priority_failure_propagates(self, mock_save):
         tc = self._tool_context()
-        result = plan_backlog_item("does-not-exist", priority="High", tool_context=tc)
+        result = plan_backlog_item("does-not-exist", priority="Must", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("not found", result["message"].lower())
 
@@ -1255,7 +1657,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     def test_roadmap_failure_propagates_even_when_priority_succeeds(self, mock_save, mock_update_roadmap):
         mock_update_roadmap.return_value = {"status": "error", "message": "ROADMAP.md not found and could not be seeded."}
         tc = self._tool_context()
-        result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
+        result = plan_backlog_item("US-0001", priority="Must", version="v0.2", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("ROADMAP.md", result["message"])
         # The priority update itself succeeded and should still be reported.
@@ -1265,7 +1667,7 @@ class TestPlanBacklogItemPropagatesFailures(unittest.TestCase):
     @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
     def test_all_sub_calls_succeeding_reports_ok(self, mock_save, mock_update_roadmap):
         tc = self._tool_context()
-        result = plan_backlog_item("US-0001", priority="High", version="v0.2", tool_context=tc)
+        result = plan_backlog_item("US-0001", priority="Must", version="v0.2", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
 
@@ -1330,6 +1732,158 @@ class TestPriorityAffectsBacklogOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         ids = [x["id"] for x in tc.state["product_backlog"]]
         self.assertEqual(ids, ["US-0002", "US-0001"])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_set_priority_rejects_a_non_moscow_value(self, mock_save, mock_md):
+        """GH issue #355: a real eval run used "P0"/"P2" interchangeably
+        with "Must" across different items - since those aren't real
+        MoSCoW values, _priority_rank's lookup silently ranked them as if
+        "Must" (highest priority), the opposite of what a "P2" (intended
+        low) was meant to convey. There is exactly one priority scale."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        for bogus in ("P0", "P1", "P2", "High", "1", ""):
+            with self.subTest(priority=bogus):
+                result = set_priority("US-0001", bogus, tool_context=tc)
+                self.assertEqual(result["status"], "error")
+                self.assertIn("Must", result["message"])
+                # The rejected value must never have been saved.
+                self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_set_priority_accepts_every_real_moscow_value(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        for real in ("Must", "Should", "Could", "Won't"):
+            with self.subTest(priority=real):
+                result = set_priority("US-0001", real, tool_context=tc)
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(tc.state["product_backlog"][0]["priority"], real)
+
+    def test_upsert_backlog_item_rejects_a_non_moscow_priority(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+
+        result = upsert_backlog_item({"id": "US-0001", "title": "First", "priority": "P0"}, tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Must", result["message"])
+        self.assertEqual(tc.state["product_backlog"], [])
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_plan_backlog_item_propagates_the_priority_rejection(self, mock_save, mock_md):
+        """plan_backlog_item delegates to set_priority - its own validation
+        must be inherited, not bypassed via this alternate entry point."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["product_backlog"] = [{"id": "US-0001", "title": "First", "priority": "Should"}]
+
+        result = plan_backlog_item("US-0001", priority="P0", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
+
+
+class TestMigratedPriority(unittest.TestCase):
+    """GH issue #355 (migration follow-up, PR review comment): a repo's
+    existing stories/issues may predate the MoSCoW-only enforcement and
+    still carry a pre-MoSCoW value - _migrated_priority decides what (if
+    anything) a given raw value should be rewritten to."""
+
+    def test_already_valid_values_are_left_alone(self):
+        for valid in ("Must", "Should", "Could", "Won't"):
+            with self.subTest(priority=valid):
+                self.assertIsNone(_migrated_priority(valid))
+
+    def test_unset_or_blank_is_left_alone(self):
+        self.assertIsNone(_migrated_priority(None))
+        self.assertIsNone(_migrated_priority(""))
+        self.assertIsNone(_migrated_priority("   "))
+
+    def test_miscased_valid_value_is_corrected(self):
+        self.assertEqual(_migrated_priority("must"), "Must")
+        self.assertEqual(_migrated_priority("SHOULD"), "Should")
+        self.assertEqual(_migrated_priority("wont"), "Won't")
+
+    def test_legacy_pN_scale_maps_to_moscow(self):
+        self.assertEqual(_migrated_priority("P0"), "Must")
+        self.assertEqual(_migrated_priority("p1"), "Should")
+        self.assertEqual(_migrated_priority("P2"), "Could")
+        self.assertEqual(_migrated_priority("P3"), "Won't")
+
+    def test_legacy_word_scale_maps_to_moscow(self):
+        self.assertEqual(_migrated_priority("High"), "Must")
+        self.assertEqual(_migrated_priority("Medium"), "Should")
+        self.assertEqual(_migrated_priority("low"), "Could")
+
+    def test_unrecognized_value_falls_back_to_must(self):
+        """Same fallback _priority_rank itself already uses for an
+        unrecognized value - this never makes an item rank worse than it
+        already silently did."""
+        self.assertEqual(_migrated_priority("some-custom-scheme"), "Must")
+
+
+class TestSyncStoriesFromMarkdownMigratesLegacyPriority(unittest.TestCase):
+    """GH issue #355 (migration follow-up): sync_stories_from_markdown
+    self-heals a pre-MoSCoW priority value found in an existing story/issue
+    file, surgically rewriting just that one line so the fix survives past
+    this session - not just an in-memory correction that the very next
+    sync would silently re-derive and then forget again."""
+
+    def _write_story(self, stories_dir, filename, priority, extra_notes=""):
+        stories_dir.mkdir(parents=True, exist_ok=True)
+        (stories_dir / filename).write_text(
+            "# User Story\n\n"
+            "- Story ID: US-0001\n"
+            "- Title: Add login\n"
+            "- Status: Ready\n"
+            f"- Priority: {priority}\n\n"
+            "## As a user, I want to log in, so that I can access my account.\n\n"
+            "## Acceptance Criteria\n- Given valid credentials, when I submit, then I'm logged in\n"
+            + extra_notes,
+            encoding="utf-8",
+        )
+
+    def test_rewrites_a_legacy_priority_value_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            stories_dir = repo_root / "specs" / "stories"
+            self._write_story(stories_dir, "US-0001-Add-login.md", "P0", extra_notes="\n## Notes\n- A custom note that must survive.\n")
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=repo_root):
+                tc = MagicMock()
+                tc.state = {"product_backlog": [], "sprint_backlog": []}
+                result = sync_stories_from_markdown(tool_context=tc)
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
+            written = (stories_dir / "US-0001-Add-login.md").read_text(encoding="utf-8")
+            self.assertIn("- Priority: Must", written)
+            self.assertNotIn("P0", written)
+            # Nothing else in the file was touched.
+            self.assertIn("A custom note that must survive.", written)
+
+    def test_does_not_rewrite_a_file_whose_priority_is_already_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            stories_dir = repo_root / "specs" / "stories"
+            self._write_story(stories_dir, "US-0001-Add-login.md", "Should")
+            fp = stories_dir / "US-0001-Add-login.md"
+            original_mtime = fp.stat().st_mtime
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=repo_root), \
+                 patch("agents.scrum_team.tools.requirements._rewrite_priority_line") as mock_rewrite:
+                tc = MagicMock()
+                tc.state = {"product_backlog": [], "sprint_backlog": []}
+                sync_stories_from_markdown(tool_context=tc)
+
+            mock_rewrite.assert_not_called()
+            self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
 
 
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})

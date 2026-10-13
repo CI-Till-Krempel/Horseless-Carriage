@@ -1,4 +1,7 @@
 # agents/scrum_team/tests/test_budget.py
+import os
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -13,13 +16,19 @@ from agents.scrum_team.tools.budget import (
     optimize_process_for_budget,
     create_sprint_report,
     render_fallback_sprint_report,
-    reset_sprint_budget,
     sprint_budget_reset_state_delta,
     _write_conversation_transcript,
     _file_retro_items_as_issues,
     estimate_sprint_capacity,
     sprint_capacity_advisory,
+    _render_retro_doc,
+    _render_steering_doc,
+    _next_sprint_report_path,
+    _next_transcript_path,
+    _next_retro_doc_path,
+    _next_steering_doc_path,
 )
+from agents.scrum_team.tools.scrum import init_scrum_state
 from agents.scrum_team.state import ScrumState
 
 
@@ -56,28 +65,25 @@ class TestBudgetTools(unittest.TestCase):
         self.assertEqual(tool_context.state["token_usage"]["agents"]["ProductOwner"], 100)
         self.assertEqual(tool_context.state["token_usage"]["total"], 100)
 
-    def test_reset_sprint_budget_clears_every_grace_and_safety_net_guard(self):
+    def test_sprint_budget_reset_state_delta_clears_every_grace_and_safety_net_guard(self):
         """
         ISSUE-0049 / 0.1.0-run33: a prior sprint's halt can leave
         critical_halt_notified/sprint_report_safety_net_fired stuck True -
-        reset_sprint_budget must clear all of them, not just token_usage,
-        or the NEXT sprint's own final halt silently produces no report.
+        this dict must clear all of them, not just token_usage, or the NEXT
+        sprint's own final halt silently produces no report. GH #413:
+        applied mechanically by start_sprint itself now (see test_scrum.py
+        for that integration) - this just checks the dict's own content.
         """
-        tool_context = MagicMock()
-        tool_context.state = ScrumState().model_dump()
-        tool_context.state["token_usage"] = {"total": 6032161, "agents": {"DevTeam": 1604179}}
-        tool_context.state["budget_exhaustion_synced"] = True
-        tool_context.state["budget_reset_since_last_sprint_start"] = False
-        tool_context.state["critical_halt_notified"] = True
-        tool_context.state["sprint_report_safety_net_fired"] = True
+        delta = sprint_budget_reset_state_delta()
 
-        reset_sprint_budget(tool_context=tool_context)
-
-        self.assertEqual(tool_context.state["token_usage"], {"total": 0, "agents": {}})
-        self.assertFalse(tool_context.state["budget_exhaustion_synced"])
-        self.assertTrue(tool_context.state["budget_reset_since_last_sprint_start"])
-        self.assertFalse(tool_context.state["critical_halt_notified"])
-        self.assertFalse(tool_context.state["sprint_report_safety_net_fired"])
+        self.assertEqual(delta["token_usage"], {"total": 0, "agents": {}})
+        self.assertFalse(delta["budget_exhaustion_synced"])
+        self.assertFalse(delta["critical_halt_notified"])
+        self.assertFalse(delta["sprint_report_safety_net_fired"])
+        self.assertEqual(delta["sprint_report"], "")
+        self.assertEqual(delta["sprint_report_kpis"], {})
+        self.assertEqual(delta["sprint_report_path"], "", "a new sprint must allocate its own fresh report number, not reuse the previous sprint's")
+        self.assertEqual(delta["transcript_path"], "", "a new sprint must allocate its own fresh transcript number, not reuse the previous sprint's")
 
     def test_sprint_budget_reset_state_delta_returns_independent_copies(self):
         """Two calls must not share the same nested dict - a caller
@@ -199,6 +205,31 @@ class TestBudgetTools(unittest.TestCase):
         self.assertIn("Process Overhead: 15.0%", report["report"])
 
     @patch("os.getenv")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-999.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_reuses_this_sprints_already_allocated_path(self, mock_write_file, mock_next_path, mock_getenv):
+        """GH issue (0.1.0-run42): if render_fallback_sprint_report already
+        fired earlier this sprint (e.g. a transient grace-exhaustion halt
+        the sprint then recovered from) and recorded a numbered path, this
+        real report must land on that SAME file, not burn a fresh one -
+        otherwise the sprint ends up with two committed report files
+        (fallback + real) for what should be one."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["sprint_report_path"] = "specs/reports/SPRINT-REPORT-002.md"
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        mock_next_path.assert_not_called()
+        self.assertEqual(report["path"], "specs/reports/SPRINT-REPORT-002.md")
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/SPRINT-REPORT-002.md", written_paths)
+        self.assertNotIn("specs/reports/SPRINT-REPORT-999.md", written_paths)
+
+    @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_shows_actual_usd_spend(self, mock_write_file, mock_getenv):
         """
@@ -238,6 +269,70 @@ class TestBudgetTools(unittest.TestCase):
 
         self.assertIn("Actual USD Spend (LiteLLM): not yet available", report["report"])
 
+    @patch.dict(os.environ, {}, clear=False)
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_warns_on_suspicious_zero_spend(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (GH issue #298): $0.00 actual spend after a lot
+        of real token usage almost always means a configured model id isn't
+        in LiteLLM's bundled pricing table, not that usage was free - the
+        report must flag this rather than let it read as good news.
+        """
+        os.environ.pop("LLM_LOCAL_PROVIDER", None)
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 0
+        tool_context.state["token_usage"]["total"] = 75_000
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertIn("SAFETY WARNING", report["report"])
+        self.assertIn("75,000 tokens", report["report"])
+
+    @patch.dict(os.environ, {}, clear=False)
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_no_warning_below_token_threshold(self, mock_write_file, mock_getenv):
+        """A sprint that just started genuinely has $0 spend and few
+        tokens - must not be flagged as suspicious."""
+        os.environ.pop("LLM_LOCAL_PROVIDER", None)
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 0
+        tool_context.state["token_usage"]["total"] = 100
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertNotIn("SAFETY WARNING", report["report"])
+
+    @patch.dict(os.environ, {"LLM_LOCAL_PROVIDER": "true"})
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_no_warning_for_local_provider(self, mock_write_file, mock_getenv):
+        """Ollama/local sessions genuinely have no cost to report - $0
+        spend there is correct, not a misconfiguration."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 0
+        tool_context.state["token_usage"]["total"] = 75_000
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertNotIn("SAFETY WARNING", report["report"])
+
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_includes_hc_version(self, mock_write_file, mock_getenv):
@@ -256,6 +351,32 @@ class TestBudgetTools(unittest.TestCase):
         report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
 
         self.assertIn("Generated by Horseless Carriage v0.1.0", report)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_renders_retro_and_impediment_category(self, mock_write_file, mock_getenv):
+        """GH issue #354: category was previously invisible in the sprint
+        report even though it drives real mechanical consequences (Issue
+        auto-filing, the steering-proposal gate) - a human reviewing the
+        report should be able to audit the classification directly."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            # status "resolved" (not "open") so the open-steering-finding gate
+            # (which requires a fresh propose_steering_change) doesn't trip -
+            # this test is only about rendering, not that other gate.
+            {"action": "QA keeps skipping local test runs", "owner": "QA", "status": "resolved", "category": "steering"},
+        ]
+        tool_context.state["impediment_log"] = [
+            {"description": "Need a product decision on auth provider", "owner": "ProductOwner", "status": "open", "category": "human"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertIn("Category: steering", report)
+        self.assertIn("Category: human", report)
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
@@ -468,15 +589,86 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_warns_on_generic_success_narrative_with_no_new_accepted_story(self, mock_write_file, mock_getenv):
+        """
+        GH issue #390: a real run (0.1.0-run48) produced sprint reports
+        claiming "completed successfully"/"sign-off" despite zero stories
+        reaching Accepted that sprint - the specific-story-ID overclaim
+        check above doesn't catch generic narrative that names no story at
+        all. This is a non-blocking nudge, not a hard rejection.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        result = create_sprint_report(
+            "Sprint 3 completed successfully with backlog refinement", ["Reviewed the backlog"],
+            tool_context=tool_context,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("warning", result)
+        self.assertIn("completed successfully", result["warning"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_no_warning_when_a_story_was_genuinely_accepted(self, mock_write_file, mock_getenv):
+        """Same generic success phrasing, but backed by a real, new Accepted
+        story this sprint - no warning, since the claim is actually true."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+        ]
+
+        result = create_sprint_report(
+            "Sprint 3 completed successfully", ["US-0002 accepted"], tool_context=tool_context,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("warning", result)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_no_warning_without_generic_success_phrasing(self, mock_write_file, mock_getenv):
+        """Zero new Accepted stories is normal and not itself a problem -
+        only flagged when paired with success-sounding narrative."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "title": "Add Task", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        result = create_sprint_report(
+            "Sprint 3: no stories progressed, budget mostly spent on review",
+            ["Nothing shipped this sprint"], tool_context=tool_context,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("warning", result)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_rejects_without_fresh_kpi_update(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (ISSUE-0046): create_sprint_report must refuse to
-        close the sprint unless QualityGuardian's update_sprint_report was
-        called since the last successful report, mirroring the retro gate
-        immediately above - across every real eval run before this existed,
-        QualityGuardian was never once transferred to (nothing in the SPRINT
-        CLOSE SEQUENCE told anyone to), so every KPI trend came back "never
-        computed".
+        close the sprint unless update_sprint_report was called since the
+        last successful report, mirroring the retro gate immediately above -
+        across every real eval run before this existed, the former
+        QualityGuardian role (now ScrumMaster, GH #395) was never once
+        transferred to (nothing in the SPRINT CLOSE SEQUENCE told anyone
+        to), so every KPI trend came back "never computed".
         """
         mock_getenv.return_value = "15.0"
         tool_context = MagicMock()
@@ -488,7 +680,7 @@ class TestBudgetTools(unittest.TestCase):
         result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
 
         self.assertEqual(result["status"], "error")
-        self.assertIn("QualityGuardian", result["message"])
+        self.assertIn("fresh KPI update", result["message"])
         mock_write_file.assert_not_called()
 
     @patch("os.getenv")
@@ -514,15 +706,236 @@ class TestBudgetTools(unittest.TestCase):
         tool_context.state["retro_actions"].append({"action": "sprint 2 retro", "owner": "SM", "status": "open"})
         second = create_sprint_report("summary 2", ["accomplishment 2"], tool_context=tool_context)
         self.assertEqual(second["status"], "error")
-        self.assertIn("QualityGuardian", second["message"])
+        self.assertIn("fresh KPI update", second["message"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_open_steering_finding_with_no_fresh_proposal(self, mock_write_file, mock_getenv):
+        """GH issue #342: an open "steering"-category retro finding demands
+        a fresh propose_steering_change call since the last report, mirroring
+        the retro/KPI gates right above - without this, a steering finding
+        could be logged once and never actually acted on."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "QA keeps skipping local test runs", "owner": "SM", "status": "open", "category": "steering"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_steering_change", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_succeeds_once_steering_change_is_proposed(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "QA keeps skipping local test runs", "owner": "SM", "status": "open", "category": "steering"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["steering_proposal_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["steering_baseline"], 1)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_not_blocked_by_steering_gate_without_a_steering_finding(self, mock_write_file, mock_getenv):
+        """A purely "technical"-category retro action must not trip the
+        steering gate at all."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Fix the flaky coverage setup", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_two_unresolved_role_behavior_findings_filed_as_technical(self, mock_write_file, mock_getenv):
+        """
+        GH issue #381: a real run (0.1.0-run47) never once assigned
+        category='steering', despite ScrumMaster being nudged at filing time
+        that several of its 'technical' findings read like role-behavior/
+        process-discipline gaps - so the steering gate right above never got
+        a chance to fire. 2+ open 'technical' findings that still read this
+        way, with no steering proposal since the last report, is the
+        backstop for when that nudge keeps getting ignored.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure automated tests are fully stable before starting sprint test execution phases",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+            {
+                "action": "Ensure all stories in sprint backlog reach accepted stage before sprint finalization",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_steering_change", result["message"])
+        self.assertIn("category='technical'", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_one_unresolved_role_behavior_finding_does_not_trip_the_gate(self, mock_write_file, mock_getenv):
+        """A single occurrence could still be a false positive (the
+        heuristic's own design tolerates those) - only 2+ escalates."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure automated tests are fully stable before starting sprint test execution phases",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_succeeds_once_steering_change_proposed_for_role_behavior_findings(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure automated tests are fully stable before starting sprint test execution phases",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+            {
+                "action": "Ensure all stories in sprint backlog reach accepted stage before sprint finalization",
+                "owner": "SM", "status": "open", "category": "technical",
+            },
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["steering_proposal_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_a_blocker_unresolved_across_a_full_sprint_with_no_retro_mention(self, mock_write_file, mock_getenv):
+        """GH issue #359: a story still BLOCKED now, that was ALSO already
+        BLOCKED as of the last report, must actually be discussed in the
+        retro - not just silently re-noted in the report's own "Open
+        Questions for Stakeholder" section again."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Improve CI pipeline speed", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["blocked_story_ids_as_of_last_report"] = ["US-0003"]
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0003", "title": "Add login", "blocked": {"category": "technical", "question": "which auth library?"}},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("US-0003", result["message"])
+        self.assertIn("retrospective", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_succeeds_once_the_blocker_is_mentioned_in_retro(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Still waiting on US-0003's auth library decision - escalating to Architect", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["blocked_story_ids_as_of_last_report"] = ["US-0003"]
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0003", "title": "Add login", "blocked": {"category": "technical", "question": "which auth library?"}},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("US-0003", tool_context.state["blocked_story_ids_as_of_last_report"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_not_blocked_by_a_story_only_just_blocked_this_sprint(self, mock_write_file, mock_getenv):
+        """Not previously blocked (empty blocked_story_ids_as_of_last_report)
+        - raised this sprint for the first time - must not trip this gate;
+        the existing "Open Questions for Stakeholder" section already
+        surfaces a freshly-raised blocker without demanding retro discussion
+        the very same sprint it was raised."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Improve CI pipeline speed", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0003", "title": "Add login", "blocked": {"category": "technical", "question": "which auth library?"}},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_snapshots_currently_blocked_ids_on_success(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Improve CI pipeline speed", "owner": "SM", "status": "open", "category": "technical"},
+        ]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0004", "title": "Add logout", "blocked": {"category": "technical", "question": "why?"}},
+        ]
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["blocked_story_ids_as_of_last_report"], ["US-0004"])
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_renders_kpi_dashboard(self, mock_write_file, mock_getenv):
         """Acceptance Criteria (ISSUE-0046): the KPI dashboard was computed
         and stored (sprint_report_kpis) but never actually rendered anywhere
-        in the report document itself - QUALITY_GUARDIAN_PROMPT's own "YOU
-        DO" says to include it, but create_sprint_report's code never did."""
+        in the report document itself - SM_PROMPT's own "YOU DO" (formerly
+        QUALITY_GUARDIAN_PROMPT's, GH #395) says to include it, but
+        create_sprint_report's code never did."""
         mock_getenv.return_value = "15.0"
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
@@ -540,6 +953,42 @@ class TestBudgetTools(unittest.TestCase):
         self.assertIn("## KPI Dashboard", report)
         self.assertIn("Say-Do Ratio: 0.8", report)
         self.assertIn("Test Coverage: 0.9", report)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_renders_unavailable_kpis_honestly(self, mock_write_file, mock_getenv):
+        """GH issue #389: commitment_reliability/customer_satisfaction used
+        to be hardcoded fake numbers (1.0/4.5), always rendered as if real.
+        Now that calculate_kpis reports them as None + a note, the report
+        must render the same 'not available (<note>)' fallback already used
+        for test_coverage/code_complexity/vulnerability_scan, not silently
+        omit the line."""
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["sprint_report_kpis"] = {
+            "team_effectiveness": {
+                "say_do_ratio": 0.8,
+                "commitment_reliability": None,
+                "commitment_reliability_note": "not available - no estimate-accuracy tracking exists yet",
+            },
+            "result_quality": {
+                "defect_escape_rate": None,
+                "defect_escape_rate_note": "not available - no defect/bug-lifecycle tracking exists yet",
+                "customer_satisfaction": None,
+                "customer_satisfaction_note": "not available - no user/customer satisfaction survey exists yet",
+            },
+            "maintainability": {"test_coverage_available": True, "test_coverage": 0.9, "tests_run": 10, "tests_failed": 0},
+            "security": {"vulnerability_scan_available": True, "vulnerability_scan_results": {"critical": 0}},
+        }
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertIn("Commitment Reliability: not available (not available - no estimate-accuracy tracking exists yet)", report)
+        self.assertIn("Defect Escape Rate: not available (not available - no defect/bug-lifecycle tracking exists yet)", report)
+        self.assertIn("Customer Satisfaction: not available (not available - no user/customer satisfaction survey exists yet)", report)
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
@@ -1045,6 +1494,39 @@ class TestWriteConversationTranscript(unittest.TestCase):
         self.assertIn(result["path"], written_paths)
         self.assertIn(result["latest_path"], written_paths)
 
+    @patch("agents.scrum_team.tools.budget._next_transcript_path", return_value="specs/reports/TRANSCRIPT-999.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reuses_this_sprints_already_allocated_path(self, mock_write_file, mock_next_path):
+        """GH issue #345 (same bug as #341's sprint_report_path fix):
+        called unconditionally from both create_sprint_report and
+        create_release_pr - without reuse, a single sprint wrote two
+        separate numbered TRANSCRIPT-*.md files for what should be one."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript_path"] = "specs/reports/TRANSCRIPT-001.md"
+        tool_context.state["transcript"] = [{"agent_name": "DevTeam", "role": "model", "content": "hi"}]
+
+        result = _write_conversation_transcript(tool_context)
+
+        mock_next_path.assert_not_called()
+        self.assertEqual(result["path"], "specs/reports/TRANSCRIPT-001.md")
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/TRANSCRIPT-001.md", written_paths)
+        self.assertNotIn("specs/reports/TRANSCRIPT-999.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_transcript_path", return_value="specs/reports/TRANSCRIPT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_first_call_this_sprint_allocates_and_records_a_fresh_path(self, mock_write_file, mock_next_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript"] = [{"agent_name": "DevTeam", "role": "model", "content": "hi"}]
+
+        result = _write_conversation_transcript(tool_context)
+
+        mock_next_path.assert_called_once()
+        self.assertEqual(tool_context.state["transcript_path"], "specs/reports/TRANSCRIPT-001.md")
+        self.assertEqual(result["path"], "specs/reports/TRANSCRIPT-001.md")
+
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_handles_empty_transcript(self, mock_write_file):
         tool_context = MagicMock()
@@ -1088,12 +1570,13 @@ class TestWriteConversationTranscript(unittest.TestCase):
 
 class TestRenderFallbackSprintReport(unittest.TestCase):
     """
-    Acceptance Criteria: render_fallback_sprint_report is the deterministic,
-    non-LLM stand-in _ensure_sprint_report_on_final_halt_once (agent.py)
-    calls when the sprint budget runs out before Product Owner ever
-    successfully calls the real create_sprint_report - it must render
-    something real from state alone (no summary/accomplishments text to
-    author), and it must never clobber an already-real report.
+    Acceptance Criteria: render_fallback_sprint_report is the mechanically-
+    rendered counterpart _ensure_sprint_report_on_final_halt_once (agent.py)
+    calls when the sprint budget runs out before Product Owner ever gets a
+    turn to call create_sprint_report - a sprint ending this way is normal,
+    expected behavior, not a failure. It must render something real from
+    state alone (no summary/accomplishments text to author), and it must
+    never clobber a report Product Owner already authored.
     """
 
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
@@ -1111,7 +1594,7 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         result = render_fallback_sprint_report(tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
-        self.assertIn("Automatically Generated Fallback Report", result["report"])
+        self.assertIn("Mechanically-Rendered Report", result["report"])
         self.assertIn("US-0001", result["report"])
         self.assertNotIn("EP-0001", result["report"], "epics are not stories - must not appear in Story Status")
         self.assertIn("improve X", result["report"])
@@ -1120,6 +1603,41 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         written_paths = [c.args[0] for c in mock_write_file.call_args_list]
         self.assertIn("specs/reports/SPRINT-REPORT-001.md", written_paths)
         self.assertIn("specs/reports/SPRINT-REPORT-LATEST.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_renders_retro_and_impediment_category(self, mock_write_file, mock_next_path):
+        """GH issue #354: category was previously invisible here too."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "QA keeps skipping local test runs", "owner": "QA", "status": "open", "category": "steering"},
+        ]
+        tool_context.state["impediment_log"] = [
+            {"description": "Need a product decision on auth provider", "owner": "ProductOwner", "status": "open", "category": "human"},
+        ]
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertIn("Category: steering", result["report"])
+        self.assertIn("Category: human", result["report"])
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_snapshots_currently_blocked_ids_even_on_a_fallback_close(self, mock_write_file, mock_next_path):
+        """GH issue #359: a budget-exhausted sprint doesn't get a free pass
+        from ever needing to discuss a still-unresolved blocker - it just
+        defers the requirement to the next sprint's real create_sprint_report
+        call, which needs an accurate snapshot to do that."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0001", "title": "Add login", "blocked": {"category": "technical", "question": "which auth library?"}},
+        ]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["blocked_story_ids_as_of_last_report"], ["US-0001"])
 
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-002.md")
     @patch("agents.scrum_team.tools.docs.write_file")
@@ -1132,12 +1650,180 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         result = render_fallback_sprint_report(tool_context=tool_context)
 
         self.assertEqual(result["report"], real_report)
-        self.assertNotIn("Automatically Generated Fallback Report", result["report"])
+        self.assertNotIn("Mechanically-Rendered Report", result["report"])
         # Re-written to disk (in case the real one was never committed), but
         # the pending-release bookkeeping is create_sprint_report's own job,
         # not re-triggered here for content that already existed.
         written_paths = [c.args[0] for c in mock_write_file.call_args_list]
         self.assertIn("specs/reports/SPRINT-REPORT-LATEST.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-002.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reusing_a_real_report_does_not_burn_a_new_report_number(self, mock_write_file, mock_next_path):
+        """GH issue (0.1.0-run42): create_release_pr calls this
+        unconditionally to land the report on develop before opening the
+        PR - even when create_sprint_report already succeeded this sprint.
+        Without reusing the already-allocated path, every single sprint
+        wrote a second, duplicate numbered file with identical content,
+        turning a 5-sprint run into 12+ SPRINT-REPORT-NNN.md files."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        real_report = "# Sprint Review Report\n\nEverything shipped, authored for real by Product Owner.\n"
+        tool_context.state["sprint_report"] = real_report
+        tool_context.state["sprint_report_path"] = "specs/reports/SPRINT-REPORT-001.md"
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        mock_next_path.assert_not_called()
+        self.assertEqual(result["path"], "specs/reports/SPRINT-REPORT-001.md")
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/SPRINT-REPORT-001.md", written_paths)
+        self.assertNotIn("specs/reports/SPRINT-REPORT-002.md", written_paths)
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_first_call_this_sprint_allocates_and_records_a_fresh_path(self, mock_write_file, mock_next_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open"}]
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        mock_next_path.assert_called_once()
+        self.assertEqual(tool_context.state["sprint_report_path"], "specs/reports/SPRINT-REPORT-001.md")
+        self.assertEqual(result["path"], "specs/reports/SPRINT-REPORT-001.md")
+
+    @patch.dict(os.environ, {}, clear=False)
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-003.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_warns_on_suspicious_zero_spend(self, mock_write_file, mock_next_path):
+        """Same GH issue #298 safety warning as create_sprint_report - the
+        fallback path renders straight from state, so it needs its own
+        wiring of the shared helper, not automatic coverage from the real
+        report's tests."""
+        os.environ.pop("LLM_LOCAL_PROVIDER", None)
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["budgets"]["total_usd"] = 10.0
+        tool_context.state["budgets"]["current_usd_spend"] = 0
+        tool_context.state["token_usage"]["total"] = 75_000
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertIn("SAFETY WARNING", result["report"])
+
+    @patch("agents.scrum_team.tools.budget._next_retro_doc_path", return_value="specs/reports/RETRO-001.md")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_always_writes_the_retro_doc_but_not_the_steering_doc_when_empty(self, mock_write_file, mock_next_report_path, mock_next_retro_path):
+        """GH issue #356: RETRO-NNN.md is written every time regardless;
+        STEERING-NNN.md is only written once a real proposal exists."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open", "category": "technical"}]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/RETRO-001.md", written_paths)
+        self.assertFalse(any(p.startswith("specs/reports/STEERING-") for p in written_paths))
+        self.assertEqual(tool_context.state["retro_doc_path"], "specs/reports/RETRO-001.md")
+
+    @patch("agents.scrum_team.tools.budget._next_steering_doc_path", return_value="specs/reports/STEERING-001.md")
+    @patch("agents.scrum_team.tools.budget._next_retro_doc_path", return_value="specs/reports/RETRO-001.md")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_writes_the_steering_doc_once_a_proposal_exists(self, mock_write_file, mock_next_report_path, mock_next_retro_path, mock_next_steering_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open", "category": "technical"}]
+        tool_context.state["steering_proposals"] = [{
+            "role": "QA", "proposed_by": "ScrumMaster", "rationale": "QA keeps skipping local test runs.",
+            "new_content": "# QA\n\nRun the full local test suite before marking Tested.\n",
+            "pr_url": "https://github.com/example/example/pull/42", "branch": "steering/qa-identity-20261001000000",
+        }]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/STEERING-001.md", written_paths)
+        self.assertEqual(tool_context.state["steering_doc_path"], "specs/reports/STEERING-001.md")
+        steering_call = next(c for c in mock_write_file.call_args_list if c.args[0] == "specs/reports/STEERING-001.md")
+        self.assertIn("QA", steering_call.args[1])
+        self.assertIn("https://github.com/example/example/pull/42", steering_call.args[1])
+
+    @patch("agents.scrum_team.tools.budget._next_retro_doc_path", return_value="specs/reports/RETRO-002.md")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-002.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reuses_the_retro_doc_path_already_allocated_this_sprint(self, mock_write_file, mock_next_report_path, mock_next_retro_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_doc_path"] = "specs/reports/RETRO-001.md"
+        tool_context.state["retro_actions"] = [{"action": "improve X", "owner": "SM", "status": "open", "category": "technical"}]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/RETRO-001.md", written_paths)
+        mock_next_retro_path.assert_not_called()
+
+
+class TestRenderRetroDoc(unittest.TestCase):
+    """GH issue #356: TEMPLATE-RETRO-ITEM.md's structure, rendered from
+    state - a durable, full-detail record alongside the terse one-liners in
+    the sprint report itself."""
+
+    def test_empty_state_renders_a_plain_no_data_message(self):
+        self.assertIn("No retro actions or impediments logged yet", _render_retro_doc({}))
+
+    def test_renders_retro_action_detail(self):
+        s = {
+            "retro_actions": [{
+                "action": "Keep feature branches synchronized with develop",
+                "owner": "DevTeam", "status": "open", "category": "steering",
+                "success_metric": "No stale branches at sprint end", "issue_id": "ISSUE-0012",
+            }],
+            "impediment_log": [],
+        }
+        doc = _render_retro_doc(s)
+        self.assertIn("Keep feature branches synchronized with develop", doc)
+        self.assertIn("Category: steering", doc)
+        self.assertIn("Owner: DevTeam", doc)
+        self.assertIn("No stale branches at sprint end", doc)
+        self.assertIn("ISSUE-0012", doc)
+
+    def test_renders_impediment_detail(self):
+        s = {
+            "retro_actions": [],
+            "impediment_log": [{
+                "description": "Need a product decision on auth provider",
+                "owner": "ProductOwner", "status": "open", "category": "human",
+            }],
+        }
+        doc = _render_retro_doc(s)
+        self.assertIn("Need a product decision on auth provider", doc)
+        self.assertIn("Category: human", doc)
+
+
+class TestRenderSteeringDoc(unittest.TestCase):
+    """GH issue #356: TEMPLATE-STEERING-PROPOSAL.md's structure - no file
+    should be written when nothing has been proposed yet."""
+
+    def test_no_proposals_renders_nothing(self):
+        self.assertIsNone(_render_steering_doc({}))
+
+    def test_renders_proposal_detail(self):
+        s = {"steering_proposals": [{
+            "role": "QA", "proposed_by": "ScrumMaster",
+            "rationale": "QA keeps skipping local test runs.",
+            "new_content": "# QA\n\nRun the full local test suite before marking Tested.\n",
+            "pr_url": "https://github.com/example/example/pull/42",
+        }]}
+        doc = _render_steering_doc(s)
+        self.assertIn("QA", doc)
+        self.assertIn("QA keeps skipping local test runs.", doc)
+        self.assertIn("https://github.com/example/example/pull/42", doc)
+        self.assertIn("Run the full local test suite before marking Tested.", doc)
 
 
 class TestFileRetroItemsAsIssues(unittest.TestCase):
@@ -1225,6 +1911,41 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
         self.assertEqual(filed, [])
         self.assertEqual(tool_context.state["product_backlog"], [])
 
+    def test_only_files_technical_category_items(self):
+        """GH issue #342: a "steering"/"human" finding isn't a code task the
+        team can plan into a sprint - filing it as an Issue here would just
+        be a different flavor of the same "never actually acted on"
+        failure this function exists to prevent."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "Fix the flaky coverage setup", "owner": "SM", "status": "open", "category": "technical"},
+            {"action": "QA keeps skipping local test runs", "owner": "SM", "status": "open", "category": "steering"},
+        ]
+        tool_context.state["impediment_log"] = [
+            {"description": "Need a product decision on auth provider", "owner": "SM", "status": "open", "category": "human"},
+        ]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(filed), 1)
+        self.assertTrue(tool_context.state["retro_actions"][0]["issue_id"])
+        self.assertNotIn("issue_id", tool_context.state["retro_actions"][1])
+        self.assertNotIn("issue_id", tool_context.state["impediment_log"][0])
+
+    def test_missing_category_defaults_to_technical(self):
+        """Backward compatibility: data logged before this triage existed
+        has no category field at all - must still get filed as before."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "pre-existing retro item", "owner": "SM", "status": "open"}]
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(filed), 1)
+
 
 class TestCreateSprintReportFilesRetroItems(unittest.TestCase):
     """Integration coverage: create_sprint_report itself must trigger the
@@ -1244,6 +1965,165 @@ class TestCreateSprintReportFilesRetroItems(unittest.TestCase):
         self.assertTrue(issue_id)
         self.assertIn(f"filed as {issue_id}", report)
         self.assertTrue(any(item["id"] == issue_id for item in tool_context.state["product_backlog"]))
+
+
+class TestCreateSprintReportPersistsStateToRepo(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #397): a real eval run (0.1.0-run50) showed
+    ProductOwner and ScrumMaster bouncing transfer_to_agent until the loop
+    breaker tripped - root-caused to create_sprint_report/create_release_pr
+    never persisting their retro_baseline/kpi_baseline/
+    sprint_report_pending_release bumps to the repo's .hc/state.json, unlike
+    every other state-mutating tool (advance_story_stage, start_sprint,
+    ...). A stale on-disk snapshot (e.g. from an advance_story_stage call
+    made between a rejected create_sprint_report attempt and its eventual
+    success) could then get reloaded by a later init_scrum_state() call -
+    clobbering the correctly-advanced in-memory baselines and resurrecting a
+    false sprint_report_step_active() condition (helpers.py) that locks
+    ScrumMaster out of every tool but transfer_to_agent.
+
+    Reproduces the exact failure end to end: create_sprint_report succeeds,
+    then a FRESH tool_context (simulating the next sprint's own
+    init_scrum_state() call reading straight from the repo, as ProductOwner's
+    does at the start of every sprint in the real transcript) must see the
+    already-consumed freshness baselines, not the stale pre-close ones.
+    """
+
+    def setUp(self):
+        self.test_repo = Path("test_repo_create_sprint_report_persistence")
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        self.test_repo.mkdir(exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.test_repo, check=True)
+
+        self.old_internal_path = os.environ.get("INTERNAL_STATE_REPO_PATH")
+        if "INTERNAL_STATE_REPO_PATH" in os.environ:
+            del os.environ["INTERNAL_STATE_REPO_PATH"]
+        os.environ["STATE_REPO_PATH"] = str(self.test_repo.absolute())
+
+    def tearDown(self):
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        if "STATE_REPO_PATH" in os.environ:
+            del os.environ["STATE_REPO_PATH"]
+        if self.old_internal_path:
+            os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_fresh_init_scrum_state_sees_the_just_closed_baselines_not_a_stale_snapshot(self, mock_write_file, mock_getenv):
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "fix coverage tooling", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+
+        # Simulates the mid-sprint save a real advance_story_stage call makes
+        # while retro/KPIs are already fresh but the report hasn't closed yet
+        # (e.g. after an earlier rejected create_sprint_report attempt) -
+        # exactly the stale snapshot the real run50 failure reloaded later.
+        from agents.scrum_team.tools.scrum import save_state_to_repo
+        save_state_to_repo(tool_context=tool_context)
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+
+        fresh_context = MagicMock()
+        fresh_context.state = {}
+        init_scrum_state(tool_context=fresh_context)
+
+        self.assertEqual(fresh_context.state["retro_baseline"], tool_context.state["retro_baseline"])
+        self.assertEqual(fresh_context.state["kpi_baseline"], tool_context.state["kpi_baseline"])
+        self.assertEqual(
+            fresh_context.state["sprint_report_pending_release"],
+            tool_context.state["sprint_report_pending_release"],
+        )
+        # The actual symptom: with the bug, this would still read as "fresh"
+        # (process_signals/kpi_update_count past a stale, un-persisted
+        # baseline of 0) even though create_sprint_report just consumed it.
+        process_signals = len(fresh_context.state.get("retro_actions", [])) + len(fresh_context.state.get("impediment_log", []))
+        self.assertFalse(process_signals > fresh_context.state["retro_baseline"])
+        self.assertFalse(fresh_context.state["kpi_update_count"] > fresh_context.state["kpi_baseline"])
+
+
+class TestNextNumberedArtifactPathFloor(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue, 0.1.0-run57): _next_sprint_report_path/
+    _next_transcript_path/_next_retro_doc_path/_next_steering_doc_path pick
+    their next number by scanning specs/reports/ on disk - a real eval run
+    showed that scan can under-count (the shared working tree didn't yet
+    reflect the immediately-prior sprint's own committed file at the
+    moment this ran), silently reusing an earlier sprint's number and
+    overwriting its file. Each of these artifacts is written exactly once
+    per real sprint, so the allocated number must never come out lower
+    than state.sprint_number itself.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo_root = Path(self._tmp.name)
+        (self.repo_root / "specs" / "reports").mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _tool_context(self, sprint_number):
+        tool_context = MagicMock()
+        tool_context.state = {"sprint_number": sprint_number}
+        return tool_context
+
+    def _touch(self, name):
+        (self.repo_root / "specs" / "reports" / name).write_text("x")
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    def test_plain_scan_still_works_when_disk_and_sprint_number_agree(self, mock_repo_root):
+        mock_repo_root.return_value = self.repo_root
+        self._touch("SPRINT-REPORT-001.md")
+
+        path = _next_sprint_report_path(self._tool_context(sprint_number=2))
+
+        self.assertEqual(path, "specs/reports/SPRINT-REPORT-002.md")
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    def test_floors_at_sprint_number_when_the_disk_scan_under_counts(self, mock_repo_root):
+        """The actual bug: specs/reports/ is missing a prior sprint's file
+        (a transient git-sync gap, not a real absence) - without the floor,
+        this would allocate the SAME number as that missing sprint and
+        silently overwrite it once that file does reappear."""
+        mock_repo_root.return_value = self.repo_root
+        self._touch("SPRINT-REPORT-001.md")  # only sprint 1's file visible
+
+        path = _next_sprint_report_path(self._tool_context(sprint_number=3))
+
+        self.assertEqual(path, "specs/reports/SPRINT-REPORT-003.md")
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    def test_no_sprint_number_in_state_falls_back_to_pure_scan(self, mock_repo_root):
+        """A caller with no sprint_number in state (e.g. a unit test that
+        doesn't set it) must behave exactly as before this fix."""
+        mock_repo_root.return_value = self.repo_root
+        self._touch("SPRINT-REPORT-001.md")
+        tool_context = MagicMock()
+        tool_context.state = {}
+
+        path = _next_sprint_report_path(tool_context)
+
+        self.assertEqual(path, "specs/reports/SPRINT-REPORT-002.md")
+
+    @patch("agents.scrum_team.tools.budget._configured_repo_root")
+    def test_each_artifact_type_floors_independently(self, mock_repo_root):
+        mock_repo_root.return_value = self.repo_root
+        self._touch("TRANSCRIPT-001.md")
+        self._touch("RETRO-001.md")
+        self._touch("STEERING-001.md")
+        ctx = self._tool_context(sprint_number=4)
+
+        self.assertEqual(_next_transcript_path(ctx), "specs/reports/TRANSCRIPT-004.md")
+        self.assertEqual(_next_retro_doc_path(ctx), "specs/reports/RETRO-004.md")
+        self.assertEqual(_next_steering_doc_path(ctx), "specs/reports/STEERING-004.md")
 
 
 if __name__ == "__main__":

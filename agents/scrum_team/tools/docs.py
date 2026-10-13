@@ -3,7 +3,50 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name
+from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name, _run
+
+# GH #419: seeded into every project from its very first commit (see
+# seed_repository below) - common build/test/editor artifacts that real
+# eval runs have shown DevTeam/QA's own normal work (running tests, a local
+# SQLite db, bytecode caches) leaves untracked in the working tree, which a
+# later GitFlow checkout can hard-fail on ("untracked working tree files
+# would be overwritten"). Deliberately broad/multi-ecosystem rather than
+# narrowly Python-only - this template seeds projects in whatever language
+# Dev Team ends up writing, not just Python.
+_DEFAULT_GITIGNORE = """\
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+instance/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+"""
+
 
 def _strip_agent_safeguard_comments(text: str) -> str:
     """
@@ -57,7 +100,57 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
                 pass
         abs_path.write_text(content, encoding="utf-8")
         _record_touched_file(path, tool_context)
+        # GH eval run39: check_build()'s pip/npm install result was still
+        # being trusted by advance_story_stage's Tested gate even after a
+        # LATER rewrite of requirements.txt/package.json - a real eval run
+        # emptied requirements.txt (dropping Flask) after check_build had
+        # already passed, and nobody re-ran it before QA's pytest attempt
+        # hit ModuleNotFoundError 11 times in a row against a build nobody
+        # had actually re-verified. Bumping this counter on every write to
+        # either manifest, at repo root, lets that gate tell "check_build
+        # ran against exactly this manifest" apart from "check_build ran at
+        # some point, before the manifest changed" - see check_build's own
+        # snapshot of this counter and the Tested gate's freshness check.
+        if tool_context and getattr(tool_context, "state", None) and abs_path.parent == repo_root.resolve() \
+                and abs_path.name in ("requirements.txt", "package.json"):
+            tool_context.state["dependency_manifest_write_count"] = (
+                tool_context.state.get("dependency_manifest_write_count", 0) + 1
+            )
         return {"status": "ok", "path": str(abs_path), "overwrote_existing_content": overwrote_existing_content}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+def delete_file(path: str, tool_context=None) -> Dict[str, Any]:
+    """
+    Delete a repository-relative file that was created by mistake.
+
+    GH issue #376: write_file only ever writes or overwrites - it never
+    removes a file from disk. A real eval run (0.1.0-run46) had DevTeam
+    write a test file with a wrong import, then narrate "removing" it, but
+    there was no tool that actually did that - the broken file sat on disk
+    forever, failing pytest collection identically on every subsequent
+    check_build, which permanently blocked the one story it belonged to
+    (and, via the one-story-at-a-time ordering gate, every story behind it)
+    for the rest of the run.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    abs_path = (repo_root / path).resolve()
+
+    if not str(abs_path).startswith(str(repo_root.resolve())):
+        return {"status": "error", "message": f"Path '{path}' is outside the repository root."}
+
+    if not abs_path.exists():
+        return {"status": "error", "message": f"File does not exist: {path}"}
+    if abs_path.is_dir():
+        return {
+            "status": "error",
+            "message": f"'{path}' is a directory, not a file - delete_file only removes a single file.",
+        }
+
+    try:
+        abs_path.unlink()
+        _record_touched_file(path, tool_context)
+        return {"status": "ok", "path": str(abs_path)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -275,7 +368,8 @@ def create_from_template(template_path: str, destination_path: str, substitution
 
 def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any]:
     """
-    Creates a specs/ directory and a README.md in the configured target repo.
+    Creates a specs/ directory, a README.md, and a .gitignore (GH #419 - see
+    _DEFAULT_GITIGNORE's own comment for why) in the configured target repo.
     Then performs an initial commit and push.
     - overwrite: If True, existing files in the target will be replaced.
     """
@@ -309,6 +403,27 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
             
             dst_readme.write_text(content, encoding="utf-8")
             files_seeded.append("README.md")
+
+        # GH #419: two separate real eval runs (0.1.0-run54, 0.1.0-run55)
+        # each hit a GitFlow checkout hard-failing with git's "untracked
+        # working tree files would be overwritten by checkout" - run54 on
+        # instance/todo.db (Flask's default SQLite location), run55 on
+        # .coverage/__pycache__/*.pyc (left behind by QA's own check_build()
+        # test runs) - because the generated project had no .gitignore at
+        # all, so DevTeam/QA's own normal local test runs left real,
+        # untracked build/test artifacts sitting in the working tree that
+        # ANY later checkout (create_release_pr, start_feature_branch, ...)
+        # could trip over. A comment on git_push's own "nothing staged"
+        # handling (ISSUE-0050 follow-up) already diagnosed the identical
+        # root cause once before, for a different symptom (a commit
+        # failure, not a checkout failure) - .gitignore existing from the
+        # very first commit prevents the whole class of failure at the
+        # source, for both symptoms, rather than patching one call site at a
+        # time as new artifact types show up.
+        dst_gitignore = repo_root / ".gitignore"
+        if not dst_gitignore.exists() or overwrite:
+            dst_gitignore.write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
+            files_seeded.append(".gitignore")
 
         # Create specs/ directory
         specs_dir = repo_root / "specs"
@@ -350,3 +465,87 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
         return {"status": "ok", "message": "No new files seeded.", "seeded": []}
     except Exception as e:
         return {"status": "error", "message": f"Seeding failed: {e}"}
+
+
+def _heal_gitignore_drift(tool_context) -> Dict[str, Any]:
+    """
+    Ensures the configured repo has a .gitignore covering the standard
+    build/test-artifact patterns (_DEFAULT_GITIGNORE above), and untracks
+    any file ALREADY committed to git history that a freshly-written
+    .gitignore would now cover.
+
+    This closes a gap GH #419's "seed_repository writes a .gitignore on
+    first seed" fix doesn't: that fix only ever helps a brand-new project's
+    very first commit (it skips writing .gitignore once one already
+    exists, same as every other seeded file). A long-lived project that
+    was first seeded before .gitignore existed at all - or that
+    accumulated a tracked build artifact before this file started covering
+    it - never gets a second chance to pick this up, since nothing ever
+    re-invokes seed_repository once specs/README.md etc. already exist. A
+    real eval run (0.1.0-run58) hit exactly the pre-#419 symptom again:
+    __pycache__/*.pyc and .coverage, already tracked from however this
+    particular project's history began, kept blocking every later
+    checkout with git's "local changes would be overwritten" - the eval
+    harness's own target repo (run_eval.py's _prepare_local_clone) is a
+    standing, reused GitHub repo, branched from whatever its current tip
+    happens to be each run, not recreated fresh - so this drift, once
+    introduced, persists forever regardless of how many times the seeding
+    code itself gets fixed.
+
+    Called mechanically from init_scrum_state() (this session's first
+    init only - see its own `force`/`already_initialized` gating), not
+    left for an agent to remember to call seed_repository again on a
+    project that already looks fully seeded. Best-effort: returns an "ok,
+    nothing to heal" result (never an error) whenever there's no git repo
+    yet, no develop branch pushed yet (a brand-new project mid-bootstrap,
+    not drift), or nothing tracked actually needs untracking - this must
+    never block a session's own startup over repo hygiene.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    if not (repo_root / ".git").exists():
+        return {"status": "ok", "healed": False, "message": "Not a git repo yet - nothing to heal."}
+
+    from .github import _checkout_develop_or_recover
+
+    develop = _develop_branch_name(tool_context)
+    remote_has_develop = _run(
+        ["git", "ls-remote", "--exit-code", "--heads", "origin", develop], cwd=str(repo_root), tool_context=tool_context,
+    ).get("returncode") == 0
+    if not remote_has_develop:
+        return {"status": "ok", "healed": False, "message": "No develop branch on origin yet - project still bootstrapping, not drift."}
+
+    recovery = _checkout_develop_or_recover(str(repo_root), develop, tool_context=tool_context)
+    if recovery.get("status") != "ok":
+        return {"status": "ok", "healed": False, "message": "Could not check out develop - skipping gitignore-drift healing for now.", "checkout": recovery}
+
+    changed = []
+    gitignore_path = repo_root / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path.write_text(_DEFAULT_GITIGNORE, encoding="utf-8")
+        _run(["git", "add", ".gitignore"], cwd=str(repo_root), tool_context=tool_context)
+        changed.append(".gitignore")
+
+    tracked_ignored = _run(
+        ["git", "ls-files", "--cached", "--ignored", "--exclude-standard"],
+        cwd=str(repo_root), tool_context=tool_context,
+    )
+    offending = [line for line in (tracked_ignored.get("stdout") or "").splitlines() if line.strip()]
+    if offending:
+        _run(["git", "rm", "--cached", "-q", "--"] + offending, cwd=str(repo_root), tool_context=tool_context)
+        changed.extend(offending)
+
+    if not changed:
+        return {"status": "ok", "healed": False, "message": "No .gitignore drift to heal."}
+
+    commit_res = _run(
+        ["git", "commit", "-m", "chore: untrack build/test artifacts now covered by .gitignore"],
+        cwd=str(repo_root), tool_context=tool_context,
+    )
+    if commit_res.get("status") != "ok":
+        return {"status": "ok", "healed": False, "message": "Found drift but could not commit the fix.", "commit": commit_res}
+
+    push_res = _run(["git", "push", "origin", develop], cwd=str(repo_root), tool_context=tool_context)
+    if push_res.get("status") != "ok":
+        return {"status": "ok", "healed": False, "message": "Found drift but could not push the fix.", "push": push_res}
+
+    return {"status": "ok", "healed": True, "changed": changed}

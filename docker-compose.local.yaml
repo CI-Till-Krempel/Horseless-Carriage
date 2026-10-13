@@ -23,6 +23,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - external-net
 
   ollama:
     build:
@@ -61,9 +63,13 @@ services:
     # (Settings -> Resources -> Advanced on the host), which is the actual
     # lever for "give Ollama more of the machine" - see docs/SETUP.md's
     # "Performance Tuning" section.
+    networks:
+      - external-net
 
   litellm:
-    image: docker.litellm.ai/berriai/litellm:main-stable
+    # GH issue #298: pinned to a digest instead of the floating main-stable
+    # tag - see docker-compose.yaml's identical entry for the re-pin command.
+    image: docker.litellm.ai/berriai/litellm:main-stable@sha256:df15400b5b80925c45d3fd53f8f7a6c0eaa8a25a86833e1b358002e129018943
     ports:
       # GH issue #239: bound to localhost by default - see docker-compose.yaml's
       # identical entry. Set LITELLM_BIND_HOST=0.0.0.0 in .env to expose it on
@@ -85,6 +91,12 @@ services:
       - db
       - ollama
     restart: unless-stopped
+    # GH issue #287: see docker-compose.yaml's identical entry - reachable
+    # directly by `agent` over agent-net, while keeping its own
+    # unrestricted egress to ollama/commercial providers over external-net.
+    networks:
+      - external-net
+      - agent-net
 
   agent:
     build:
@@ -125,6 +137,15 @@ services:
       - LITELLM_PROXY_API_KEY=${LITELLM_PROXY_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_REPO_URL=${GITHUB_REPO_URL}
+      # GH issue #287: see docker-compose.yaml's identical entry - agent-net
+      # (below) has no route to the internet at all except through
+      # net-proxy's allowlist (config/net-proxy/allowlist.filter).
+      - HTTP_PROXY=http://net-proxy:8888
+      - HTTPS_PROXY=http://net-proxy:8888
+      - http_proxy=http://net-proxy:8888
+      - https_proxy=http://net-proxy:8888
+      - NO_PROXY=litellm
+      - no_proxy=litellm
       # GH issue #82: Compose prints a "variable is not set" warning for any
       # bare ${VAR} reference left unset in .env, even when the code being
       # run already has a perfectly good default for it (get_interaction_level(),
@@ -150,6 +171,9 @@ services:
       - TOTAL_USD_BUDGET=${TOTAL_USD_BUDGET:-}
       - SPRINT_USD_BUDGET=${SPRINT_USD_BUDGET:-}
       - PROCESS_OVERHEAD_PERCENTAGE=${PROCESS_OVERHEAD_PERCENTAGE:-10.0}
+      # GH #407: absolute backstop on the sprint-report-step's own uncapped
+      # window - see ritual_hard_ceiling, agents/scrum_team/helpers.py.
+      - RITUAL_HARD_CEILING_PERCENT=${RITUAL_HARD_CEILING_PERCENT:-50.0}
       # Per-sprint config for agents/scrum_team/scripts/run_eval.py - see
       # .env.example's "Eval Harness Budget Configuration" section. No inline
       # default here (unlike the vars above) - run_eval.py's own
@@ -192,10 +216,33 @@ services:
       - SPRINT_CLOSEOUT_GRACE_PERCENT=${SPRINT_CLOSEOUT_GRACE_PERCENT:-20.0}
     depends_on:
       - litellm
+      - net-proxy
     # Keep the container running and allow for interactive sessions
     stdin_open: true
     tty: true
     command: ["/bin/bash", "/app/agents/scrum_team/scripts/run_agent.sh"]
+    # GH issue #287: see docker-compose.yaml's identical entry - internal:
+    # true (below) means this container has NO route to the internet
+    # except through net-proxy's allowlist.
+    networks:
+      - agent-net
+
+  # GH issue #287: see docker-compose.yaml's identical entry.
+  net-proxy:
+    build:
+      context: .
+      dockerfile: net-proxy.Dockerfile
+    networks:
+      - external-net
+      - agent-net
+    restart: unless-stopped
+
+networks:
+  external-net:
+    driver: bridge
+  agent-net:
+    driver: bridge
+    internal: true
 
 volumes:
   postgres_data:

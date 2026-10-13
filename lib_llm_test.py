@@ -120,6 +120,57 @@ def llm_test_alias(base_url: str, auth_key: str, alias: str, timeout_secs: int =
         return False, f"unexpected error testing {base_url}: {e}"
 
 
+# Providers whose $0 cost is correct, not a misconfiguration - a self-hosted
+# model genuinely has no per-token price to look up.
+_FREE_PROVIDER_PREFIXES = ("ollama/",)
+
+
+def llm_check_model_pricing(base_url: str, auth_key: str, timeout_secs: int = 15) -> list:
+    """
+    Queries the proxy's /model/info endpoint (GH issue #298) and flags any
+    configured alias, routed through a commercial provider, whose resolved
+    input_cost_per_token AND output_cost_per_token both come back zero or
+    missing - LiteLLM's bundled pricing table not covering that model id at
+    all (e.g. a newly-released or retired/renamed model) silently produces
+    exactly this shape, not an error, so a live chat completion
+    (llm_test_alias) succeeding is not enough to catch it - the response
+    looks completely normal, only the derived USD cost is wrong.
+
+    Returns a list of human-readable warning strings, empty if every
+    commercial-provider alias resolved to a real price (or there was
+    nothing to check / the endpoint couldn't be reached - never raises,
+    same fail-safe shape as llm_wait_for_proxy).
+    """
+    req = urllib.request.Request(
+        f"{base_url}/model/info",
+        headers={"Authorization": f"Bearer {auth_key}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_secs) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+
+    warnings = []
+    for entry in data.get("data", []) or []:
+        alias = entry.get("model_name", "<unknown>")
+        model_id = (entry.get("litellm_params") or {}).get("model", "")
+        if model_id.startswith(_FREE_PROVIDER_PREFIXES):
+            continue
+        info = entry.get("model_info") or {}
+        input_cost = info.get("input_cost_per_token") or 0
+        output_cost = info.get("output_cost_per_token") or 0
+        if input_cost == 0 and output_cost == 0:
+            warnings.append(
+                f'"{alias}" ({model_id}) resolves to $0 cost per token - LiteLLM\'s bundled '
+                "pricing table likely doesn't cover this model id (new release, or retired/"
+                "renamed) - budget/spend figures for this role will be wrong regardless of real "
+                "usage. Check the model id in litellm.yaml, or pick a different one via "
+                "setup_llm.py."
+            )
+    return warnings
+
+
 def _extract_content(body: str) -> Optional[str]:
     try:
         data = json.loads(body)

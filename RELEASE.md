@@ -243,6 +243,15 @@ for - so it's mechanically visible and actionable, not just something said once 
 conversation turn. Cleared automatically by `advance_story_stage` once the story actually advances
 past the stage it was denied at, so a resolved denial doesn't linger as stale feedback.
 
+**The denial also posts to the PR itself (GH issue #346).** A real eval run showed QA posting
+"Approved for Tested stage" `gh_pr_comment`s immediately alongside `deny_review` calls denying that
+exact same attempt - the denial reason only ever reached the story's Markdown file before this, never
+the PR, so the only GitHub-visible trail said the opposite of what actually happened. `deny_review`
+now posts a `gh_pr_comment` itself, generated from the denial's own reason, instead of relying on a
+separate free-text call the model might get wrong or skip - best-effort, same as every other side
+notification in this codebase (a comment-post failure doesn't turn an already-recorded denial into an
+error).
+
 **Accepted has its own evidence gate (ISSUE-0043).** Unlike Reviewed/Tested, Product Owner doesn't
 leave PR reviews, so there was nothing for Accepted's gate to check at all - any role could
 previously call `advance_story_stage(id, "Accepted")` on assertion alone.
@@ -302,6 +311,127 @@ tier, unlike Retrospective Actions/Impediments below) listing every story still 
 sprint closes, so whoever reads the report can give feedback/guidance on it before the next sprint
 starts.
 
+### One canonical priority scale, mechanically enforced (GH issue #355)
+
+There was no single, enforced priority scale - `_PRIORITY_RANK`/`_priority_rank` (the sort the whole
+backlog ordering gate depends on) only ever understood MoSCoW (`Must`/`Should`/`Could`/`Won't`), but
+`ProductOwner-workflow.md`'s own BACKLOG ITEM TEMPLATE told Product Owner to use a completely
+different scale ("priority: P0/P1/P2 (or numeric)"), and `set_priority`/`upsert_backlog_item`
+performed zero validation on the value. A real eval run used `"P0"`/`"P2"`/`"Must"` interchangeably
+across different items - since `"P0"`/`"P2"` aren't real MoSCoW values, `_priority_rank`'s own
+fallback silently ranked them as `"Must"` (the highest priority), the *opposite* of what a `"P2"`
+(intended low, per the very scale the prompt taught) was meant to convey.
+
+MoSCoW stays the one canonical scale (it's already what the sort mechanism is built around). `set_priority`
+and `upsert_backlog_item` (so `upsert_story`/`upsert_epic`/`upsert_issue`, and `plan_backlog_item` which
+delegates to `set_priority`) now refuse any `priority` outside `{"Must", "Should", "Could", "Won't"}`
+outright, naming the valid values. `_priority_rank`'s existing "no priority set at all defaults to
+`Must`'s rank" behavior is deliberately left unchanged - that's a different, already-justified case (a
+story nobody has explicitly deprioritized shouldn't be silently pushed to the back of the queue) from a
+value someone explicitly tried to set using the wrong scale, which validation now prevents from ever
+being saved in the first place.
+
+**Migrating existing data** (PR review follow-up): validation on *new* writes does nothing about a
+`priority` value already sitting in an existing repo's `specs/stories/*.md`/`specs/requirements/ISSUE-
+*.md` files from before this was enforced - the old BACKLOG ITEM TEMPLATE literally taught "P0/P1/P2 (or
+numeric)". `sync_stories_from_markdown` (`agents/scrum_team/tools/requirements.py`) now self-heals this
+on every sync: `_migrated_priority` maps a recognized legacy value to its MoSCoW equivalent (`P0`→`Must`,
+`P1`→`Should`, `P2`→`Could`, `P3`→`Won't`; `High`/`Medium`/`Low` likewise; a merely-miscased already-valid
+value like `"must"` is corrected to canonical casing), falling back to `"Must"` for anything else
+unrecognized - the same fallback `_priority_rank` itself already used, so this never makes an item rank
+*worse* than it already silently did. `_rewrite_priority_line` then surgically replaces just the
+`- Priority:` line in the file on disk (not a full regeneration via `_update_story_markdown`, which would
+silently drop any Notes/Test Approach/owner/tasks content `_parse_story_markdown` never round-trips back
+into state at all) - so the fix is durable, not just a one-session in-memory correction the very next
+sync would otherwise re-derive and then forget again. Idempotent: a file whose value is already valid is
+never rewritten. Retro findings that get auto-filed as Issues (`_file_retro_items_as_issues`) are covered
+the same way once filed, since a filed Issue is just another `specs/requirements/ISSUE-*.md` file this
+same sync already scans - `add_retro_action`/`add_impediment`'s own `priority` field (`"normal"`/`"high"`)
+is a separate, unrelated escalation scale that was never part of MoSCoW and needs no migration.
+
+### One-at-a-time ordering also gates the start of work, not just stage completion (GH issue #358)
+
+`advance_story_stage`'s one-story-at-a-time ordering gate only ever refused a story reaching
+Implemented-onward before the higher-priority story ahead of it reached Accepted - nothing stopped
+`start_feature_branch` (the real work - writing code, opening a PR) from starting on a lower-priority
+story first, wasting effort if the higher-priority one later needs rework or gets blocked.
+`start_feature_branch` now runs the exact same `_preceding_story` check (same BLOCKED-predecessor
+skip, same "not in `product_backlog` at all" data-integrity refusal) one step earlier, at the point
+work actually begins, not just when a stage transition is claimed.
+
+### One-at-a-time ordering gate: an Issue still blocks, but now names the reprioritization escape hatch (GH issue #368)
+
+A real eval run (0.1.0-run45) showed two abstract process findings - "ensure robust test isolation",
+"US-0001 tests experienced test isolation/fixture failures" - auto-filed as Must-priority Issues
+(`_file_retro_items_as_issues`, GH #164), sitting ahead of a real feature story in `product_backlog`
+order, and mechanically blocking all unrelated feature work behind them via the one-story-at-a-time
+ordering gate (GH #358) until *they* reached Accepted - something an abstract process reminder often
+has no concrete way to do. Product Owner found the correct escape hatch this run
+(`set_priority(..., "Won't")` on both, once it was clear neither genuinely warranted blocking
+priority), but only after real trial and error against the gate's own refusals.
+
+**An earlier version of this fix exempted Issues from the ordering gate entirely - reconsidered and
+reverted** (PR review feedback): exempting them removed the *only* mechanical pressure that was
+actually pushing a Ready Must-priority Issue all the way to Accepted. GH #164's own enforcement
+(`create_sprint_backlog_pr`'s Must-priority gate) only ever demands an Issue reach *Ready*, never
+Accepted - once Ready, that gate is satisfied permanently, even if the Issue then sits completely
+untouched forever. Removing ordering's pressure too would have recreated #164's original "never
+actually acted on" failure one stage later in the pipeline, just for Ready-but-stalled Issues instead
+of Draft-but-unplanned ones.
+
+The actual fix: `_preceding_story` still blocks on an Issue exactly like any other unfinished item -
+but when the ordering gate's own refusal message (`advance_story_stage`, `start_feature_branch`) names
+an Issue specifically as the blocker, it now also names the reprioritization escape hatch. **Resolving
+it for real is the lead instruction, not reprioritizing it away** (second round of review feedback):
+*"'\<id\>' is an auto-filed process finding - resolve it for real (advance it through Implemented ->
+Reviewed -> Tested -> Accepted like any other item) rather than reaching for set_priority('\<id\>',
+...) to dodge it. Only reprioritize away from 'Must' if, on genuine reflection, it turns out this
+finding never actually warranted blocking priority - not because resolving it is inconvenient right
+now."* A cheap model under budget pressure reaches for whichever option reads easiest - leading with
+"just deprioritize it" would turn this gate into a convenient dodge for every inconvenient finding,
+defeating the entire point of auto-filing these as Must-priority in the first place (GH #164).
+Reprioritization stays available (a real eval run showed Product Owner use it correctly), but only
+framed as the narrow exception for a finding that genuinely doesn't warrant blocking priority, not a
+shortcut around doing the work.
+
+### Blocked-story discipline (GH issue #359)
+
+Two gaps in how BLOCKED stories (`raise_story_blocker`/`resolve_story_blocker`) were handled, beyond
+the existing "a BLOCKED story can't advance its own stage" enforcement:
+
+1. **Real work could still start/continue on a BLOCKED story.** `advance_story_stage` already refused
+   every further stage transition while `blocked` was set, but nothing stopped `start_feature_branch`
+   from opening a branch and writing code for it anyway - wasted effort by definition, since the open
+   question blocking it hasn't been answered. `start_feature_branch` now refuses outright on the
+   target story's own `blocked` field (not just its predecessor's, see the ordering section above),
+   naming the open question and directing to `resolve_story_blocker`.
+2. **A blocker left unresolved across a full sprint wasn't mechanically surfaced to the retro.** A
+   story still BLOCKED now, that was ALSO already BLOCKED as of the *last* sprint report (genuinely
+   stuck across a full sprint, not just raised this sprint), is tracked via a new
+   `blocked_story_ids_as_of_last_report` snapshot (updated by both `create_sprint_report` and
+   `render_fallback_sprint_report` on every close). `create_sprint_report` now refuses to close while
+   any such story isn't mentioned anywhere in this sprint's `retro_actions`/`impediment_log` text -
+   the retro is where the team decides what happens next (escalate harder, reprioritize around it,
+   accept the delay), not silence.
+
+### Structured backlog dependencies (`depends_on`)
+
+Dependencies between stories/issues were previously just an optional free-text field nothing read
+mechanically - priority ordering was only ever as correct as whatever a cheap model remembered to do
+by hand (GH issue #343). `upsert_story`/`upsert_issue` now accept a real `depends_on: [story_id, ...]`
+list. `advance_story_stage` refuses to let an item start real development (Implemented onward - same
+"actual DEVELOPMENT, not Draft/Ready grooming" scoping as the one-story-at-a-time ordering check right
+above, so Product Owner can still queue dependent work up ahead of time) while any `depends_on` item
+hasn't reached Accepted yet, naming the exact unmet dependency. An unknown/removed dependency id is
+treated as a data-integrity problem for Product Owner to fix, not an ordering block, so a stale id
+can't deadlock a story forever.
+
+Saving a `depends_on` edge that would create a cycle (a direct self-reference, or transitively - A
+depends on B depends on C depends on A) is refused at write time (`upsert_backlog_item`), via a DFS
+over the whole backlog's dependency graph - caught here rather than only discovered later as a
+permanent mutual deadlock once `advance_story_stage`'s own gate refuses every item in the cycle
+forever.
+
 ### Sprint retrospective enforcement
 
 `create_sprint_report` (`agents/scrum_team/tools/budget.py`) mechanically refuses to write a
@@ -312,6 +442,168 @@ this sprint's requirement forever - `add_retro_action`/`add_impediment` must pro
 every sprint. On success the baseline is updated to the new total. The rejection message tells the
 caller (Product Owner) exactly what's missing and to transfer to Scrum Master first - turning a
 skippable prompt instruction into a hand-off the tooling itself forces.
+
+### Filed retro/impediment Issues must actually get planned
+
+`_file_retro_items_as_issues` (`agents/scrum_team/tools/budget.py`, GH issue #164) files every
+retro action/impediment as a real, Must-priority Issue in `product_backlog` - but a real eval run
+(0.1.0-run42) showed that alone wasn't enough: a dependency-pinning Issue filed in Sprint 1 sat at
+Draft, unaddressed, through Sprints 2-5, while every later sprint's retro just filed more Issues on
+top. `create_sprint_backlog_pr` (`agents/scrum_team/tools/github.py`) now mechanically refuses to
+open a sprint's backlog PR while any non-blocked Must-priority Issue is still sitting below Ready -
+the same choke-point pattern as the Ready-backlog-shortfall check right next to it - with the
+rejection message naming exactly which Issue IDs and what to do (`advance_story_stage(..., "Ready")`,
+or `set_priority` away from `"Must"` if it turns out not to warrant that).
+
+### Retro-item triage: technical / steering / human (GH issue #342)
+
+Every retro action/impediment used to get auto-filed as a Must-priority Issue uniformly, regardless
+of what kind of gap it actually was - correct for a genuine code/process task, wrong for a
+role-behavior gap or something only a human can decide. `add_retro_action`/`add_impediment`
+(`agents/scrum_team/tools/scrum.py`) now require a `category` - `"technical"`, `"steering"`, or
+`"human"` - plus an optional `priority` (`"normal"`/`"high"`):
+
+- **`"technical"`** - unchanged: flows into `_file_retro_items_as_issues` as before, Must-priority,
+  planned into the next sprint.
+- **`"steering"`** - a role-behavior gap, not a code fix. `_file_retro_items_as_issues` no longer files
+  these as Issues at all; instead `create_sprint_report` mechanically refuses to close while an open
+  `"steering"` finding has no fresh `propose_steering_change` call behind it since the last report -
+  same "must be NEW since last time" baseline pattern as `retro_baseline`/`kpi_baseline`
+  (`steering_proposal_count`/`steering_baseline`, bumped by `propose_steering_change` itself on a real,
+  non-no-op proposal).
+- **`"human"`** - genuinely outside the team's own authority to resolve. Immediately raised as a new
+  `state.general_blockers` entry (not story-scoped, unlike `raise_story_blocker`), always recording a
+  `blocking_interaction` (kind `"general_blocker"`) the same way story-level blockers already do. Shows
+  up in the eval report's "## Blockers" section regardless of story association
+  (`_collect_general_blockers`/`_render_blockers_section`, `run_eval_analysis.py`). If `priority="high"`
+  and still unresolved, `run_eval.py` stops the run outright (`human_blocker_unresolved` stop reason) -
+  same reasoning as the existing `blocked_needs_human` stop reason for story-level blockers: an
+  unattended run has no human to act on it, so continuing just burns further sprints' budget.
+
+### Mechanical nudge toward the steering/human retro categories (GH issue #354)
+
+A real eval run after #342 shipped showed the model never once chose `"steering"` or `"human"` across
+all 5 sprints - every retro finding, including textbook role-behavior gaps ("Maintain rigorous story
+sequencing...", "Keep feature branches synchronized..."), was categorized `"technical"` and silently
+dropped into the backlog as an unfixable code task. Prompt-only guidance on what each category means
+wasn't enough to get it actually used - the same lesson this codebase has hit repeatedly elsewhere.
+
+`add_retro_action`/`add_impediment` (`agents/scrum_team/tools/scrum.py`) now return a non-blocking
+`warning` field when a `"technical"` finding matches either signal (`agents/scrum_team/helpers.py`):
+
+- **Heuristic re-classification**: the text matches a small set of role-behavior/process-discipline
+  signal phrases (`looks_like_role_behavior_finding` - "discipline", "synchronized", "in strict
+  sequence", a role name, etc.) rather than describing a one-time code task.
+- **Recurrence escalation**: the text shares real substance (keyword overlap) with an earlier sprint's
+  still-unresolved `"technical"` finding of the same kind (`recurring_technical_finding_sprint`) - the
+  same finding keeps getting logged without ever being escalated to a steering change.
+
+Neither blocks the call - a real code-task finding that happens to match must still succeed - but both
+are visible enough on the tool's own response, and `ScrumMaster-workflow.md`'s triage guidance now
+tells Scrum Master to read and act on a `warning` before moving on. `category` is also now rendered in
+both `create_sprint_report` and `render_fallback_sprint_report`'s retro/impediment sections (previously
+invisible even there), so a human reviewing the report can audit classification choices directly.
+
+### Sprint report numbering (duplicate files)
+
+A 5-sprint eval run (0.1.0-run42) produced 12+ numbered `specs/reports/SPRINT-REPORT-NNN.md` files
+instead of 5: `create_release_pr` unconditionally calls `render_fallback_sprint_report` to land the
+report on `develop` before opening the release PR (regardless of whether `create_sprint_report`
+already succeeded that sprint), and that function always allocated a *fresh* sequential number even
+when only reusing an already-existing report string. `state.sprint_report_path` now records the
+numbered path the sprint has already allocated (set by both `create_sprint_report` and
+`render_fallback_sprint_report`, cleared each sprint via `sprint_budget_reset_state_delta`) - a
+repeat call within the same sprint reuses that path instead of burning a new number.
+
+`_write_conversation_transcript` had the exact same bug (GH issue #345), also called unconditionally
+from both `create_sprint_report` and `create_release_pr` - a 5-sprint run (0.1.0-run43) produced 10
+numbered `TRANSCRIPT-NNN.md` files instead of 5. `state.transcript_path` mirrors `sprint_report_path`
+for this function, same reuse-within-the-sprint fix.
+
+### Budget exhaustion mid-sprint is a normal sprint ending, not a failure
+
+`render_fallback_sprint_report`'s rendered banner used to read "⚠️ Automatically Generated Fallback
+Report... before Product Owner could author and close the **real** sprint report" - language (and
+matching code comments: "degraded stand-in", "visibly degraded") that framed a sprint ending because
+the team used its full token/USD budget on actual implementation work as an exceptional failure
+rather than the expected, normal way a sprint can close. Mechanically, nothing was ever wrong here:
+`_ensure_sprint_report_on_final_halt_once` (`agents/scrum_team/agent.py`) only ever commits
+`specs/` + `.hc/state.json` (via `integrate_open_changes`, itself scoped to exactly those paths) to
+`develop` - it never touches, merges, or integrates any open `feature/*` branch, and never changes a
+story's stage. Unfinished feature branches are correctly left exactly as they are, to be picked up
+again next sprint. The banner and surrounding comments now describe this as what it is: a report
+rendered mechanically from logged state (because there's no LLM turn left to author a narrative one
+with) rather than a "fake" report standing in for a "real" one.
+
+### Templates for retro items and steering proposals, documented alongside the reports (GH issue #356)
+
+Retro actions, impediments, and steering proposals previously had no durable artifact of their own -
+just in-memory state, a terse one-line bullet in the sprint report (`category` not even rendered
+there, see #354), and for a steering finding, a `propose_steering_change` PR body that could be lost
+once the PR merges/closes. New templates, modeled on `spec-templates/requirements/TEMPLATE-ISSUE.md`:
+`spec-templates/reports/TEMPLATE-RETRO-ITEM.md` and `TEMPLATE-STEERING-PROPOSAL.md`.
+
+`create_sprint_report`/`render_fallback_sprint_report` now also render `specs/reports/RETRO-NNN.md`
+(every time, from `_render_retro_doc`) and `specs/reports/STEERING-NNN.md` (only once at least one
+`propose_steering_change` call has actually succeeded, from `_render_steering_doc` - no empty file
+otherwise), alongside the existing `SPRINT-REPORT-NNN.md`/`TRANSCRIPT-NNN.md` pair - same numbered-
+path-reuse-within-a-sprint pattern (`state.retro_doc_path`/`steering_doc_path`, cleared each sprint
+via `sprint_budget_reset_state_delta`), shared between both call sites via `_write_retro_and_steering_
+docs` so they can't drift apart the way `sprint_report_path`'s own bug (above) once did.
+`propose_steering_change` (`agents/scrum_team/tools/workflow.py`) now records a structured entry
+(`state.steering_proposals` - role, rationale, proposed content, PR link) on every successful call,
+since nothing previously retained this once the PR itself did.
+
+**Design decision on the issue's own open question** (one file per sprint vs. one per item): per-
+sprint, for consistency with `SPRINT-REPORT-NNN.md`/`TRANSCRIPT-NNN.md`'s existing convention - but
+with content accumulated across the *whole run to date* (same scope as the sprint report's own terse
+Retrospective Actions/Impediments sections already use), not sprint-isolated: a finding's eventual
+resolution is often only known in a later sprint, so the full running history is the more useful
+durable record, and avoids inventing new cross-file-synced per-sprint counters alongside the existing
+(and previously bug-prone, see #345's own history above) `retro_baseline` mechanism.
+
+### Non-blocking nudge for stubbed "assert True" tests (GH issue #370)
+
+`check_build`/the Tested-stage gate (`advance_story_stage`) only ever counted pass/fail totals from
+the real test suite run - it never inspected what a test actually asserts. A real eval run (0.1.0-
+run45) showed DevTeam hedge a genuinely flaky real test suite by also writing separate dummy test
+files alongside it each sprint (literally `def test_dummy(): assert True`), so the pass count always
+had *something* passing regardless of whether the real functionality was actually verified.
+
+`detect_stubbed_tests` (`agents/scrum_team/tools/quality.py`) scans `test_*.py`/`*_test.py` files
+(pytest's own discovery convention) for a test function whose body is just `pass`, a bare docstring,
+`assert True`, or a tautological `assert <literal> == <same literal>` - no other real assertions or
+fixture usage. The Tested-stage gate now calls this right after a story's test suite genuinely passes,
+and surfaces a non-blocking `warning` on the result naming the file/function if any are found - it
+never refuses the transition (a real, intentional placeholder has legitimate uses too, and false
+positives here are harmless; false negatives just mean the nudge doesn't fire). Deliberately a narrow,
+explicit AST heuristic rather than deeper static analysis, matching #354's own risk tolerance for this
+category of nudge.
+
+### KPI trends report per-sprint deltas, not cumulative totals
+
+`_kpi_time_series`/`_sprint_metrics_table` (`agents/scrum_team/scripts/run_eval_analysis.py`) read
+each sprint's `sprint_backlog` snapshot - which is never reset between sprints, so it accumulates
+stage progress across the *whole run*. A raw per-sprint count of "items with stage X completed" was
+therefore a running total, not that sprint's own throughput: a real run's Velocity/Stories-implemented
+KPIs read 1, 3, 5, 6, 6 - monotonically non-decreasing, since sprint 3's "5" still counted sprint 1
+and 2's already-accepted items too, hiding the run's actual (tapering-off) velocity. Both functions
+now diff each sprint's set of items-at-stage-X (by item ID/title) against the previous sprint's set,
+reporting how many items newly reached that stage *this* sprint.
+
+### KPI "no data" message distinguishes never-called from called-but-null
+
+`_render_kpi_graphs` (`agents/scrum_team/scripts/run_eval_analysis.py`) rendered one generic "never
+computed... not called in any sprint" message whenever a KPI's time series was empty - but an empty
+series has two different causes: `calculate_kpis`/`update_sprint_report` genuinely never ran this
+run, or it ran every sprint and correctly reported `None` for one specific sub-metric with its own
+explanatory `*_note` (e.g. `defect_escape_rate_note: "not available - no defect/bug-lifecycle
+tracking exists yet"`, `tools/quality.py`). A real run (0.1.0-run43) showed the report falsely
+claiming QualityGuardian "was not called in any sprint" for defect escape rate, while the same run's
+Say-Do Ratio - sourced from the exact same `calculate_kpis` calls - had real values for 4 of 5
+sprints. `_kpi_unavailable_message` now checks each sprint's `sprint_report_kpis` for the specific
+`*_note` field before falling back to the generic message, so the report states the real,
+more-useful reason instead of misrepresenting the team's process.
 
 ### Human interaction levels
 
@@ -394,6 +686,746 @@ This is scoped to the eval harness's own driver loop - it's the only place in th
 calls `runner.run_async` directly. An interactive/production run goes through ADK's own runner
 (e.g. the ADK web server), which this fix does not touch.
 
+### Transfer-rotation breaker no longer permanently deadlocks a run (GH issue #367)
+
+The rotation-based transfer-loop breaker (`_transfer_rotation_count`, GH issue #191) used to **pin**
+its counter at `TRANSFER_ROTATION_THRESHOLD` once it fired, rather than resetting it to 0 the way the
+pair-based breaker (`_transfer_loop`) already does. Since every subsequent `transfer_to_agent` call -
+to *any* target, by *any* agent - is refused for as long as the counter sits at/above threshold, and
+the only reset path is a non-transfer tool call succeeding (which first requires reaching a role
+capable of making one, which first requires a transfer succeeding), this pin was unrecoverable: a real
+eval run (0.1.0-run45) hit it during the mandatory budget-exhaustion SPRINT CLOSE SEQUENCE's own
+correct, system-instructed hand-off chain (not a genuine stuck rotation) and the whole run never
+reached ScrumMaster/QualityGuardian/ProductOwner again for the rest of its sprints.
+
+Two related bugs, both in `_detect_transfer_loop` (`agents/scrum_team/agent.py`):
+1. The rotation counter now **resets to 0 once it fires**, instead of pinning at the threshold - it
+   still breaks an actively-spinning rotation in the moment (its actual job), without permanently
+   banning every future hand-off for the rest of the run. A genuinely recurring rotation simply trips
+   it again, which is correct.
+2. The pair breaker (`_transfer_loop`) firing now **also resets the rotation counter**, since that
+   streak's hops were otherwise inherited by the independent rotation budget too - run45's exact
+   failure was 3 wasted pair-ping-pong hops (broken by the pair breaker) immediately followed by a
+   legitimate 3-hop close-sequence chain, with the two sums (3 + 3) landing exactly on
+   `TRANSFER_ROTATION_THRESHOLD` (6) on the chain's own correct final hop.
+
+### Forgotten-implementation nudge (DevTeam transferring away before advancing the stage)
+
+`advance_story_stage`'s Implemented gate already refuses to let a story reach Implemented without a
+real `write_file` since the last successful Implemented transition
+(`dev_touch_baseline`/`sprint_files_touched`) - but nothing previously caught the opposite: DevTeam
+writing the real implementation, then transferring away (to Architect, QA, back to the Orchestrator,
+...) without ever calling `advance_story_stage(..., "Implemented")` for it. A story whose code is
+actually done but whose stage silently stays at Ready/earlier blocks that story - and, via the
+one-story-at-a-time ordering gate, every lower-priority story behind it - from ever reaching Accepted,
+with no mechanical signal anything is wrong (GH issue #344).
+
+`_detect_unadvanced_implementation` (`agents/scrum_team/agent.py`) hooks into
+`log_tool_invocation_callback`'s existing `transfer_to_agent` interception point (alongside the
+self-transfer and loop-breaker checks already there): when DevTeam transfers to a genuinely different
+role while `source_touch_count` (the same signal `advance_story_stage`'s own gate tracks) has grown
+past both `dev_touch_baseline` *and* a new `unadvanced_write_nudge_baseline`, the transfer is blocked
+with a reminder naming the story in progress (`_current_story_in_progress`). The nudge baseline
+snapshots the current touch count on firing, so an immediate retry of the same transfer (no new
+`write_file` in between) is let through - DevTeam may have a real reason to transfer before finishing
+(e.g. a design question for Architect mid-story), and a reminder it has already seen once must not
+become a permanent deadlock. Further new `write_file` activity re-arms the nudge.
+
+### Sprint backlog requires real team engagement before implementation starts (GH issue #357)
+
+Product Owner proposes the Sprint Backlog (`create_sprint_backlog_pr`), but that PR merging was
+never, by itself, proof the rest of the team actually weighed in on the proposed priority/sequencing
+- Dev Team could start implementing the moment it merged. The user's explicit requirement: "The team
+gives feedback and finally approves it and commits to it in the planning ritual. Before this is clear
+no implementation work should be started."
+
+`start_feature_branch` now mechanically refuses to run until Architect, Dev Team, and QA have each
+left a real `gh_pr_comment`/`gh_pr_review` on *this sprint's* Sprint Backlog PR - reusing the
+`pr_review_calls` per-role counter the Reviewed/Tested stage gates already track, no new tracking
+mechanism needed. The counter accumulates across the whole run rather than resetting per sprint, so a
+fresh `sprint_backlog_engagement_baseline` is snapshotted from it the moment this sprint's Sprint
+Backlog PR first merges (`create_sprint_backlog_pr`) - the gate then requires each role's count to
+have grown past that baseline, not just be nonzero historically. At that point in the sprint this PR
+is the only one that could possibly exist yet (no feature branches are open), so any role's review
+call is necessarily real engagement with it. A second `create_sprint_backlog_pr` call the same sprint
+(Product Owner adding more stories) doesn't re-snapshot the baseline, so engagement already given
+isn't silently forgotten.
+
+This is feedback-and-commitment, not a veto: the team's comments don't block the PR from merging, and
+Product Owner still owns the final prioritization - only the *start of implementation* is gated on the
+team having actually engaged with it.
+
+**Prompt clarification follow-up (GH issue #369)**: a real eval run showed DevTeam correctly identify
+that QA needed to act to satisfy this gate, but with no way to tell QA that via `transfer_to_agent`
+(no payload beyond a target name), QA transferred back instead - a ping-pong the pair loop-breaker had
+to step in and break. DevTeam then tried calling `gh_pr_comment` itself, worded as QA's own sign-off -
+this does nothing, since `gh_pr_comment`/`gh_pr_review` always attribute to the *actual calling
+agent's* role, never to whatever the text claims. `DevTeam-workflow.md`/`QA-workflow.md`/`Architect-
+workflow.md` now say this explicitly: there's no way to post "as" another role, so don't try - and if
+transferred to specifically because this gate named you as still missing, the expected response is to
+immediately leave your own comment, not transfer further.
+
+### Reading back PR comments/reviews (`gh_pr_comments`)
+
+`gh_pr_comment`/`gh_pr_review` only ever write - there was no way for any role to read back what
+another role (or it itself) had already said on a PR, only whether the mechanical team-engagement gate
+above considers them to have commented *at all*. A real eval run showed DevTeam unable to tell whether
+Architect/QA had already left feedback worth reading, and separately try (and fail) to satisfy QA's own
+missing-engagement requirement by posting a comment itself worded as QA's sign-off - `gh_pr_comment`
+attributes by the real calling agent, never by what the text claims, so a role had no way to even
+*verify* that before assuming it worked.
+
+`gh_pr_comments(pr_id=None)` (`agents/scrum_team/tools/github.py`) reads back `gh pr view`'s own
+`comments`/`reviews` JSON - each entry's author, body, and timestamp, in chronological order. Since
+every comment this codebase posts is prefixed with the posting role's own name (`**Architect:**`,
+`**QA:**`, ...) regardless of the underlying shared GitHub account, that prefix - not the raw GitHub
+username - is how a caller tells who said what. Added to DevTeam/QA/Architect/ScrumMaster's tool lists
+(the same roles that already have `gh_pr_comment`/`gh_pr_review`), with prompt guidance to check it
+before assuming nothing has happened yet, or before repeating feedback another role already gave.
+
+### DevTeam/Architect can actually delete a file they created by mistake (GH issue #376)
+
+`write_file` only ever writes or overwrites - there was no tool anywhere that removed a file from
+disk. A real eval run (0.1.0-run46) had DevTeam write a test file with a wrong import
+(`tests/test_todo_unit.py`), then narrate "removing" it rather than actually deleting it - the
+broken file sat on disk, failing `check_build`'s pytest collection identically on every later
+attempt, which permanently blocked that one story at Tested. Because of the (correctly-working)
+one-story-at-a-time ordering gate, every other story was then starved behind it for the rest of
+the run - 0 stories completed across all 5 sprints, from this one missing capability.
+
+`delete_file(path)` (`agents/scrum_team/tools/docs.py`) actually unlinks a repo-relative file
+(same repo-root containment check as `write_file`; errors clearly on a path that doesn't exist or
+is a directory) and records it via `_record_touched_file`, so removing a broken file to unblock
+the real one still counts as real dev progress toward the Implemented-stage touch-count gate.
+Added to DevTeam's and Architect's tool lists (the two roles that already have `write_file`), with
+prompt guidance in `DevTeam-workflow.md` to reach for it instead of narrating a no-op removal.
+
+### KPIs sourced from the wrong backlog field, and stories never actually planned into a sprint (GH issue #378)
+
+A real eval run (0.1.0-run47) showed Velocity/Issues-fixed/Stories-implemented flat at 0 across all
+5 sprints despite real stage progress happening (several stories reached Accepted). Two compounding
+causes: `run_eval_analysis.py`'s `_kpi_time_series` read `sprint_backlog`, which stayed `[]` the
+entire run because DevTeam never called `plan_sprint_backlog_item` a single time - nothing
+mechanically required it before starting real work. `advance_story_stage` only ever writes stage
+progress into `sprint_backlog` if the story was already planned into it; it always writes to
+`product_backlog` (the authoritative superset) regardless, which is where the real progress was
+sitting the whole time, unread.
+
+Fixed both sides: `_kpi_time_series` now sources from `product_backlog`. `start_feature_branch`
+(`agents/scrum_team/tools/github.py`) now mechanically refuses to start work on a story that hasn't
+been planned into the current sprint via `plan_sprint_backlog_item` first - so the sprint backlog
+(and everything sourced from it, like "Stories Planned" in the per-sprint table) actually reflects
+what the team committed to, not just what got silently implemented without ever being planned.
+
+### Sprint-close honesty, and a real release PR even when the budget runs out (GH issue #379)
+
+A real eval run (0.1.0-run47) had the per-sprint report table claim "Sprint Report? yes" for all 5
+sprints, and 4 of 5 sprints merged no release PR at all - both traced to the same cause: the
+budget-exhaustion safety net (`_ensure_sprint_report_on_final_halt`, agent.py) already guaranteed a
+sprint report always exists, but never tried to release it, so Product Owner's own
+`create_release_pr` simply never got a turn to run on those 4 sprints. The per-sprint table also
+couldn't tell that fallback stub apart from a real Product-Owner-authored report, reporting "yes"
+either way.
+
+Two fixes: the safety net now also attempts `create_release_pr` itself, best-effort, right after
+committing the fallback report - if this interaction level requires a fresh pre-release approval
+that isn't available mechanically, or develop/main are already in sync, it just errors harmlessly
+and `sprint_report_pending_release` stays set for a later sprint to clear, exactly as before.
+Separately, `run_eval_analysis.py`'s per-sprint table now reads "fallback" instead of "yes" when the
+report is this mechanically-rendered stub (detected via its own fixed heading), so the distinction
+is visible instead of hidden.
+
+### Sprint Backlog PR no longer races other tools for whichever pending writes land first (GH issue #379)
+
+The same run also showed sprint-backlog and story-spec PRs opening with no actual roadmap/story
+edits in them. Root cause: `create_sprint_backlog_pr` committed via `git add -A`, sweeping up
+*every* pending write in the shared checkout - including another story's not-yet-committed spec
+file `upsert_story` had already written to disk - and merged it into `develop` before the later,
+deliberately-scoped `create_story_spec_pr` ever got a chance to claim it, leaving that PR empty.
+`git_push`'s own `--allow-empty` fallback (a deliberate fix for a different, earlier bug - see
+ISSUE-0050/0.1.0-run34) meant even a sprint with genuinely nothing new yet still silently
+opened/merged a content-free "Sprint Backlog" PR.
+
+`create_sprint_backlog_pr` now calls `integrate_open_changes` (scoped to `specs/`+`.hc/` only - the
+same pattern `create_release_pr` already uses for exactly this reason) instead of `git add -A`, and
+refuses outright with a clear message if there's genuinely no new planning output to publish,
+instead of leaning on git_push's generic empty-commit fallback.
+
+### advance_story_stage(Implemented) now requires a fresh, passing gh_pr_checks() result (GH issue #380)
+
+`gh_pr_checks` only ever gated `mark_pr_ready_for_review`, which happens *after* a story is already
+marked Implemented - nothing anywhere actually required CI to be checked before that transition
+itself, despite `DevTeam-workflow.md`'s own prose already saying to do so.
+
+`gh_pr_checks` now stamps `last_pr_checks` (passing/failing, and the `git_push_count` at the moment
+it ran) every time it's called - the same "last tool result, snapshot the staleness counter"
+pattern `check_build`'s `last_check_build`/`dependency_manifest_write_count` already uses for the
+Tested gate. `git_push` (the agent-facing tool) bumps `git_push_count` on every successful push to a
+feature branch (not sprint-backlog/release pushes, which don't touch a story's own code).
+`advance_story_stage`'s Implemented-stage gate now refuses outright if `gh_pr_checks()` was never
+called, its last result wasn't passing, or a feature-branch push happened since that passing result
+(stale - CI needs rechecking). Spike stories (no code, no PR) are exempt, same as the existing
+source-file-write gate. `DevTeam-workflow.md`'s "Typical flow" reordered to call `gh_pr_checks()`
+before `advance_story_stage(..., "Implemented")`, not after.
+
+### Role-behavior retro findings filed as "technical" get a broader nudge, and a real backstop (GH issue #381)
+
+A real run (0.1.0-run47) filed 4 of 5 retro/impediment findings as category `"technical"` despite
+reading as team-process reminders, not one-time code tasks - `propose_steering_change` was called
+zero times across all 5 sprints. Two causes: `looks_like_role_behavior_finding`'s keyword heuristic
+missed 3 of those 4 (none contained the exact matched phrases or a role name); and even the one it
+did catch was just a non-blocking warning on the `add_retro_action` response, which ScrumMaster
+could (and did) simply ignore - `create_sprint_report`'s own real backstop only ever fires once a
+finding is actually categorized `"steering"`, which never happened.
+
+Broadened `_ROLE_BEHAVIOR_SIGNAL_PHRASES` (`agents/scrum_team/helpers.py`) with the process-gating
+shape ("before starting", "promptly", "finalization", etc.) those 3 misses shared, without
+overfitting to their exact wording - a genuine one-off technical nitpick phrased as an imperative
+("Ensure test assertions use dynamic IDs correctly...") stays unflagged. `create_sprint_report`
+(`tools/budget.py`) now also blocks sprint close if 2+ *open* `"technical"` findings still read as
+role-behavior gaps with no `propose_steering_change` call since the last report - the same
+mandatory-backstop pattern already used for a correctly-categorized `"steering"` finding, extended
+to the case where the categorization itself never happened. A single match still isn't enough to
+block (the heuristic's own design tolerates an occasional false positive) - only a recurring,
+ignored pattern is.
+
+### DevTeam can actually resolve a real git merge conflict (GH issue #382)
+
+A real eval run (0.1.0-run47) hit a genuine merge conflict on a story's feature-branch PR -
+`merge_story_pr` reported "not mergeable" 5 times in a row. Each time, DevTeam's only response was
+re-running `git_push`, which only ever re-fetches/re-pushes the *same* branch - it never runs `git
+merge`/rebase against `develop`, so nothing about the actual conflict ever changed. The team
+eventually gave up and recreated the PR from scratch, re-implementing the same story on a fresh
+branch - survivable only because that story's diff happened to be small.
+
+`resolve_feature_branch_conflicts(story_id)` (`agents/scrum_team/tools/github.py`) gives DevTeam a
+real fix: it merges the current `develop` into the story's feature branch
+(`active_feature_branches[story_id]`, set by `start_feature_branch`). With no real conflict, it
+commits and pushes immediately. With one, it returns each conflicted file's actual on-disk content -
+including git's own `<<<<<<</=======/>>>>>>>` markers - so DevTeam can resolve it via `write_file`
+(replacing the marked section with the real merged content) and call the tool again; it tracks which
+files still have marker lines left versus which are already clean, and finishes the merge (stage,
+commit, push) only once none remain. Safe to call repeatedly as resolution progresses one file at a
+time. Added to DevTeam's tool list, with `DevTeam-workflow.md` guidance pointing here instead of the
+"recreate the PR from scratch" workaround the team had converged on.
+
+### advance_story_stage pushes its own state/roadmap update - a local-only commit was silently getting lost (GH issue #388)
+
+A real eval run (0.1.0-run48) showed US-0001's `stages_completed` silently regress between sprints -
+`Tested` and `Accepted` vanished from both `product_backlog` and `sprint_backlog` between sprint 1's
+close and sprint 2's start. This single regression explained the entire rest of that run: the
+one-story-at-a-time ordering gate then correctly refused every later story ("the higher-priority story
+'US-0001' must reach Accepted first"), even though it genuinely had been - zero feature-branch PRs
+opened for sprints 2-5, every auto-filed retro Issue froze permanently at Ready, and the sprint-2
+"QA/ScrumOrchestrator transfer loop" the eval report flagged was the #367 breaker working correctly on a
+team that had nothing left to do.
+
+Root cause: `save_state_to_repo`'s own docstring admits `_checkpoint_state_commit` is a "purely local
+safety net" - it commits `.hc/state.json` onto whatever branch happens to be checked out at that exact
+moment, and never pushes. `advance_story_stage` calls this after every stage transition, but nothing
+pushed that commit anywhere, and a sprint routinely switches checked-out branches multiple times
+(feature branch -> `develop` via `merge_story_pr`, a new feature branch for the next story, ...) - a
+local-only commit left behind on a branch that's later abandoned is simply gone.
+
+`advance_story_stage` now pushes its own commit (state + `specs/ROADMAP.md` + the story/issue markdown
+file) as part of the same atomic call, instead of relying on a separate `git_push` the calling role has
+to remember: `Implemented`/`Reviewed`/`Tested` push to the story's active feature branch (so the update
+rides into `develop` as part of the very next `merge_story_pr`), `Accepted` pushes straight to `develop`
+(the merge has already landed by then). `Draft`/`Ready` are deliberately left alone - those are Product
+Owner's own planning-doc edits, already covered by `create_sprint_backlog_pr`'s own commit+push sweep.
+If the push itself fails, the call now reports `"status": "error"` instead of silently succeeding -
+that silent-drift is exactly the failure mode this closes.
+
+A larger follow-up (GH issue #391, not implemented here) would fold the required PR review/comment and
+QA's `merge_story_pr` into the stage-advancement call itself too, so each role's gate decision is a
+single atomic tool call start to finish.
+
+### Customer Satisfaction and Commitment Reliability KPIs are no longer fabricated (GH issue #389)
+
+`calculate_kpis` (`agents/scrum_team/tools/quality.py`) hardcoded `commitment_reliability` to `1.0` and
+`customer_satisfaction` to `4.5` - plausible-looking fake numbers presented as real measurements in
+every single sprint report, despite the function's own docstring admitting "no principled way to compute
+them exists... no human satisfaction survey." This directly contradicted the honest `None` + note
+pattern already used correctly for `defect_escape_rate` a few lines below in the same function.
+
+Both now consistently report unavailable (`None` + an explanatory `_note` field), matching
+`defect_escape_rate`'s existing pattern. The sprint report renderer (`budget.py`) now also shows the
+same "not available (\<note\>)" fallback line already used for Test Coverage/Code Complexity/Security
+Scan when a KPI is unavailable, instead of just omitting the line entirely - a reader can now tell
+"never computed" apart from "computed but genuinely zero," for all three previously-fabricated/
+unavailable KPIs (Commitment Reliability, Customer Satisfaction, Defect Escape Rate).
+
+### Non-blocking nudge for sprint reports with a generic success narrative but nothing new Accepted (GH issue #390)
+
+A real eval run (0.1.0-run48) produced sprint reports claiming "Sprint 3 completed successfully with
+backlog refinement", "Sprint 4 executed successfully with... robustness verification", and "Completed
+final sprint review, quality validation, and release sign-off for Sprint 5" - despite zero stories
+reaching Accepted any of those sprints. `create_sprint_report`'s existing overclaim check only catches a
+claim that names a SPECIFIC story ID not yet Accepted - generic success narrative naming no story at all
+sailed through unchecked.
+
+`create_sprint_report` now adds a non-blocking warning (not a hard rejection, unlike the specific-story
+check - "sounds too positive" is a fuzzy signal that could false-positive on a genuinely good, truthfully-
+worded sprint) when the summary/accomplishments contain generic success phrasing ("completed
+successfully", "sign-off", "finalized", ...) and no story reached Accepted that wasn't already Accepted
+before this sprint (tracked via a new `accepted_count_baseline`, same "must be NEW since last report"
+pattern as `retro_baseline`/`kpi_baseline`).
+
+### QualityGuardian merged into ScrumMaster; ScrumMaster gets its own separate, uncapped-but-gated ritual budget (GH issue #395)
+
+Across eval runs 0.1.0-run48/run49, `create_sprint_report` "repeatedly failed" - a verbose sprint could
+exhaust the shared per-sprint token budget before ScrumMaster (retrospective) or QualityGuardian (KPI
+calculation) ever got a turn, leaving every sprint's required close-out artifacts (retro, KPIs, sprint
+report) silently skipped. `PROCESS_OVERHEAD_PERCENTAGE` existed to size exactly this kind of reserved
+process budget, but was purely cosmetic - only ever printed in the report, never actually enforced.
+
+Separately, QualityGuardian and ScrumMaster were both pure process/reporting roles with no implementation
+responsibility of their own - splitting "facilitate the retro" from "calculate and report the KPIs that
+summarize the same sprint" added a mandatory extra agent hand-off to every sprint close for no real
+separation of concerns.
+
+**The fix:**
+- The `QualityGuardian` role is folded into `ScrumMaster`. `calculate_kpis`, `update_sprint_report`, and
+  `create_sprint_report` (moved off Product Owner) are now Scrum Master's own tools, end to end -
+  `create_release_pr` stays with Product Owner.
+- Scrum Master's own ritual work (facilitation, retro, KPIs, sprint report) now draws on a **separate
+  budget**, sized at `PROCESS_OVERHEAD_PERCENTAGE` percent of the sprint's token budget and checked
+  against Scrum Master's own token usage only (`ritual_token_budget`/`main_budget_token_usage`,
+  `agents/scrum_team/helpers.py`) - entirely independent of whether the shared main budget has tripped
+  for DevTeam/QA/Architect/Product Owner.
+- Once a fresh retro action and a fresh KPI update both exist this sprint (`create_sprint_report`'s own
+  two prerequisites), that final step is mechanically **uncapped** - and simultaneously **tool-gated**
+  (a `before_tool_callback` check, `_restrict_to_sprint_report_step` in `agent.py`) to refuse any tool
+  call other than the report sequence itself, so the uncapped window can't be spent on anything else.
+  This guarantees a sprint can never fail to produce its required KPIs/report purely for lack of
+  remaining ritual budget - the mechanical safety net (`render_fallback_sprint_report`) still exists as
+  the final backstop if Scrum Master's own ritual budget runs out before reaching that point.
+- `SPRINT_CLOSEOUT_GRACE_ROLES`/`closeout_grace_percent` (the main-budget-exhaustion grace) now only
+  covers Product Owner's `create_release_pr` call and ScrumOrchestrator's routing - Scrum Master no
+  longer shares it.
+
+Out of scope for this change (left for a separate future PR): general timeboxing/runaway-task-detection
+nudges for the team, and blocker-surfacing by the root ScrumOrchestrator agent.
+
+### create_sprint_report/create_release_pr now persist state - a stale disk reload was deadlocking Scrum Master and Product Owner (GH issue #397)
+
+The very first eval run after GH issue #395 shipped (0.1.0-run50) showed Product Owner and Scrum Master
+bouncing `transfer_to_agent` back and forth until the loop breaker tripped, in multiple sprints. Root
+cause: `create_sprint_report` and `create_release_pr` never called `save_state_to_repo` on success - unlike
+nearly every other state-mutating tool (`advance_story_stage`, `reset_sprint_budget`, `update_budgets`,
+`log_token_usage`, `log_story_tokens`, `create_sprint_backlog_pr` all do) - so the `retro_baseline`/
+`kpi_baseline`/`sprint_report_pending_release` bumps these two functions make on success only ever landed
+in the live in-memory session state, never on disk.
+
+If an earlier `create_sprint_report` attempt was rejected (a common case - e.g. the overclaim gate) and the
+team went on to do more real work to fix it, `advance_story_stage`'s own `save_state_to_repo` calls along
+the way would commit a stale `.hc/state.json` snapshot: baselines still at their pre-close values, while
+`retro_actions`/`kpi_update_count` were already past them. `init_scrum_state()` reloads `.hc/state.json`
+unconditionally whenever it's present - and runs at the start of every single sprint in the real
+transcript - so it would clobber the correctly-advanced in-memory baselines with that stale snapshot,
+resurrecting a false `sprint_report_step_active()` condition (GH issue #395) that mechanically locks Scrum
+Master out of every tool but `transfer_to_agent`. With nothing new for Product Owner to do in response, the
+two bounced until the loop breaker fired.
+
+Both functions now call `save_state_to_repo` at the exact moment these fields change, matching the
+convention every other close-sequence mutator already follows - disk can no longer drift behind memory for
+them.
+
+### create_sprint_backlog_pr now recognizes content that landed via a different path - start_sprint's own cleanup sweep could bypass its review entirely (GH issue #399)
+
+The very next eval run (0.1.0-run51) hit the same transfer-loop symptom as 0.1.0-run50 (GH issue #397), but
+via a completely different, unrelated root cause - confirmed by cloning the actual eval repo and inspecting
+its git history directly, not just the transcript. ScrumOrchestrator routed the first turn to Product Owner,
+who wrote the PRD/roadmap/epic/story before any sprint was ever started - nothing mechanically prevents
+this. Once Scrum Master finally called `start_sprint(goal)`, its own "clean working copy" sweep (an older
+fix, "GH issue eval run41", meant to commit genuinely stale leftovers from a *previous* sprint's close-out)
+committed THIS sprint's own not-yet-published planning output directly onto whatever branch was checked
+out - bypassing `create_sprint_backlog_pr`'s reviewable PR entirely. `create_sprint_backlog_pr`'s own "is
+there anything to commit right now" check then found nothing dirty, indistinguishable from "nothing was
+ever written this sprint," and rejected it with no way for Product Owner to ever satisfy the gate again -
+Product Owner and Scrum Master bounced `transfer_to_agent` until the loop breaker tripped, and the story
+got BLOCKED, stopping the run early with zero stories implemented.
+
+`create_sprint_backlog_pr` now has a memory of its own: `planning_output_commit_count` (bumped by every
+successful `integrate_open_changes` call, regardless of which caller or branch triggered it) against a
+`sprint_backlog_pr_content_baseline` snapshotted at its own last successful publish. If nothing is dirty
+right now but the counter has advanced since that baseline, the content already landed - just not
+reviewably - and the sprint backlog is recognized as published (with a clear warning that review was
+bypassed) instead of rejecting forever.
+
+### A cleanly-finished sprint could start the next one without ever opening its release PR (GH issue #401)
+
+0.1.0-run52 (the first eval run with both fixes above in) showed real, measurably better delivery - but
+confirmed a gap: the team repeatedly "forgot" to open the release PR before closing a sprint.
+`new_sprint_item_blocked` (the gate `start_sprint`/`plan_sprint_backlog_item` both rely on) was written to
+only block the next sprint when the previous one's `sprint_report_pending_release` was set **and** it still
+had stories short of Accepted - the moment every story reached Accepted, it returned `None` regardless.
+Confirmed in the transcript: Sprint 1 fully delivered and accepted its one story, but its release PR only
+got opened retroactively inside Sprint 2's own window - and the run's last two sprints, with no further
+sprint to force it, never got a release PR at all despite every story being genuinely done.
+
+`new_sprint_item_blocked` now blocks on `sprint_report_pending_release` alone, full stop - the "stories
+still short of Accepted" detail only changes which message is shown, never whether the gate fires. A sprint
+is not actually closed until its release PR is opened, regardless of how cleanly it finished.
+
+### The team is now proactively made aware of the current sprint phase, and Scrum Master nudges toward it (GH issue #403)
+
+0.1.0-run52 showed real, measurably better delivery - and also confirmed, via direct observation, that the
+team's ritual order (groom the backlog to Ready -> plan & start the sprint -> development -> review, retro
+& release) was enforced only *reactively*: a tool call made out of phase got mechanically rejected after
+the fact, with nothing proactively telling the team which phase it was actually in. DevTeam tried to jump
+straight to implementation, got rejected, and only then did Product Owner backfill the planning work that
+should have come first.
+
+A new `current_sprint_phase` helper derives one of four phases - Conceptual Work, Plan & Start Sprint,
+Development, Review/Retro & Release - purely from existing state signals (no new state to track). A new
+`before_model_callback`, registered for every role every turn, injects a one-line `[SPRINT PHASE: ...]`
+system-context message plus that phase's own short goal/scope reminder. Scrum Master's own prompt now
+explicitly owns intervening when another role acts outside the current phase - a nudge, not a new
+mechanical gate; the existing gates (`new_sprint_item_blocked`, `sprint_backlog_pr_missing`,
+`ready_backlog_shortfall`, ...) are untouched and remain the only real enforcement. The same phase and
+token-usage snapshot now also prefixes every tool-call console/transcript log line, so a human watching a
+live run sees both at a glance.
+
+### Scrum Master now revisits prior retro findings before logging new ones, and EVAL mode auto-merges steering-proposal PRs (GH issue #405)
+
+0.1.0-run52's own retrospective reasoning showed two further gaps once GH issue #403's phase
+awareness was in place. First: `add_retro_action`/`add_impediment` entries are append-only - nothing
+mechanically or prompt-wise ever revisits a prior sprint's still-open finding, so a technical gap
+filed as an Issue, or a steering-category gap handed off via `propose_steering_change`, could sit
+unresolved indefinitely with the retro only ever adding new findings on top. Second: direct
+inspection of the eval repo's own PR list confirmed 5 open "Steering proposal: ...-identity.md" PRs
+from run52, all unmerged - `run_eval.py`'s existing auto-merge sweep (`_merge_open_prs`) is
+deliberately scoped to `base_branch=args.branch` (the release PR's target) only, by design, so these
+develop-targeted PRs were never touched by the harness standing in for human review.
+
+Scrum Master's retro reasoning now opens every retrospective by stating plainly what the team can
+actually customize itself (only a role's own `identity.md`, via `propose_steering_change`, always
+human-reviewed - never DoD/DoR/the mechanically-enforced workflow itself), then revisits every retro
+action/impediment still open from a prior sprint before logging anything new: a `"technical"` finding
+checks its filed Issue's stage in `product_backlog`; a `"steering"` finding checks whether its
+recorded `propose_steering_change` PR (`state.steering_proposals`) actually merged, via
+`gh_pr_checks`. No new mechanical "mark resolved" tool was added - this reuses state the codebase
+already records.
+
+A new `_merge_open_steering_prs` sweep in `run_eval.py` runs once per sprint alongside the existing
+release-PR merge, narrowly scoped to open PRs whose head branch contains `/steering/` - not a blanket
+develop-targeted sweep, which would risk force-merging incomplete feature->develop PRs too (the exact
+risk `_merge_open_prs`'s own scoping already avoids).
+
+### Loop detection didn't catch a failing-call-interspersed transfer rotation, or reworded repeats of the same rejection (GH issue #408)
+
+0.1.0-run53's deadlock (see GH issue #407) ran for ~140 hops / 75 rejected `create_sprint_report`
+calls across two internal sprints before the run had to be cancelled - the loop detectors meant to
+catch exactly this never tripped. Two independent gaps: the transfer-rotation/pair breaker
+(`_detect_transfer_loop`) reset its counters on ANY non-transfer tool call, with no check on whether
+that call actually succeeded - a rejected `create_sprint_report`/`propose_steering_change` call counted
+as "real progress" and reset the streak just as readily as a genuine success would, so the ~140-hop
+rotation (through 5 roles, a failing call interspersed every cycle) never accumulated past 1-2. And the
+repeated-call breaker (`_detect_repeated_call_loop`) keys on exact argument values - ScrumMaster reworded
+`summary`/`accomplishments` nearly every attempt (different free text each time, same underlying
+rejection), so it almost never matched.
+
+Both fixed: the rotation/pair-breaker reset now only fires on a *successful* non-transfer, non-read-only
+call - moved from the before-tool callback (which can't know the outcome yet) to the after-tool callback
+`log_tool_result_callback`, which already inspects the response. And a new, content-aware
+`_detect_repeated_rejection_loop` tracks the tool's own rejection *message* (not the caller's arguments)
+across consecutive failures by the same agent+tool - surviving any number of intervening
+`transfer_to_agent` hops - and refuses further calls to that exact tool once the same rejection repeats
+`REPEATED_REJECTION_LOOP_THRESHOLD` (3) times, regardless of how the wording varies.
+### run_eval.py now stops a run stuck on the same sprint-closing rejection across sprint boundaries (GH issue #409)
+
+0.1.0-run53's deadlock (GH issue #407) also exposed a harness-level gap: `_run_one_sprint`'s token/event
+budget resets fresh at the start of every scripted per-sprint message, with no memory of whether the
+*previous* invocation actually closed its sprint. The deadlock's own per-invocation event/token counters
+never crossed either safety net, so the harness just moved on to the next scripted message twice in a
+row, handing the identical irresolvable deadlock a fresh budget each time - the user had to cancel the
+run manually.
+
+A new `_dominant_repeated_rejection` finds the single (tool, truncated message) pair that failed
+identically most often within a sprint, if any pair repeated at least 3 times. Carried across sprint
+boundaries the same way `previously_blocked_ids` already is (GH issue #336): if a sprint produces no
+sprint report AND its dominant rejection matches the *previous* sprint's (which also produced no
+report), the run stops rather than resetting the budget and repeating the same bet a third time.
+Independent of whether agent.py's own in-sprint loop breakers (GH issue #408) fired - those can
+themselves keep re-tripping turn after turn without the team ever resolving the underlying cause, which
+still burns this harness's per-sprint budget same as the original rejection would.
+### Sprint-closing deadlock: propose_steering_change was blocked exactly when create_sprint_report demanded it, and the ritual-budget exemption had no ceiling (GH issue #407)
+
+0.1.0-run53 had to be cancelled manually after ScrumMaster got stuck in an unrecoverable loop for two
+separate internal sprints, running up to 11.9M tokens against a 5,000,000 sprint budget (~2.4x)
+before the cancellation. Root cause was a genuine code-level catch-22, not a model confusion:
+`create_sprint_report`'s own gate (GH #381/#354) hard-refuses to close the sprint once 2+ open
+"technical" retro/impediment findings read like role-behavior gaps, until a fresh
+`propose_steering_change` call exists - and its own error message says to call that tool next. But the
+same precondition (fresh retro + fresh KPI, report not yet successful) also makes
+`sprint_report_step_active` true, which mechanically refused every ScrumMaster tool call except the
+report sequence itself (GH #395) - `propose_steering_change` was not on that allowed list. Once this
+exact state was reached, ScrumMaster was structurally unable to ever satisfy create_sprint_report's
+own requirement - confirmed via identical rejection text repeating dozens of times across two separate
+internal sprints.
+
+Separately, GH #395's "uncapped ritual budget" (ScrumMaster is exempt from any token ceiling while
+`sprint_report_step_active`, so a sprint can never fail to close "for lack of budget") had no upper
+bound of its own - combined with the catch-22 above (the window could never close on its own), one
+internal sprint ran to 11.17M tokens with no halt ever firing at all, because the main per-sprint
+ceiling deliberately excludes ScrumMaster's own usage from what it measures.
+
+Two fixes: `propose_steering_change` is now in `_SPRINT_REPORT_STEP_ALLOWED_TOOLS` - it still only
+ever opens a draft PR for human review, so this adds no new write path, it just un-blocks the one tool
+the other gate already demands. And a new `ritual_hard_ceiling` (default 50% of the main sprint token
+budget, configurable via `RITUAL_HARD_CEILING_PERCENT`) is an absolute backstop on the uncapped
+window - past it, the same mechanical fallback-report generator fires instead of continuing
+indefinitely. Loop-detection gaps that let this run as long as it did, and a harness-level
+cross-sprint abort signal, are tracked separately (GH issues #408/#409).
+
+### specs/ROADMAP.md's release goals and Kanban version-grouping are now populated mechanically (GH issue #415)
+
+0.1.0-run54's own eval report flagged this directly: "project tracking files like specs/ROADMAP.md
+were left largely unpopulated with release goals and kanban states" / "specs/ROADMAP.md containing
+empty version goals and blank Kanban tables under '### v0.1 Kanban'." Root cause: `update_roadmap`'s
+own `goals` parameter is entirely optional and nothing ever mechanically supplied it - only populated
+if an agent happened to call `update_roadmap` with `goals=` explicitly, which nothing prompted or
+gated. Separately, every `product_backlog` story defaults to `version="Backlog (unplanned)"` unless
+something explicitly assigns a real release version - `advance_story_stage` keeps a story's Kanban
+checkboxes correctly in sync *once it has a version*, but nothing ever assigned one, so stories
+accumulated under the generic unplanned bucket forever and the real "### v0.1 Kanban" section stayed
+empty.
+
+`create_sprint_backlog_pr` - which already runs every sprint and already knows both the sprint's own
+goal (`state.sprint_goal`, set by `start_sprint`) and which stories are newly committed to it - now
+does both mechanically on a successful merge: defaults each newly-committed story's `version` to
+`DEFAULT_RELEASE_VERSION` ("v0.1", matching `spec-templates/ROADMAP.md`'s own first real release
+section) if it doesn't already have one, and records this sprint's goal against that version. Since
+`update_roadmap`'s own `goals` parameter replaces a version's Goals section wholesale on every call
+(it has no "append" mode), the accumulated history is tracked in state (`version_goals`, deduped) and
+passed in full every time, so a later sprint's goal never erases an earlier sprint's already-recorded
+one.
+### Eval harness stops immediately on a mechanically-detected loop or a genuinely human-only blocker, and an eval report now survives a crashed sprints step (GH issue #414)
+
+0.1.0-run54 only stopped after `blocked_unresolved_across_sprint` fired - i.e. only once the SAME
+story was still BLOCKED after a full extra sprint's budget was spent re-confirming it, even though a
+mechanical transfer-loop breaker had already proven the team stuck well before that. Root cause:
+`should_escalate_blocker_to_user`'s immediate-stop check was gated on the REAL configured
+`INTERACTION_LEVEL`, but the eval harness always runs at `EVAL` - a "product"-category blocker never
+escalated immediately there no matter how clearly only a human could answer it, even though this
+harness has exactly as little a human available in EVAL mode as "Product" mode assumes. Separately, a
+blocker raised by a loop breaker (`_detect_transfer_loop`/`_detect_repeated_call_loop`) is categorically
+different from an agent's own judgment call - the breaker only fires after the team already proved
+itself unable to make progress through repeated attempts, so giving it the same one-more-sprint benefit
+of the doubt as an ordinary blocker just re-confirms something already demonstrated unresolvable.
+
+`_sprint_needs_human_this_harness_cannot_provide` now checks `should_escalate_blocker_to_user` as if
+this were "Product" level regardless of the actually-configured one (this harness always has no human,
+in any mode), and a new `mechanically_detected` flag - set by the loop breakers themselves right after
+their own `raise_story_blocker` call succeeds, never agent-settable - triggers the same immediate stop.
+Human-approval gates are untouched; they're a separate mechanism, never raised via
+`raise_story_blocker`.
+
+Also: `.github/workflows/eval.yml`'s sprints-and-analysis step used to be one `set -e` bash step - if
+the sprints half crashed or was cancelled (as in run53), the analysis half never ran, so no report.md
+ever existed even with a usable manifest.json on disk. Split into two steps, with analysis using
+`if: always()` (matching the tag/upload/teardown steps already below it) so it always attempts a report
+from whatever manifest exists. `run_eval.py`'s own `main()` also now guarantees a (possibly minimal)
+manifest gets written even if something crashes outside the per-sprint loop entirely, where previously
+nothing would be written at all.
+### Sprint token-budget reset is now purely mechanical - no more agent-invoked or harness-side resets to drift out of sync (GH issue #413)
+
+Two independent, forgettable reset paths existed for the same underlying fact ("a new sprint
+started"): ScrumMaster had to remember to call `reset_sprint_budget()` - "MANDATORY" only in prompt
+text, with no code enforcing it beyond refusing the next `start_sprint` call until it happened - and
+`run_eval.py`'s `_run_one_sprint` separately, blindly reset the same state at the start of every
+scripted per-sprint message, regardless of whether a real sprint boundary had actually occurred. This
+was root cause #1 of eval run53's 2.4x budget overspend (GH issue #407/#409): a sprint stuck
+mid-close-out got a completely fresh token/event budget purely because the harness happened to send
+its next scripted message, letting an unresolved deadlock run again from scratch.
+
+The reset (token usage, sprint_report/sprint_report_kpis, and every sibling guard flag -
+`sprint_budget_reset_state_delta`) is now applied directly inside `start_sprint` itself, for every
+sprint after the first - mechanical, tied to the one real event that should trigger it. The
+`reset_sprint_budget` tool has been removed entirely (there's nothing left for an agent to forget).
+`run_eval.py` no longer mutates session state via `state_delta` at all - it snapshots
+`sprint_report`/`sprint_report_kpis` as a baseline before sending anything, and detects "did this
+invocation's own activity produce something new" by comparing against that snapshot afterward, a
+pure read that can never drift out of sync with the real sprint boundary again.
+
+### "A sprint report was produced" is not proof the sprint closed out cleanly - the harness now checks the release too (GH issue #421)
+
+Found while auditing for more gaps in the same family as GH #419, right after that fix: 0.1.0-run55's
+sprint 3 had `create_sprint_report` succeed, then `create_release_pr` fail later in the SAME
+invocation (the untracked-files checkout error GH #419 fixed) - `sprint_report_pending_release` stayed
+`True` (only `create_release_pr`'s own success path clears it), mechanically blocking the next
+sprint's `start_sprint` call. `_sprint_should_abort_run`'s own docstring stated the assumption
+plainly: "if [stop_reason is sprint_report_produced], the sprint ended in a clean state - safe to move
+on." That's false whenever the release fails after the report succeeds - the harness kept treating
+the sprint as closed and sent the next scripted message into a team now structurally unable to make
+further progress (ProductOwner exhausted its own grace retrying the release, then got nothing but
+repeated token-budget halts, with nobody else ever getting a turn to even attempt `start_sprint`).
+
+`_run_one_sprint` now also returns `sprint_report_pending_release` (read from end-of-invocation
+session state), and `_sprint_should_abort_run` requires it to be `False` - true proof the release
+actually went out - before treating a produced report as a clean close-out, not just that one was
+authored at some point during the invocation.
+### seed_repository now creates a .gitignore - untracked build/test artifacts kept blocking GitFlow checkouts (GH issue #419)
+
+A follow-up eval run (0.1.0-run55, right after GH #413/#414/#415 merged) stalled permanently:
+`create_release_pr` failed with git's "untracked working tree files would be overwritten by checkout"
+on `.coverage`/`__pycache__/*.pyc`, which left the sprint's close-out sequence unable to ever complete
+(ProductOwner's own grace allowance exhausted retrying it, with no path left to ever call
+`start_sprint` again under GH #413's now-fully-mechanical reset). US-0004/US-0005/US-0006 had real
+code written for them but never reached `advance_story_stage` before the team pivoted to closing the
+sprint out, so `specs/ROADMAP.md`'s per-story checkboxes stayed stale - the exact symptom GH #415 had
+just fixed a different cause of, recurring from a new one.
+
+This is the same underlying class of failure 0.1.0-run54 hit on `instance/todo.db` (GH #415's own
+report flagged it): the generated project has no `.gitignore` at all, so DevTeam/QA's own ordinary
+local work (running tests, a local SQLite db) leaves real, untracked build/test artifacts in the
+working tree for a later GitFlow checkout to trip over. A `git_push` code comment (ISSUE-0050
+follow-up / 0.1.0-run34) had already diagnosed this exact root cause once before, for a different
+symptom (a commit failure, not a checkout failure).
+
+`seed_repository` now creates a `.gitignore` alongside README.md/specs/ as part of every project's
+very first commit - broad/multi-ecosystem (Python bytecode/coverage/venv, Node `node_modules`, local
+databases, editor/OS cruft), not narrowly scoped to whichever single artifact type caused the most
+recent incident. This prevents the whole class of failure at the source (these paths can no longer get
+accidentally committed via a careless `git add -A` before a `.gitignore` ever existed) instead of
+patching one call site or one artifact type at a time as new ones keep showing up.
+
+### init_scrum_state() could regress already-advanced backlog state when called mid-session (GH issue #423)
+
+A real eval run (0.1.0-run56) stopped early in Sprint 2 via the mechanical loop-breaker
+(`blocked_mechanically_detected`, GH #414 working exactly as designed) - but the root cause one layer
+down was a genuine state-corruption bug, not the ordering gate or loop-breaker misbehaving. In Sprint
+1, US-0003/US-0004/US-0005 all genuinely reached `Accepted` (`advance_story_stage` returned "ok" each
+time, with a successful git push of the updated state to `develop`). Sprint 2's very first tool call
+was ScrumMaster explicitly re-invoking `init_scrum_state()` ("Initializing Scrum state from disk") -
+available to every role, not just invoked automatically once by `ensure_state_initialized_callback`'s
+own `_state_auto_initialized` guard (agent.py). `init_scrum_state`'s "load from repo" step used to run
+unconditionally on every call, so this second, agent-initiated call wholesale-overwrote the live,
+already-advanced `product_backlog` with whatever snapshot happened to be sitting in `.hc/state.json`
+on disk - regressing all three stories back to `['Draft', 'Ready']`. That fed the one-story-at-a-time
+ordering gate stale data, which correctly-but-wrongly rejected `start_feature_branch` on the next
+story, cascading into a DevTeam/ProductOwner transfer loop and the eventual mechanical stop.
+
+`init_scrum_state` now only performs the "load from repo" step on this session's actual first-ever
+init (tracked via the same `_state_auto_initialized` flag), or when a caller explicitly passes
+`force=True` for the rare genuine case of picking up an out-of-band edit to `state.json` mid-session.
+The markdown-rebuild step (`sync_stories_from_markdown` et al.) stays unconditional - it merges
+per-field onto the existing backlog rather than replacing it wholesale, and doesn't carry
+`stages_completed` at all, so re-running it can only ever pick up a genuinely new story/doc, never
+regress an existing one's progress.
+
+### Sprint report/transcript/retro/steering doc numbering now floors at the sprint number (GH issue #425)
+
+A real eval run (0.1.0-run57) showed `specs/reports/SPRINT-REPORT-001.md` written by
+**both** Sprint 1 and Sprint 2 (Sprint 2's content silently overwrote Sprint 1's), then
+`SPRINT-REPORT-002.md` by Sprint 3, `SPRINT-REPORT-003.md` by Sprint 4 - every sprint's
+report landed one number behind where it should have. `_next_sprint_report_path` and its
+three siblings (`_next_transcript_path`/`_next_retro_doc_path`/`_next_steering_doc_path`,
+all sharing the same underlying helper) pick their next number purely by scanning
+`specs/reports/*.md` on disk, and that scan evidently didn't always see the immediately-
+prior sprint's own already-committed file at the moment the current sprint allocated its
+own number - the same general class of "the shared working tree doesn't reliably reflect
+the last sprint's committed state" fragility as GH #423, just hitting a different file.
+
+Each of these four artifacts is written exactly once per real sprint, so the allocated
+number is now also floored at `state.sprint_number` - a sprint's own number can never come
+out lower than the sprint itself, regardless of whether the underlying git-sync gap is ever
+fully root-caused.
+
+### KPI data is no longer silently dropped when it coincides with the previous sprint's values (GH issue #426)
+
+The same eval run (0.1.0-run57) showed Sprints 3 and 4 reporting "n/a" for Say-Do Ratio/Test
+Coverage in `report.md`'s KPI Trends table, despite `create_sprint_report`'s own rendered
+output for both sprints containing a fully-populated KPI Dashboard - the data was genuinely
+computed both times. `run_eval.py`'s `_run_one_sprint` used to decide "did KPIs actually
+update this sprint" by comparing the whole `sprint_report_kpis` dict's own value against a
+baseline snapshot - this test project's own measurements (test coverage, security scan,
+code complexity) are sometimes identical sprint-to-sprint by coincidence, so the equality
+check false-negatived and discarded real, freshly-computed data.
+
+Now snapshots `kpi_update_count` (bumped by every successful `update_sprint_report` call
+regardless of whether the resulting values changed) instead of the KPI dict's value, and
+gates freshness on whether that counter advanced - the same snapshot-a-counter pattern
+`retro_baseline`/`kpi_baseline` already use internally for their own "something new since
+last time" gates.
+
+### The team performance eval workflow's per-sprint token budget is now configurable per run
+
+`.github/workflows/eval.yml`'s `workflow_dispatch` trigger gains a `sprint_token_budget`
+input, read into `EVAL_SPRINT_TOKEN_BUDGET` ahead of the existing repo/environment
+`vars.EVAL_SPRINT_TOKEN_BUDGET` fallback (then the `5000000` hardcoded default) - a one-off
+manual run asking for a specific budget (e.g. to check whether a change affects how far a
+tighter or looser budget lets the team get) no longer requires changing the standing repo
+variable and remembering to revert it afterward. A tag-push trigger has no dispatch inputs
+at all, so it's unaffected and keeps using the repo/environment variable or default exactly
+as before.
+
+### ScrumMaster's ritual-budget halt no longer repeats once it's already produced its one fallback report (GH issue #428)
+
+A real eval run (0.1.0-run58) wasted 3 of its 5 sprints (60% of the run) stuck in an
+unrecoverable loop: Sprint 1 ran out of budget before calling `create_release_pr`; Sprint 2
+caught up on that overdue close-out (opening the release PR) but then couldn't start its own
+new sprint, because that just-opened PR wasn't merged yet - no in-session tool can actually
+merge a PR (GitHub refuses self-approval from the same bot identity), only the eval harness's
+own host-side `_merge_open_prs` can, and only *between* sprint invocations. The team spent
+the rest of Sprint 2 retrying `start_sprint` (still refused) until ScrumMaster's own
+ritual-budget check (`check_cost_budget_callback`, GH #395) tripped - and that check's
+`state.token_usage.agents["ScrumMaster"]` counter is only ever reset inside `start_sprint`'s
+own success path, which never ran. Every subsequent sprint's very first ScrumMaster turn hit
+the identical before-model halt, checking the same stale counter, before the model (and
+therefore `start_sprint`) ever got to run again - a genuine catch-22, even after the harness
+auto-merged the release PR between Sprints 2 and 3 and the real blocker was long since gone.
+
+The ritual-budget halt already calls `_ensure_sprint_report_on_final_halt_once`, which
+guarantees a fallback report exists and sets `sprint_report_safety_net_fired` so it never
+re-renders twice. Once that flag is already set, repeating the halt serves no further purpose
+(the report already exists) and only prevents recovery - the halt no longer repeats once it
+has, for both the main `ritual_limit` branch and the GH #407 `ritual_hard_ceiling` branch.
+ScrumMaster gets a genuine turn instead, free to retry `start_sprint`, which (if it succeeds)
+resets everything properly for good.
+
+### seed_repository's .gitignore fix can now heal a project that was already seeded before it existed (GH issue #429)
+
+The same eval run (0.1.0-run58) hit the exact pre-GH-#419 symptom again: `__pycache__/*.pyc`
+and `.coverage`, already tracked in git history, blocked a checkout with "local changes would
+be overwritten by checkout." GH #419's fix only ever helps a brand-new project's very first
+commit - `seed_repository` writes `.gitignore` only if one doesn't already exist, and nothing
+re-invokes it once a project already has `specs/`/`README.md` in place. The eval harness's
+own target repo is a standing, reused GitHub repo (`run_eval.py`'s `_prepare_local_clone`
+clones it fresh each run and branches from whatever its current tip is, rather than
+recreating the project from scratch) - first seeded long before GH #419 existed, so its
+`.gitignore` gap persisted forever regardless of how many times the seeding code itself got
+fixed.
+
+A new mechanical healing step (`_heal_gitignore_drift`, `tools/docs.py`) ensures `.gitignore`
+exists and untracks (`git rm --cached` - never deleted from disk) anything already-tracked
+that it now covers, committing and pushing the fix to `develop`. Called from
+`init_scrum_state()` on a session's genuine first init only (same gating as the GH #423 fix)
+- cheap/idempotent, and best-effort: never blocks session startup if the repo isn't
+configured yet or the healing itself fails for any reason.
+
+### The harness no longer aborts a run whose sprint actually closed out cleanly via the host-side report backstop (GH issue #431)
+
+A real eval run (0.1.0-run60) stopped after just one sprint, reporting "a sprint hit a
+critical token/USD budget halt with no clean close-out afterward" - even though Sprint 1's
+report genuinely existed (a mechanical fallback) and its release PR had actually merged.
+Hitting the per-sprint token budget is expected; the run should have continued normally.
+
+`_sprint_should_abort_run` treated `stop_reason == "sprint_report_produced"` as the only
+accepted proof a report exists - but `_run_one_sprint` has a second, legitimate path that
+also produces one: a host-side backstop right after the per-sprint loop (see its own comment
+citing eval-run41) exists precisely so a report always gets produced even when the harness's
+own `max_events`/`max_duration` cap, not the in-session budget grace, ends the sprint first.
+That path genuinely populates `sprint_report`, but never revises `stop_reason` away from
+whatever the per-sprint loop already set (`"max_events_reached"` here) - rewriting a reason
+that was already true isn't its job. Checking the `stop_reason` string missed this case
+entirely.
+
+Now checks `bool(sprint_result.get("sprint_report"))` directly instead - a strict superset of
+the old check, since `stop_reason` is only ever set to `"sprint_report_produced"` right after
+`sprint_report` itself is populated, never the other way around.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
@@ -455,6 +1487,47 @@ of only being noticed anecdotally.
   running until the CI job's own hard `timeout-minutes` kills the process with
   no output at all. Verified directly: forcing the deadline to 0 stops the run
   before sprint 1 with `stopped_early: true` and a valid, if empty, report.
+  **Stops early on a story blocked with no real way forward** (GH issue #336):
+  a real eval run (0.1.0-run39) had a story get BLOCKED by the mechanical
+  loop-breaker in sprint 2, then sat blocked through sprints 3-5 with no
+  resolution - this scripted driver has no way to call `resolve_story_blocker`
+  itself (see below: it "pre-approves every sprint goal/backlog... standing in
+  for the human review gate real usage requires"), so those 3 remaining
+  sprints burned real tokens/budget on a story that could never move forward.
+  `_sprint_needs_human_this_harness_cannot_provide` (`run_eval.py`) now stops
+  the run (`stop_reason: "blocked_needs_human"`/`"blocked_unresolved_across_sprint"`)
+  the moment either holds: a BLOCKED story's category escalates straight to
+  the human User at this interaction level
+  (`should_escalate_blocker_to_user`, `agents/scrum_team/helpers.py` - this
+  driver has no human to answer it, so an immediate stop, not a wasted
+  sprint), or the *same* story is still BLOCKED at the end of a sprint that
+  already started with it blocked (the team had a full sprint's own budget to
+  resolve it themselves and didn't - further sprints are the same bet with no
+  new information).
+  **A sprint report always exists, even when the harness's own event/time
+  caps cut the close-out sequence off first** (0.1.0-run41): a real run's
+  SPRINT CLOSE SEQUENCE grace was making genuine progress (retro logged,
+  KPIs computed) but got cut off by `max_events_per_sprint` one turn before
+  ProductOwner's `create_sprint_report` - agent.py's own safety net
+  (`_ensure_sprint_report_on_final_halt_once`) only fires once a
+  grace-eligible role's own turn *also* exceeds its (shrunk) grace
+  allowance, which never happened here; the sprint just ran out of
+  *host-side* turns first. `_run_one_sprint` now calls the exact same
+  mechanism directly as a backstop whenever a sprint ends with
+  `critical_halt_notified` set but no report - the in-agent budget grace
+  and this harness's own event/time caps are two independent stopping
+  mechanisms, and "a report always exists" needs a backstop that doesn't
+  depend on which one fires first.
+  **The rendered report now surfaces *why* a run stopped early, and lists
+  every currently-BLOCKED story** (0.1.0-run41): previously `stop_reason`/
+  `blocked_story` lived only in `manifest.json` - a user had to dig through
+  raw GitHub Actions logs to find out why a run only completed 1 of 5
+  requested sprints. `run_eval_analysis.py`'s `_render_report` now renders
+  a "⚠️ Evaluation Stopped Early" callout (stop reason, crash detail, or the
+  blocked story - whichever applies) as the very first thing after the run
+  header, and a "## Blockers" section listing every story still BLOCKED as
+  of the last completed sprint - the same view `create_sprint_report`'s own
+  "Open Questions for Stakeholder (Blockers)" section already gives per-sprint.
   **Local runs only** (`GITHUB_ACTIONS` unset): before spending anything, the
   script checks that the LiteLLM proxy is actually reachable, not just
   configured - the USD guardrail above lives entirely in the proxy (see

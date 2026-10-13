@@ -8,7 +8,6 @@ from agents.scrum_team.prompts import (
     DEV_PROMPT,
     QA_PROMPT,
     ARCH_PROMPT,
-    QUALITY_GUARDIAN_PROMPT,
     ROLE_NAMES,
     DOD_ROLES,
     DOR_ROLES,
@@ -34,7 +33,6 @@ class TestPromptModuleAssembly(unittest.TestCase):
         (DEV_PROMPT, "DevTeam"),
         (QA_PROMPT, "QA"),
         (ARCH_PROMPT, "Architect"),
-        (QUALITY_GUARDIAN_PROMPT, "QualityGuardian"),
     ]
 
     def test_every_role_name_has_a_loadable_prompt(self):
@@ -96,7 +94,6 @@ class TestDefinitionOfDoneAndReadyInjection(unittest.TestCase):
         (DEV_PROMPT, "DevTeam"),
         (QA_PROMPT, "QA"),
         (ARCH_PROMPT, "Architect"),
-        (QUALITY_GUARDIAN_PROMPT, "QualityGuardian"),
     ]
 
     def test_dod_roles_are_exactly_the_realisation_roles(self):
@@ -155,7 +152,6 @@ class TestSelfTransferWarning(unittest.TestCase):
             (DEV_PROMPT, "DevTeam"),
             (QA_PROMPT, "QA"),
             (ARCH_PROMPT, "Architect"),
-            (QUALITY_GUARDIAN_PROMPT, "QualityGuardian"),
         ]
         for prompt, agent_name in cases:
             with self.subTest(agent_name=agent_name):

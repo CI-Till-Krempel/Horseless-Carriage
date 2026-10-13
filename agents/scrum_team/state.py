@@ -20,6 +20,15 @@ class ScrumState(BaseModel):
     sprint_goal: str = ""
     sprint_number: int = 0
     sprint_backlog_pr_sprint: int = 0
+    # GH issue #399: how many times integrate_open_changes has ever
+    # successfully committed something (any caller, any branch) -
+    # create_sprint_backlog_pr's own baseline snapshot of this at its last
+    # successful publish, so it can tell "nothing was ever written" apart
+    # from "it already landed via a different path" (e.g. start_sprint's own
+    # cleanup sweep) when its own live working-tree check finds nothing
+    # dirty right now.
+    planning_output_commit_count: int = 0
+    sprint_backlog_pr_content_baseline: int = 0
     sprint_backlog: List[Dict] = Field(default_factory=list)
     impediment_log: List[Dict] = Field(default_factory=list)
     retro_actions: List[Dict] = Field(default_factory=list)
@@ -46,12 +55,82 @@ class ScrumState(BaseModel):
     sprint_approval_baseline: int = 0
     release_approval_baseline: int = 0
     dev_touch_baseline: int = 0
+    # GH issue #344: mirrors dev_touch_baseline for
+    # _detect_unadvanced_implementation (agent.py) - the touch-count
+    # snapshot taken the last time DevTeam was nudged for transferring away
+    # with un-advanced implementation work, so the same reminder doesn't
+    # repeat forever once DevTeam has already seen it. No leading
+    # underscore - Pydantic treats underscore-prefixed fields as private
+    # attributes, excluded from model_dump(), which would silently break
+    # persistence to .hc/state.json.
+    unadvanced_write_nudge_baseline: int = 0
     last_check_build: Optional[Dict[str, Any]] = None
+    # GH issue #380: same "last tool result" pattern as last_check_build,
+    # stamped by gh_pr_checks every time it's called - advance_story_stage's
+    # Implemented-stage gate requires a fresh (post-git_push_count) passing
+    # result here before letting a story advance.
+    last_pr_checks: Optional[Dict[str, Any]] = None
+    dependency_manifest_write_count: int = 0
+    # GH issue #380: bumped by the agent-facing git_push tool (not internal-
+    # only _git_push_impl callers like report-landing/roadmap-sync, which
+    # don't touch a story's own feature branch) every successful push -
+    # gh_pr_checks snapshots this into last_pr_checks so a LATER push after
+    # the last passing check can be told apart from one that's still fresh,
+    # the same staleness pattern dependency_manifest_write_count already
+    # uses for check_build.
+    git_push_count: int = 0
     pr_review_calls: Dict[str, int] = Field(default_factory=dict)
     architect_review_baseline: int = 0
     qa_review_baseline: int = 0
+    # GH issue #357: snapshot of pr_review_calls taken the first time each
+    # sprint's Sprint Backlog PR merges. start_feature_branch requires
+    # Architect/DevTeam/QA's counts to each have grown past this baseline -
+    # real team feedback/commitment on the backlog Product Owner proposed,
+    # before implementation starts.
+    sprint_backlog_engagement_baseline: Dict[str, int] = Field(default_factory=dict)
     qa_tested_baseline: int = 0
     sprint_report_pending_release: bool = False
     blocking_interactions: List[Dict[str, Any]] = Field(default_factory=list)
     orchestrator_stall_count: int = 0
     overclaim_rejection_counts: Dict[str, int] = Field(default_factory=dict)
+    # GH issue #342: retro-item triage - add_retro_action/add_impediment
+    # now require a category ("technical"/"steering"/"human"). A "human"
+    # category entry becomes a general_blockers record here (not tied to
+    # any one story, unlike raise_story_blocker) - surfaced in the eval
+    # report's Blockers section regardless of story association, and (if
+    # high priority) able to stop an eval run the same way a BLOCKED
+    # story's own stop reasons already do (see run_eval.py).
+    general_blockers: List[Dict[str, Any]] = Field(default_factory=list)
+    # steering_proposal_count only increases via a real, successful
+    # propose_steering_change call (tools/workflow.py) - compared against
+    # steering_baseline by create_sprint_report's own gate, same
+    # "must be NEW since last report" pattern as retro_baseline/kpi_baseline,
+    # so a "steering"-category retro finding can't just be logged and
+    # forgotten the way GH issue #342 found every retro finding was.
+    steering_proposal_count: int = 0
+    steering_baseline: int = 0
+    # GH issue #356: a structured, durable record of every propose_steering_
+    # change call that has actually succeeded - rendered into
+    # specs/reports/STEERING-NNN.md alongside the sprint report. Distinct
+    # from steering_proposal_count above (a bare counter for the gate) -
+    # this holds the actual content (role/rationale/PR link) a human would
+    # need to audit the proposal later, since the PR body itself may be
+    # lost once the PR merges/closes.
+    steering_proposals: List[Dict[str, Any]] = Field(default_factory=list)
+    # GH issue #359: snapshot of which stories were BLOCKED as of the last
+    # successful create_sprint_report/render_fallback_sprint_report close -
+    # compared against who's still blocked now to find a story that's been
+    # stuck across a FULL sprint (not just raised this sprint), which
+    # create_sprint_report's own gate then requires the retro to actually
+    # discuss, not just silently let the report's "Open Questions for
+    # Stakeholder" section note it exists again.
+    blocked_story_ids_as_of_last_report: List[str] = Field(default_factory=list)
+    # GH issue #390: snapshot of how many non-Epic product_backlog items had
+    # reached Accepted as of the last successful create_sprint_report close -
+    # compared against the current count to tell "this sprint genuinely
+    # delivered something new" apart from a generically positive narrative
+    # ("completed successfully", "sign-off", ...) with nothing concrete
+    # behind it. Non-blocking nudge only - see create_sprint_report's own
+    # comment for why this isn't a hard gate like the specific-story-ID
+    # overclaim check right above it.
+    accepted_count_baseline: int = 0

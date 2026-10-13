@@ -13,7 +13,56 @@ from ..helpers import (
     required_pre_implementation_approval,
     report_detail_level,
     get_env_with_deprecated_fallback,
+    looks_like_role_behavior_finding,
 )
+
+# GH issue #298: below this many tokens, "$0 spend" is indistinguishable
+# from a sprint that just started - only worth flagging once there's been
+# enough real usage that a genuinely-priced model would show *some* cost.
+# GH issue #390: a real eval run (0.1.0-run48) produced sprint reports
+# claiming "Sprint 3 completed successfully with backlog refinement",
+# "Sprint 4 executed successfully with... robustness verification", and
+# "Completed final sprint review, quality validation, and release sign-off
+# for Sprint 5" - despite ZERO stories reaching Accepted any of those
+# sprints. The overclaim check right below only catches a claim that names a
+# SPECIFIC story ID not yet Accepted - generic success narrative naming no
+# story at all sails through unchecked. This is deliberately a non-blocking
+# nudge, not a hard gate like the specific-story-ID check: unlike "story
+# US-0003 is claimed delivered but isn't Accepted" (an unambiguous, provably
+# false claim), "sounds too positive" is a fuzzy signal that could
+# false-positive on a genuinely good, truthfully-worded sprint.
+_GENERIC_SUCCESS_PHRASES = (
+    "completed successfully", "executed successfully", "sign-off", "signed off",
+    "finalized", "successfully delivered", "quality validation",
+)
+_SUSPICIOUS_ZERO_SPEND_TOKEN_THRESHOLD = 50_000
+
+
+def _zero_cost_spend_warning(current_spend, tokens_used) -> str:
+    """
+    GH issue #298: LiteLLM's bundled pricing table not covering a configured
+    model id (new release, or retired/renamed) makes every completion routed
+    through it report $0 cost - silently, since the completion itself still
+    succeeds normally. A sprint report showing "$0.00 Actual USD Spend" after
+    tens of thousands of real tokens is that bug caught live, not genuinely
+    free usage, so this flags it rather than letting it read as good news.
+    Skipped for LLM_LOCAL_PROVIDER sessions (Ollama has no cost to
+    misreport) and below the token threshold above.
+    """
+    if (
+        current_spend == 0
+        and tokens_used >= _SUSPICIOUS_ZERO_SPEND_TOKEN_THRESHOLD
+        and os.environ.get("LLM_LOCAL_PROVIDER") != "true"
+    ):
+        return (
+            "⚠️ SAFETY WARNING: Actual USD Spend reports $0.00 despite "
+            f"{tokens_used:,} tokens used this session - this usually means a configured "
+            "model id isn't in LiteLLM's bundled pricing table (new release, or retired/"
+            "renamed), not that usage was genuinely free. Run `python3 doctor.py` to check "
+            "every configured model's resolved cost-per-token.\n"
+        )
+    return ""
+
 
 def update_budgets(total_usd: float = None, tool_context=None) -> Dict[str, Any]:
     """
@@ -62,83 +111,73 @@ def log_token_usage(agent_name: str, tokens: int, tool_context=None) -> Dict[str
 def sprint_budget_reset_state_delta() -> Dict[str, Any]:
     """
     Single source of truth for exactly which state keys must be cleared at
-    the start of a new sprint, and to what. Two callers need this identical
-    set: this module's own reset_sprint_budget (the agent-invoked tool used
-    in interactive/real usage) and run_eval.py's _run_one_sprint (the eval
-    harness's own unattended equivalent, since there's no Scrum Master
-    around to call reset_sprint_budget for it).
+    the start of a new sprint, and to what. SPRINT_TOKEN_BUDGET is a
+    per-sprint allowance, not a cumulative total for the whole engagement -
+    without this, token_usage.total only ever grows, silently starving
+    every later sprint of further LLM calls.
 
-    ISSUE-0049 / 0.1.0-run33: those two used to be independent, hand-copied
-    key lists. run_eval.py's copy predated critical_halt_notified and
-    sprint_report_safety_net_fired being added here and was never
-    backported, so a sprint that ended via the final-halt safety net (see
-    _ensure_sprint_report_on_final_halt_once, agent.py) left
-    sprint_report_safety_net_fired=True stuck for the rest of the run - the
-    very next sprint's own final halt then silently no-opped on that guard
-    and produced NO sprint report at all (not even the fallback one),
-    exactly the failure EVAL-REPORT.md flagged as run33's worst problem.
-    Both callers importing this one function instead of maintaining their
-    own copy means they can't drift apart like that again.
+    GH #413: applied mechanically by start_sprint itself (tools/scrum.py)
+    as part of actually starting a new sprint - there is no longer a
+    separate agent-invoked reset_sprint_budget tool, and no separate
+    harness-side reset in run_eval.py either. Both used to exist
+    independently of the real sprint boundary (an agent "MANDATORY"-text
+    instruction it could forget to follow, and a harness reset tied to
+    whichever scripted message happened to arrive next, not to whether a
+    real sprint actually started) - a real eval run (0.1.0-run53) hit
+    exactly this: a sprint stuck mid-close-out got a completely fresh
+    token/event budget purely because the harness sent its next scripted
+    message, letting an unresolved deadlock run again from scratch. One
+    mechanical reset, tied to the one real event that should trigger it,
+    can no longer drift out of sync with "the rest of the sprint process"
+    this way.
+
+    ISSUE-0049 / 0.1.0-run33: before this, start_sprint's own enforcement
+    and run_eval.py's harness-side copy were independent, hand-copied key
+    lists that drifted apart (run_eval.py's predated critical_halt_notified/
+    sprint_report_safety_net_fired and was missing them, leaving a stuck
+    flag across sprint boundaries that silently suppressed a later sprint's
+    own safety net). A single shared function closes that gap for good.
 
     Returns a fresh dict (with fresh nested dicts) on every call so a
-    caller mutating its own copy - or writing each key into its own
-    per-sprint state_delta alongside a few keys of its own - never risks
-    aliasing another caller's copy.
+    caller mutating its own copy never risks aliasing another's.
     """
     return {
         "token_usage": {"total": 0, "agents": {}},
         "budget_exhaustion_synced": False,
-        "budget_reset_since_last_sprint_start": True,
         "critical_halt_notified": False,
         "sprint_report_safety_net_fired": False,
+        # GH #413: ScrumState.sprint_report/sprint_report_kpis are just
+        # whatever the last create_sprint_report/update_sprint_report call
+        # produced - never cleared by the product code itself otherwise, so
+        # without this a new sprint would silently start with the PREVIOUS
+        # sprint's report/KPIs still sitting in state until this sprint's
+        # own calls overwrite them (or never do, if this sprint's own report
+        # step is skipped for any reason).
+        "sprint_report": "",
+        "sprint_report_kpis": {},
+        # GH issue (0.1.0-run42): the numbered specs/reports/SPRINT-REPORT-
+        # NNN.md path this sprint's report was written to (create_sprint_report
+        # / render_fallback_sprint_report both set this on write, and reuse it
+        # on any later call this same sprint instead of allocating a new
+        # number - see render_fallback_sprint_report's own docstring). Cleared
+        # here so a later sprint's first report call still allocates its own
+        # fresh number.
+        "sprint_report_path": "",
+        # GH issue #345: mirrors sprint_report_path immediately above, for
+        # TRANSCRIPT-NNN.md's own numbered-path reuse (see
+        # _write_conversation_transcript).
+        "transcript_path": "",
+        # GH issue #356: mirrors sprint_report_path/transcript_path above,
+        # for RETRO-NNN.md/STEERING-NNN.md's own numbered-path reuse (see
+        # _render_retro_doc/_render_steering_doc).
+        "retro_doc_path": "",
+        "steering_doc_path": "",
         # GH issue #220: the 75%/90% budget-warning gate (see
         # _maybe_inject_budget_warning, agent.py) - cleared so a new sprint's
         # own approach to the ceiling warns again, rather than staying
         # silently suppressed because a previous sprint already crossed 90%.
         "_budget_warning_pct_fired": 0,
     }
-
-
-def reset_sprint_budget(tool_context=None) -> Dict[str, Any]:
-    """
-    Resets the LOGICAL token budget for a new sprint. SPRINT_TOKEN_BUDGET is
-    a per-sprint allowance, not a cumulative total for the whole engagement -
-    without this, token_usage.total only ever grows, so a sprint that used
-    most of the budget silently starves every later sprint of any further
-    LLM calls (check_cost_budget_callback compares token_usage.total against
-    the same never-reset budgets.total). Call this once, at the start of
-    every sprint after the first, before Sprint Planning.
-
-    Deliberately does NOT touch budgets.total_usd: the USD guardrail is an
-    intentional whole-run financial ceiling enforced by the LiteLLM proxy's
-    shared scrum-sprint-budget object (see BUDGET.md), not a per-sprint one.
-
-    Also clears the exhaustion-sync guard (see check_cost_budget_callback in
-    agent.py) so a new sprint's exhaustion, if it happens, syncs the roadmap
-    again rather than being silently skipped because a *previous* sprint
-    already tripped it once. Likewise clears the critical-halt notification
-    guard (GH issue #112) - see _notify_critical_halt in agent.py - so a
-    halt in this new sprint notifies again rather than being silently
-    skipped because a previous sprint's halt already fired it once. Same
-    for the sprint-report safety net's own guard (see
-    _ensure_sprint_report_on_final_halt_once in agent.py) - a new sprint's
-    final halt, if it happens, is guaranteed a report again too.
-
-    Also marks the budget as freshly reset (see GH issue #110) - start_sprint
-    requires this to have happened since the previous sprint started (except
-    for the very first sprint, which has no previous sprint's usage to
-    clear), instead of relying on SM_PROMPT's "MANDATORY" text alone.
-
-    See sprint_budget_reset_state_delta (ISSUE-0049) for the actual list of
-    keys/values this clears - shared with run_eval.py's harness-side
-    equivalent so the two can't drift apart again.
-    """
-    from .scrum import save_state_to_repo
-    s = tool_context.state
-    for key, value in sprint_budget_reset_state_delta().items():
-        s[key] = value
-    save_state_to_repo(tool_context)
-    return {"status": "ok", "token_usage": s["token_usage"]}
 
 
 def log_story_tokens(title_or_id: str, actual_tokens: int, tool_context=None) -> Dict[str, Any]:
@@ -259,7 +298,7 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         # ... Tried to access scrum-eval-cheap". Deduplicated since an eval
         # run maps every role onto the same alias.
         from ..agent import get_model_name
-        roles = ["po", "sm", "dev", "qa", "arch", "orchestrator", "quality"]
+        roles = ["po", "sm", "dev", "qa", "arch", "orchestrator"]
         models = list(dict.fromkeys(get_model_name(role) for role in roles))
     
     data = {
@@ -276,9 +315,10 @@ def create_litellm_virtual_key(agent_name: str, max_budget: float = None, budget
         # while the shared budget_id above already enforces the real,
         # correctly-sized ceiling (total_budget_usd) across every agent -
         # this per-key cap is redundant at best. Worse, it's never reset or
-        # recreated between sprints (reset_sprint_budget only clears local
-        # token counters), so a too-small value starves that agent for the
-        # rest of the run once hit, and the eventual litellm.RateLimitError
+        # recreated between sprints (start_sprint's own mechanical reset,
+        # GH #413, only clears local token counters), so a too-small value
+        # starves that agent for the rest of the run once hit, and the
+        # eventual litellm.RateLimitError
         # used to crash the whole process (see _patched_adk_acompletion).
         # Never let an individual key's cap be tighter than the shared
         # budget that's meant to be the real ceiling.
@@ -363,8 +403,8 @@ def estimate_sprint_capacity(s: Dict[str, Any]) -> float | None:
     """
     Average actual tokens per completed story, computed from every
     story_estimates[*].actual logged so far (log_story_tokens) - persists
-    across sprints, unlike token_usage/sprint_backlog which
-    reset_sprint_budget clears each sprint. The same "observed
+    across sprints, unlike token_usage/sprint_backlog which start_sprint's
+    own mechanical reset (GH #413) clears each sprint. The same "observed
     tokens-per-completed-story rate" _sprint_length_feedback already
     extrapolates from at sprint *close*, exposed here for use at sprint
     *start* too (see sprint_capacity_advisory below). None if nothing has
@@ -499,41 +539,154 @@ def _sprint_length_feedback(s: Dict[str, Any]) -> str:
 
 
 _SPRINT_REPORT_NUM_PATTERN = re.compile(r"SPRINT-REPORT-(\d+)\.md$")
+_TRANSCRIPT_NUM_PATTERN = re.compile(r"TRANSCRIPT-(\d+)\.md$")
+_RETRO_DOC_NUM_PATTERN = re.compile(r"RETRO-(\d+)\.md$")
+_STEERING_DOC_NUM_PATTERN = re.compile(r"STEERING-(\d+)\.md$")
+
+
+def _next_numbered_artifact_path(tool_context, prefix: str, pattern: "re.Pattern") -> str:
+    """
+    Shared implementation for _next_sprint_report_path/_next_transcript_path/
+    _next_retro_doc_path/_next_steering_doc_path below - picks the next
+    sequential specs/reports/<prefix>-NNN.md path by scanning what's
+    already there, self-healing like _generate_next_id (no separate
+    counter in state to drift out of sync).
+
+    Also floored at state.sprint_number: each of these four artifacts is
+    written exactly once per real sprint (reused on any later call that
+    same sprint - see each caller's own docstring), so a given sprint's
+    own number should never come out lower than the sprint number itself.
+    A real eval run (0.1.0-run57) hit exactly this with a plain scan-only
+    version of this function: the shared working tree's view of
+    specs/reports/ didn't yet reflect the immediately-prior sprint's own
+    committed file at the moment this ran (the same general class of
+    git-sync gap as GH #423, just for this file instead of .hc/state.json)
+    - the scan under-counted, allocated a number one behind the real sprint
+    count, and silently overwrote an earlier sprint's report/transcript/
+    retro/steering doc with this sprint's content instead of erroring or
+    skipping ahead. Flooring at sprint_number makes that specific failure
+    mode impossible regardless of whether the underlying git-sync gap is
+    ever fully root-caused: the number this sprint allocates can never be
+    less than the sprint it's for, so it can never collide with a real
+    earlier sprint's own file.
+    """
+    repo_root = _configured_repo_root(tool_context)
+    reports_dir = repo_root / "specs" / "reports"
+    max_num = 0
+    if reports_dir.exists():
+        for fp in reports_dir.glob(f"{prefix}-*.md"):
+            m = pattern.match(fp.name)
+            if m:
+                max_num = max(max_num, int(m.group(1)))
+    state = getattr(tool_context, "state", None) or {}
+    sprint_number = state.get("sprint_number") or 0
+    next_num = max(max_num + 1, sprint_number)
+    return f"specs/reports/{prefix}-{next_num:03d}.md"
 
 
 def _next_sprint_report_path(tool_context) -> str:
     """
-    Picks the next sequential specs/reports/SPRINT-REPORT-NNN.md path by
-    scanning what's already there - self-healing like _generate_next_id,
-    no separate counter in state to drift out of sync. Previously every
-    sprint overwrote the same SPRINT-REPORT-LATEST.md, so only the final
-    sprint's report ever survived in the repo.
+    Picks the next sequential specs/reports/SPRINT-REPORT-NNN.md path -
+    see _next_numbered_artifact_path above. Previously every sprint
+    overwrote the same SPRINT-REPORT-LATEST.md, so only the final sprint's
+    report ever survived in the repo.
     """
-    repo_root = _configured_repo_root(tool_context)
-    reports_dir = repo_root / "specs" / "reports"
-    max_num = 0
-    if reports_dir.exists():
-        for fp in reports_dir.glob("SPRINT-REPORT-*.md"):
-            m = _SPRINT_REPORT_NUM_PATTERN.match(fp.name)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-    return f"specs/reports/SPRINT-REPORT-{max_num + 1:03d}.md"
-
-
-_TRANSCRIPT_NUM_PATTERN = re.compile(r"TRANSCRIPT-(\d+)\.md$")
+    return _next_numbered_artifact_path(tool_context, "SPRINT-REPORT", _SPRINT_REPORT_NUM_PATTERN)
 
 
 def _next_transcript_path(tool_context) -> str:
     """Mirrors _next_sprint_report_path, one sequence per artifact type."""
-    repo_root = _configured_repo_root(tool_context)
-    reports_dir = repo_root / "specs" / "reports"
-    max_num = 0
-    if reports_dir.exists():
-        for fp in reports_dir.glob("TRANSCRIPT-*.md"):
-            m = _TRANSCRIPT_NUM_PATTERN.match(fp.name)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-    return f"specs/reports/TRANSCRIPT-{max_num + 1:03d}.md"
+    return _next_numbered_artifact_path(tool_context, "TRANSCRIPT", _TRANSCRIPT_NUM_PATTERN)
+
+
+def _next_retro_doc_path(tool_context) -> str:
+    """Mirrors _next_sprint_report_path, one sequence per artifact type."""
+    return _next_numbered_artifact_path(tool_context, "RETRO", _RETRO_DOC_NUM_PATTERN)
+
+
+def _next_steering_doc_path(tool_context) -> str:
+    """Mirrors _next_sprint_report_path, one sequence per artifact type."""
+    return _next_numbered_artifact_path(tool_context, "STEERING", _STEERING_DOC_NUM_PATTERN)
+
+
+def _render_retro_doc(s: Dict[str, Any]) -> str:
+    """
+    GH issue #356: TEMPLATE-RETRO-ITEM.md's structure, rendered for every
+    retro action/impediment logged so far (full detail - category, owner,
+    status, success metric, Issue/PR/blocker disposition once known) - a
+    durable record alongside the terse one-liners in the sprint report
+    itself. Cumulative across the whole run (same scope as the sprint
+    report's own terse sections), not sprint-scoped - a finding's eventual
+    resolution often isn't known until a later sprint, so the full history
+    is the more useful audit trail.
+    """
+    retro = s.get("retro_actions", []) or []
+    impediments = s.get("impediment_log", []) or []
+    lines = ["# Retro Items\n"]
+    if not retro and not impediments:
+        lines.append("No retro actions or impediments logged yet.\n")
+        return "".join(lines)
+    for action in retro:
+        lines.append(f"\n## {action.get('action', '(no action text)')}\n")
+        lines.append(f"- Kind: Retro Action\n")
+        lines.append(f"- Category: {action.get('category', 'unset')}\n")
+        lines.append(f"- Owner: {action.get('owner', 'unknown')}\n")
+        lines.append(f"- Status: {action.get('status', 'open')}\n")
+        if action.get("success_metric"):
+            lines.append(f"- Success Metric: {action['success_metric']}\n")
+        if action.get("issue_id"):
+            lines.append(f"- Filed As: {action['issue_id']}\n")
+    for imp in impediments:
+        lines.append(f"\n## {imp.get('description', '(no description)')}\n")
+        lines.append(f"- Kind: Impediment\n")
+        lines.append(f"- Category: {imp.get('category', 'unset')}\n")
+        lines.append(f"- Owner: {imp.get('owner', 'unknown')}\n")
+        lines.append(f"- Status: {imp.get('status', 'open')}\n")
+        if imp.get("issue_id"):
+            lines.append(f"- Filed As: {imp['issue_id']}\n")
+    return "".join(lines)
+
+
+def _render_steering_doc(s: Dict[str, Any]) -> str | None:
+    """
+    GH issue #356: TEMPLATE-STEERING-PROPOSAL.md's structure, rendered for
+    every propose_steering_change call that has succeeded so far. Returns
+    None (caller skips writing the file) if none have happened yet - no
+    empty STEERING-NNN.md file otherwise.
+    """
+    proposals = s.get("steering_proposals", []) or []
+    if not proposals:
+        return None
+    lines = ["# Steering Proposals\n"]
+    for proposal in proposals:
+        lines.append(f"\n## {proposal.get('role', 'unknown role')}\n")
+        lines.append(f"- Proposed By: {proposal.get('proposed_by', 'unknown')}\n")
+        lines.append(f"- Pull Request: {proposal.get('pr_url') or '(unavailable)'}\n")
+        lines.append(f"\n### Rationale\n{proposal.get('rationale', '(none recorded)')}\n")
+        lines.append(f"\n### Proposed Content\n```\n{proposal.get('new_content', '')}\n```\n")
+    return "".join(lines)
+
+
+def _write_retro_and_steering_docs(s: Dict[str, Any], tool_context) -> None:
+    """
+    GH issue #356: writes specs/reports/RETRO-NNN.md (always) and
+    STEERING-NNN.md (only if at least one steering proposal has happened)
+    alongside the sprint report itself - shared by create_sprint_report and
+    render_fallback_sprint_report so the two can't drift apart on this.
+    Reuses each doc's own numbered path within the sprint, same
+    duplicate-file-avoidance pattern as sprint_report_path/transcript_path.
+    """
+    from .docs import write_file
+
+    retro_path = s.get("retro_doc_path") or _next_retro_doc_path(tool_context)
+    write_file(retro_path, _render_retro_doc(s), overwrite=True, tool_context=tool_context)
+    s["retro_doc_path"] = retro_path
+
+    steering_doc = _render_steering_doc(s)
+    if steering_doc is not None:
+        steering_path = s.get("steering_doc_path") or _next_steering_doc_path(tool_context)
+        write_file(steering_path, steering_doc, overwrite=True, tool_context=tool_context)
+        s["steering_doc_path"] = steering_path
 
 
 def _write_conversation_transcript(tool_context=None) -> Dict[str, Any]:
@@ -593,10 +746,18 @@ def _write_conversation_transcript(tool_context=None) -> Dict[str, Any]:
                 lines.append(f"\n{content}\n")
 
     report = "".join(lines)
-    numbered_path = _next_transcript_path(tool_context)
+    # GH issue #345 (same bug as #341's sprint_report_path fix): this is
+    # called unconditionally from both create_sprint_report and
+    # create_release_pr's "land the report on develop" step - without
+    # reusing this sprint's already-allocated path, a 5-sprint run wrote 10
+    # numbered TRANSCRIPT-*.md files instead of 5. The content is still
+    # re-rendered fresh every call (transcript keeps growing through the
+    # sprint), only the destination file path is reused.
+    numbered_path = s.get("transcript_path") or _next_transcript_path(tool_context)
     write_file(numbered_path, report, overwrite=True, tool_context=tool_context)
     latest_path = "specs/reports/TRANSCRIPT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
+    s["transcript_path"] = numbered_path
 
     return {"status": "ok", "path": numbered_path, "latest_path": latest_path, "entries": len(transcript)}
 
@@ -619,6 +780,15 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
     other level (no human review step in that loop), it's auto-prioritized
     "Must" so it can't be silently starved the way the reported failure
     was.
+
+    GH issue #342: only files entries categorized "technical" (see
+    add_retro_action/add_impediment's own `category` param) - a
+    "steering"/"human" finding isn't a code task the team can plan into a
+    sprint, so filing it as an Issue here would just be a different flavor
+    of the same "never actually acted on" failure this function exists to
+    prevent, just for the wrong kind of finding. A missing category (data
+    from before this triage existed) defaults to "technical", preserving
+    the old behavior for pre-existing entries.
     """
     from .requirements import upsert_issue, set_priority
 
@@ -627,6 +797,8 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
         collection = list(tool_context.state.get(collection_name, []))
         for entry in collection:
             if entry.get("issue_id"):
+                continue
+            if entry.get("category", "technical") != "technical":
                 continue
             text = (entry.get(text_field) or "").strip()
             if not text:
@@ -648,30 +820,47 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
 
 def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
     """
-    Deterministic, non-LLM stand-in for create_sprint_report above - the
+    Mechanically-rendered counterpart to create_sprint_report above - the
     other half of the "always a sprint report" guarantee, called only by
     _ensure_sprint_report_on_final_halt_once (agent.py) the moment the
     sprint's token/USD budget is truly exhausted (including its SPRINT
-    CLOSE SEQUENCE grace allowance - see closeout_grace_percent). Unlike
-    create_sprint_report, this takes no summary/accomplishments text to
-    author, since by the time it's called there may be no LLM turn left
+    CLOSE SEQUENCE grace allowance - see closeout_grace_percent). A sprint
+    ending this way is expected, normal behavior, not a failure - the team
+    spent its full budget on the sprint's actual work, and unfinished
+    feature branches are left exactly as they are (this function only ever
+    touches specs/ + .hc/ via integrate_open_changes, never a feature
+    branch - see _ensure_sprint_report_on_final_halt_once's own docstring).
+    Unlike create_sprint_report, this takes no summary/accomplishments text
+    to author, since by the time it's called there may be no LLM turn left
     to author it with at all - it renders purely from what's already
     logged in state (story stages, budget usage, blocked stories, retro/
     impediment entries logged so far).
 
     A real incident: a release PR went out with no sprint report attached
-    at all, because the sprint ran out of budget between Product Owner's
-    create_sprint_report call (which only ever writes the report file
-    locally - see that function's own commit/push notes) and whatever
-    would have committed it. This exists so a report - even a visibly
-    degraded, mechanically-generated one - is always present to commit,
-    regardless of how much of the real SPRINT CLOSE SEQUENCE actually
-    completed.
+    at all, because the sprint ran out of budget between the create_sprint_
+    report call (which only ever writes the report file locally - see that
+    function's own commit/push notes) and whatever would have committed it.
+    This exists so a report - even one rendered mechanically from logged
+    state rather than authored by an agent - is always present to commit,
+    regardless of how much of the SPRINT CLOSE SEQUENCE Scrum Master
+    personally got a turn to run (GH #395: create_sprint_report is Scrum
+    Master's own tool now, not Product Owner's).
 
     If create_sprint_report already succeeded this sprint (state.
-    sprint_report is set), that real, human-authored report is reused
-    as-is - this never overwrites a genuine report with this degraded
-    stand-in, it only ever fills the gap when none exists yet.
+    sprint_report is set), that already-authored report is reused as-is -
+    this never overwrites it with this state-rendered one, it only ever
+    fills the gap when none exists yet.
+
+    create_release_pr also calls this unconditionally to (re-)land the
+    report on develop before opening the PR, regardless of whether it was
+    ever called this sprint before. Without state.sprint_report_path
+    tracking the numbered file this sprint already used, that second call
+    would allocate and write an entirely new SPRINT-REPORT-NNN.md with the
+    exact same (reused) content - a real eval run (0.1.0-run42) showed
+    this exact bug, turning 5 sprints into 12+ numbered report files.
+    Reusing the already-allocated path here instead makes repeat calls
+    within the same sprint idempotent on the file path, not just the
+    text.
 
     Takes no arguments beyond tool_context: there is no free-form path or
     content parameter anywhere in this function for a caller to redirect -
@@ -696,12 +885,15 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
         report = (
             f"# Sprint Review Report\n\n**Generated by {hc_version_line}** "
             f"(Interaction Level: {get_interaction_level()})\n\n"
-            "## ⚠️ Automatically Generated Fallback Report\n"
-            "This sprint's token/USD budget (including its grace allowance to close out the sprint) "
-            "was exhausted before Product Owner could author and close the real sprint report "
-            "(`create_sprint_report`). This mechanical stand-in exists only so a report is always "
-            "present on the release PR - it reflects raw logged state, not a human-authored summary, "
-            "and none of `create_sprint_report`'s own content-completeness gates apply to it.\n\n"
+            "## Mechanically-Rendered Report (Budget Used in Full)\n"
+            "This sprint's token/USD budget was used in full before Scrum Master's own "
+            "`create_sprint_report` call could run - the expected way a sprint ends when the team "
+            "spends its full budget on the sprint's actual work, not a failure. This report is "
+            "rendered mechanically from logged state rather than authored by an agent, so "
+            "`create_sprint_report`'s own content-completeness gates don't apply to it. Any feature "
+            "branches still open at this point were left untouched - "
+            "only this report and already-logged specs/ state were committed - and pick up again next "
+            "sprint.\n\n"
             "## Story Status\n"
         )
         story_lines = 0
@@ -722,6 +914,7 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
             current_spend = budgets.get("current_usd_spend")
             if current_spend is not None:
                 report += f"- Actual USD Spend: ${current_spend:.2f}\n"
+                report += _zero_cost_spend_warning(current_spend, usage.get("total", 0))
 
         blocked_stories = []
         seen_ids = set()
@@ -735,7 +928,7 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
                     continue
                 seen_ids.add(story_id)
                 blocked_stories.append((story_id, item.get("title", story_id), blocked))
-        report += "\n## Open Questions for Stakeholder\n"
+        report += "\n## Open Questions for Stakeholder (Blockers)\n"
         if blocked_stories:
             for story_id, story_title, blocked in blocked_stories:
                 report += (
@@ -750,13 +943,19 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
         report += "\n## Retrospective Actions Logged So Far\n"
         if retro:
             for action in retro:
-                report += f"- {action.get('action')} (Owner: {action.get('owner')}, Status: {action.get('status')})\n"
+                report += (
+                    f"- {action.get('action')} (Owner: {action.get('owner')}, Status: {action.get('status')}, "
+                    f"Category: {action.get('category', 'unset')})\n"
+                )
         else:
             report += "None logged before the budget ran out.\n"
         report += "\n## Impediments Logged So Far\n"
         if impediments:
             for imp in impediments:
-                report += f"- {imp.get('description')} (Owner: {imp.get('owner')}, Status: {imp.get('status')})\n"
+                report += (
+                    f"- {imp.get('description')} (Owner: {imp.get('owner')}, Status: {imp.get('status')}, "
+                    f"Category: {imp.get('category', 'unset')})\n"
+                )
         else:
             report += "None logged before the budget ran out.\n"
 
@@ -767,10 +966,29 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
         # again until a real create_release_pr clears this.
         s["sprint_report_pending_release"] = True
 
-    numbered_path = _next_sprint_report_path(tool_context)
+    # Reuse this sprint's already-allocated numbered path if one exists
+    # (either a prior call to this same function this sprint, or a real
+    # create_sprint_report success) rather than burning a fresh sequence
+    # number on every call - see this function's own docstring above for
+    # the exact duplicate-file bug this avoids.
+    numbered_path = s.get("sprint_report_path") or _next_sprint_report_path(tool_context)
     write_file(numbered_path, report, overwrite=True, tool_context=tool_context)
     latest_path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
+    s["sprint_report_path"] = numbered_path
+    _write_retro_and_steering_docs(s, tool_context)
+    # GH issue #359: same snapshot create_sprint_report takes on a clean
+    # close - a budget-exhausted sprint doesn't get a free pass from ever
+    # needing to discuss a still-unresolved blocker, it just defers the
+    # requirement to the next sprint's real create_sprint_report call.
+    blocked_now = []
+    for collection in (s.get("product_backlog", []) or [], s.get("sprint_backlog", []) or []):
+        for item in collection:
+            if item.get("blocked"):
+                story_id = item.get("id") or item.get("title")
+                if story_id and story_id not in blocked_now:
+                    blocked_now.append(story_id)
+    s["blocked_story_ids_as_of_last_report"] = blocked_now
     return {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
 
 
@@ -779,6 +997,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     Generate a management summary report for the current sprint.
     """
     from .docs import write_file
+    from .scrum import save_state_to_repo
     s = tool_context.state
     budgets = s.get("budgets", {})
     usage = s.get("token_usage", {"total": 0})
@@ -794,7 +1013,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # skipped every single sprint - the prompt said it was mandatory, but
     # nothing actually stopped the sprint from "closing" without it. This
     # is the mechanical backstop: create_sprint_report itself won't
-    # complete without it, forcing an actual hand-off to Scrum Master
+    # complete without it, forcing the retrospective to actually happen
     # rather than a step that's silently optional in practice.
     process_signals = len(retro) + len(impediments)
     baseline = s.get("retro_baseline", 0)
@@ -803,20 +1022,21 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             "status": "error",
             "message": (
                 "Cannot close the sprint report: no new retrospective action or impediment has "
-                "been logged since the last sprint report. Transfer to Scrum Master to actually "
-                "run the retrospective (add_retro_action) or log a real impediment "
-                "(add_impediment) first - see SM_PROMPT's RETROSPECTIVE REASONING - then retry "
-                "create_sprint_report. This is mandatory, not optional."
+                "been logged since the last sprint report. Actually run the retrospective "
+                "(add_retro_action) or log a real impediment (add_impediment) first - see "
+                "SM_PROMPT's RETROSPECTIVE REASONING - then retry create_sprint_report. This is "
+                "mandatory, not optional."
             ),
         }
 
     # ISSUE-0046: same "prompt-only wasn't enough" lesson as the retro gate
-    # right above - QualityGuardian was never once transferred to across
-    # every real eval run so far (nothing in the SPRINT CLOSE SEQUENCE
-    # actually told another agent to hand off to it), so every KPI trend in
-    # every report came back "never computed." Mirrors retro_baseline
-    # exactly: kpi_update_count only increases via a real update_sprint_report
-    # call (tools/quality.py), so this demands a *fresh* one since the last
+    # right above - the former QualityGuardian role (now ScrumMaster, GH
+    # #392) was never once transferred to across every real eval run before
+    # this gate existed (nothing in the SPRINT CLOSE SEQUENCE actually told
+    # another agent to hand off to it), so every KPI trend in every report
+    # came back "never computed." Mirrors retro_baseline exactly:
+    # kpi_update_count only increases via a real update_sprint_report call
+    # (tools/quality.py), so this demands a *fresh* one since the last
     # sprint report, not just "one exists somewhere in history."
     kpi_baseline = s.get("kpi_baseline", 0)
     if s.get("kpi_update_count", 0) <= kpi_baseline:
@@ -824,9 +1044,106 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             "status": "error",
             "message": (
                 "Cannot close the sprint report: no fresh KPI update has been logged since the "
-                "last sprint report. Transfer to QualityGuardian to call calculate_kpis() then "
-                "update_sprint_report(kpis=...) with that returned dict first, then transfer back "
-                "and retry create_sprint_report. This is mandatory, not optional."
+                "last sprint report. Call calculate_kpis() then update_sprint_report(kpis=...) with "
+                "that returned dict first, then retry create_sprint_report. This is mandatory, not "
+                "optional."
+            ),
+        }
+
+    # GH issue #342: if an open "steering"-category retro finding exists
+    # (a role-behavior gap, not a code task - see add_retro_action/
+    # add_impediment's category param), demand a *fresh*
+    # propose_steering_change call since the last sprint report, same
+    # "must be NEW since last time" pattern as retro_baseline/kpi_baseline
+    # right above. Without this, a steering finding could be logged once
+    # and never actually acted on - exactly the failure this whole
+    # category-triage design exists to fix for "technical" findings via
+    # _file_retro_items_as_issues; this is the equivalent backstop for
+    # "steering" findings, which that function deliberately no longer files
+    # as Issues at all.
+    has_open_steering_finding = any(
+        e.get("category") == "steering" and e.get("status", "open") == "open"
+        for e in list(retro) + list(impediments)
+    )
+    if has_open_steering_finding and s.get("steering_proposal_count", 0) <= s.get("steering_baseline", 0):
+        return {
+            "status": "error",
+            "message": (
+                "Cannot close the sprint report: an open 'steering'-category retro finding exists "
+                "with no fresh propose_steering_change call since the last sprint report. Call "
+                "propose_steering_change(role, new_content, rationale) for it first, then retry "
+                "create_sprint_report. This is mandatory, not optional."
+            ),
+        }
+
+    # GH issue #381: the check above only ever fires once a finding is
+    # actually categorized "steering" - a real run (0.1.0-run47) never
+    # assigned that category a single time across 5 sprints, despite
+    # ScrumMaster being nudged at filing time (_technical_category_nudge)
+    # that several of its "technical" findings read like role-behavior/
+    # process-discipline gaps every single time. That nudge is deliberately
+    # non-blocking at filing time (a false positive there costs nothing) -
+    # this is the backstop for when it keeps getting ignored: 2+ open
+    # "technical" findings that still read this way, with no steering
+    # proposal since the last report, is no longer "maybe a false positive",
+    # it's a pattern nobody has acted on.
+    unresolved_role_behavior_findings = [
+        e for e in list(retro) + list(impediments)
+        if e.get("category") == "technical" and e.get("status", "open") == "open"
+        and looks_like_role_behavior_finding(e.get("action") or e.get("description") or "")
+    ]
+    if len(unresolved_role_behavior_findings) >= 2 and s.get("steering_proposal_count", 0) <= s.get("steering_baseline", 0):
+        examples = "; ".join(
+            (e.get("action") or e.get("description") or "")[:80]
+            for e in unresolved_role_behavior_findings[:2]
+        )
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot close the sprint report: {len(unresolved_role_behavior_findings)} retro/"
+                f"impediment findings read like role-behavior/process-discipline gaps (e.g. "
+                f"{examples}) but are filed as category='technical', with no propose_steering_change "
+                "call since the last sprint report. Call propose_steering_change(role, new_content, "
+                "rationale) for the recurring behavior these point at, then retry "
+                "create_sprint_report. This is mandatory, not optional."
+            ),
+        }
+
+    # GH issue #359: a story still BLOCKED now, that was ALSO already
+    # BLOCKED as of the last report (i.e. genuinely unresolved across a
+    # full sprint, not just raised this sprint), must actually be discussed
+    # in the retro - not just silently re-noted in the report's own "Open
+    # Questions for Stakeholder" section again. Mirrors
+    # _sprint_needs_human_this_harness_cannot_provide's "unresolved_across_
+    # sprint" reasoning (run_eval.py, GH issue #336), enforced here in the
+    # product code itself rather than only in the eval harness's stop-early
+    # check. A mention anywhere in retro_actions/impediment_log's full text
+    # history is enough - this isn't demanding a brand-new entry every
+    # single sprint a hard blocker remains genuinely unresolved, just that
+    # it was actually raised as a topic, not silently skipped.
+    currently_blocked_ids = []
+    for collection in (s.get("product_backlog", []) or [], s.get("sprint_backlog", []) or []):
+        for item in collection:
+            if item.get("blocked"):
+                story_id = item.get("id") or item.get("title")
+                if story_id and story_id not in currently_blocked_ids:
+                    currently_blocked_ids.append(story_id)
+    previously_blocked_ids = set(s.get("blocked_story_ids_as_of_last_report", []))
+    unresolved_across_sprint = [sid for sid in currently_blocked_ids if sid in previously_blocked_ids]
+    all_retro_text = " ".join(
+        str(e.get("action") or e.get("description") or "") for e in list(retro) + list(impediments)
+    )
+    undiscussed = [sid for sid in unresolved_across_sprint if sid not in all_retro_text]
+    if undiscussed:
+        plural = len(undiscussed) > 1
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot close the sprint report: {', '.join(undiscussed)} - still BLOCKED since "
+                f"before this sprint - {'have' if plural else 'has'} not been discussed in the "
+                "retrospective. Log a retro action or impediment (add_retro_action/add_impediment) "
+                f"explicitly addressing {'them' if plural else 'it'} before retrying "
+                "create_sprint_report. This is mandatory, not optional."
             ),
         }
 
@@ -843,6 +1160,17 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     product_backlog = s.get("product_backlog", []) or []
     sprint_backlog = s.get("sprint_backlog", []) or []
     claimed_text = " ".join([summary, *accomplishments])
+    accepted_count = sum(
+        1 for item in product_backlog
+        if item.get("type") != "Epic"
+        and "Accepted" in _story_stages_completed(
+            item, next((x for x in sprint_backlog if x.get("id") == item.get("id")), {})
+        )
+    )
+    # Captured BEFORE accepted_count_baseline gets bumped to accepted_count
+    # further down (on success) - reading it after that point would always
+    # compare accepted_count against itself.
+    accepted_count_baseline_before = s.get("accepted_count_baseline", 0)
     overclaimed = []
     for item in product_backlog:
         story_id = item.get("id")
@@ -1002,6 +1330,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         current_spend = budgets.get("current_usd_spend")
         if current_spend is not None:
             report += f"- Actual USD Spend (LiteLLM): ${current_spend:.2f}\n"
+            report += _zero_cost_spend_warning(current_spend, usage.get("total", 0))
         else:
             report += "- Actual USD Spend (LiteLLM): not yet available (no live proxy budget check has run this session)\n"
 
@@ -1038,7 +1367,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             seen_ids.add(story_id)
             blocked_stories.append((story_id, item.get("title", story_id), blocked))
 
-    report += "\n## Open Questions for Stakeholder\n"
+    report += "\n## Open Questions for Stakeholder (Blockers)\n"
     if blocked_stories:
         for story_id, story_title, blocked in blocked_stories:
             report += (
@@ -1053,7 +1382,10 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         if retro:
             for action in retro:
                 issue_note = f", filed as {action['issue_id']}" if action.get("issue_id") else ""
-                report += f"- {action['action']} (Owner: {action['owner']}, Status: {action['status']}{issue_note})\n"
+                report += (
+                    f"- {action['action']} (Owner: {action['owner']}, Status: {action['status']}, "
+                    f"Category: {action.get('category', 'unset')}{issue_note})\n"
+                )
         else:
             # This branch is now only reachable when the mandatory gate above
             # was satisfied by a *new impediment* instead of a retro action -
@@ -1066,7 +1398,10 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         if impediments:
             for imp in impediments:
                 issue_note = f", filed as {imp['issue_id']}" if imp.get("issue_id") else ""
-                report += f"- {imp['description']} (Owner: {imp['owner']}, Status: {imp['status']}{issue_note})\n"
+                report += (
+                    f"- {imp['description']} (Owner: {imp['owner']}, Status: {imp['status']}, "
+                    f"Category: {imp.get('category', 'unset')}{issue_note})\n"
+                )
         else:
             report += "No impediments logged.\n"
     else:
@@ -1092,9 +1427,10 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # (tools/quality.py) but never actually rendered anywhere in the report
     # itself - stored in state.sprint_report_kpis purely for
     # run_eval_analysis.py's cross-sprint trend charts, with no human-visible
-    # counterpart in the document QualityGuardian's own prompt says should
-    # "include the KPI dashboard in the sprint report". Rendered here now
-    # that the gate above guarantees it's fresh for this sprint.
+    # counterpart in the document ScrumMaster's own prompt (formerly
+    # QualityGuardian's, GH #395) says should "include the KPI dashboard in
+    # the sprint report". Rendered here now that the gate above guarantees
+    # it's fresh for this sprint.
     kpis = s.get("sprint_report_kpis") or {}
     if detail == "full":
         report += "\n## KPI Dashboard\n"
@@ -1107,10 +1443,16 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                 report += f"- Say-Do Ratio: {team_effectiveness['say_do_ratio']}\n"
             if team_effectiveness.get("commitment_reliability") is not None:
                 report += f"- Commitment Reliability: {team_effectiveness['commitment_reliability']}\n"
+            elif team_effectiveness.get("commitment_reliability_note"):
+                report += f"- Commitment Reliability: not available ({team_effectiveness['commitment_reliability_note']})\n"
             if result_quality.get("defect_escape_rate") is not None:
                 report += f"- Defect Escape Rate: {result_quality['defect_escape_rate']}\n"
+            elif result_quality.get("defect_escape_rate_note"):
+                report += f"- Defect Escape Rate: not available ({result_quality['defect_escape_rate_note']})\n"
             if result_quality.get("customer_satisfaction") is not None:
                 report += f"- Customer Satisfaction: {result_quality['customer_satisfaction']}\n"
+            elif result_quality.get("customer_satisfaction_note"):
+                report += f"- Customer Satisfaction: not available ({result_quality['customer_satisfaction_note']})\n"
             if maintainability.get("test_coverage_available"):
                 report += (
                     f"- Test Coverage: {maintainability.get('test_coverage')} "
@@ -1195,22 +1537,50 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
         )
 
     s["sprint_report"] = report
-    numbered_path = _next_sprint_report_path(tool_context)
+    # Reuse this sprint's already-allocated numbered path if one exists
+    # (e.g. render_fallback_sprint_report already fired earlier this sprint
+    # via the budget-halt safety net, then the sprint recovered enough
+    # grace for this real report to also succeed) - see
+    # render_fallback_sprint_report's own docstring for the duplicate-file
+    # bug this avoids.
+    numbered_path = s.get("sprint_report_path") or _next_sprint_report_path(tool_context)
     write_file(numbered_path, report, overwrite=True, tool_context=tool_context)
     latest_path = "specs/reports/SPRINT-REPORT-LATEST.md"
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
+    s["sprint_report_path"] = numbered_path
+    _write_retro_and_steering_docs(s, tool_context)
 
     # Snapshot the count that satisfied this sprint's requirement, so next
     # sprint's gate demands something *new* again rather than trivially
     # passing forever on the same old entries.
     s["retro_baseline"] = process_signals
     s["kpi_baseline"] = s.get("kpi_update_count", 0)
+    # GH issue #342: same snapshot pattern - freezes the count that
+    # satisfied this sprint's steering-finding gate (if it fired at all).
+    s["steering_baseline"] = s.get("steering_proposal_count", 0)
+    # GH issue #359: snapshot which stories are BLOCKED as of this
+    # successful close, so next report's gate can tell "blocked before
+    # this sprint started, still blocked now" (genuinely unresolved across
+    # a full sprint) apart from "just raised this sprint".
+    blocked_now = []
+    for collection in (s.get("product_backlog", []) or [], s.get("sprint_backlog", []) or []):
+        for item in collection:
+            if item.get("blocked"):
+                story_id = item.get("id") or item.get("title")
+                if story_id and story_id not in blocked_now:
+                    blocked_now.append(story_id)
+    s["blocked_story_ids_as_of_last_report"] = blocked_now
     # GH issue #246: same snapshot pattern as retro_baseline/kpi_baseline
     # right above - freezes the count that satisfied this sprint's QA
     # "Tested" gate (if it fired at all) so next sprint's gate demands a
     # genuinely fresh Tested transition again, not just the same story that
     # already satisfied it once before.
     s["qa_tested_baseline"] = tested_count
+    # GH issue #390: same snapshot pattern - freezes the Accepted count that
+    # satisfied this sprint's generic-overclaim nudge (see accepted_count
+    # above), so next sprint's nudge demands a genuinely NEW Accepted story
+    # again, not just the same count from a sprint ago.
+    s["accepted_count_baseline"] = accepted_count
 
     # ISSUE-0001: closing this sprint's report "uses up" its human
     # pre-implementation approval - the next sprint's stories can't reach
@@ -1230,7 +1600,42 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # gate refuses further story work until create_release_pr clears this.
     s["sprint_report_pending_release"] = True
 
-    return {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
+    # GH issue #397: every baseline bump above (retro_baseline/kpi_baseline/
+    # steering_baseline/accepted_count_baseline/qa_tested_baseline/
+    # sprint_report_pending_release) previously only ever landed in the live
+    # in-memory session state - this function never persisted them, unlike
+    # nearly every other state-mutating tool (advance_story_stage,
+    # start_sprint, log_story_tokens, ...). A real eval run (0.1.0-
+    # run50) showed the exact failure this causes: if an EARLIER
+    # create_sprint_report attempt was rejected (e.g. the overclaim gate)
+    # and the team went on to do more real work to fix it,
+    # advance_story_stage's own save_state_to_repo calls would commit a
+    # stale .hc/state.json snapshot - baselines still at their pre-close
+    # values, but retro_actions/kpi_update_count already past them. The very
+    # next init_scrum_state() call (it reloads state.json unconditionally
+    # whenever present, and runs at the start of every sprint) then
+    # clobbered the correctly-advanced in-memory baselines with that stale
+    # snapshot, resurrecting a false "sprint_report_step_active" condition
+    # (see helpers.py) that mechanically locked Scrum Master out of every
+    # tool except transfer_to_agent - with nothing for Product Owner to do
+    # in response, the two bounced transfer_to_agent back and forth until
+    # the loop breaker tripped. Saving here, at the exact moment these
+    # fields change, means disk can never again drift behind memory for
+    # them.
+    save_state_to_repo(tool_context)
+
+    result = {"status": "ok", "report": report, "path": numbered_path, "latest_path": latest_path}
+    if accepted_count <= accepted_count_baseline_before:
+        lowered_claim = claimed_text.lower()
+        matched_phrase = next((p for p in _GENERIC_SUCCESS_PHRASES if p in lowered_claim), None)
+        if matched_phrase:
+            result["warning"] = (
+                f"summary/accomplishments reads like a generically positive narrative (contains "
+                f"'{matched_phrase}'), but no story reached Accepted this sprint that wasn't already "
+                "Accepted before it - if nothing concrete actually landed, say so plainly instead of "
+                "a success-sounding summary nobody checked against real state."
+            )
+    return result
 
 def calculate_cost_breakdown(tool_context=None) -> Dict[str, Any]:
     """

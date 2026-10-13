@@ -13,6 +13,13 @@ from agents.scrum_team.helpers import (
     ready_backlog_shortfall,
     closeout_grace_percent,
     closeout_remaining_work_fraction,
+    looks_like_role_behavior_finding,
+    recurring_technical_finding_sprint,
+    current_sprint_phase,
+    SPRINT_PHASES,
+    SPRINT_PHASE_GUIDANCE,
+    new_sprint_item_blocked,
+    ritual_hard_ceiling,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -237,6 +244,252 @@ class TestCloseoutGraceScaling(unittest.TestCase):
         state.sprint_report_pending_release = True
         with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "4"}, clear=True):
             self.assertEqual(closeout_grace_percent(state), 1.0)  # 4 * max(0.25, 0.25)
+
+
+class TestLooksLikeRoleBehaviorFinding(unittest.TestCase):
+    """GH issue #354: heuristic signal for a "technical" finding that
+    actually reads like a role-behavior/process-discipline gap."""
+
+    def test_flags_textbook_steering_candidates_from_the_real_eval_run(self):
+        for text in (
+            "Maintain rigorous story sequencing and ensure all planned stories have acceptance checks recorded promptly",
+            "Keep feature branches synchronized with develop to prevent integration delays",
+            "Ensure all lingering process issues and backlog requirements are completed in strict sequence before final wrap-up",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(looks_like_role_behavior_finding(text))
+
+    def test_does_not_flag_a_genuine_code_task(self):
+        self.assertFalse(looks_like_role_behavior_finding(
+            "Ensure test runner and dependencies are fully configured upfront in conftest.py/pytest.ini for new projects"
+        ))
+
+    def test_flags_a_finding_naming_a_role(self):
+        self.assertTrue(looks_like_role_behavior_finding("QA should run the full suite before marking Tested"))
+
+    def test_non_string_input_is_not_flagged(self):
+        self.assertFalse(looks_like_role_behavior_finding(None))
+
+    def test_flags_process_gating_findings_the_original_phrase_list_missed(self):
+        """GH issue #381: a real run (0.1.0-run47) filed these 3 of 5 retro
+        findings as 'technical' despite reading as team-process reminders -
+        none matched the original phrase list or a role name."""
+        for text in (
+            "Ensure automated tests are fully stable before starting sprint test execution phases",
+            "Recreate clean PRs promptly when merge conflicts arise to avoid stale branch blocking",
+            "Ensure all stories in sprint backlog reach accepted stage before sprint finalization",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(looks_like_role_behavior_finding(text))
+
+    def test_does_not_flag_a_one_off_technical_nitpick(self):
+        """A concrete, one-time code-quality instruction - not a recurring
+        process/behavior gap - should stay unflagged even though it's
+        phrased as an imperative, same as test_does_not_flag_a_genuine_code_task."""
+        self.assertFalse(looks_like_role_behavior_finding(
+            "Ensure test assertions use dynamic IDs correctly from created objects"
+        ))
+
+
+class TestRecurringTechnicalFindingSprint(unittest.TestCase):
+    """GH issue #354: detects a "technical" finding recurring from an
+    earlier, still-unresolved sprint via keyword overlap."""
+
+    def test_no_recurrence_against_an_empty_history(self):
+        self.assertIsNone(recurring_technical_finding_sprint([], "Keep feature branches synchronized with develop", 2, "action"))
+
+    def test_detects_recurrence_from_an_earlier_sprint(self):
+        existing = [{"action": "Keep feature branches synchronized with develop to avoid drift", "category": "technical", "sprint_number": 1}]
+        result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 3, "action")
+        self.assertEqual(result, 1)
+
+    def test_does_not_match_the_same_sprint(self):
+        existing = [{"action": "Keep feature branches synchronized with develop to avoid drift", "category": "technical", "sprint_number": 2}]
+        result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 2, "action")
+        self.assertIsNone(result)
+
+    def test_ignores_non_technical_entries(self):
+        existing = [{"action": "Keep feature branches synchronized with develop to avoid drift", "category": "steering", "sprint_number": 1}]
+        result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 3, "action")
+        self.assertIsNone(result)
+
+    def test_unrelated_findings_do_not_match(self):
+        existing = [{"action": "Update the README with setup instructions", "category": "technical", "sprint_number": 1}]
+        result = recurring_technical_finding_sprint(existing, "Feature branches must stay synchronized with develop", 3, "action")
+        self.assertIsNone(result)
+
+
+class TestCurrentSprintPhase(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #403): current_sprint_phase derives the
+    team's current ritual phase - Conceptual Work -> Plan & Start Sprint ->
+    Development -> Review, Retro & Release - purely from existing state
+    signals, so it can be surfaced proactively (a system-context nudge plus
+    a console-log prefix) instead of the team only finding out reactively,
+    after a mechanically-enforced tool call gets rejected.
+    """
+
+    def _base_state(self, **overrides):
+        state = {
+            "sprint_number": 0,
+            "sprint_backlog_pr_sprint": 0,
+            "product_backlog": [],
+            "sprint_backlog": [],
+            "backlog_scope_complete": False,
+            "sprint_report_pending_release": False,
+            "budgets": {"total": 1000},
+            "token_usage": {"total": 0},
+        }
+        state.update(overrides)
+        return state
+
+    def test_conceptual_work_when_no_sprint_and_backlog_not_ready_sufficient(self):
+        state = self._base_state()
+        self.assertEqual(current_sprint_phase(state), "Conceptual Work")
+
+    def test_plan_and_start_sprint_once_backlog_is_ready_sufficient(self):
+        state = self._base_state(backlog_scope_complete=True)
+        self.assertEqual(current_sprint_phase(state), "Plan & Start Sprint")
+
+    def test_plan_and_start_sprint_while_sprint_started_but_backlog_pr_not_yet_published(self):
+        state = self._base_state(backlog_scope_complete=True, sprint_number=1, sprint_backlog_pr_sprint=0)
+        self.assertEqual(current_sprint_phase(state), "Plan & Start Sprint")
+
+    def test_development_once_backlog_published_and_stories_not_all_accepted(self):
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_backlog=[{"id": "ST-1", "stages_completed": ["Ready", "Implemented"]}],
+        )
+        self.assertEqual(current_sprint_phase(state), "Development")
+
+    def test_review_retro_release_once_every_story_accepted(self):
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_backlog=[{"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}],
+        )
+        self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
+
+    def test_review_retro_release_once_budget_exhausted_even_with_unfinished_stories(self):
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_backlog=[{"id": "ST-1", "stages_completed": ["Ready"]}],
+            budgets={"total": 1000},
+            token_usage={"total": 1000},
+        )
+        self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
+
+    def test_review_retro_release_while_report_done_but_release_still_pending(self):
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_report_pending_release=True,
+        )
+        self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
+
+    def test_epics_are_never_counted_toward_all_accepted(self):
+        """An Epic sitting in sprint_backlog alongside a not-yet-accepted
+        story must not itself cause (or prevent) "every story accepted" -
+        only real stories count."""
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=1,
+            sprint_backlog=[
+                {"id": "EP-1", "type": "Epic", "stages_completed": []},
+                {"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            ],
+        )
+        self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
+
+    def test_every_phase_has_its_own_guidance_text(self):
+        for phase in SPRINT_PHASES:
+            with self.subTest(phase=phase):
+                self.assertIn(phase, SPRINT_PHASE_GUIDANCE)
+                self.assertTrue(SPRINT_PHASE_GUIDANCE[phase])
+
+
+class TestNewSprintItemBlocked(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #401): a real eval run (0.1.0-run52) showed
+    a sprint that finished *cleanly* - every planned story reached Accepted -
+    still let the next sprint start without its release PR ever having been
+    opened, because this gate used to return None the instant no story was
+    left unfinished, regardless of sprint_report_pending_release. That flag
+    alone - not "and stories are unfinished" - is what this gate must key on.
+    """
+
+    def test_not_blocked_when_nothing_is_pending_release(self):
+        state = {"sprint_report_pending_release": False, "sprint_backlog": []}
+        self.assertIsNone(new_sprint_item_blocked(state))
+
+    def test_blocked_when_pending_release_and_stories_unfinished(self):
+        state = {
+            "sprint_report_pending_release": True,
+            "sprint_backlog": [{"id": "ST-1", "stages_completed": ["Ready", "Implemented"]}],
+        }
+        message = new_sprint_item_blocked(state)
+        self.assertIsNotNone(message)
+        self.assertIn("ST-1", message)
+
+    def test_blocked_when_pending_release_even_with_every_story_accepted(self):
+        """The exact gap GH issue #401 closes: a cleanly-finished sprint
+        (nothing left unfinished) must still be blocked until its release
+        PR actually goes out."""
+        state = {
+            "sprint_report_pending_release": True,
+            "sprint_backlog": [{"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}],
+        }
+        message = new_sprint_item_blocked(state)
+        self.assertIsNotNone(message)
+        self.assertIn("create_release_pr", message)
+
+    def test_not_blocked_once_release_pr_opened_and_flag_cleared(self):
+        state = {
+            "sprint_report_pending_release": False,
+            "sprint_backlog": [{"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}],
+        }
+        self.assertIsNone(new_sprint_item_blocked(state))
+
+    def test_epics_are_never_counted_as_unfinished(self):
+        state = {
+            "sprint_report_pending_release": True,
+            "sprint_backlog": [{"id": "EP-1", "type": "Epic", "stages_completed": []}],
+        }
+        message = new_sprint_item_blocked(state)
+        # Still blocked (pending_release alone is enough) but the message
+        # must reflect "every story accepted" phrasing, not list the Epic
+        # as an unfinished story.
+        self.assertIsNotNone(message)
+        self.assertNotIn("EP-1", message)
+
+
+class TestRitualHardCeiling(unittest.TestCase):
+    """
+    Acceptance Criteria (GH #407): the sprint-report-step-active window is
+    uncapped relative to ritual_token_budget, but not literally unbounded -
+    ritual_hard_ceiling is the absolute backstop, default 50% of the main
+    sprint token budget, configurable via RITUAL_HARD_CEILING_PERCENT.
+    """
+
+    def test_defaults_to_fifty_percent_of_the_main_budget(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(ritual_hard_ceiling(1000), 500.0)
+
+    def test_configurable_via_env_var(self):
+        with patch.dict("os.environ", {"RITUAL_HARD_CEILING_PERCENT": "25"}, clear=True):
+            self.assertEqual(ritual_hard_ceiling(1000), 250.0)
+
+    def test_zero_for_a_non_positive_token_limit(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(ritual_hard_ceiling(0), 0.0)
+            self.assertEqual(ritual_hard_ceiling(-5), 0.0)
 
 
 if __name__ == "__main__":

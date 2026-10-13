@@ -23,7 +23,6 @@ from agents.scrum_team.tools.requirements import (
     set_priority,
     update_roadmap,
 )
-from agents.scrum_team.tools.budget import reset_sprint_budget
 from agents.scrum_team.state import ScrumState
 from agents.scrum_team.tools.base import _hc_version
 
@@ -187,10 +186,10 @@ class TestScrumTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        story = {"id": "ST-1", "title": "New Story", "status": "new", "priority": "medium"}
+        story = {"id": "ST-1", "title": "New Story", "status": "new", "priority": "Should"}
         tool_context.state["product_backlog"] = [story]
-        set_priority("ST-1", "high", tool_context=tool_context)
-        self.assertEqual(tool_context.state["product_backlog"][0]["priority"], "high")
+        set_priority("ST-1", "Must", tool_context=tool_context)
+        self.assertEqual(tool_context.state["product_backlog"][0]["priority"], "Must")
 
     def test_add_impediment(self):
         """
@@ -199,7 +198,7 @@ class TestScrumTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        add_impediment("This is an impediment", "ScrumMaster", tool_context=tool_context)
+        add_impediment("This is an impediment", "ScrumMaster", category="technical", tool_context=tool_context)
         self.assertEqual(tool_context.state["impediment_log"][0]["description"], "This is an impediment")
 
     def test_add_retro_action(self):
@@ -209,7 +208,7 @@ class TestScrumTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        add_retro_action("Improve testing", "ScrumMaster", "CI passes", tool_context=tool_context)
+        add_retro_action("Improve testing", "ScrumMaster", "CI passes", category="technical", tool_context=tool_context)
         self.assertEqual(tool_context.state["retro_actions"][0]["action"], "Improve testing")
 
     def test_add_impediment_rejects_generic_placeholder_text(self):
@@ -219,7 +218,7 @@ class TestScrumTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        result = add_impediment("stuff", "ScrumMaster", tool_context=tool_context)
+        result = add_impediment("stuff", "ScrumMaster", category="technical", tool_context=tool_context)
         self.assertEqual(result["status"], "error")
         self.assertEqual(tool_context.state["impediment_log"], [])
 
@@ -227,9 +226,97 @@ class TestScrumTools(unittest.TestCase):
         """Acceptance Criteria (ISSUE-0009): same guard for retro actions."""
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
-        result = add_retro_action("communicate better", "ScrumMaster", "n/a", tool_context=tool_context)
+        result = add_retro_action("communicate better", "ScrumMaster", "n/a", category="technical", tool_context=tool_context)
         self.assertEqual(result["status"], "error")
         self.assertEqual(tool_context.state["retro_actions"], [])
+
+    def test_add_impediment_rejects_unknown_category(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_impediment("A real concrete impediment", "ScrumMaster", category="bogus", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("category", result["message"])
+
+    def test_add_retro_action_rejects_unknown_priority(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action(
+            "Improve testing", "ScrumMaster", "CI passes", category="technical", priority="urgent", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("priority", result["message"])
+
+    def test_steering_category_does_not_raise_a_general_blocker(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        add_retro_action("QA keeps skipping local test runs", "QA", "0 skipped test runs", category="steering", tool_context=tool_context)
+        self.assertEqual(tool_context.state["general_blockers"], [])
+
+    def test_human_category_raises_a_general_blocker(self):
+        """GH issue #342: a 'human' category finding is genuinely outside
+        the team's own authority - immediately raised as a general_blockers
+        entry, not tied to any one story."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.agent_name = "ScrumMaster"
+        add_impediment(
+            "Need a product decision on which auth provider to standardize on",
+            "ProductOwner", category="human", priority="high", tool_context=tool_context,
+        )
+        self.assertEqual(len(tool_context.state["general_blockers"]), 1)
+        blocker = tool_context.state["general_blockers"][0]
+        self.assertEqual(blocker["priority"], "high")
+        self.assertFalse(blocker["resolved"])
+        self.assertEqual(blocker["raised_by"], "ScrumMaster")
+        self.assertEqual(len(tool_context.state["blocking_interactions"]), 1)
+        self.assertEqual(tool_context.state["blocking_interactions"][0]["kind"], "general_blocker")
+
+    def test_technical_finding_that_reads_like_role_behavior_gets_a_warning(self):
+        """GH issue #354: a non-blocking nudge when a "technical" finding's
+        text matches role-behavior/process-discipline signal phrases."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action(
+            "Keep feature branches synchronized with develop to prevent integration delays",
+            "DevTeam", "No stale branches at sprint end", category="technical", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("steering", result["warning"])
+
+    def test_technical_finding_with_no_signal_gets_no_warning(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action("Improve testing", "ScrumMaster", "CI passes", category="technical", tool_context=tool_context)
+        self.assertNotIn("warning", result)
+
+    def test_steering_category_never_gets_the_technical_nudge(self):
+        """The nudge only applies to category="technical" - a finding
+        already correctly categorized "steering" has nothing to warn about."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action(
+            "Keep feature branches synchronized with develop to prevent integration delays",
+            "DevTeam", "No stale branches at sprint end", category="steering", tool_context=tool_context,
+        )
+        self.assertNotIn("warning", result)
+
+    def test_impediment_recurring_from_an_earlier_sprint_gets_a_stronger_warning(self):
+        """GH issue #354: a "technical" finding sharing real substance with
+        an earlier sprint's still-unresolved "technical" finding is flagged
+        even when its own text doesn't match the role-behavior phrase list."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["impediment_log"] = [
+            {"description": "Dependency pinning keeps lagging behind upstream security releases",
+             "owner": "Architect", "status": "open", "category": "technical", "sprint_number": 1},
+        ]
+        tool_context.state["sprint_number"] = 3
+        result = add_impediment(
+            "Dependency pinning still lags behind upstream security releases again this sprint",
+            "Architect", category="technical", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("sprint 1", result["warning"])
 
     def test_record_human_approval(self):
         """
@@ -407,6 +494,35 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tool_context.state["sprint_goal"], "Ship the Heinzelmann control-server MVP")
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    def test_start_sprint_sweeps_dangling_open_changes_before_returning(self, mock_integrate):
+        """
+        Acceptance Criteria (GH eval run41): a dangling uncommitted specs/
+        .hc write left over from the previous sprint's close-out used to
+        just sit in the working tree until the first checkout of the new
+        sprint happened to trip over it ("local changes would be
+        overwritten"). start_sprint now sweeps it immediately, so the new
+        sprint actually starts from a clean working copy.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = start_sprint("Ship the Heinzelmann control-server MVP", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        mock_integrate.assert_called_once_with(tool_context)
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", side_effect=RuntimeError("git hiccup"))
+    def test_start_sprint_still_succeeds_if_the_sweep_itself_fails(self, mock_integrate):
+        """Best-effort: a git hiccup unrelated to the sprint-start gates
+        above must never block a sprint from actually starting."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = start_sprint("Ship the Heinzelmann control-server MVP", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
     def test_start_sprint_rejects_blank_or_placeholder_goal(self):
         """Acceptance Criteria (ISSUE-0011): mirrors is_low_quality_retro_text's guard."""
         tool_context = MagicMock()
@@ -444,6 +560,25 @@ class TestScrumTools(unittest.TestCase):
         result = start_sprint("Ship the next increment", tool_context=tool_context)
         self.assertEqual(result["status"], "ok")
 
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    def test_start_sprint_rejects_new_work_while_release_pending_even_if_every_story_accepted(self, mock_md):
+        """GH issue #401: a real eval run (0.1.0-run52) showed a sprint that
+        finished cleanly - every story Accepted - still let the next sprint
+        start without ever opening a release PR, because this gate used to
+        stop blocking the instant nothing was left unfinished."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_report_pending_release"] = True
+        tool_context.state["sprint_backlog"] = [
+            {"id": "ST-1", "title": "Old Story", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}
+        ]
+
+        result = start_sprint("Ship the next increment", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("create_release_pr", result["message"])
+        self.assertEqual(tool_context.state["sprint_goal"], "")
+
     @patch("agents.scrum_team.tools.github.release_pr_still_open")
     @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
     def test_start_sprint_rejects_when_previous_release_pr_still_open(self, mock_md, mock_pr_open):
@@ -463,7 +598,6 @@ class TestScrumTools(unittest.TestCase):
         # start_sprint's own "not the first sprint" guard).
         mock_pr_open.return_value = False
         start_sprint("Ship the first increment", tool_context=tool_context)
-        reset_sprint_budget(tool_context=tool_context)
 
         mock_pr_open.return_value = True
         result = start_sprint("Ship the second increment", tool_context=tool_context)
@@ -493,8 +627,8 @@ class TestScrumTools(unittest.TestCase):
     def test_first_sprint_needs_no_budget_reset(self):
         """
         Acceptance Criteria (GH issue #110): the very first sprint has no
-        previous sprint's leftover token usage to clear, so it must not be
-        blocked just because reset_sprint_budget was never called.
+        previous sprint's leftover token usage to clear, so start_sprint
+        must not even attempt a reset (there's nothing to reset yet).
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
@@ -504,56 +638,50 @@ class TestScrumTools(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
-    def test_second_sprint_without_reset_is_refused(self):
+    def test_second_sprint_mechanically_resets_the_budget_with_no_separate_call(self):
         """
-        Acceptance Criteria (GH issue #110): reset_sprint_budget() is
-        "MANDATORY" only in SM_PROMPT's text - nothing in code checked
-        whether it actually ran before a new sprint started, so a forgotten
-        call silently carried over the previous sprint's token usage. A
-        second (or later) sprint must now be refused unless a fresh
-        reset_sprint_budget() call happened since the previous one started.
+        Acceptance Criteria (GH issues #110, #413): reset_sprint_budget()
+        used to be a separate tool call "MANDATORY" only in SM_PROMPT's
+        text - nothing in code checked whether it actually ran, so a
+        forgotten call silently carried over the previous sprint's token
+        usage, and a real eval run (0.1.0-run53) separately showed the
+        harness's own equivalent reset drifting out of sync with the real
+        sprint boundary. start_sprint itself now resets the budget (and its
+        sibling guard flags/sprint_report/sprint_report_kpis) mechanically,
+        for every sprint after the first - no separate call, and nothing to
+        forget.
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         start_sprint("Ship the first increment", tool_context=tool_context)
         tool_context.state["token_usage"] = {"total": 950_000, "agents": {"DevTeam": 950_000}}
-
-        result = start_sprint("Ship the second increment", tool_context=tool_context)
-
-        self.assertEqual(result["status"], "error")
-        self.assertIn("reset_sprint_budget", result["message"])
-        # Refused: sprint_goal and the leftover usage must be unchanged.
-        self.assertEqual(tool_context.state["sprint_goal"], "Ship the first increment")
-        self.assertEqual(tool_context.state["token_usage"]["total"], 950_000)
-
-    def test_second_sprint_after_reset_succeeds(self):
-        tool_context = MagicMock()
-        tool_context.state = ScrumState().model_dump()
-        start_sprint("Ship the first increment", tool_context=tool_context)
-        tool_context.state["token_usage"] = {"total": 950_000, "agents": {"DevTeam": 950_000}}
-
-        reset_result = reset_sprint_budget(tool_context=tool_context)
-        self.assertEqual(reset_result["status"], "ok")
-        self.assertEqual(tool_context.state["token_usage"]["total"], 0)
+        tool_context.state["sprint_report"] = "Sprint 1 report content"
+        tool_context.state["sprint_report_kpis"] = {"velocity": 3}
+        tool_context.state["critical_halt_notified"] = True
 
         result = start_sprint("Ship the second increment", tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tool_context.state["sprint_goal"], "Ship the second increment")
+        self.assertEqual(tool_context.state["token_usage"], {"total": 0, "agents": {}})
+        self.assertEqual(tool_context.state["sprint_report"], "")
+        self.assertEqual(tool_context.state["sprint_report_kpis"], {})
+        self.assertFalse(tool_context.state["critical_halt_notified"])
 
-    def test_reset_required_again_before_a_third_sprint(self):
-        """The reset is consumed by each start_sprint call - it doesn't
-        carry forward as a standing "always allowed" state."""
+    def test_third_sprint_also_resets_mechanically(self):
+        """The mechanical reset applies to every sprint after the first,
+        not just the second - no standing "already reset, skip it from now
+        on" state."""
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         start_sprint("Ship the first increment", tool_context=tool_context)
-        reset_sprint_budget(tool_context=tool_context)
         start_sprint("Ship the second increment", tool_context=tool_context)
+        tool_context.state["token_usage"] = {"total": 500_000, "agents": {}}
 
         result = start_sprint("Ship the third increment", tool_context=tool_context)
 
-        self.assertEqual(result["status"], "error")
-        self.assertIn("reset_sprint_budget", result["message"])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["token_usage"], {"total": 0, "agents": {}})
 
 
 class TestSyncBudgetsFromEnv(unittest.TestCase):
@@ -680,6 +808,112 @@ class TestInitScrumStateCorruptionSurfacing(unittest.TestCase):
 
         self.assertFalse(result["state_json_corrupted"])
         self.assertNotIn("state_json_corrupted", tool_context.state)
+
+
+class TestInitScrumStateReloadRegression(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #423): a real eval run (0.1.0-run56) had
+    ScrumMaster call init_scrum_state() again at the start of Sprint 2 (it's
+    available to every role, not just invoked automatically once by
+    ensure_state_initialized_callback) - the "load from repo" step used to
+    run unconditionally every call, and a stale .hc/state.json on disk
+    wholesale-overwrote three stories' already-Accepted progress back down
+    to Draft/Ready, cascading into a spurious ordering-gate block and a
+    transfer-loop stop.
+    """
+
+    def setUp(self):
+        self.test_repo = Path("test_repo_init_scrum_state_reload_regression")
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        self.test_repo.mkdir(exist_ok=True)
+        subprocess.run(["git", "init", "-q"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=self.test_repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=self.test_repo, check=True)
+
+        self.old_internal_path = os.environ.get("INTERNAL_STATE_REPO_PATH")
+        if "INTERNAL_STATE_REPO_PATH" in os.environ:
+            del os.environ["INTERNAL_STATE_REPO_PATH"]
+        os.environ["STATE_REPO_PATH"] = str(self.test_repo.absolute())
+
+    def tearDown(self):
+        if self.test_repo.exists():
+            shutil.rmtree(self.test_repo)
+        if "STATE_REPO_PATH" in os.environ:
+            del os.environ["STATE_REPO_PATH"]
+        if self.old_internal_path:
+            os.environ["INTERNAL_STATE_REPO_PATH"] = self.old_internal_path
+
+    def _write_stale_state_json(self):
+        """Persists a product_backlog where the one story is still stuck at
+        Draft/Ready - standing in for a .hc/state.json on disk that lags
+        behind a live session's own in-memory progress."""
+        stale_context = MagicMock()
+        stale_context.state = {
+            "product_backlog": [
+                {"id": "US-0001", "title": "Stale story", "stages_completed": ["Draft", "Ready"]},
+            ],
+        }
+        save_state_to_repo(tool_context=stale_context)
+
+    def test_second_call_does_not_reload_stale_state_from_disk(self):
+        self._write_stale_state_json()
+
+        tool_context = MagicMock()
+        # Live session already past its first init, and has genuinely
+        # advanced US-0001 to Accepted since then - the disk snapshot above
+        # was never re-saved to reflect that.
+        tool_context.state = {
+            "_state_auto_initialized": True,
+            "product_backlog": [
+                {"id": "US-0001", "title": "Stale story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            ],
+        }
+        result = init_scrum_state(tool_context=tool_context)
+
+        self.assertFalse(result["reloaded_from_disk"])
+        self.assertTrue(result["already_initialized"])
+        self.assertEqual(
+            tool_context.state["product_backlog"][0]["stages_completed"],
+            ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"],
+        )
+
+    def test_force_true_reloads_even_when_already_initialized(self):
+        self._write_stale_state_json()
+
+        tool_context = MagicMock()
+        tool_context.state = {
+            "_state_auto_initialized": True,
+            "product_backlog": [
+                {"id": "US-0001", "title": "Stale story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            ],
+        }
+        result = init_scrum_state(tool_context=tool_context, force=True)
+
+        self.assertTrue(result["reloaded_from_disk"])
+        self.assertEqual(
+            tool_context.state["product_backlog"][0]["stages_completed"],
+            ["Draft", "Ready"],
+        )
+
+    def test_first_call_this_session_still_loads_persisted_state(self):
+        """Regression safety: a genuinely first-ever init (e.g. after a real
+        process restart, with no _state_auto_initialized flag yet) must
+        still pick up whatever was last persisted - this fix only skips the
+        reload once a session is already warm, never on its own first call.
+        """
+        self._write_stale_state_json()
+
+        tool_context = MagicMock()
+        tool_context.state = {}
+        result = init_scrum_state(tool_context=tool_context)
+
+        self.assertTrue(result["reloaded_from_disk"])
+        self.assertFalse(result["already_initialized"])
+        self.assertEqual(
+            tool_context.state["product_backlog"][0]["stages_completed"],
+            ["Draft", "Ready"],
+        )
 
 
 if __name__ == "__main__":

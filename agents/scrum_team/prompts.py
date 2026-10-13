@@ -45,7 +45,7 @@ _SPEC_TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "spec-templates"
 # (IMPLEMENTED/REVIEWED/TESTED/ACCEPTED): the roles actually "involved in
 # the realisation of the tasks" (implementing, reviewing, testing, and
 # accepting the resulting increment), not the roles that only facilitate
-# or report on it (ScrumMaster, QualityGuardian) or only route (Orchestrator).
+# or report on it (ScrumMaster) or only route (Orchestrator).
 DOD_ROLES = ("DevTeam", "Architect", "QA", "ProductOwner")
 
 # Roles that need the Definition of Ready in their own prompt, verbatim -
@@ -68,7 +68,6 @@ ROLE_NAMES = (
     "DevTeam",
     "QA",
     "Architect",
-    "QualityGuardian",
 )
 
 
@@ -149,7 +148,6 @@ SM_PROMPT = _load_role_prompt("ScrumMaster")
 DEV_PROMPT = _load_role_prompt("DevTeam")
 QA_PROMPT = _load_role_prompt("QA")
 ARCH_PROMPT = _load_role_prompt("Architect")
-QUALITY_GUARDIAN_PROMPT = _load_role_prompt("QualityGuardian")
 
 # Convenience lookup by role name, for anything that needs a role's static
 # prompt text without re-deriving which constant belongs to which role
@@ -165,5 +163,4 @@ ROLE_PROMPT_TEXT = {
     "DevTeam": DEV_PROMPT,
     "QA": QA_PROMPT,
     "Architect": ARCH_PROMPT,
-    "QualityGuardian": QUALITY_GUARDIAN_PROMPT,
 }
