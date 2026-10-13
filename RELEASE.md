@@ -1405,6 +1405,27 @@ that it now covers, committing and pushing the fix to `develop`. Called from
 - cheap/idempotent, and best-effort: never blocks session startup if the repo isn't
 configured yet or the healing itself fails for any reason.
 
+### The harness no longer aborts a run whose sprint actually closed out cleanly via the host-side report backstop (GH issue #431)
+
+A real eval run (0.1.0-run60) stopped after just one sprint, reporting "a sprint hit a
+critical token/USD budget halt with no clean close-out afterward" - even though Sprint 1's
+report genuinely existed (a mechanical fallback) and its release PR had actually merged.
+Hitting the per-sprint token budget is expected; the run should have continued normally.
+
+`_sprint_should_abort_run` treated `stop_reason == "sprint_report_produced"` as the only
+accepted proof a report exists - but `_run_one_sprint` has a second, legitimate path that
+also produces one: a host-side backstop right after the per-sprint loop (see its own comment
+citing eval-run41) exists precisely so a report always gets produced even when the harness's
+own `max_events`/`max_duration` cap, not the in-session budget grace, ends the sprint first.
+That path genuinely populates `sprint_report`, but never revises `stop_reason` away from
+whatever the per-sprint loop already set (`"max_events_reached"` here) - rewriting a reason
+that was already true isn't its job. Checking the `stop_reason` string missed this case
+entirely.
+
+Now checks `bool(sprint_result.get("sprint_report"))` directly instead - a strict superset of
+the old check, since `stop_reason` is only ever set to `"sprint_report_produced"` right after
+`sprint_report` itself is populated, never the other way around.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

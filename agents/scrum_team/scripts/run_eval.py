@@ -426,9 +426,29 @@ def _sprint_should_abort_run(sprint_result: dict) -> bool:
     progress. Requires sprint_report_pending_release to also already be
     False - true proof the release actually went out, not just that a
     report was authored at some point.
+
+    GH issue (0.1.0-run60): checking the stop_reason STRING, rather than
+    whether a report actually exists, missed a real "clean closeout" case
+    and aborted an otherwise-healthy run after just one sprint.
+    _run_one_sprint's own host-side backstop (this file, right after the
+    per-sprint loop: "if not sprint_report and
+    session.state.get('critical_halt_notified')...") exists precisely so a
+    report always gets produced even when the harness's own max_events/
+    max_duration cap - not the in-session budget grace - is what ends the
+    sprint first (see that backstop's own docstring, GH issue eval-run41).
+    That path genuinely populates sprint_result["sprint_report"] - a real
+    run confirmed both the fallback report AND its release PR actually
+    went out - but never revises stop_reason away from whatever the
+    per-sprint loop already set ("max_events_reached" here), since
+    rewriting a reason that was already true (the loop really did exit
+    that way) isn't this backstop's job. Checking sprint_report directly
+    is a strict superset of the old stop_reason check (stop_reason is
+    only ever set to "sprint_report_produced" right after sprint_report
+    itself is populated - never the other way around), so this also
+    covers every case the old check already handled correctly.
     """
     return bool(sprint_result["critical_halt"]) and not (
-        sprint_result["stop_reason"] == "sprint_report_produced"
+        bool(sprint_result.get("sprint_report"))
         and not sprint_result.get("sprint_report_pending_release")
     )
 
