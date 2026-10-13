@@ -46,6 +46,25 @@ class TestAgent(unittest.TestCase):
         self.assertIsInstance(architect, LlmAgent)
         self.assertIsInstance(root_agent, LlmAgent)
 
+    def test_init_scrum_state_is_not_an_agent_callable_tool(self):
+        """
+        ISSUE-0052: init_scrum_state must never be directly callable by any
+        role - the mechanical ensure_state_initialized_callback already
+        guarantees it runs exactly once per session, correctly, before any
+        agent's first real turn, so no role ever legitimately needs to call
+        it itself. Exposing it as a tool let an agent re-trigger a reload
+        mid-session (optionally with force=True), silently overwriting
+        richer live progress with a stale on-disk .hc/state.json snapshot
+        (0.1.0-run56/GH #423, recurring in 0.1.0-run61). A structural test
+        so this can't silently regress by someone re-adding it to a tool
+        list later.
+        """
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, root_agent):
+            self.assertNotIn(
+                agent_module.init_scrum_state, agent.tools,
+                f"{agent.name} must not have init_scrum_state as a directly-callable tool",
+            )
+
     def test_budget_callbacks(self):
         # Create a mock callback context
         mock_context = MagicMock()

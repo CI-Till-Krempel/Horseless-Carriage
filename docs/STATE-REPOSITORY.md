@@ -73,3 +73,11 @@ script runs before the agent/container even exist, so it has no LLM access) - re
 usable checkpoint anywhere in git history, delete state.json and start fresh, or leave it as-is (and
 let the Orchestrator attempt an LLM-assisted repair once you do start a session). Non-interactive
 runs (CI, `doctor.py`) are unaffected - they still just report the failure.
+
+A fourth, last-resort option rebuilds state.json from whatever `specs/` already has on disk instead -
+re-deriving stories/epics/issues, the PRD's vision/goals, and the architecture vision doc straight from
+those markdown files (`agents/scrum_team/scripts/rebuild_state_from_specs.py`), for when neither a git
+checkpoint nor starting fresh actually gets you anywhere (e.g. `specs/` is further along than any
+`.hc/state.json` you have a checkpoint for). This is deliberately only reachable from this script, not
+as an agent tool - see ISSUE-0052 for why `init_scrum_state()`'s own equivalent rebuild step is no
+longer something any role can trigger mid-session.
