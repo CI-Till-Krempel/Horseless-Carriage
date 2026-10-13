@@ -88,16 +88,22 @@ def compose_project_args(context: str, repo_root: Optional[Path] = None) -> list
     return ["-p", f"{prefix}-{context}"]
 
 
-def compose_running_services(compose_args: list) -> list:
+def compose_running_services(compose_args: list, cwd: Optional[Path] = None) -> list:
     """Names of services with at least one running container for the
-    compose project resolved from compose_args + the current directory -
-    via `docker compose <compose_args> ps --status running`. Empty if
-    nothing is running, docker/compose isn't available, or the check
-    itself fails for any reason - this is a best-effort diagnostic, never
-    a hard gate on actually starting the stack."""
+    compose project resolved from compose_args + cwd (defaults to the
+    current directory, matching every caller's own os.chdir()'d-to-repo-
+    root invariant) - via `docker compose <compose_args> ps --status
+    running`. Empty if nothing is running, docker/compose isn't available,
+    or the check itself fails for any reason - this is a best-effort
+    diagnostic, never a hard gate on actually starting the stack.
+
+    GH issue #310: dashboard.py is the one caller that genuinely needs an
+    explicit cwd - it checks several *different* projects' stacks in the
+    same process (no single repo-root chdir applies), one right after
+    another."""
     cmd = ["docker", "compose", *compose_args, "ps", "--status", "running", "--format", "json"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=cwd)
     except Exception:
         return []
     if result.returncode != 0 or not result.stdout.strip():

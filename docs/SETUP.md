@@ -49,6 +49,36 @@ If you've already added the submodule yourself
 (`git submodule add <this-repo-url> horseless-carriage`, run from inside your project), skip
 `--target-repo` and just run `python3 new_project.py` from inside that submodule directory.
 
+## Viewing every installed project: `dashboard.py` (GH issue #310)
+
+`new_project.py` registers every project it installs into `~/.horseless-carriage/projects.json` -
+a machine-wide list, independent of which project's directory you happen to be in. `dashboard.py`
+is a small always-on local web page listing all of them:
+
+```bash
+python3 dashboard.py       # http://127.0.0.1:8899 by default - change with --port/--bind-host
+```
+
+Per project: name, config mode (local/cloud), **state** - derived from whether that project's own
+docker stack is currently running, and whether its cached `.hc/state.json` has any
+`blocking_interactions` logged (not a new field the agent loop has to maintain):
+
+| State | Meaning |
+|---|---|
+| `resting` | Stack isn't running right now. |
+| `working` | Stack is running, no blocking question/approval outstanding. |
+| `waiting for confirmation` | Stack is running, but there's a logged blocking interaction to resolve. |
+
+...plus interaction level, sprint goal, budget (from the same cached `.hc/state.json` - not a live
+LiteLLM proxy poll, so a stopped project's numbers are its last-known state, not real-time), and
+product version (that project's own `VERSION` file, falling back to `git describe`). Start/stop a
+project's stack right from the page - the dashboard itself is the only thing that runs
+continuously; it never keeps every registered project's containers up by default.
+
+Like the ADK web UI/LiteLLM proxy (GH issue #239), this has **no authentication in front of it** -
+binds to `127.0.0.1` by default for the same reason. Don't set `--bind-host 0.0.0.0` on a network
+you don't trust.
+
 ## 1. Guided LLM/project setup: `setup_llm.py`
 
 ```bash
