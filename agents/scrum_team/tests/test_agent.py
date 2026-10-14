@@ -2575,7 +2575,14 @@ class TestRestrictToSprintReportStep(unittest.TestCase):
         tool = BaseTool(name="write_file", description="Write a file.")
         tool_context = MagicMock()
         tool_context.agent_name = "DevTeam"
-        tool_context.state = self._active_state()
+        # Development-phase shape (ISSUE-0057's phase gate otherwise refuses
+        # write_file outside it, unrelated to what this test is actually
+        # about - _restrict_to_sprint_report_step's role scoping).
+        state = self._active_state()
+        state["sprint_number"] = 1
+        state["sprint_backlog_pr_sprint"] = 1
+        state["sprint_backlog"] = [{"id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready"]}]
+        tool_context.state = state
 
         result = log_tool_invocation_callback(tool, {"path": "x.py", "content": "y"}, tool_context)
 
@@ -3353,3 +3360,174 @@ class TestPatchedAdkAcompletion(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def _state_for_phase(phase):
+    """Constructs a real ScrumState dict that current_sprint_phase derives
+    the given phase from - see TestPhaseAwarenessInjectionCallback above for
+    the Conceptual Work/Plan & Start Sprint shapes this mirrors."""
+    state = ScrumState().model_dump()
+    if phase == "Conceptual Work":
+        return state
+    state["backlog_scope_complete"] = True
+    if phase == "Plan & Start Sprint":
+        return state
+    state["sprint_number"] = 1
+    state["sprint_backlog_pr_sprint"] = 1
+    if phase == "Development":
+        state["sprint_backlog"] = [{
+            "id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready"],
+        }]
+        return state
+    if phase == "Review, Retro & Release":
+        state["sprint_backlog"] = [{
+            "id": "US-0001", "type": "User Story",
+            "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"],
+        }]
+        return state
+    raise ValueError(f"unknown phase {phase!r}")
+
+
+class TestDetectPhaseViolation(unittest.TestCase):
+    """
+    Acceptance Criteria (ISSUE-0057): sprint-phase awareness is no longer
+    nudge-only - a tool shaped for a different phase is refused, with an
+    immediate identical retry let through and logged as an explicit
+    override (never a silent, unrecoverable second gate).
+    """
+
+    def _call(self, tool_name, args, phase, agent_name="DevTeam"):
+        tool = BaseTool(name=tool_name, description="test tool")
+        tool_context = MagicMock()
+        tool_context.agent_name = agent_name
+        tool_context.state = _state_for_phase(phase)
+        return log_tool_invocation_callback(tool, args, tool_context), tool_context
+
+    def test_blocks_implementation_tool_outside_development(self):
+        result, _ = self._call("write_file", {"path": "app.py", "content": "x"}, "Conceptual Work")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("write_file", result["message"])
+        self.assertIn("Conceptual Work", result["message"])
+
+    def test_allows_implementation_tool_during_development(self):
+        result, _ = self._call("write_file", {"path": "app.py", "content": "x"}, "Development")
+
+        self.assertIsNone(result)
+
+    def test_blocks_planning_tool_outside_conceptual_or_plan_phases(self):
+        result, _ = self._call("upsert_story", {"title_or_id": "US-0002"}, "Development")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+
+    def test_allows_planning_tool_during_conceptual_work(self):
+        result, _ = self._call("upsert_story", {"title_or_id": "US-0002"}, "Conceptual Work")
+
+        self.assertIsNone(result)
+
+    def test_allows_planning_tool_during_plan_and_start_sprint(self):
+        result, _ = self._call("upsert_story", {"title_or_id": "US-0002"}, "Plan & Start Sprint")
+
+        self.assertIsNone(result)
+
+    def test_never_blocks_a_closing_ritual_tool_regardless_of_phase(self):
+        """
+        Deliberately never phase-gated: ScrumMaster's closing ritual
+        (create_sprint_report, etc.) is already governed by its own,
+        separately-tested machinery (check_cost_budget_callback's SPRINT
+        CLOSE SEQUENCE grace, critical-halt handling) that can correctly
+        trigger it before current_sprint_phase's own simpler classification
+        agrees the team has reached "Review, Retro & Release" - e.g. a
+        critical budget halt mid-Development. Gating it here too would
+        fight that existing system instead of complementing it.
+        """
+        result, _ = self._call("create_sprint_report", {"summary": "x"}, "Development")
+
+        self.assertIsNone(result)
+
+    def test_never_blocks_transfer_to_agent(self):
+        result, _ = self._call("transfer_to_agent", {"agent_name": "ProductOwner"}, "Conceptual Work")
+
+        self.assertIsNone(result)
+
+    def test_never_blocks_an_always_allowed_tool(self):
+        result, _ = self._call("log_decision", {"title": "x", "decision": "y"}, "Conceptual Work")
+
+        self.assertIsNone(result)
+
+    def test_never_blocks_an_unbucketed_tool(self):
+        """A tool name this gate doesn't recognize at all must fail open,
+        not become an accidental blocker on every phase."""
+        result, _ = self._call("some_future_tool_not_in_the_policy", {}, "Conceptual Work")
+
+        self.assertIsNone(result)
+
+    def test_advance_story_stage_ready_allowed_during_conceptual_work(self):
+        result, _ = self._call("advance_story_stage", {"title_or_id": "US-0001", "stage": "Ready"}, "Conceptual Work")
+
+        self.assertIsNone(result)
+
+    def test_advance_story_stage_implemented_blocked_during_conceptual_work(self):
+        result, _ = self._call("advance_story_stage", {"title_or_id": "US-0001", "stage": "Implemented"}, "Conceptual Work")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+
+    def test_advance_story_stage_implemented_allowed_during_development(self):
+        result, _ = self._call("advance_story_stage", {"title_or_id": "US-0001", "stage": "Implemented"}, "Development")
+
+        self.assertIsNone(result)
+
+    def test_advance_story_stage_accepted_allowed_during_development(self):
+        """Finishing one story mid-sprint before the next starts is routine
+        Development-phase work, not just a closing-phase action."""
+        result, _ = self._call("advance_story_stage", {"title_or_id": "US-0001", "stage": "Accepted"}, "Development")
+
+        self.assertIsNone(result)
+
+    def test_advance_story_stage_accepted_allowed_during_review_retro_release(self):
+        result, _ = self._call("advance_story_stage", {"title_or_id": "US-0001", "stage": "Accepted"}, "Review, Retro & Release")
+
+        self.assertIsNone(result)
+
+    def test_immediate_identical_retry_is_allowed_and_logged(self):
+        tool = BaseTool(name="write_file", description="test tool")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        tool_context.state = _state_for_phase("Conceptual Work")
+        args = {"path": "app.py", "content": "x"}
+
+        first = log_tool_invocation_callback(tool, args, tool_context)
+        second = log_tool_invocation_callback(tool, args, tool_context)
+
+        self.assertIsNotNone(first)
+        self.assertEqual(first["status"], "error")
+        self.assertIsNone(second)
+        interactions = tool_context.state.get("blocking_interactions", [])
+        self.assertTrue(any(i["kind"] == "stalled" and "overrode" in i["summary"] for i in interactions))
+
+    def test_a_different_args_retry_is_blocked_again_not_treated_as_an_override(self):
+        tool = BaseTool(name="write_file", description="test tool")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        tool_context.state = _state_for_phase("Conceptual Work")
+
+        first = log_tool_invocation_callback(tool, {"path": "app.py", "content": "x"}, tool_context)
+        second = log_tool_invocation_callback(tool, {"path": "other.py", "content": "y"}, tool_context)
+
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertEqual(second["status"], "error")
+
+    def test_fails_open_when_state_is_not_a_real_dict(self):
+        """Observability layered on top of real work - a phase-computation
+        glitch must never block a tool call that would otherwise be fine."""
+        tool = BaseTool(name="write_file", description="test tool")
+        tool_context = MagicMock()
+        tool_context.agent_name = "DevTeam"
+        # tool_context.state left as an un-configured MagicMock, not a dict.
+
+        result = log_tool_invocation_callback(tool, {"path": "app.py", "content": "x"}, tool_context)
+
+        self.assertIsNone(result)
