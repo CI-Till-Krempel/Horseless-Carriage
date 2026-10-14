@@ -2105,7 +2105,7 @@ def _detect_transfer_loop(tool_context: ToolContext, from_agent: str, to_agent: 
     try:
         from .helpers import infer_blocker_category
         from .tools.requirements import _current_story_in_progress, raise_story_blocker
-        story = _current_story_in_progress(state.get("product_backlog", []) or [])
+        story = _current_story_in_progress(state.get("product_backlog", []) or [], state.get("active_feature_branches"))
         result = None
         if story:
             result = raise_story_blocker(
@@ -2175,7 +2175,7 @@ def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str
     s["unadvanced_write_nudge_baseline"] = source_touch_count
 
     from .tools.requirements import _current_story_in_progress
-    story = _current_story_in_progress(s.get("product_backlog", []) or [])
+    story = _current_story_in_progress(s.get("product_backlog", []) or [], s.get("active_feature_branches"))
     story_ref = f"'{story.get('id') or story.get('title')}'" if story else "the story you were working on"
     return {
         "status": "error",
