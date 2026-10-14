@@ -1479,6 +1479,31 @@ case along with it, is slated to disappear from this repo entirely once the scru
 into its own MCP-server-owned store in a future release. See ISSUE-0054 for the full mechanism and
 fix.
 
+### ADK's own session history, never trimmed across sprint boundaries, is the real driver behind every run's budget overrun (0.1.0-run64, ISSUE-0055)
+
+A real eval run (0.1.0-run64) - run *after* ISSUE-0054's fix landed, and with zero `.hc/state.json`
+conflicts anywhere in its transcript - still blew its token budget on all 3 sprints it completed
+before stopping early. Average tokens spent per transcript event climbed steadily every sprint even as
+the number of new events per sprint fell: Sprint 1 averaged ~18k tokens/event across 300 events,
+Sprint 2 averaged ~311k tokens/event across just 19 events (a clean, efficient sprint by event count),
+Sprint 3 ~330k tokens/event across 20 events. The same monotonic climb shows up in 0.1.0-run62's full
+5 sprints too (~18k -> ~39k -> ~49k -> ~63k -> ~77k tokens/event), confirming this isn't run64-specific.
+
+`run_eval.py` creates exactly one ADK session for an entire 5-sprint run and reuses it for every
+sprint - nothing recreates or resets it inside the sprint loop. ADK's own content-request processor
+replays the full conversation from `session.events` into every model call's `llm_request.contents` by
+default, and nothing in this codebase trims or compacts that ongoing-session history anywhere -
+`_trim_transcript`'s `TRANSCRIPT_MAX_ENTRIES` bound only ever applies to a separate bookkeeping replay
+used for session-crash recovery, never to a normal continuing session. So every sprint's actual
+model-facing prompt includes the full, ever-growing history of every prior sprint, and cost per call
+scales with cumulative run size, not with how much new work that sprint is actually doing.
+
+Each sprint now starts on a brand new ADK session instead - the real state (backlog, budgets, token
+usage) carries forward via `create_session`'s own `state=` parameter, and the old session is deleted.
+No change was needed to the crash-recovery history replay already in `agent.py` - a brand new
+session's empty event list already triggers that same existing bounded-recovery path, so each sprint
+now starts with a small, bounded context summary instead of either nothing or everything since Sprint
+1. See ISSUE-0055 for the full mechanism and fix.
 ### `start_sprint` never got called again after Sprint 1, so the token budget and sprint phase got stuck for the rest of the run (0.1.0-run64, ISSUE-0056)
 
 Watching a real eval run (0.1.0-run64), the sprint token budget visibly never reset even though a new
