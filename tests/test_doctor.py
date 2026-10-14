@@ -31,15 +31,15 @@ def _patch_proxy_unreachable(monkeypatch):
     monkeypatch.setattr(doctor.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
 
 
-@pytest.fixture
-def valid_repo(tmp_path, monkeypatch):
-    """A tmp_path with a valid .env + litellm.yaml + state repo - everything
-    doctor.py needs to pass end-to-end. docker/docker-compose/gh are all
-    "present and happy" by default; individual tests override as needed."""
-    state_repo = tmp_path / "state_repo"
+def _populate_valid_repo(repo_root):
+    """Writes a valid .env + litellm.yaml + state repo under repo_root -
+    everything doctor.py needs to pass end-to-end. Shared by valid_repo
+    below and TestDashboardRegistryCheck's own nested-repo fixture, which
+    needs this same content at a path other than tmp_path itself."""
+    state_repo = repo_root / "state_repo"
     (state_repo / "specs").mkdir(parents=True)
 
-    (tmp_path / ".env").write_text(
+    (repo_root / ".env").write_text(
         'LITELLM_MASTER_KEY="testkey"\n'
         f'STATE_REPO_PATH="{state_repo}"\n'
         'GIT_USER_NAME="Test"\n'
@@ -49,13 +49,21 @@ def valid_repo(tmp_path, monkeypatch):
         'GITHUB_TOKEN="dummy"\n'
         'GOOGLE_API_KEY="real-key-value"\n'
     )
-    (tmp_path / "litellm.yaml").write_text(
+    (repo_root / "litellm.yaml").write_text(
         "model_list:\n"
         "  - model_name: scrum-po\n"
         "    litellm_params:\n"
         "      model: gemini/gemini-2.5-pro\n"
         "      api_key: os.environ/GOOGLE_API_KEY\n"
     )
+
+
+@pytest.fixture
+def valid_repo(tmp_path, monkeypatch):
+    """A tmp_path with a valid .env + litellm.yaml + state repo - everything
+    doctor.py needs to pass end-to-end. docker/docker-compose/gh are all
+    "present and happy" by default; individual tests override as needed."""
+    _populate_valid_repo(tmp_path)
 
     _patch_which(monkeypatch, docker=True, **{"docker-compose": True, "gh": True})
     _patch_subprocess_ok(monkeypatch)
@@ -314,6 +322,118 @@ class TestWarningsDoNotBlock:
         out = capsys.readouterr().out
         assert "gh CLI is not authenticated" not in out
         assert "'gh' command not found" not in out
+        assert code == 0
+
+
+class TestComposeProjectNamePrefixMigration:
+    """ISSUE-0063 follow-up: new_project.py now keeps 'horseless-carriage_'
+    on the front of an auto-derived COMPOSE_PROJECT_NAME_PREFIX, but an
+    installation from before that change has one that's just the bare
+    target-repo name - doctor.py should flag it (with migration steps),
+    never silently rewrite .env itself."""
+
+    def test_old_style_prefix_warns_with_migration_steps(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'COMPOSE_PROJECT_NAME_PREFIX="heinzelmann"\n')
+
+        code = doctor.run(valid_repo)
+        out = capsys.readouterr().out
+
+        assert "COMPOSE_PROJECT_NAME_PREFIX='heinzelmann' predates" in out
+        assert "horseless-carriage_heinzelmann" in out
+        assert "docker compose -p heinzelmann-dev down" in out
+        assert "docker compose -p horseless-carriage_heinzelmann-dev up -d" in out
+        assert code == 0
+
+    def test_already_migrated_prefix_does_not_warn(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'COMPOSE_PROJECT_NAME_PREFIX="horseless-carriage_heinzelmann"\n')
+
+        code = doctor.run(valid_repo)
+        out = capsys.readouterr().out
+
+        assert "predates" not in out
+        assert code == 0
+
+    def test_bare_default_prefix_does_not_warn(self, valid_repo, monkeypatch, capsys):
+        """A standalone checkout with no target project may have this
+        explicitly set to the bare default too - not itself a problem."""
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'COMPOSE_PROJECT_NAME_PREFIX="horseless-carriage"\n')
+
+        code = doctor.run(valid_repo)
+        out = capsys.readouterr().out
+
+        assert "predates" not in out
+        assert code == 0
+
+    def test_unset_prefix_does_not_warn(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        code = doctor.run(valid_repo)
+        out = capsys.readouterr().out
+
+        assert "predates" not in out
+        assert code == 0
+
+
+class TestDashboardRegistryCheck:
+    """GH issue #310: a nested installation (repo_root is a
+    horseless-carriage/ submodule of some other project) should be
+    registered in project_registry.py so dashboard.py can list it -
+    whether new_project.py did that or it was set up by hand. doctor.py
+    must never read/write the real ~/.horseless-carriage/projects.json -
+    every test here patches REGISTRY_PATH to a tmp_path location first."""
+
+    @pytest.fixture
+    def nested_repo(self, tmp_path, monkeypatch):
+        """repo_root nested one level under a parent that's itself a git
+        repo (the shape new_project.py's own _install_if_nested detects) -
+        same valid .env/litellm.yaml content as the top-level valid_repo
+        fixture, just at this different path."""
+        target_repo = tmp_path / "target"
+        (target_repo / ".git").mkdir(parents=True)
+        repo_root = target_repo / "horseless-carriage"
+        repo_root.mkdir()
+        _populate_valid_repo(repo_root)
+
+        _patch_which(monkeypatch, docker=True, **{"docker-compose": True, "gh": True})
+        _patch_subprocess_ok(monkeypatch)
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: (None, ""))
+        monkeypatch.setattr(doctor.project_registry, "REGISTRY_PATH", tmp_path / "registry.json")
+        return repo_root
+
+    def test_nested_and_unregistered_warns(self, nested_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        code = doctor.run(nested_repo)
+        out = capsys.readouterr().out
+
+        assert "isn't registered in the dashboard project registry" in out
+        assert "python3 new_project.py" in out
+        assert code == 0
+
+    def test_nested_and_already_registered_does_not_warn(self, nested_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        doctor.project_registry.register("target", nested_repo, nested_repo.parent)
+
+        code = doctor.run(nested_repo)
+        out = capsys.readouterr().out
+
+        assert "isn't registered in the dashboard project registry" not in out
+        assert code == 0
+
+    def test_standalone_checkout_does_not_warn(self, valid_repo, monkeypatch, capsys):
+        """valid_repo's tmp_path has no parent .git - not a nested
+        installation at all, so this check must stay silent regardless of
+        the (patched-to-real-home-by-default, but never actually touched
+        here since the guard short-circuits first) registry state."""
+        _patch_proxy_unreachable(monkeypatch)
+        code = doctor.run(valid_repo)
+        out = capsys.readouterr().out
+
+        assert "isn't registered in the dashboard project registry" not in out
         assert code == 0
 
 
