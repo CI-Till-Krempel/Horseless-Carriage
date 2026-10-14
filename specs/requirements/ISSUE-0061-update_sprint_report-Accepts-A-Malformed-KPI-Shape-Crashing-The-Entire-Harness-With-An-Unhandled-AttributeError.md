@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0061
 - Title: `update_sprint_report` Accepts A Malformed KPI Shape, Crashing The Entire Harness With An Unhandled `AttributeError`
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-10-14
@@ -120,3 +120,25 @@ argument reaches all the way to an *uncaught* Python exception instead of a clea
   entry reported as unavailable/skipped rather than crashing.
 - Re-run (or replay) `0.1.0-run67`'s Sprint 3 shape against the fixed harness and confirm a malformed
   `update_sprint_report` call is rejected and retried rather than crashing the run.
+
+## Resolution
+`update_sprint_report` (`tools/quality.py`) now checks each of the four known nested KPI keys
+(`team_effectiveness`/`result_quality`/`maintainability`/`security`) after `_coerce_dict_arg` - if
+present and not `None`, each must be an actual `dict`; a truthy non-dict (the exact shape that
+crashed 0.1.0-run67) is rejected with a structured error naming which key and what type it actually
+saw, before it ever reaches `state["sprint_report_kpis"]`.
+
+`create_sprint_report`'s own KPI-rendering code (`tools/budget.py`) is now defensive independently of
+that gate: `team_effectiveness`/`result_quality`/`maintainability`/`security`/`prompt_context_usage`
+are each coerced to `{}` via an explicit `isinstance(..., dict)` check (not the old `or {}`, which
+only guards a falsy value, not a truthy non-dict) - and each `prompt_context_usage` entry is skipped
+if it isn't itself a dict. This means even a malformed `sprint_report_kpis` value written some other
+way (not necessarily through `update_sprint_report`) can never crash this rendering step.
+
+New regression tests: `test_update_sprint_report_rejects_a_scalar_in_place_of_a_nested_kpi_dict`
+(`test_quality.py`) drives all four nested keys through `update_sprint_report` as a bare float and
+confirms each is rejected without touching state; `test_create_sprint_report_survives_a_malformed_kpi_shape`
+(`test_budget.py`) seeds `sprint_report_kpis` directly with all five fields malformed (simulating the
+gate being bypassed entirely) and confirms `create_sprint_report` still completes and renders the KPI
+Dashboard section without raising. All pre-existing `test_quality.py`/`test_budget.py` tests continue
+to pass unmodified.

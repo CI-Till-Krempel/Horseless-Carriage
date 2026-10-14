@@ -1649,6 +1649,12 @@ its own reading of `calculate_kpis()`'s prior response rather than passing the o
 - three different first-key orderings across three calls that should be identical if passed through
 unmodified - plausibly collapsing a nested KPI sub-dict down to just its headline float along the way.
 
+Fixed at both layers: `update_sprint_report` now rejects a `kpis` dict if any of its four nested
+sub-keys is present but not an actual dict, before it ever reaches state - naming which key and what
+type it actually saw. `create_sprint_report`'s own KPI-rendering code is now defensive independently
+of that gate too (`isinstance(..., dict)` instead of `or {}`, which only ever caught a falsy value,
+never a truthy non-dict) - so even a malformed value written to state some other way can't crash this
+step. See ISSUE-0061 for the full mechanism and fix.
 See ISSUE-0061 for the full mechanism - not yet implemented.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically

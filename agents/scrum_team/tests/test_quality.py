@@ -498,6 +498,28 @@ class TestQualityTools(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(tool_context.state["sprint_report_kpis"], {})
 
+    def test_update_sprint_report_rejects_a_scalar_in_place_of_a_nested_kpi_dict(self):
+        """
+        ISSUE-0061: a real eval run (0.1.0-run67) crashed the entire harness
+        with an unhandled AttributeError because update_sprint_report wrote
+        a kpis dict straight to state with no check that its nested
+        sub-dicts (team_effectiveness/result_quality/maintainability/
+        security) were actually dicts - a truthy scalar standing in for one
+        of them (plausibly a cheap model collapsing a nested dict down to
+        just its headline float) sailed through and crashed
+        create_sprint_report's KPI-rendering code on the next .get() call.
+        This must now be rejected before it ever reaches state.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        for key in ("team_effectiveness", "result_quality", "maintainability", "security"):
+            with self.subTest(key=key):
+                tool_context.state["sprint_report_kpis"] = {}
+                result = update_sprint_report(kpis={key: 1.0}, tool_context=tool_context)
+                self.assertEqual(result["status"], "error")
+                self.assertIn(key, result["message"])
+                self.assertEqual(tool_context.state["sprint_report_kpis"], {})
+
     @patch("agents.scrum_team.tools.quality.calculate_kpis")
     def test_update_sprint_report_self_heals_calculate_kpis_tool_name_string(self, mock_calculate_kpis):
         """
