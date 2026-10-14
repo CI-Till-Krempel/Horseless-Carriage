@@ -1479,6 +1479,25 @@ case along with it, is slated to disappear from this repo entirely once the scru
 into its own MCP-server-owned store in a future release. See ISSUE-0054 for the full mechanism and
 fix.
 
+### `start_sprint` never got called again after Sprint 1, so the token budget and sprint phase got stuck for the rest of the run (0.1.0-run64, ISSUE-0056)
+
+Watching a real eval run (0.1.0-run64), the sprint token budget visibly never reset even though a new
+sprint had clearly started, and separately, implementation-shaped work kept happening while the system
+behaved as though it were in the closing/retro/release phase. Both trace back to one cause:
+`start_sprint` is the *only* place that resets the per-sprint token budget, and the transcript shows
+exactly one `start_sprint` call in the entire 3-sprint run - Sprint 1 only. `token_usage.total` climbs
+strictly across all 3 sprints (5.39M -> 5.91M -> 6.60M) instead of dropping back toward zero at each
+boundary.
+
+`current_sprint_phase` compares that same never-reset cumulative total against the fixed per-sprint
+ceiling to decide whether a sprint is in "Review, Retro & Release" - once the stale total first
+crosses that ceiling (practically the start of Sprint 2 here), the phase gets stuck reporting
+"closing" for the rest of the run regardless of that sprint's own real backlog progress, and since
+phase awareness is nudge-only (never a gate), nothing stops new implementation work from continuing
+anyway. The scripted driver's own per-sprint message never names `start_sprint` at all - it explicitly
+names `create_sprint_report` and `create_release_pr`, but never the one call that would have kept
+budget and phase in sync. See ISSUE-0056 for the full mechanism - not yet implemented.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
