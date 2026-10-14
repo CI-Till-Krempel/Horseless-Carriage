@@ -66,15 +66,16 @@ services:
     build:
       context: .
       dockerfile: agent.Dockerfile
-    ports:
-      # ADK web frontend (only listens when AGENT_MODE=web, the default).
-      # GH issue #239: bound to localhost by default - the ADK web UI has no
-      # authentication at all. Set AGENT_WEB_BIND_HOST=0.0.0.0 in .env to
-      # expose it on the LAN (e.g. a shared dev box) - an explicit, informed
-      # opt-in instead of the old silent default.
-      # GH issue #288: see the litellm service's identical LITELLM_HOST_PORT
-      # note above - same per-installation collision avoidance.
-      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
+    # ISSUE-0063: no `ports:` here, deliberately - a container with no
+    # attachment to any non-internal network can never have a port
+    # published to the host at all (Docker has no gateway path to forward
+    # through), which silently broke the ADK web UI (port 8000) the moment
+    # agent-net's `internal: true` landed (GH issue #287). Adding
+    # external-net back to `agent` itself would fix that, but would also
+    # hand it a second, egress-capable network interface - exactly what
+    # #287 removed. See the net-proxy service below instead: it already
+    # straddles both networks for egress, and now reverse-proxies this
+    # port's ingress too.
     volumes:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro
@@ -217,6 +218,13 @@ services:
     build:
       context: .
       dockerfile: net-proxy.Dockerfile
+    ports:
+      # ISSUE-0063: the ADK web UI's actual host-facing port - moved here
+      # from `agent` (which can never have a port published to the host
+      # while it's agent-net-only, see that service's own comment). Same
+      # env vars/defaults as before - this is a transparent relocation, not
+      # a behavior change for anyone who already configured these.
+      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
     networks:
       - external-net
       - agent-net
