@@ -1471,6 +1471,26 @@ case along with it, is slated to disappear from this repo entirely once the scru
 into its own MCP-server-owned store in a future release. See ISSUE-0054 for the full mechanism and
 fix.
 
+### ADK's own session history, never trimmed across sprint boundaries, is the real driver behind every run's budget overrun (0.1.0-run64, ISSUE-0055)
+
+A real eval run (0.1.0-run64) - run *after* ISSUE-0054's fix landed, and with zero `.hc/state.json`
+conflicts anywhere in its transcript - still blew its token budget on all 3 sprints it completed
+before stopping early. Average tokens spent per transcript event climbed steadily every sprint even as
+the number of new events per sprint fell: Sprint 1 averaged ~18k tokens/event across 300 events,
+Sprint 2 averaged ~311k tokens/event across just 19 events (a clean, efficient sprint by event count),
+Sprint 3 ~330k tokens/event across 20 events. The same monotonic climb shows up in 0.1.0-run62's full
+5 sprints too (~18k -> ~39k -> ~49k -> ~63k -> ~77k tokens/event), confirming this isn't run64-specific.
+
+`run_eval.py` creates exactly one ADK session for an entire 5-sprint run and reuses it for every
+sprint - nothing recreates or resets it inside the sprint loop. ADK's own content-request processor
+replays the full conversation from `session.events` into every model call's `llm_request.contents` by
+default, and nothing in this codebase trims or compacts that ongoing-session history anywhere -
+`_trim_transcript`'s `TRANSCRIPT_MAX_ENTRIES` bound only ever applies to a separate bookkeeping replay
+used for session-crash recovery, never to a normal continuing session. So every sprint's actual
+model-facing prompt includes the full, ever-growing history of every prior sprint, and cost per call
+scales with cumulative run size, not with how much new work that sprint is actually doing. See
+ISSUE-0055 for the full mechanism - not yet implemented.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
