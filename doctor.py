@@ -47,6 +47,7 @@ from pathlib import Path
 import check_state_repo
 import lib_docker
 import lib_env
+import project_registry
 import lib_github
 import lib_llm_test
 
@@ -176,6 +177,48 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
 
     if not env.get("LOG_LEVEL"):
         print("NOTE: LOG_LEVEL is not set in .env. Defaulting to 'info'.")
+
+    # ISSUE-0063 follow-up: an installation from before new_project.py kept
+    # "horseless-carriage_" on the front of an auto-derived
+    # COMPOSE_PROJECT_NAME_PREFIX has one that's just the bare target-repo
+    # name (e.g. "heinzelmann") - on a shared machine running several
+    # unrelated projects, nothing in `docker ps`/`docker images` then reads
+    # as a Horseless Carriage installation at a glance. Only ever a
+    # warning with manual migration steps, never auto-fixed here: changing
+    # this value changes the Compose project name itself, so the next
+    # `docker compose up` would build a brand-new stack rather than
+    # recreating the existing one - a choice for the user to make
+    # knowingly, not something doctor.py should silently rewrite in .env.
+    old_prefix = env.get("COMPOSE_PROJECT_NAME_PREFIX")
+    if old_prefix and old_prefix != "horseless-carriage" and not old_prefix.startswith("horseless-carriage_"):
+        new_prefix = f"horseless-carriage_{old_prefix}"
+        warn(
+            f"COMPOSE_PROJECT_NAME_PREFIX='{old_prefix}' predates the 'horseless-carriage_' naming "
+            "convention new_project.py now uses, so this installation's containers/images don't read "
+            "as a Horseless Carriage installation at a glance. To migrate (for each of dev/eval/test "
+            f"you use): (1) edit .env, set COMPOSE_PROJECT_NAME_PREFIX='{new_prefix}'; "
+            f"(2) docker compose -p {old_prefix}-dev down; (3) docker compose -p {new_prefix}-dev up -d. "
+            "Only LiteLLM's spend-log history and ADK's own eval-run bookkeeping reset - no Scrum-team "
+            "data lives in Docker volumes (specs/state/git history are all bind-mounted from the host)."
+        )
+
+    # GH issue #310: a nested installation (this repo_root is a
+    # horseless-carriage/ submodule of some other project) should be
+    # registered in project_registry.py so dashboard.py can list it -
+    # whether that happened via new_project.py or by hand (adding the
+    # submodule + .env manually is explicitly supported too). Mirrors
+    # new_project.py's own _install_if_nested nesting detection exactly
+    # (parent directory is itself a git repo).
+    parent_dir = repo_root.parent
+    if (parent_dir / ".git").exists():
+        registered_paths = {entry.get("hc_path") for entry in project_registry.load()}
+        if str(repo_root) not in registered_paths:
+            warn(
+                f"{repo_root} looks like a nested installation (submodule of {parent_dir}) but isn't "
+                "registered in the dashboard project registry - python3 dashboard.py won't show it. "
+                "Run python3 new_project.py to register it (safe to re-run - never overwrites existing "
+                ".env values)."
+            )
 
     # 3. Check GitHub configuration
     if not env.get("GITHUB_REPO_URL"):
