@@ -1550,6 +1550,52 @@ agrees the team has reached closing, and gating it anyway broke 9 pre-existing t
 exactly this conflict. This also depended on ISSUE-0056 landing first: a phase that could get
 permanently stuck would have turned this gate into a genuine deadlock instead of a one-time nudge.
 
+### A failed or incomplete release PR at sprint close leaves `start_sprint` permanently stuck for the rest of that sprint (0.1.0-run65, ISSUE-0058)
+
+A real eval run (0.1.0-run65) stopped after 2 of 5 sprints - Sprint 2 alone burned 6.25M tokens (125%
+of budget) and accepted zero of the 5 remaining stories. Unlike 0.1.0-run64 (ISSUE-0056), the team
+here wasn't failing to call `start_sprint` - it called it twice in Sprint 2, and both times correctly
+diagnosed and even correctly attempted the fix its own error message asked for.
+
+Sprint 1 ended without successfully opening a release PR (its one attempt failed with "No commits
+between main and develop"), leaving `sprint_report_pending_release` stuck `True`. Sprint 2's
+`start_sprint` correctly refused for exactly that reason; ProductOwner correctly recovered by calling
+`create_release_pr`, which succeeded this time - but retrying `start_sprint` immediately still refused,
+because merging that PR is "always a separate, out-of-band step" that only `run_eval.py`'s
+`_merge_open_prs` performs, and that only ever runs once, right after each sprint's own
+`_run_one_sprint` call returns - never mid-sprint. Since the release PR didn't exist until partway
+through Sprint 2, the earliest the harness could have merged it was the Sprint 2 -> 3 boundary, which
+never arrived because `start_sprint` kept failing in the meantime - a closed loop with no escape from
+inside the session. By the time the harness finally did try to merge it (after Sprint 2 ended), the PR
+had become genuinely unmergeable - `develop` had moved on in the meantime, and nothing resolves a
+conflicted release PR the way `resolve_feature_branch_conflicts` does for story branches.
+
+A `create_release_pr` success mid-sprint now immediately triggers a merge attempt instead of waiting
+for the sprint to end, giving a recovery attempt like this one a real chance to actually unblock
+`start_sprint` within the same sprint. Separately, a release PR that genuinely can't be merged due to
+a real conflict (no tool exists to resolve this, the same gap noted above) now stops the run cleanly
+with a clear reason, instead of silently burning further sprints' budget on a `start_sprint` retry
+loop that could never succeed. See ISSUE-0058 for the full mechanism and fix.
+
+### `gh_pr_create`'s silent default-to-main let a feature-branch PR bypass `develop` entirely (0.1.0-run65, ISSUE-0059)
+
+Tracing why 0.1.0-run65's Sprint 1 `create_release_pr` saw "no commits between main and develop"
+(ISSUE-0058) found the true trigger: US-0001's own story PR never targeted `develop` at all.
+`start_feature_branch` - which always correctly targets `develop` - rejected DevTeam's story four times
+in a row for different legitimate reasons (not yet planned into the sprint, then a missing
+Architect/QA sign-off on the Sprint Backlog PR). DevTeam never retried it after the fourth rejection -
+instead it pushed the branch itself and called `gh_pr_create` (a general-purpose tool also directly in
+its toolset) twice, neither time passing a `base` argument. `gh_pr_create` silently defaults an unset
+`base` to the repo's main/push branch, with nothing recognizing that this particular `head` was a story
+feature branch that must always target `develop` - so the PR opened and merged straight into `main`,
+completely bypassing GitFlow with no error or warning anywhere. `develop` sat untouched at the seed
+commit for the rest of the run, which is exactly why the later release PR found nothing to release.
+
+`gh_pr_create` now recognizes a `head` shaped like a story feature branch (the `feature/<id>-<slug>`
+naming convention `start_feature_branch` itself always uses) and forces `base` to the resolved develop
+branch whenever it matches - regardless of what `base` was passed or left unset - before falling
+through to the previous default for everything else. See ISSUE-0059 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

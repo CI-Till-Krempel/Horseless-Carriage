@@ -15,6 +15,7 @@ from agents.scrum_team.scripts.run_eval import (
     _blocked_stories,
     _sprint_needs_human_this_harness_cannot_provide,
     _unresolved_high_priority_general_blocker,
+    _unresolvable_release_pr_conflict,
     _sprint_message,
     _start_fresh_sprint_session,
 )
@@ -613,6 +614,126 @@ class TestHostSideSprintReportBackstop:
 
         assert result["stop_reason"] == "max_events_reached"
         assert result["sprint_report"] is None
+
+
+class _FakePart:
+    def __init__(self, function_response=None):
+        self.text = None
+        self.function_call = None
+        self.function_response = function_response
+
+
+class _FakeFunctionResponse:
+    def __init__(self, name, response):
+        self.name = name
+        self.response = response
+
+
+class _FakeContent:
+    def __init__(self, parts):
+        self.parts = parts
+
+
+class _FakeEventWithContent:
+    def __init__(self, author, parts):
+        self.author = author
+        self.content = _FakeContent(parts)
+
+
+class _CreateReleasePrSuccessRunner:
+    """Yields one event representing a create_release_pr tool call that
+    just succeeded - simulates ProductOwner's mid-sprint recovery after
+    start_sprint's own new_sprint_item_blocked gate (ISSUE-0058)."""
+
+    async def run_async(self, user_id, session_id, new_message, state_delta=None):
+        yield _FakeEventWithContent("ProductOwner", [
+            _FakePart(function_response=_FakeFunctionResponse("create_release_pr", {"status": "ok"})),
+        ])
+
+
+class TestRunOneSprintMidSprintReleasePrMerge:
+    """
+    Acceptance Criteria (ISSUE-0058): a create_release_pr call that succeeds
+    mid-sprint must have a real chance to actually unblock a subsequent
+    start_sprint retry within that same sprint - the harness's merge sweep
+    otherwise only runs once, after _run_one_sprint returns, which can never
+    help a mid-sprint recovery attempt.
+    """
+
+    def test_triggers_a_merge_attempt_when_create_release_pr_succeeds(self):
+        with patch("agents.scrum_team.scripts.run_eval._merge_open_prs") as mock_merge:
+            mock_merge.return_value = [{"number": 541, "merged": True, "message": "ok"}]
+            result = _run(_run_one_sprint(
+                _CreateReleasePrSuccessRunner(), _FakeSessionService(), "app", "user", "session-1",
+                "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+                local_path="/tmp/fake-repo", base_branch="main",
+            ))
+
+        mock_merge.assert_called_once_with("/tmp/fake-repo", "main")
+        assert result["mid_sprint_pr_merges"] == [{"number": 541, "merged": True, "message": "ok"}]
+
+    def test_does_not_trigger_without_local_path_and_base_branch(self):
+        """Backward compatible: every existing caller/test that doesn't
+        pass these must see identical behavior to before this fix."""
+        with patch("agents.scrum_team.scripts.run_eval._merge_open_prs") as mock_merge:
+            result = _run(_run_one_sprint(
+                _CreateReleasePrSuccessRunner(), _FakeSessionService(), "app", "user", "session-1",
+                "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        mock_merge.assert_not_called()
+        assert result["mid_sprint_pr_merges"] == []
+
+    def test_does_not_trigger_for_an_unrelated_tool_success(self):
+        class _UnrelatedToolRunner:
+            async def run_async(self, user_id, session_id, new_message, state_delta=None):
+                yield _FakeEventWithContent("DevTeam", [
+                    _FakePart(function_response=_FakeFunctionResponse("write_file", {"status": "ok"})),
+                ])
+
+        with patch("agents.scrum_team.scripts.run_eval._merge_open_prs") as mock_merge:
+            _run(_run_one_sprint(
+                _UnrelatedToolRunner(), _FakeSessionService(), "app", "user", "session-1",
+                "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+                local_path="/tmp/fake-repo", base_branch="main",
+            ))
+
+        mock_merge.assert_not_called()
+
+
+class TestUnresolvableReleasePrConflict:
+    """
+    Acceptance Criteria (ISSUE-0058): a release PR merge failure must be
+    distinguished by whether it's genuinely unresolvable (a real git merge
+    conflict - no tool exists to fix this) versus something that might
+    still resolve on its own (not yet mergeable, pending checks).
+    """
+
+    def test_detects_a_genuine_merge_conflict(self):
+        merges = [{
+            "number": 541,
+            "merged": False,
+            "message": "X Pull request .../541 is not mergeable: the merge commit cannot be cleanly created.",
+        }]
+
+        assert _unresolvable_release_pr_conflict(merges) == merges[0]
+
+    def test_ignores_a_not_yet_ready_failure(self):
+        merges = [{
+            "number": 541,
+            "merged": False,
+            "message": "pull request #541 is not ready for merge: 2 required status checks are pending",
+        }]
+
+        assert _unresolvable_release_pr_conflict(merges) is None
+
+    def test_ignores_a_clean_merge(self):
+        merges = [{"number": 541, "merged": True, "message": ""}]
+
+        assert _unresolvable_release_pr_conflict(merges) is None
+
+    def test_ignores_an_empty_list(self):
+        assert _unresolvable_release_pr_conflict([]) is None
 
 
 def test_sprint_message_names_start_sprint_explicitly():

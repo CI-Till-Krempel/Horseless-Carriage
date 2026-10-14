@@ -295,6 +295,28 @@ def _merge_open_prs(local_path: Path, base_branch: str, sprint_result: dict | No
     return results
 
 
+def _unresolvable_release_pr_conflict(merges: list) -> Optional[dict]:
+    """
+    ISSUE-0058: the first entry in `merges` (as returned by _merge_open_prs)
+    that failed for a reason no retry can ever fix - a genuine git merge
+    conflict ("not mergeable: the merge commit cannot be cleanly created",
+    the exact message a real eval run's release PR hit, 0.1.0-run65) - or
+    None if every failure here is something that might still resolve on its
+    own (e.g. "not yet merged", pending checks).
+
+    There is no tool analogous to resolve_feature_branch_conflicts for a
+    release PR, and start_sprint can never succeed again while this PR sits
+    open and unmerged - silently continuing just burns further sprints'
+    budget on a run that structurally cannot make progress, the same bet
+    _sprint_should_abort_run already won't take for a critical budget halt
+    with no clean close-out.
+    """
+    for m in merges:
+        if not m.get("merged") and "not mergeable" in (m.get("message") or "").lower():
+            return m
+    return None
+
+
 def _merge_open_steering_prs(local_path: Path, develop_branch: str) -> list:
     """
     Auto-merges open `propose_steering_change` PRs (GH #405) - these also
@@ -589,7 +611,7 @@ def _dominant_repeated_rejection(sprint_result: dict) -> Optional[tuple]:
     return dominant_key
 
 
-async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, session_id: str, message_text: str, max_events: int, deadline: float, max_nudges: int = 4) -> dict:
+async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, session_id: str, message_text: str, max_events: int, deadline: float, max_nudges: int = 4, local_path=None, base_branch: str | None = None) -> dict:
     """
     Sends message_text, then - if the model stops with plain text and no
     NEW sprint report yet, rather than an actual tool call moving the
@@ -640,12 +662,27 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
     whatever's been gathered so far, rather than running indefinitely
     until something else (e.g. the CI job's hard timeout) kills the
     process with no report at all.
+
+    `local_path`/`base_branch`: when both are given, a `create_release_pr`
+    tool call that succeeds mid-sprint immediately triggers an attempt to
+    merge it (see _merge_open_prs), rather than waiting for this whole
+    function to return. ISSUE-0058: the harness's merge sweep otherwise only
+    runs once, after _run_one_sprint's caller gets control back - which can
+    never help a mid-sprint recovery attempt (e.g. ProductOwner opening the
+    previous sprint's release PR in response to start_sprint's own
+    new_sprint_item_blocked gate): a real eval run spent an entire sprint's
+    token budget retrying start_sprint in a loop that could never succeed,
+    because nothing could merge the PR it was waiting on until the sprint
+    itself ended - and it couldn't end until start_sprint succeeded. Left
+    None (the default) for every existing caller/test that doesn't care
+    about this - a no-op in that case, identical to before this fix.
     """
     from google.genai import types
 
     events = []
     final_text = None
     sprint_report = None
+    mid_sprint_pr_merges = []
     stop_reason = "max_nudges_exhausted"
     # Fetched unconditionally so it's always defined below, even if the
     # deadline is already past before the first attempt runs (e.g. a
@@ -691,6 +728,10 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
                             response = fr.response if isinstance(fr.response, dict) else {"value": fr.response}
                             record["tool_responses"].append({"name": fr.name, "response": response})
                 events.append(record)
+                if local_path and base_branch:
+                    for tr in record["tool_responses"]:
+                        if tr["name"] == "create_release_pr" and (tr["response"] or {}).get("status") == "ok":
+                            mid_sprint_pr_merges.extend(_merge_open_prs(local_path, base_branch))
                 if len(events) >= max_events or time.monotonic() >= deadline:
                     break
         except ValueError as e:
@@ -799,6 +840,11 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # was produced" alone doesn't prove the release also went out.
         # Captured here so _sprint_should_abort_run can tell the two apart.
         "sprint_report_pending_release": bool(session.state.get("sprint_report_pending_release")),
+        # ISSUE-0058: any merge attempts triggered mid-sprint by a
+        # create_release_pr success (see this function's own docstring) -
+        # the caller folds these into the same manifest["pr_merges"] list
+        # the end-of-sprint sweep's results go into.
+        "mid_sprint_pr_merges": mid_sprint_pr_merges,
     }
 
 
@@ -911,9 +957,35 @@ async def _main_async(args: argparse.Namespace) -> dict:
         try:
             sprint_result = await _run_one_sprint(
                 runner, session_service, app_name, user_id, session.id, message_text, args.max_events_per_sprint, deadline,
+                local_path=args.local_path, base_branch=args.branch,
             )
             sprint_result["sprint_number"] = sprint_number
             manifest["sprints"].append(sprint_result)
+
+            # ISSUE-0058: fold in whatever _run_one_sprint already merged
+            # mid-sprint (see its own docstring) before this sprint's
+            # own end-of-sprint sweep runs below - and stop the run if any
+            # of those attempts hit a genuine, unresolvable conflict rather
+            # than silently burning the rest of this sprint's budget on a
+            # start_sprint retry loop that can never succeed (the harness
+            # has no tool analogous to resolve_feature_branch_conflicts for
+            # a release PR, so a real conflict here has no recovery path).
+            mid_sprint_merges = sprint_result.get("mid_sprint_pr_merges") or []
+            manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number, "mid_sprint": True} for m in mid_sprint_merges])
+            unresolvable = _unresolvable_release_pr_conflict(mid_sprint_merges)
+            if unresolvable:
+                print(
+                    f"--- sprint {sprint_number}/{args.sprints}: a release PR opened mid-sprint to recover "
+                    f"from start_sprint's own gate hit a genuine, unresolvable conflict "
+                    f"({unresolvable.get('message')!r}) - no tool exists to resolve this, and the next "
+                    "sprint boundary can never arrive while start_sprint keeps failing because of it. "
+                    "Stopping run ---",
+                    file=sys.stderr,
+                )
+                manifest["stopped_early"] = True
+                manifest["stop_reason"] = "release_pr_conflict_unrecoverable"
+                manifest["unresolvable_release_pr"] = unresolvable
+                break
             if sprint_result["stop_reason"] == "max_duration_exceeded":
                 manifest["stopped_early"] = True
                 manifest["stop_reason"] = "max_duration_exceeded"
@@ -924,6 +996,19 @@ async def _main_async(args: argparse.Namespace) -> dict:
             # merged by QA's own merge_story_pr call during the sprint instead.
             merges = _merge_open_prs(args.local_path, args.branch, sprint_result=sprint_result)
             manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number} for m in merges])
+            unresolvable = _unresolvable_release_pr_conflict(merges)
+            if unresolvable:
+                print(
+                    f"--- sprint {sprint_number}/{args.sprints}: the end-of-sprint release-PR merge hit a "
+                    f"genuine, unresolvable conflict ({unresolvable.get('message')!r}) - no tool exists to "
+                    "resolve this, and start_sprint can never succeed again while it's unmerged. "
+                    "Stopping run ---",
+                    file=sys.stderr,
+                )
+                manifest["stopped_early"] = True
+                manifest["stop_reason"] = "release_pr_conflict_unrecoverable"
+                manifest["unresolvable_release_pr"] = unresolvable
+                break
             # GH #405: steering proposals are the one develop-targeted PR
             # type the eval harness treats as "reviewed" on the team's
             # behalf (see _merge_open_steering_prs's own docstring) - swept
