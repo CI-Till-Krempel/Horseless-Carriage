@@ -242,12 +242,25 @@ class TestWebUiAndProxyPortsBindToLocalhostByDefault:
         # (AGENT_WEB_HOST_PORT, default 8000) - this only re-checks the
         # #239 guarantee this class exists for (bind host defaults to
         # 127.0.0.1), not the exact literal string anymore.
+        #
+        # ISSUE-0063: the publish itself moved from `agent` to `net-proxy` -
+        # `agent` sits on agent-net only (internal: true, GH issue #287),
+        # and a container with no route on any non-internal network can
+        # never have a port published to the host at all. net-proxy (the
+        # one container straddling both networks) now reverse-proxies this
+        # port's ingress instead - same env vars/defaults, just relocated.
         for compose_file in self._COMPOSE_FILES:
             data = yaml.safe_load((REPO_ROOT / compose_file).read_text(encoding="utf-8"))
-            ports = data["services"]["agent"]["ports"]
+            assert "ports" not in data["services"]["agent"], (
+                f"{compose_file}: agent service publishes a port directly, but it's agent-net-only "
+                "(internal: true) - a container with no route on any non-internal network can never "
+                "have a port actually published to the host. See net-proxy's own port instead "
+                "(ISSUE-0063)."
+            )
+            ports = data["services"]["net-proxy"]["ports"]
             assert any("${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000" == p for p in ports), (
-                f"{compose_file}: agent service's port publish must default to 127.0.0.1 via "
-                "AGENT_WEB_BIND_HOST, not publish to 0.0.0.0 unconditionally (GH issue #239)."
+                f"{compose_file}: net-proxy service's web-UI port publish must default to 127.0.0.1 "
+                "via AGENT_WEB_BIND_HOST, not publish to 0.0.0.0 unconditionally (GH issue #239)."
             )
 
     def test_litellm_service_port_defaults_to_localhost(self):
@@ -259,6 +272,37 @@ class TestWebUiAndProxyPortsBindToLocalhostByDefault:
             assert any("${LITELLM_BIND_HOST:-127.0.0.1}:${LITELLM_HOST_PORT:-4000}:4000" == p for p in ports), (
                 f"{compose_file}: litellm service's port publish must default to 127.0.0.1 via "
                 "LITELLM_BIND_HOST, not publish to 0.0.0.0 unconditionally (GH issue #239)."
+            )
+
+
+class TestAgentHasNoDirectEgressRoute:
+    """
+    ISSUE-0063: `agent` must stay agent-net-only (no `external-net`
+    membership) - that's the actual GH issue #287 guarantee (no direct
+    route to the internet except through net-proxy's allowlist). The web
+    UI's port was moved to net-proxy specifically so this invariant could
+    stay true while still fixing host access to the UI - a regression here
+    would silently let any tool inside `agent` bypass the allowlist
+    entirely over a second network interface.
+    """
+
+    _COMPOSE_FILES = (
+        "docker-compose.yaml",
+        "docker-compose.local.yaml",
+        "docker-compose.local-hostollama.yaml",
+    )
+
+    def test_agent_service_is_not_on_external_net(self):
+        for compose_file in self._COMPOSE_FILES:
+            data = yaml.safe_load((REPO_ROOT / compose_file).read_text(encoding="utf-8"))
+            networks = data["services"]["agent"]["networks"]
+            assert "external-net" not in networks, (
+                f"{compose_file}: agent service is on external-net - this gives it a direct route "
+                "to the internet, bypassing net-proxy's allowlist entirely (GH issue #287)."
+            )
+            assert networks == ["agent-net"], (
+                f"{compose_file}: agent service's networks list is {networks!r}, expected exactly "
+                "['agent-net']."
             )
 
 

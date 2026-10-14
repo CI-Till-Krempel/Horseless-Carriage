@@ -102,12 +102,9 @@ services:
     build:
       context: .
       dockerfile: agent.Dockerfile
-    ports:
-      # ADK web frontend (only listens when AGENT_MODE=web, the default).
-      # GH issue #239: bound to localhost by default - see docker-compose.yaml's
-      # identical entry. Set AGENT_WEB_BIND_HOST=0.0.0.0 in .env to expose it
-      # on the LAN.
-      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
+    # ISSUE-0063: see docker-compose.yaml's identical entry - no `ports:`
+    # here, deliberately. net-proxy below reverse-proxies the web UI's
+    # ingress instead.
     volumes:
       # Mount the agent's source code as read-only
       - ./agents:/app/agents:ro
@@ -232,6 +229,9 @@ services:
     build:
       context: .
       dockerfile: net-proxy.Dockerfile
+    ports:
+      # ISSUE-0063: see docker-compose.yaml's identical entry.
+      - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
     networks:
       - external-net
       - agent-net
