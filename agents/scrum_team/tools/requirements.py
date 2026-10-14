@@ -1311,15 +1311,45 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     return None
 
 
-def _current_story_in_progress(product_backlog: List[Dict[str, Any]]):
+def _current_story_in_progress(product_backlog: List[Dict[str, Any]], active_feature_branches: Dict[str, str] | None = None):
     """
-    The story "currently being worked" under one-story-at-a-time ordering:
-    the first non-Epic, non-BLOCKED story in product_backlog order that
-    hasn't reached Accepted yet. Used to attach a story to a loop-detection
-    trip that has no story ID of its own (an unproductive transfer_to_agent
-    ping-pong, unlike a stuck advance_story_stage retry which already names
-    one in its own arguments) - see agent.py's _detect_transfer_loop.
+    The story "currently being worked" under one-story-at-a-time ordering.
+    Used to attach a story to a loop-detection trip that has no story ID of
+    its own (an unproductive transfer_to_agent ping-pong, unlike a stuck
+    advance_story_stage retry which already names one in its own arguments)
+    - see agent.py's _detect_transfer_loop/_detect_unadvanced_implementation.
+
+    Prefers the first non-Epic story in product_backlog order that has an
+    open feature branch (active_feature_branches, set by start_feature_branch)
+    and hasn't reached Accepted yet - regardless of whether it's already
+    `blocked` - since a story the team has genuinely started real work on
+    is the one implicated by anything happening right now, blocked or not.
+
+    ISSUE-0053: a real eval run (0.1.0-run63) showed an earlier, correctly-
+    attributed block on a story (from an unrelated loop a few events
+    earlier) make a SECOND loop-detection trip - about that very same
+    story's own PR review - skip straight past it (the old rule
+    unconditionally excluded any already-`blocked` item) and misattach to a
+    completely untouched story further down the backlog instead, which then
+    got the whole run killed over a story nobody had ever worked.
+    raise_story_blocker already refuses to double-block the same story (see
+    its own docstring), so re-targeting the active story here is safe:
+    either it isn't blocked yet (attaches normally) or it already is (the
+    caller's own fallback to a plain "stalled" interaction kicks in,
+    instead of fabricating a block on a story with zero recorded activity).
+
+    Falls back to the original rule (first non-Epic, non-blocked,
+    non-Accepted item) when no story has an active feature branch yet -
+    e.g. before any work has started this sprint, or once every actively
+    worked story has reached Accepted.
     """
+    active_feature_branches = active_feature_branches or {}
+    for item in product_backlog:
+        if item.get("type", "User Story") == "Epic":
+            continue
+        story_id = item.get("id") or item.get("title")
+        if story_id in active_feature_branches and "Accepted" not in (item.get("stages_completed") or []):
+            return item
     for item in product_backlog:
         if item.get("type", "User Story") == "Epic":
             continue
