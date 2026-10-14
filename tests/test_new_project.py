@@ -106,7 +106,7 @@ class TestConfigureForTargetProject:
             new_project._configure_for_target_project(repo_root, target_repo)
 
         import lib_env
-        assert lib_env.read_env_var(repo_root / ".env", "COMPOSE_PROJECT_NAME_PREFIX") == "my-project"
+        assert lib_env.read_env_var(repo_root / ".env", "COMPOSE_PROJECT_NAME_PREFIX") == "horseless-carriage_my-project"
 
     def test_picks_a_free_port_when_default_is_taken(self, tmp_path):
         repo_root = tmp_path / "horseless-carriage"
