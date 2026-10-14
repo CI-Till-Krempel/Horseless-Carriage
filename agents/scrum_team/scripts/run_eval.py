@@ -399,10 +399,13 @@ def _sprint_message(sprint_number: int, total_sprints: int) -> str:
         f"This is sprint {sprint_number} of {total_sprints}. Continue the product vision "
         "from before - check the existing repo content (specs/, code, .hc/state.json) "
         "before planning, so you build on what's already there rather than repeating or "
-        "contradicting it. As before: the sprint goal and backlog are pre-approved, proceed "
-        "directly through planning, development, PR creation, CI verification, sprint review "
-        "(create_sprint_report), and the release PR (create_release_pr) without waiting for "
-        "further approval. Do not ask me anything else during this sprint."
+        "contradicting it. As before: the sprint goal and backlog are pre-approved. Start by "
+        "calling start_sprint(goal) to officially kick off this sprint - it mechanically resets "
+        "the sprint's own token/event budget, so skipping it leaves this sprint silently running "
+        "on whatever budget the previous sprint already spent. Then proceed directly through "
+        "planning, development, PR creation, CI verification, sprint review (create_sprint_report), "
+        "and the release PR (create_release_pr) without waiting for further approval. Do not ask "
+        "me anything else during this sprint."
     )
 
 

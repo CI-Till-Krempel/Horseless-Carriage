@@ -753,9 +753,18 @@ def new_sprint_item_blocked(state: dict) -> str | None:
 # existing state signals (nothing new to track) so it can be surfaced
 # proactively - as a one-line system-context nudge every role sees every
 # turn (agent.py's phase_awareness_injection_callback), and as a console-
-# log prefix a human watching a live run can see at a glance. Nudging
-# only: nothing here may ever refuse a tool call - the existing mechanical
-# gates above remain the only real enforcement.
+# log prefix a human watching a live run can see at a glance.
+#
+# ISSUE-0057: originally nudge-only ("nothing here may ever refuse a tool
+# call") - PHASE_TOOL_POLICY/ALWAYS_PHASE_ALLOWED_TOOLS below turn this into
+# a real, if forgiving, gate (see agent.py's _detect_phase_violation): the
+# FIRST out-of-phase attempt at a given tool this phase is refused with a
+# clear explanation; an immediate identical retry is let through and
+# logged as an override, never a silent, unrecoverable block - this must
+# not ship without ISSUE-0056's fix landing first (or an equivalent one),
+# since a `current_sprint_phase` that can get stuck (e.g. on a stale,
+# never-reset token budget) would otherwise turn a silent bug into a
+# genuine deadlock.
 SPRINT_PHASES = (
     "Conceptual Work",
     "Plan & Start Sprint",
@@ -784,6 +793,94 @@ SPRINT_PHASE_GUIDANCE = {
         "implementation work does not belong here."
     ),
 }
+
+# ISSUE-0057: tools whose EXISTENCE is phase-specific - calling them at all
+# outside the listed phase(s) is premature regardless of arguments. Deliberately
+# excludes advance_story_stage/record_acceptance_check (agent.py's
+# _detect_phase_violation evaluates those by their actual stage/story
+# argument instead - the same tool name legitimately spans multiple phases,
+# e.g. advance_story_stage(..., "Ready") is a planning action while
+# advance_story_stage(..., "Implemented") is a development one) and excludes
+# every tool in ALWAYS_PHASE_ALLOWED_TOOLS below (cross-cutting/
+# communication/recovery tools no phase should ever gate).
+#
+# Deliberately NO "Review, Retro & Release"-only bucket: ScrumMaster's own
+# closing ritual (create_sprint_report/calculate_kpis/propose_steering_
+# change/etc.) is already governed by its own, separately-tested machinery
+# (check_cost_budget_callback's SPRINT CLOSE SEQUENCE grace,
+# _restrict_to_sprint_report_step, the ritual/critical-halt budget system)
+# that can - correctly - trigger that sequence before current_sprint_phase's
+# OWN, simpler classification agrees the team has reached that phase (e.g. a
+# critical budget halt mid-Development). Gating these tools here as well
+# would fight that existing system instead of complementing it. The user
+# requirement this issue actually protects - no NEW implementation work
+# during closing - is already fully covered by "Development" being the only
+# phase that allows write_file/start_feature_branch/etc. below; closing-ritual
+# tools are simply never phase-gated at all, listed in
+# ALWAYS_PHASE_ALLOWED_TOOLS instead.
+PHASE_TOOL_POLICY = {
+    "Conceptual Work": {
+        "upsert_story", "upsert_epic", "upsert_prd", "upsert_srs",
+        "plan_backlog_item", "set_priority", "declare_backlog_scope_complete",
+        "create_story_spec_pr",
+    },
+    "Plan & Start Sprint": {
+        "upsert_story", "upsert_epic", "upsert_prd", "upsert_srs",
+        "plan_backlog_item", "set_priority", "declare_backlog_scope_complete",
+        "create_story_spec_pr",
+        "start_sprint", "create_sprint_backlog_pr", "plan_sprint_backlog_item",
+    },
+    "Development": {
+        "write_file", "delete_file", "start_feature_branch",
+        "mark_pr_ready_for_review", "merge_story_pr", "gh_pr_create",
+        "resolve_feature_branch_conflicts", "git_push", "check_build",
+    },
+}
+
+# Every tool name that appears anywhere in PHASE_TOOL_POLICY is gated in
+# every OTHER phase by default - these are the ones that must never be
+# gated at all: cross-cutting communication/recovery/read tools, the
+# closing-ritual tools (see PHASE_TOOL_POLICY's own comment above), plus
+# per-story filing tools (add_impediment/upsert_issue/upsert_adr/
+# upsert_architecture_vision) that legitimately come up in any phase, not
+# just a dedicated planning one.
+ALWAYS_PHASE_ALLOWED_TOOLS = {
+    "create_sprint_report", "update_sprint_report_with_kpis", "calculate_kpis",
+    "add_retro_action", "create_release_pr", "gh_release_create",
+    "propose_steering_change", "gather_workflow_improvement_proposals",
+    "generate_workflow_diagram", "calculate_cost_breakdown",
+    "recommend_sprint_budget", "optimize_process_for_budget",
+    "transfer_to_agent", "read_doc", "list_docs", "log_decision",
+    "raise_story_blocker", "resolve_story_blocker", "deny_review",
+    "record_blocking_interaction", "resolve_blocking_interaction",
+    "list_blocking_interactions", "record_human_approval",
+    "gh_pr_status", "gh_pr_checks", "gh_pr_comment", "gh_pr_comments",
+    "gh_pr_review", "gh_pr_check_logs",
+    "get_budget_status", "update_budgets", "log_token_usage", "log_story_tokens",
+    "repo_status", "save_state_to_repo", "load_state_from_repo",
+    "get_corrupted_state_raw_content", "save_repaired_state",
+    "reset_state_from_git", "clear_corrupted_state",
+    "create_from_template", "integrate_open_changes", "update_roadmap",
+    "add_impediment", "upsert_issue", "upsert_adr", "upsert_architecture_vision",
+    "configure_github_repo", "configure_github_app", "seed_repository",
+    "create_litellm_virtual_key",
+    # Tied to an individual story's own readiness, not a sprint-wide phase -
+    # record_acceptance_check has no stage argument to evaluate the way
+    # advance_story_stage does (see PLANNING_STAGE_NAMES below), and
+    # over-restricting it risks blocking legitimate close-out work.
+    "record_acceptance_check",
+}
+
+# ISSUE-0057: advance_story_stage/record_acceptance_check are evaluated by
+# their actual effect, not gated as a whole tool - stage names reachable in
+# a planning phase vs. ones that mean real development progress.
+PLANNING_STAGE_NAMES = {"Draft", "Ready"}
+
+# Every tool name that appears in ANY phase's allowed set above - i.e. "is
+# this tool phase-specific at all" (agent.py's _detect_phase_violation
+# checks membership here, not PHASE_TOOL_POLICY's own keys, which are phase
+# names, not tool names).
+PHASE_SPECIFIC_TOOLS = set().union(*PHASE_TOOL_POLICY.values())
 
 
 def current_sprint_phase(state: dict) -> str:

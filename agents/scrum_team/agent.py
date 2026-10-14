@@ -259,6 +259,10 @@ from .helpers import (
     sprint_report_step_active,
     current_sprint_phase,
     SPRINT_PHASE_GUIDANCE,
+    PHASE_TOOL_POLICY,
+    PHASE_SPECIFIC_TOOLS,
+    ALWAYS_PHASE_ALLOWED_TOOLS,
+    PLANNING_STAGE_NAMES,
 )
 from .prompts import (
     ORCHESTRATOR_PROMPT,
@@ -2286,6 +2290,118 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
     return {"status": "error", "message": msg}
 
 
+def _advance_story_stage_phase_violation(phase: str, args: Dict[str, Any]) -> bool:
+    """
+    ISSUE-0057: advance_story_stage spans multiple phases depending on
+    WHICH stage it's actually moving a story to - Draft/Ready is a planning
+    action, Implemented/Reviewed/Tested is real development work, and
+    Accepted legitimately happens either mid-Development (one story
+    finishing before the next starts) or during sprint close. Gating the
+    tool name as a whole (the way PHASE_TOOL_POLICY does for everything
+    else) would wrongly block a routine Ready transition during planning,
+    or an Accepted transition exactly when it's supposed to happen.
+    """
+    stage = (args or {}).get("stage")
+    if stage in PLANNING_STAGE_NAMES:
+        return phase not in ("Conceptual Work", "Plan & Start Sprint")
+    if stage == "Accepted":
+        return phase not in ("Development", "Review, Retro & Release")
+    # Implemented, Reviewed, Tested, or anything else advance_story_stage
+    # itself doesn't recognize (its own validation handles a bad stage name
+    # - this gate only cares about phase, not about whether the stage is
+    # real) - all genuinely development-only work.
+    return phase != "Development"
+
+
+def _detect_phase_violation(tool_context: ToolContext, agent_name: str, tool_name: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    ISSUE-0057: turns sprint-phase awareness from a pure nudge
+    (phase_awareness_injection_callback/SPRINT_PHASE_GUIDANCE) into a real,
+    but forgiving, gate - a real eval run (0.1.0-run52, see
+    current_sprint_phase's own module comment) showed DevTeam jump straight
+    to implementation work during backlog grooming, getting mechanically
+    rejected by a DIFFERENT, reactive gate and only then having Product
+    Owner backfill the planning that should have come first. Catching this
+    proactively, by tool shape rather than by each reactive gate's own
+    narrower check, is the point.
+
+    Forgiving by design: the FIRST out-of-phase attempt at a given
+    tool+args this phase is refused, with a clear explanation. An
+    IMMEDIATE identical retry (same agent, same tool, same args, same
+    phase) is let through - logged as an override, never silently - rather
+    than becoming a second, truly unrecoverable gate stacked on top of
+    whatever the real mechanical gates already enforce. This must not ship
+    while current_sprint_phase can get stuck (ISSUE-0056) - a wrong phase
+    that can never correct itself would turn this gate into a genuine
+    deadlock instead of a one-time nudge.
+    """
+    if tool_name in ALWAYS_PHASE_ALLOWED_TOOLS or tool_name == "transfer_to_agent":
+        return None
+
+    try:
+        state = tool_context.state
+        phase = current_sprint_phase(state)
+
+        if tool_name == "advance_story_stage":
+            violation = _advance_story_stage_phase_violation(phase, args)
+        elif tool_name in PHASE_SPECIFIC_TOOLS:
+            # Appears somewhere in the policy at all - gated everywhere
+            # except the phase(s) it's actually listed under.
+            violation = tool_name not in PHASE_TOOL_POLICY.get(phase, set())
+        else:
+            # Not bucketed anywhere - fail open rather than guess; a tool
+            # this gate doesn't know about must never become an accidental
+            # new blocker on every phase.
+            return None
+    except Exception:
+        # Observability layered on top of real work, same spirit as
+        # _phase_and_tokens_prefix just below this function's own caller -
+        # a phase-computation glitch (e.g. state isn't a real dict yet)
+        # must never block a tool call that would otherwise be fine.
+        return None
+
+    if not violation:
+        return None
+
+    try:
+        args_key = json.dumps(args or {}, sort_keys=True, default=str)
+    except Exception:
+        args_key = repr(args)
+    signature = {"agent": agent_name, "tool": tool_name, "args": args_key, "phase": phase}
+    nudged = list(state.get("_phase_gate_nudged") or [])
+    if signature in nudged:
+        state["_phase_gate_nudged"] = [s for s in nudged if s != signature]
+        print(
+            f"⚠️ [{agent_name}] phase-gate override: {tool_name} allowed during {phase!r} "
+            "on immediate retry - this is logged, not silently bypassed.",
+            file=sys.stderr,
+        )
+        try:
+            from .tools.notifications import record_blocking_interaction
+            record_blocking_interaction(
+                "stalled",
+                f"{agent_name} overrode the {phase!r}-phase gate to call {tool_name} after being "
+                "refused once.",
+                detail=f"args: {args_key}",
+                tool_context=tool_context,
+            )
+        except Exception:
+            pass
+        return None
+
+    state["_phase_gate_nudged"] = nudged + [signature]
+    guidance = SPRINT_PHASE_GUIDANCE.get(phase, "")
+    return {
+        "status": "error",
+        "message": (
+            f"{tool_name} does not belong in the current phase ({phase!r}). {guidance} If this "
+            f"genuinely needs to happen now, call {tool_name} again with the exact same arguments - "
+            "that immediate retry will be let through and logged as an explicit override, instead of "
+            "staying permanently blocked."
+        ),
+    }
+
+
 REPEATED_REJECTION_LOOP_THRESHOLD = 3
 
 
@@ -2527,6 +2643,10 @@ def log_tool_invocation_callback(tool: BaseTool, args: Dict[str, Any], tool_cont
         if loop_result is not None:
             print(f"\U0001f501 [{agent_name}] repeated-call loop broken (-> {tool.name})", file=sys.stderr)
             return loop_result
+        phase_result = _detect_phase_violation(tool_context, agent_name, tool.name, args)
+        if phase_result is not None:
+            print(f"⏳ [{agent_name}] phase-gated - refused {tool.name}", file=sys.stderr)
+            return phase_result
 
     # GH issue #403: a human watching a live run (console or
     # `docker compose logs agent`) previously had no quick way to tell which

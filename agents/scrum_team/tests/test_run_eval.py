@@ -16,6 +16,7 @@ from agents.scrum_team.scripts.run_eval import (
     _sprint_needs_human_this_harness_cannot_provide,
     _unresolved_high_priority_general_blocker,
     _unresolvable_release_pr_conflict,
+    _sprint_message,
     _start_fresh_sprint_session,
 )
 
@@ -733,6 +734,20 @@ class TestUnresolvableReleasePrConflict:
 
     def test_ignores_an_empty_list(self):
         assert _unresolvable_release_pr_conflict([]) is None
+
+
+def test_sprint_message_names_start_sprint_explicitly():
+    """
+    ISSUE-0056: a real eval run (0.1.0-run64) never called start_sprint
+    again after Sprint 1 - the only place that mechanically resets the
+    sprint's own token budget - because the scripted per-sprint message
+    never named it at all, unlike create_sprint_report/create_release_pr
+    which it already names explicitly. Cheap, falsifiable stopgap: the
+    message must name the one call that keeps budget/phase in sync.
+    """
+    text = _sprint_message(2, 5)
+
+    assert "start_sprint" in text
 
 
 class TestStartFreshSprintSession:
