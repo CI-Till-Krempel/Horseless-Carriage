@@ -758,6 +758,21 @@ class TestPhaseAndTokensPrefix(unittest.TestCase):
         self.assertIn("Tokens: 42", prefix)
         self.assertNotIn("/", prefix)
 
+    def test_includes_the_sprint_number(self):
+        """
+        The raw console/GH Actions log has no other way to tell which
+        sprint a given tool-call line belongs to (unlike transcript.md,
+        grouped into per-sprint sections) - a crash that happens before a
+        sprint's section is ever written (ISSUE-0061's 0.1.0-run67) left
+        investigation guessing the sprint boundary from timestamps alone.
+        """
+        state = ScrumState()
+        state.sprint_number = 3
+
+        prefix = _phase_and_tokens_prefix(state.model_dump())
+
+        self.assertIn("Sprint 3", prefix)
+
 
 class TestStoriesReadyForNextStageCount(unittest.TestCase):
     def test_ready_but_not_implemented_counts(self):

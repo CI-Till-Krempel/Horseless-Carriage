@@ -1644,14 +1644,23 @@ def _phase_and_tokens_prefix(state: dict) -> str:
     asks for both the system-injected nudge and the human-facing log to
     show the same phase/budget snapshot, so this is the one place that
     actually reads state for it.
+
+    Includes the sprint number - the raw console/GH Actions log has no
+    other way to tell which sprint a given line belongs to (unlike
+    transcript.md, which is grouped into "## Raw agent activity log -
+    sprint N" sections) - investigating a crash or a stuck-run artifact
+    that never made it into transcript.md (e.g. ISSUE-0061's 0.1.0-run67)
+    otherwise means guessing the sprint boundary from timestamps/token
+    totals alone.
     """
+    sprint_number = state.get("sprint_number") or 0
     phase = current_sprint_phase(state)
     budgets = state.get("budgets") or {}
     usage = state.get("token_usage") or {}
     token_limit = budgets.get("total") or 0
     token_usage = usage.get("total") or 0
     tokens_str = f"{token_usage:,}/{token_limit:,}" if token_limit > 0 else f"{token_usage:,}"
-    return f"[Phase: {phase} | Tokens: {tokens_str}]"
+    return f"[Sprint {sprint_number} | Phase: {phase} | Tokens: {tokens_str}]"
 
 
 def phase_awareness_injection_callback(callback_context: CallbackContext, llm_request: LlmRequest) -> None:
