@@ -1655,6 +1655,7 @@ type it actually saw. `create_sprint_report`'s own KPI-rendering code is now def
 of that gate too (`isinstance(..., dict)` instead of `or {}`, which only ever caught a falsy value,
 never a truthy non-dict) - so even a malformed value written to state some other way can't crash this
 step. See ISSUE-0061 for the full mechanism and fix.
+See ISSUE-0061 for the full mechanism - not yet implemented.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
