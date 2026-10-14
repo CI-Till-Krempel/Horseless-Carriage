@@ -1498,6 +1498,27 @@ anyway. The scripted driver's own per-sprint message never names `start_sprint` 
 names `create_sprint_report` and `create_release_pr`, but never the one call that would have kept
 budget and phase in sync. See ISSUE-0056 for the full mechanism - not yet implemented.
 
+### A failed or incomplete release PR at sprint close leaves `start_sprint` permanently stuck for the rest of that sprint (0.1.0-run65, ISSUE-0058)
+
+A real eval run (0.1.0-run65) stopped after 2 of 5 sprints - Sprint 2 alone burned 6.25M tokens (125%
+of budget) and accepted zero of the 5 remaining stories. Unlike 0.1.0-run64 (ISSUE-0056), the team
+here wasn't failing to call `start_sprint` - it called it twice in Sprint 2, and both times correctly
+diagnosed and even correctly attempted the fix its own error message asked for.
+
+Sprint 1 ended without successfully opening a release PR (its one attempt failed with "No commits
+between main and develop"), leaving `sprint_report_pending_release` stuck `True`. Sprint 2's
+`start_sprint` correctly refused for exactly that reason; ProductOwner correctly recovered by calling
+`create_release_pr`, which succeeded this time - but retrying `start_sprint` immediately still refused,
+because merging that PR is "always a separate, out-of-band step" that only `run_eval.py`'s
+`_merge_open_prs` performs, and that only ever runs once, right after each sprint's own
+`_run_one_sprint` call returns - never mid-sprint. Since the release PR didn't exist until partway
+through Sprint 2, the earliest the harness could have merged it was the Sprint 2 -> 3 boundary, which
+never arrived because `start_sprint` kept failing in the meantime - a closed loop with no escape from
+inside the session. By the time the harness finally did try to merge it (after Sprint 2 ended), the PR
+had become genuinely unmergeable - `develop` had moved on in the meantime, and nothing resolves a
+conflicted release PR the way `resolve_feature_branch_conflicts` does for story branches. See
+ISSUE-0058 for the full mechanism - not yet implemented.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
