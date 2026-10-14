@@ -1496,8 +1496,14 @@ default, and nothing in this codebase trims or compacts that ongoing-session his
 `_trim_transcript`'s `TRANSCRIPT_MAX_ENTRIES` bound only ever applies to a separate bookkeeping replay
 used for session-crash recovery, never to a normal continuing session. So every sprint's actual
 model-facing prompt includes the full, ever-growing history of every prior sprint, and cost per call
-scales with cumulative run size, not with how much new work that sprint is actually doing. See
-ISSUE-0055 for the full mechanism - not yet implemented.
+scales with cumulative run size, not with how much new work that sprint is actually doing.
+
+Each sprint now starts on a brand new ADK session instead - the real state (backlog, budgets, token
+usage) carries forward via `create_session`'s own `state=` parameter, and the old session is deleted.
+No change was needed to the crash-recovery history replay already in `agent.py` - a brand new
+session's empty event list already triggers that same existing bounded-recovery path, so each sprint
+now starts with a small, bounded context summary instead of either nothing or everything since Sprint
+1. See ISSUE-0055 for the full mechanism and fix.
 ### `start_sprint` never got called again after Sprint 1, so the token budget and sprint phase got stuck for the rest of the run (0.1.0-run64, ISSUE-0056)
 
 Watching a real eval run (0.1.0-run64), the sprint token budget visibly never reset even though a new

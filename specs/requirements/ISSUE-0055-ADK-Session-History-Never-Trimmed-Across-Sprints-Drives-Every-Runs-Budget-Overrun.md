@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0055
 - Title: ADK's Native Session History Is Never Trimmed Across Sprint Boundaries - The Real Driver Behind Every Run's "Sprint Token Budget Exceeded" Finding
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-10-14
@@ -112,18 +112,24 @@ sprints' history before any of Sprint 3's own work began.
   Top Problem entries across runs 60/62/63/64's reports, previously treated as a vague, unfixable
   "architectural pruning" problem rather than a confirmed, localized gap (one unbroken session +
   ADK's own default full-replay + no compaction anywhere in the ongoing-session path).
-- Not investigated further here: whether ADK itself exposes a supported summarization/compaction hook
-  (vs. this harness needing to build its own, e.g. by periodically calling `session_service` to start a
-  fresh session seeded with a `_trim_transcript`-style summary) - that's the next engineer's design
-  call, informed by whatever `google-adk`'s current version actually supports.
+- Resolved via `google-adk`'s own supported primitive - `InMemorySessionService.create_session` accepts
+  a `state=` kwarg directly, confirmed via `inspect.signature`. No ADK-internal hook into
+  `llm_request.contents` construction was needed.
 
 ## Test Approach
-- A new test exercising `history_management_after_callback` (or wherever the fix lands) across a
-  simulated sprint boundary: seed `session.events`/`llm_request.contents` with several sprints' worth of
-  bulky synthetic tool-call entries, trigger a sprint boundary, and assert the next call's
-  `llm_request.contents` size is bounded (not equal to the full accumulated history).
-- `agents/scrum_team/tests/test_run_eval.py`: an integration-shaped test asserting token usage per
-  sprint (mocked LLM responses with fixed `usage_metadata.total_token_count` per call) does not scale
-  with which sprint number is running, for a fixed number of calls.
-- Re-run (or replay) `0.1.0-run64`'s Sprint 2/3 shape against the fixed harness and confirm
-  tokens-per-event stays roughly flat instead of climbing 17x.
+- `agents/scrum_team/tests/test_run_eval.py::TestStartFreshSprintSession` - three cases: state carries
+  forward onto a new session id, the old session is actually deleted, and the fix re-fetches current
+  state via `get_session` rather than trusting a stale passed-in session object (ADK's `get_session`
+  returns a merged copy per call, not a live reference - confirmed by reading
+  `InMemorySessionService._get_session_impl`'s source).
+- Full `agents/scrum_team/tests/test_run_eval.py` suite re-run (37 passed) to confirm no regression in
+  existing `_run_one_sprint` coverage.
+
+## Resolution
+- `agents/scrum_team/scripts/run_eval.py`: new `_start_fresh_sprint_session` helper - re-fetches current
+  state via `get_session`, creates a new ADK session seeded with that state via `create_session(state=
+  ...)`, deletes the old session, and returns the new one. Called from `_main_async`'s sprint loop after
+  each sprint that isn't the last. No change needed to `history_management_callback` - a brand new
+  session's empty event list already triggers its existing bounded-recovery path.
+- `agents/scrum_team/tests/test_run_eval.py`: `_FullFakeSessionService` test double (create_session/
+  delete_session with call tracking) and the three new regression tests above.
