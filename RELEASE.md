@@ -1453,14 +1453,23 @@ the whole run.
 
 `.hc/state.json` is committed to every feature branch, and because nearly every tool call mutates
 it, merging `develop` back into a feature branch hits a real git conflict on it almost every time.
-`resolve_feature_branch_conflicts` (`agents/scrum_team/tools/github.py`) surfaces conflicts the same
+`resolve_feature_branch_conflicts` (`agents/scrum_team/tools/github.py`) surfaced conflicts the same
 way for every file - the full on-disk content, conflict markers included - which for an application
-source file is a reasonable human-sized diff, but for `.hc/state.json` means dumping tens of KB of
+source file is a reasonable human-sized diff, but for `.hc/state.json` meant dumping tens of KB of
 backlog/retro/decision-log JSON into the conversation, then having DevTeam hand-reproduce the entire
 file again via `write_file` to resolve it. The transcript shows this exact round-trip costing
 15-20k tokens and 5+ wasted tool calls per occurrence in Sprints 4 and 5, crowding out the budget
-and turns needed to ever start US-0006. See ISSUE-0054 for the full mechanism and fix shape - not
-yet implemented.
+and turns needed to ever start US-0006.
+
+`.hc/state.json` is never hand-authored, though - every `save_state_to_repo` call already fully
+regenerates it from live `tool_context.state`, so the in-memory session state is always
+authoritative and a conflict on the committed file is never a real content conflict to adjudicate.
+`resolve_feature_branch_conflicts` now special-cases `.hc/state.json`: it regenerates the file from
+current state and stages it directly, instead of ever surfacing its raw content to an agent. A
+deliberately minimal fix, not a general JSON-merge engine - `.hc/state.json` itself, and this special
+case along with it, is slated to disappear from this repo entirely once the scrum state machine moves
+into its own MCP-server-owned store in a future release. See ISSUE-0054 for the full mechanism and
+fix.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so

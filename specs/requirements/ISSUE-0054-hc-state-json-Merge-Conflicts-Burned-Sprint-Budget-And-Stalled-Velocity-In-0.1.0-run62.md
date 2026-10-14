@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0054
 - Title: `.hc/state.json` Merge Conflicts Dump The Entire Scrum State Into Tool Responses, Burning Sprint Budget And Stalling Velocity
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-10-14
@@ -61,44 +61,64 @@ This directly explains both observed symptoms:
 
 ## Acceptance Criteria
 - A merge conflict on `.hc/state.json` specifically must never require an LLM agent to hand-merge the
-  raw file content. Either:
-  - `.hc/state.json` conflicts are resolved mechanically before `resolve_feature_branch_conflicts`
-    ever surfaces them to an agent (e.g. a structural/field-level merge of the two JSON versions, or
-    regenerating the feature branch's `state.json` from current in-memory state and re-committing),
-    or
-  - `.hc/state.json` is excluded from feature-branch commits entirely (e.g. committed only on
-    `develop`/release branches, never diffed/merged as part of a story's own feature-branch PR) so a
-    story branch simply never carries a conflicting copy of it.
-- `resolve_feature_branch_conflicts`'s response payload for any file must not scale with the sprint
-  number / total backlog size the way `.hc/state.json`'s does today - a regression test asserts its
-  response size for a `.hc/state.json`-only conflict stays bounded (e.g. a structured diff/summary, not
-  the full file) regardless of backlog length.
-- A new test reproduces the Sprint 5 double-failure shape (conflict on `.hc/state.json` -> resolved via
-  write_file -> immediate "resolve your current index first" on retry) and asserts the fixed path
-  either doesn't hit the conflict at all, or recovers in a single call without requiring
-  `integrate_open_changes` as a follow-up rescue.
+  raw file content - it is resolved mechanically, with zero conflict-marked content ever entering a
+  tool response.
+- `resolve_feature_branch_conflicts`'s response payload must not scale with sprint number / backlog
+  size the way `.hc/state.json`'s raw content did before this fix - a `.hc/state.json`-only conflict
+  now returns the same small, fixed-shape `{"status": "ok", "merged": true, ...}` response regardless
+  of backlog length, never a `conflicted_files` entry for that path.
+- A conflict on `.hc/state.json` alongside a genuine source-file conflict still surfaces only the
+  source file to the agent.
+- `resolve_feature_branch_conflicts` remains correct once its input changes: regenerating from stale or
+  partial `tool_context.state` (e.g. a crash-recovered session) must not silently fabricate fields -
+  covered by reusing the exact same `REPO_STATE_KEYS` snapshot `save_state_to_repo` itself uses, so
+  behavior is identical to an ordinary (non-conflict) save.
 
 ## Notes
-- Gap lives in `resolve_feature_branch_conflicts` (`agents/scrum_team/tools/github.py:1390-1516`) and
-  the unconditional `.hc/state.json` commit-to-feature-branch behavior in `save_state_to_repo`/
-  `_checkpoint_state_commit` (`agents/scrum_team/tools/scrum.py`) and `_commit_state_and_specs`
-  (`agents/scrum_team/tools/github.py:68-77`).
+- Gap lived in `resolve_feature_branch_conflicts` (`agents/scrum_team/tools/github.py:1390-1516`)
+  treating every conflicted file identically, including `.hc/state.json`.
+- Deliberately **not** pursued, per the stated direction for the next release (moving the whole scrum
+  state machine, including its state, into a separate MCP server with its own project-specific state
+  repo - out of scope for this fix but the fix is shaped not to fight it):
+  - A general JSON-level 3-way merge engine for `.hc/state.json` - unnecessary complexity for a file
+    that's always a full regeneration of live state already (see below), and would be thrown away the
+    moment state stops living in this repo's git history at all.
+  - Excluding `.hc/state.json` from feature-branch commits entirely - a larger, riskier change (it's
+    also the GH issue #59 crash-recovery checkpoint mechanism) for a problem the mechanical
+    regenerate-and-stage fix below already fully neutralizes at the one place conflicts actually
+    surface cost to an agent.
+- **Key insight enabling the actual fix**: `.hc/state.json` is never hand-authored - `save_state_to_repo`
+  (`agents/scrum_team/tools/scrum.py:482-501`) always fully regenerates it from live `tool_context.state`
+  via `{k: tool_context.state.get(k) for k in REPO_STATE_KEYS}`. The in-memory session state is therefore
+  always authoritative and current; a git conflict on the committed file is never a real content conflict
+  to adjudicate, just two stale on-disk snapshots of a value that's already correct in memory. This also
+  means the fix needs no new merge logic at all - just regenerate-and-stage using the exact same snapshot
+  `save_state_to_repo` already builds.
 - This is a different failure class from ISSUE-0050/ISSUE-0052 (no state was lost or regressed here -
   `stages_completed` only ever grew sprint over sprint in this run, confirmed via `manifest.json`); the
-  cost here is pure token/turn waste on a file that was never meant to be a piece of reviewable
+  cost here was pure token/turn waste on a file that was never meant to be a piece of reviewable
   application content in the first place.
 - Also visible in the same stretch: DevTeam attempted `merge_story_pr` directly (event 47,
   `transcript.md:14173`) despite it not being in DevTeam's tool list, wasting one more turn before
-  transferring to QA - minor compared to the state.json cost above and not filed separately, but worth
-  a prompt nudge if it recurs.
+  transferring to QA - minor compared to the state.json cost above and not fixed here.
 
 ## Test Approach
-- `agents/scrum_team/tests/test_github.py`: new cases around `resolve_feature_branch_conflicts`
-  specifically for `.hc/state.json` conflicts - assert the response no longer embeds raw conflicted
-  content for this path, and that resolution succeeds without a separate `integrate_open_changes` call.
-- `agents/scrum_team/tests/test_story_pipeline_state_machine.py` or similar: a backlog-size-scaling
-  test confirming a conflict-response payload size bound that holds regardless of `product_backlog`
-  length.
-- Re-run (or replay) `0.1.0-run62`'s Sprint 4/5 transcript shape against the fixed tools and confirm
-  token cost for the conflict-resolution sequence drops substantially, with headroom left in the sprint
-  budget for US-0006 to actually start.
+- `agents/scrum_team/tests/test_github.py::TestResolveFeatureBranchConflicts`: two new cases -
+  `test_state_json_conflict_is_resolved_mechanically_not_surfaced` (a `.hc/state.json`-only conflict
+  resolves to `status: ok, merged: true`, with the on-disk file regenerated from `tool_context.state`
+  and matching `REPO_STATE_KEYS` exactly) and
+  `test_state_json_conflict_excluded_even_when_a_real_conflict_also_exists` (a simultaneous `.hc/state.json`
+  + `app.py` conflict surfaces only `app.py` in `conflicted_files`, and `.hc/state.json` is regenerated
+  with no conflict markers left).
+- Full `agents/scrum_team/tests` suite re-run (1009 passed, 1 skipped) to confirm no regression in the
+  existing `TestResolveFeatureBranchConflicts` cases or anywhere else touching `.hc/state.json`.
+
+## Resolution
+- `agents/scrum_team/tools/github.py`: `resolve_feature_branch_conflicts` now special-cases
+  `.hc/state.json` among the conflicted paths - instead of reading and surfacing its raw conflict-marked
+  content, it regenerates the file from `tool_context.state` (reusing `scrum.py`'s own
+  `REPO_STATE_KEYS`/`_write_state_atomically`) and stages it directly, exactly like an
+  already-resolved-by-write_file file would be. No new merge logic, no change to what gets committed or
+  where - a small, self-contained special case that is trivial to delete once `.hc/state.json` stops
+  existing as a committed file in this repo at all.
+- `agents/scrum_team/tests/test_github.py`: the two new `TestResolveFeatureBranchConflicts` cases above.

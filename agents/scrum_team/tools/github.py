@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict
-from .base import _configured_repo_root, _run, _default_push_branch, _develop_branch_name, _with_eval_branch_prefix, _with_eval_title_prefix
+from .base import _configured_repo_root, _run, _default_push_branch, _develop_branch_name, _with_eval_branch_prefix, _with_eval_title_prefix, _state_file_path
 from ..helpers import (
     required_pre_release_approval,
     required_pre_implementation_approval,
@@ -1478,6 +1478,32 @@ def resolve_feature_branch_conflicts(story_id: str, tool_context=None) -> Dict[s
     unresolved = {}
     for rel_path in conflicted_paths:
         abs_path = (Path(repo_root) / rel_path).resolve()
+        if rel_path == ".hc/state.json":
+            # ISSUE-0054: .hc/state.json is never hand-authored - every
+            # save_state_to_repo() call fully regenerates it from live
+            # tool_context.state (see REPO_STATE_KEYS there), so the
+            # in-memory state this session already holds is always
+            # authoritative and current. A git conflict on it is therefore
+            # never a real content conflict to adjudicate - it's just two
+            # stale on-disk snapshots of a value that's already correct in
+            # memory. Regenerating and staging it here avoids dumping tens
+            # of KB of backlog/retro JSON into this tool's response for an
+            # agent to hand-merge via write_file, which a real eval run
+            # (0.1.0-run62) showed burning 15-20k tokens and several tool
+            # calls per occurrence for zero actual benefit. Deliberately
+            # just a regenerate-and-stage, not a general JSON-merge engine -
+            # state.json is slated to move out of this repo entirely into
+            # its own MCP-server-owned store, at which point this whole
+            # special case goes away with it.
+            try:
+                from .scrum import REPO_STATE_KEYS, _write_state_atomically
+                snapshot = {k: tool_context.state.get(k) for k in REPO_STATE_KEYS}
+                _write_state_atomically(_state_file_path(Path(repo_root)), snapshot)
+            except OSError as e:
+                unresolved[rel_path] = f"(could not regenerate state file: {e})"
+                continue
+            _run(["git", "add", "--", rel_path], cwd=repo_root, tool_context=tool_context)
+            continue
         try:
             content = abs_path.read_text(encoding="utf-8", errors="replace")
         except OSError as e:
