@@ -96,6 +96,50 @@ class TestGitHubTools(unittest.TestCase):
         )
 
     @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_create_forces_develop_for_a_feature_branch_head_with_no_base(self, mock_run):
+        """
+        ISSUE-0059: a head shaped like a story feature branch must always
+        target develop, even when the caller omits `base` entirely - a real
+        eval run showed DevTeam fall back to this general-purpose tool
+        directly (after start_feature_branch kept rejecting it for
+        unrelated reasons) with no base argument, silently defaulting into
+        main and bypassing develop/GitFlow completely, with no error.
+        """
+        mock_run.return_value = {"status": "ok", "stdout": "https://github.com/owner/repo/pull/4"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch.dict("os.environ", {"GITHUB_REPO_BRANCH": "eval/run-1/main", "GITHUB_DEVELOP_BRANCH": "eval/run-1/develop"}, clear=True):
+            gh_pr_create(title="US-0001: Create To-Do List", head="feature/US-0001-create-todo-list", tool_context=tool_context)
+
+        mock_run.assert_called_once_with(
+            ["gh", "pr", "create", "--base", "eval/run-1/develop", "--title", "US-0001: Create To-Do List", "--head", "feature/US-0001-create-todo-list"],
+            cwd=unittest.mock.ANY,
+            tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_create_forces_develop_for_a_feature_branch_head_even_with_an_explicit_wrong_base(self, mock_run):
+        """Sibling to the case above: an explicitly-passed base must not
+        override the feature-branch rule either - a story PR must never be
+        able to target anything other than develop."""
+        mock_run.return_value = {"status": "ok", "stdout": "https://github.com/owner/repo/pull/5"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch.dict("os.environ", {"GITHUB_REPO_BRANCH": "eval/run-1/main", "GITHUB_DEVELOP_BRANCH": "eval/run-1/develop"}, clear=True):
+            gh_pr_create(
+                title="US-0001: Create To-Do List", head="feature/US-0001-create-todo-list",
+                base="eval/run-1/main", tool_context=tool_context,
+            )
+
+        mock_run.assert_called_once_with(
+            ["gh", "pr", "create", "--base", "eval/run-1/develop", "--title", "US-0001: Create To-Do List", "--head", "feature/US-0001-create-todo-list"],
+            cwd=unittest.mock.ANY,
+            tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
     def test_configure_github_repo_does_not_clobber_configured_branch_with_main(self, mock_run):
         """
         Acceptance Criteria (eval harness): if the caller omits

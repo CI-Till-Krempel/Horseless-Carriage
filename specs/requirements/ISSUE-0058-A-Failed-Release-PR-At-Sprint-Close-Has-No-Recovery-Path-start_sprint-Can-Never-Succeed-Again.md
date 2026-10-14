@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0058
 - Title: A Failed/Incomplete Release PR At Sprint Close Has No Recovery Path - `start_sprint` Can Never Succeed Again For The Rest Of That Sprint
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-10-14
@@ -131,13 +131,28 @@ that could never open for it.
   again, i.e. these two issues may compound in most real runs rather than being mutually exclusive.
 
 ## Test Approach
-- `agents/scrum_team/tests/test_scrum.py` (or wherever `start_sprint`/`new_sprint_item_blocked` are
-  tested): a case reproducing this exact sequence - blocked `start_sprint`, successful recovery
-  `create_release_pr`, then asserting the chosen fix (mid-sprint merge trigger, or a conflict-resolution
-  path, or a mechanical escalation) actually lets a subsequent `start_sprint` succeed within the same
-  sprint, instead of requiring a sprint boundary that may never come.
-- `agents/scrum_team/tests/test_run_eval.py`: if the fix adds a mid-sprint merge-sweep trigger, a test
-  asserting `_merge_open_prs` (or equivalent) is invoked immediately after a successful
-  `create_release_pr` tool call, not only at `_run_one_sprint`'s return.
-- Re-run (or replay) `0.1.0-run65`'s Sprint 2 shape against the fixed harness and confirm `start_sprint`
-  succeeds once the recovery `create_release_pr` call lands, instead of looping to budget exhaustion.
+- `agents/scrum_team/tests/test_run_eval.py::TestRunOneSprintMidSprintReleasePrMerge` - a
+  `create_release_pr` success mid-sprint triggers an immediate merge attempt (given `local_path`/
+  `base_branch`); no trigger without them (backward compatible); no trigger for an unrelated tool's
+  success.
+- `agents/scrum_team/tests/test_run_eval.py::TestUnresolvableReleasePrConflict` - distinguishes a
+  genuine, unresolvable merge conflict from a "not yet ready" failure that might still resolve, and
+  from a clean merge.
+- Full `agents/scrum_team/tests` suite re-run (1019 passed, 1 skipped).
+
+## Resolution
+- `agents/scrum_team/scripts/run_eval.py`: new `_start_fresh_sprint_session`-sibling change -
+  `_run_one_sprint` now accepts optional `local_path`/`base_branch`; when given, a `create_release_pr`
+  tool response with `status: ok` immediately triggers `_merge_open_prs`, instead of waiting for the
+  sprint to end. Results are returned as `mid_sprint_pr_merges` and folded into
+  `manifest["pr_merges"]` by `_main_async`, tagged `mid_sprint: True`.
+- New `_unresolvable_release_pr_conflict` helper distinguishes a genuine, unresolvable git conflict
+  (`"not mergeable"` in the `gh pr merge` failure message - the literal wording `0.1.0-run65`'s PR #541
+  hit) from a failure that might still resolve on its own. Applied at both the new mid-sprint trigger
+  and the existing end-of-sprint sweep: either one hitting a genuine conflict now stops the run cleanly
+  (`stop_reason: "release_pr_conflict_unrecoverable"`) instead of silently continuing to burn further
+  sprints' budget on a `start_sprint` retry loop that can never succeed - no automatic git conflict
+  resolution was implemented (too risky for a harness script to get right on real content conflicts),
+  matching the issue's own acceptance criteria preference for "surfacing a real, actionable blocker"
+  over silent budget burn.
+- `agents/scrum_team/tests/test_run_eval.py`: the two new test classes above.

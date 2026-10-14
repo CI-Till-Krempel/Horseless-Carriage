@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0059
 - Title: `gh_pr_create`'s Silent Default-To-Main Let DevTeam's Feature-Branch PR Bypass `develop` Entirely, Corrupting GitFlow For The Whole Run
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-10-14
@@ -95,12 +95,24 @@ times.
   one based on what it's actually being asked to create a PR for.
 
 ## Test Approach
-- `agents/scrum_team/tests/test_github.py`: new cases for `gh_pr_create` - a call with `head` matching
-  `active_feature_branches` and no `base` resolves to the develop branch; the same call with `head` not
-  matching any known feature branch and no `base` keeps today's behavior (defaults to
-  `_default_push_branch`).
-- A regression test reproducing `0.1.0-run65`'s exact shape: `start_feature_branch` rejected (any
-  reason), then a direct `gh_pr_create(head=<that story's branch>)` with no `base` - assert the
-  resulting PR targets `develop`, not `main`.
-- Full `agents/scrum_team/tests` suite re-run to confirm no existing test relying on `gh_pr_create`'s
-  current default-to-main behavior (release PRs, sprint backlog PRs, steering proposals) breaks.
+- `agents/scrum_team/tests/test_github.py`: new cases for `gh_pr_create` - a `feature/*`-shaped `head`
+  with no `base` resolves to the develop branch; the same `head` with an explicit (wrong) `base` is
+  still forced to develop.
+- Full `agents/scrum_team/tests` suite re-run (1019 passed, 1 skipped) to confirm no existing test
+  relying on `gh_pr_create`'s default-to-main behavior (release PRs, sprint backlog PRs, steering
+  proposals) broke.
+
+## Resolution
+- `agents/scrum_team/tools/github.py`: `gh_pr_create` now checks `head` (after any eval-run prefix is
+  applied) against `_FEATURE_BRANCH_PATTERN` (`(?:^|/)feature/`) and forces `base` to the resolved
+  develop branch whenever it matches - **regardless of what `base` was passed or left unset** - before
+  falling through to `_default_push_branch` for everything else.
+- Deliberately **not** keyed on `active_feature_branches` (one of the two shapes this issue originally
+  proposed): in the actual `0.1.0-run65` failure, `start_feature_branch` never reached the point where
+  it records `active_feature_branches[story_id]` - all 4 attempts failed before that line. Keying on
+  that state would have missed the exact scenario this issue exists to fix. The `feature/*` naming
+  convention (`start_feature_branch`'s own `branch = f"feature/{story_id}-{slug}"`, confirmed as the
+  only tool in the codebase that produces this prefix - `sprint-backlog/`, `steering/` are the only
+  other branch-naming conventions in use) is a robust signal independent of whether
+  `start_feature_branch` ever actually succeeded.
+- `agents/scrum_team/tests/test_github.py`: the two new regression tests above.

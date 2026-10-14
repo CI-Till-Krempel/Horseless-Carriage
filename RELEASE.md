@@ -1516,8 +1516,14 @@ through Sprint 2, the earliest the harness could have merged it was the Sprint 2
 never arrived because `start_sprint` kept failing in the meantime - a closed loop with no escape from
 inside the session. By the time the harness finally did try to merge it (after Sprint 2 ended), the PR
 had become genuinely unmergeable - `develop` had moved on in the meantime, and nothing resolves a
-conflicted release PR the way `resolve_feature_branch_conflicts` does for story branches. See
-ISSUE-0058 for the full mechanism - not yet implemented.
+conflicted release PR the way `resolve_feature_branch_conflicts` does for story branches.
+
+A `create_release_pr` success mid-sprint now immediately triggers a merge attempt instead of waiting
+for the sprint to end, giving a recovery attempt like this one a real chance to actually unblock
+`start_sprint` within the same sprint. Separately, a release PR that genuinely can't be merged due to
+a real conflict (no tool exists to resolve this, the same gap noted above) now stops the run cleanly
+with a clear reason, instead of silently burning further sprints' budget on a `start_sprint` retry
+loop that could never succeed. See ISSUE-0058 for the full mechanism and fix.
 
 ### `gh_pr_create`'s silent default-to-main let a feature-branch PR bypass `develop` entirely (0.1.0-run65, ISSUE-0059)
 
@@ -1532,7 +1538,11 @@ its toolset) twice, neither time passing a `base` argument. `gh_pr_create` silen
 feature branch that must always target `develop` - so the PR opened and merged straight into `main`,
 completely bypassing GitFlow with no error or warning anywhere. `develop` sat untouched at the seed
 commit for the rest of the run, which is exactly why the later release PR found nothing to release.
-See ISSUE-0059 for the full mechanism - not yet implemented.
+
+`gh_pr_create` now recognizes a `head` shaped like a story feature branch (the `feature/<id>-<slug>`
+naming convention `start_feature_branch` itself always uses) and forces `base` to the resolved develop
+branch whenever it matches - regardless of what `base` was passed or left unset - before falling
+through to the previous default for everything else. See ISSUE-0059 for the full mechanism and fix.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so

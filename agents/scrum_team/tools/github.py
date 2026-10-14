@@ -658,12 +658,23 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
 
     return {"status": "ok" if r3.get("status") == "ok" else "error", "branch": branch, "steps": {"checkout": checkout, "add": r1, "commit": r2, "push": r3}}
 
+_FEATURE_BRANCH_PATTERN = re.compile(r"(?:^|/)feature/")
+
+
 def gh_pr_create(title: str, body: str = "", base: str | None = None, head: str | None = None, draft: bool = False, head_is_resolved: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     Create a Pull Request using `gh` CLI. Assumes authentication is set up.
     - base: target branch. Defaults to the configured default branch (see
       _default_push_branch) rather than a hardcoded "main", so an isolated
-      eval/test run can target its own branch via GITHUB_REPO_BRANCH.
+      eval/test run can target its own branch via GITHUB_REPO_BRANCH. A
+      `head` shaped like a story feature branch (feature/<id>-<slug>, see
+      start_feature_branch) always overrides this to the develop branch
+      instead (see _develop_branch_name) - regardless of what `base` was
+      passed or left unset (ISSUE-0059: a real eval run showed DevTeam fall
+      back to this general-purpose tool directly - after start_feature_branch
+      itself kept rejecting it for unrelated reasons - with no `base`
+      argument, silently defaulting into main and completely bypassing
+      develop/GitFlow for the rest of that run, with no error anywhere).
     - head: source branch (defaults to current if None). In an eval run
       (EVAL_RUN_ID set), auto-tagged with the run id the same way git_push
       tags branches, so a head passed as the plain (unprefixed) branch name
@@ -677,9 +688,12 @@ def gh_pr_create(title: str, body: str = "", base: str | None = None, head: str 
     - draft: open PR as draft
     """
     repo_root = str(_configured_repo_root(tool_context))
-    base = base or _default_push_branch(tool_context)
     if head and not head_is_resolved:
         head = _with_eval_branch_prefix(head)
+    if head and _FEATURE_BRANCH_PATTERN.search(head):
+        base = _develop_branch_name(tool_context)
+    else:
+        base = base or _default_push_branch(tool_context)
     title = _with_eval_title_prefix(title)
     cmd = ["gh", "pr", "create", "--base", base, "--title", title]
     if body:
