@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0057
 - Title: Mechanically Enforce Sprint-Phase Tool Restrictions (Not Just Nudge) - Block Implementation Outside Development, Block New Implementation During Closing
-- Status: Ready
+- Status: Done
 - Priority: Should
 - Owner: Architect
 - Last Updated: 2026-10-14
@@ -41,11 +41,19 @@ allowed" vs. "implementation-only" by name alone. Surveying every role's actual 
   "Development"/closing - re-planning mid-sprint or mid-close is exactly the pattern other gates
   already discourage): `upsert_story`, `upsert_epic`, `upsert_prd`, `upsert_srs`, `plan_backlog_item`,
   `set_priority`, `declare_backlog_scope_complete`, `create_story_spec_pr`.
-- Unambiguously **closing-only** (the natural fit is "Review, Retro & Release"): `create_sprint_report`,
-  `update_sprint_report_with_kpis`, `calculate_kpis`, `add_retro_action`, `create_release_pr`,
-  `gh_release_create`, `propose_steering_change`, `gather_workflow_improvement_proposals`,
-  `generate_workflow_diagram`, `calculate_cost_breakdown`, `recommend_sprint_budget`,
-  `optimize_process_for_budget`.
+- **Considered "closing-only" (`create_sprint_report`, `calculate_kpis`, `create_release_pr`, etc.) -
+  deliberately NOT gated, implemented as always-allowed instead.** These are already governed by their
+  own, separately-tested machinery (`check_cost_budget_callback`'s SPRINT CLOSE SEQUENCE grace,
+  `_restrict_to_sprint_report_step`, the ritual/critical-halt budget system) that can - correctly -
+  trigger the closing ritual before `current_sprint_phase`'s own simpler classification agrees the team
+  has reached "Review, Retro & Release" (e.g. a critical budget halt mid-"Development"). Confirmed by
+  implementation: gating these broke 9 pre-existing tests across `TestRestrictToSprintReportStep`,
+  `TestRepeatedRejectionLoop`, and `TestLogToolInvocationCallbackBlocksRepeatedCalls`, all of which
+  construct a default/"Conceptual Work"-phase state because phase was never relevant to what they test -
+  real evidence this bucket would have fought the existing system rather than complemented it. The
+  user's actual requirement ("in sprint closing, only reporting/version topics should be doable") is
+  still fully met: "Development" is the only phase that allows new implementation tools at all, so
+  closing can never include fresh `write_file`/`start_feature_branch` regardless.
 - **Needs stage-aware handling, not a blanket tool-name rule**: `advance_story_stage` is used for
   *both* backlog grooming (`Draft`->`Ready`, squarely a planning-phase action) *and* implementation
   progression (`Ready`->`Implemented`->`Reviewed`->`Tested`->`Accepted`). A phase gate on this tool
@@ -120,16 +128,40 @@ stuck is strictly worse than the current nudge-only behavior.
   tool list against the policy table before shipping, not just the categories sketched here).
 
 ## Test Approach
-- New tests alongside the existing phase-awareness coverage (wherever `current_sprint_phase`/
-  `phase_awareness_injection_callback` are tested, or a new `TestPhaseGatedToolEnforcement` class in
-  `agents/scrum_team/tests/test_agent.py`): one case per `SPRINT_PHASES` entry, asserting the
-  implementation-only tool set is refused outside "Development" and allowed inside it, the
-  planning-only set the mirror image for "Conceptual Work"/"Plan & Start Sprint", and the closing-only
-  set for "Review, Retro & Release".
-- Dedicated cases for `advance_story_stage`'s stage-aware behavior: `Ready` allowed in "Conceptual
-  Work", `Implemented` refused in "Conceptual Work" and in "Review, Retro & Release", `Accepted`
-  allowed in "Review, Retro & Release".
-- A case confirming the override/escalation path actually unblocks a legitimately-needed
-  out-of-phase call, and that it leaves a logged trace (not a silent bypass).
-- Full `agents/scrum_team/tests` suite re-run to confirm no existing test's fixture state
-  (constructed without phase in mind) starts tripping a new refusal it didn't expect.
+- `agents/scrum_team/tests/test_agent.py::TestDetectPhaseViolation` - one case per gated bucket
+  (implementation-only refused outside "Development"/allowed inside; planning-only refused outside
+  "Conceptual Work"/"Plan & Start Sprint"/allowed inside both), `transfer_to_agent` and
+  always-allowed/unbucketed tools never blocked, the `advance_story_stage` stage-aware cases (`Ready`
+  allowed in "Conceptual Work", `Implemented` refused there and allowed in "Development", `Accepted`
+  allowed in both "Development" and "Review, Retro & Release"), the override/retry path (identical
+  retry allowed and logged as a `blocking_interaction`; a *different* args retry blocked again, not
+  mistaken for an override), and the fail-open case (malformed/mock state never blocks a call).
+- Full `agents/scrum_team/tests` suite re-run (1028 passed, 1 skipped) - this is what actually surfaced
+  the closing-only bucket's conflict with existing tests (see above) and one real bug in the
+  implementation itself (see Resolution).
+
+## Resolution
+- `agents/scrum_team/helpers.py`: `PHASE_TOOL_POLICY` (Conceptual Work / Plan & Start Sprint /
+  Development only - no closing bucket, see above), `PHASE_SPECIFIC_TOOLS` (flat union of every tool
+  name appearing anywhere in the policy - used to decide "is this tool phase-specific at all"),
+  `ALWAYS_PHASE_ALLOWED_TOOLS` (cross-cutting/communication/recovery tools plus the closing-ritual
+  tools), and `PLANNING_STAGE_NAMES` (`{"Draft", "Ready"}`, for `advance_story_stage`'s stage-aware
+  check).
+- `agents/scrum_team/agent.py`: new `_detect_phase_violation`, called from
+  `log_tool_invocation_callback`'s existing non-transfer branch (right after the repeated-call loop
+  check). Wrapped in a broad `try/except Exception: return None` - observability layered on top of
+  real work must never block a call over an internal computation error (this is what the fail-open
+  test covers; two pre-existing tests used a raw, unconfigured `MagicMock()` state and needed this).
+  `_advance_story_stage_phase_violation` implements the stage-aware rule. The override mechanism keys
+  a `(agent, tool, args, phase)` signature into `state["_phase_gate_nudged"]`: first occurrence refuses
+  and remembers it, an identical second occurrence removes it, logs an override via
+  `record_blocking_interaction`, and lets the call through.
+- **Bug caught by the test suite, not by review**: the first implementation checked `tool_name in
+  PHASE_TOOL_POLICY` - but that dict's keys are phase names, not tool names, so the check was always
+  `False` and the gate never actually fired for any tool. `PHASE_SPECIFIC_TOOLS` (the flat union) fixed
+  this. Left as a note here since it's exactly the kind of bug a reviewer reading the diff alone could
+  plausibly miss - the full test suite catching it is the actual evidence this works, not the code
+  being self-evidently correct.
+- `agents/scrum_team/tests/test_agent.py`: `TestDetectPhaseViolation` (18 cases) plus two pre-existing
+  tests updated to set up a real "Development"-phase state where they'd previously relied on a
+  default/mock state that phase gating now (correctly) notices.

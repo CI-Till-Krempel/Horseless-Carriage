@@ -1496,7 +1496,34 @@ crosses that ceiling (practically the start of Sprint 2 here), the phase gets st
 phase awareness is nudge-only (never a gate), nothing stops new implementation work from continuing
 anyway. The scripted driver's own per-sprint message never names `start_sprint` at all - it explicitly
 names `create_sprint_report` and `create_release_pr`, but never the one call that would have kept
-budget and phase in sync. See ISSUE-0056 for the full mechanism - not yet implemented.
+budget and phase in sync.
+
+The scripted message now names `start_sprint` explicitly too. See ISSUE-0056 for the full mechanism
+and fix.
+
+### Sprint-phase awareness is now a real, if forgiving, gate - not just a nudge (ISSUE-0057)
+
+Following up on ISSUE-0056: `current_sprint_phase` already computed which ritual phase the team was in
+every turn, but nothing acted on it - `phase_awareness_injection_callback`'s own docstring said so
+directly, "this never refuses a tool call itself." A tool call shaped for the wrong phase (writing new
+implementation code during backlog grooming, say) was only ever caught reactively, by whichever
+narrower mechanical gate happened to also apply.
+
+`log_tool_invocation_callback` now runs a phase check for every non-transfer tool call: an
+implementation-only tool (`write_file`, `start_feature_branch`, `merge_story_pr`, etc.) is refused
+outside "Development"; a planning-only tool (`upsert_story`, `plan_backlog_item`, etc.) is refused
+outside "Conceptual Work"/"Plan & Start Sprint". `advance_story_stage` is evaluated by its actual
+`stage` argument rather than gated as a whole tool, since the same tool legitimately spans multiple
+phases (`Ready` is a planning action, `Implemented` is development, `Accepted` is routine in either
+"Development" or "Review, Retro & Release"). Deliberately forgiving by design: the first out-of-phase
+attempt is refused with a clear explanation, but an immediate identical retry is let through and
+logged as an explicit override - never a second, truly unrecoverable gate stacked on top of the real
+mechanical gates. ScrumMaster's own closing ritual (`create_sprint_report`, `calculate_kpis`, etc.) is
+deliberately never phase-gated at all - it's already governed by its own, separately-tested budget/
+grace machinery that can correctly trigger before `current_sprint_phase`'s simpler classification
+agrees the team has reached closing, and gating it anyway broke 9 pre-existing tests that proved
+exactly this conflict. This also depended on ISSUE-0056 landing first: a phase that could get
+permanently stuck would have turned this gate into a genuine deadlock instead of a one-time nudge.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
