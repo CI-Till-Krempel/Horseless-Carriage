@@ -1519,6 +1519,21 @@ had become genuinely unmergeable - `develop` had moved on in the meantime, and n
 conflicted release PR the way `resolve_feature_branch_conflicts` does for story branches. See
 ISSUE-0058 for the full mechanism - not yet implemented.
 
+### `gh_pr_create`'s silent default-to-main let a feature-branch PR bypass `develop` entirely (0.1.0-run65, ISSUE-0059)
+
+Tracing why 0.1.0-run65's Sprint 1 `create_release_pr` saw "no commits between main and develop"
+(ISSUE-0058) found the true trigger: US-0001's own story PR never targeted `develop` at all.
+`start_feature_branch` - which always correctly targets `develop` - rejected DevTeam's story four times
+in a row for different legitimate reasons (not yet planned into the sprint, then a missing
+Architect/QA sign-off on the Sprint Backlog PR). DevTeam never retried it after the fourth rejection -
+instead it pushed the branch itself and called `gh_pr_create` (a general-purpose tool also directly in
+its toolset) twice, neither time passing a `base` argument. `gh_pr_create` silently defaults an unset
+`base` to the repo's main/push branch, with nothing recognizing that this particular `head` was a story
+feature branch that must always target `develop` - so the PR opened and merged straight into `main`,
+completely bypassing GitFlow with no error or warning anywhere. `develop` sat untouched at the seed
+commit for the rest of the run, which is exactly why the later release PR found nothing to release.
+See ISSUE-0059 for the full mechanism - not yet implemented.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

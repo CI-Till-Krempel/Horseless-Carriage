@@ -106,13 +106,25 @@ that could never open for it.
   (`agents/scrum_team/tools/scrum.py`), `create_release_pr` (`agents/scrum_team/tools/github.py`), and
   `_merge_open_prs`'s once-per-sprint-boundary placement in `run_eval.py`'s sprint loop
   (`agents/scrum_team/scripts/run_eval.py:862-893`).
-- Not resolved here: why Sprint 1's *first* `create_release_pr` attempt hit "No commits between
-  eval/0.1.0-run65/main and eval/0.1.0-run65/develop" despite US-0001 having already merged into
-  `develop` via its own feature-branch PR earlier that same sprint - worth a quick, separate look (a
-  stale/cached view of the remote at `gh pr create` time? an earlier, unexpected fast-forward of `main`
-  to `develop`?), but is not this issue's central finding: **whatever** causes a release PR to fail to
-  open cleanly at a sprint's natural close, the complete absence of any recovery path afterward is the
-  severe, confirmed, and more general bug.
+- **Resolved**: why Sprint 1's *first* `create_release_pr` attempt hit "No commits between
+  eval/0.1.0-run65/main and eval/0.1.0-run65/develop" - US-0001 never actually merged into `develop`
+  at all. `start_feature_branch` failed 4 times for DevTeam on US-0001 (unplanned into the sprint,
+  then the sprint-backlog-engagement gate - `transcript.md:1978-1985`, `2654-2661`), so DevTeam gave up
+  on it and fell back to its own `git_push` + `gh_pr_create` calls directly (`transcript.md:2796-2935`)
+  - both without ever passing a `base` parameter. `gh_pr_create` silently defaults an unset `base` to
+  `_default_push_branch(tool_context)` (`agents/scrum_team/tools/github.py:680`) - i.e. **main**, not
+  develop - so PR #540 ("US-0001: Create To-Do List") opened and merged straight into `main`,
+  completely bypassing `develop`. By the time `create_release_pr` ran, `develop` was still sitting at
+  the original seed commit with nothing to release - hence "no commits between them". This is the true
+  upstream root cause of this issue's entire chain, filed separately as ISSUE-0059 (the general,
+  more severe gap: any role with direct `gh_pr_create` access can silently corrupt GitFlow by falling
+  back to it after `start_feature_branch` repeatedly rejects a story, with no guardrail distinguishing
+  "this PR is shaped like a story feature branch, it must target develop" from "this is some other kind
+  of PR, main is a safe default"). Fixing ISSUE-0059 would likely prevent this specific run's trigger
+  entirely - but the *this issue's* finding (no recovery path once a release PR fails for ANY reason)
+  remains real and worth fixing independently, since other causes of a failed release PR will keep
+  recurring (`0.1.0-run64` hit a different one - a stale git tag - and would have hit this same trap
+  too, had its team remembered to retry `start_sprint`).
 - `0.1.0-run64` (ISSUE-0056) also never got a release PR merged for its final sprint
   (`sprint_report_pending_release: true` there too) - worth checking whether that run would have hit
   this exact same unrecoverable-retry trap had the team there also remembered to call `start_sprint`
