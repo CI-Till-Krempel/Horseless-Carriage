@@ -1130,6 +1130,54 @@ class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
         self.assertIsNotNone(blocked)
         self.assertIn("bounced transfer_to_agent", blocked["question"])
 
+    def test_transfer_loop_does_not_misattach_to_an_untouched_story_when_the_active_story_is_already_blocked(self):
+        """
+        ISSUE-0053: a real eval run (0.1.0-run63) showed a second, unrelated
+        loop fire moments after an earlier one had already blocked the
+        story actually being worked (one with an open feature branch) - the
+        old rule unconditionally skipped any already-`blocked` item and
+        misattached the new block to a completely untouched story further
+        down the backlog instead, which then got the whole run killed over
+        a story nobody had ever worked. The active, already-blocked story
+        must stay the implicated one - raise_story_blocker's own refusal to
+        double-block then correctly falls back to a plain "stalled"
+        interaction instead of fabricating a new block elsewhere.
+        """
+        tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
+        tool_context = MagicMock()
+        tool_context.agent_name = "ProductOwner"
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["active_feature_branches"] = {"US-0001": "feature/US-0001-login"}
+        tool_context.state["product_backlog"] = [
+            {
+                "id": "US-0001",
+                "title": "Add login flow",
+                "type": "User Story",
+                "stages_completed": ["Draft", "Ready"],
+                "blocked": {
+                    "question": "DevTeam and ProductOwner bounced transfer_to_agent 6x with no progress.",
+                    "category": "technical",
+                    "mechanically_detected": True,
+                },
+            },
+            {
+                "id": "US-0002",
+                "title": "Add a task to a list",
+                "type": "User Story",
+                "stages_completed": ["Draft", "Ready"],
+            },
+        ]
+
+        for _ in range(agent_module.TRANSFER_LOOP_THRESHOLD):
+            result = log_tool_invocation_callback(tool, {"agent_name": "ScrumOrchestrator"}, tool_context)
+
+        self.assertEqual(result["status"], "error")
+        backlog = tool_context.state["product_backlog"]
+        self.assertIsNone(backlog[1].get("blocked"))
+        self.assertIn("bounced transfer_to_agent", backlog[0]["blocked"]["question"])
+        interactions = tool_context.state.get("blocking_interactions", [])
+        self.assertTrue(any(i["kind"] == "stalled" for i in interactions))
+
     def test_transfer_loop_falls_back_to_plain_stalled_interaction_with_no_story_in_progress(self):
         """No story in product_backlog (or every one already Accepted/
         BLOCKED) - must still record the original plain "stalled" blocking
