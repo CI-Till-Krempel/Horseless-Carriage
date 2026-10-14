@@ -992,6 +992,37 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_survives_a_malformed_kpi_shape(self, mock_write_file, mock_getenv):
+        """
+        ISSUE-0061: a real eval run (0.1.0-run67) crashed the entire harness
+        with an unhandled AttributeError ('float' object has no attribute
+        'get') because this KPI-rendering code trusted sprint_report_kpis'
+        nested shape unconditionally (`kpis.get("team_effectiveness") or
+        {}` only guards a falsy value, not a truthy non-dict). This is
+        defense in depth, independent of update_sprint_report's own gate -
+        a malformed shape seeded directly into state (as if that gate were
+        somehow bypassed) must still never crash this rendering step.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["sprint_report_kpis"] = {
+            "team_effectiveness": 1.0,
+            "result_quality": 0.5,
+            "maintainability": 3,
+            "security": "not a dict either",
+            "prompt_context_usage": {"ScrumMaster": 0.5},
+        }
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("## KPI Dashboard", result["report"])
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_renders_per_agent_prompt_context_usage(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria (real PR review comment): the percentage of a

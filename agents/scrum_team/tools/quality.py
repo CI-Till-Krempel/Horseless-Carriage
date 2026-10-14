@@ -18,6 +18,21 @@ from .base import _configured_repo_root, _run, _coerce_dict_arg
 # below so that shape self-heals instead of looping.
 _CALCULATE_KPIS_CALL_ALIASES = {"calculate_kpis", "calculate_kpis()"}
 
+# ISSUE-0061: the four top-level keys calculate_kpis() always returns as
+# nested dicts (team_effectiveness/result_quality/maintainability/security -
+# see its own return statement below). update_sprint_report's existing
+# self-healing only recovers two specific malformed *outer* shapes (the tool
+# name as a string, or a stringified dict) - it never checked that whatever
+# survived actually had this nested shape, so a cheap model re-typing this
+# dict from its own reading of calculate_kpis()'s prior response (rather
+# than passing the object through unmodified) could collapse one of these
+# down to just its headline scalar (e.g. "team_effectiveness": 1.0 instead
+# of {"say_do_ratio": 1.0, ...}). create_sprint_report's own KPI-rendering
+# code (tools/budget.py) then crashed with an unhandled AttributeError the
+# very next time it called .get() on that value - a real eval run
+# (0.1.0-run67) hit exactly this, killing the whole harness mid-Sprint-3.
+_KPI_NESTED_DICT_KEYS = ("team_effectiveness", "result_quality", "maintainability", "security")
+
 # Maps each role to the role-key agent.py's own get_model_name(role_key)
 # uses to resolve its LiteLLM proxy model alias (SCRUM_<ROLE_KEY>_MODEL env
 # var, default "scrum-<role_key>") - see agent.py's LlmAgent construction
@@ -681,6 +696,24 @@ def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, A
                     "call calculate_kpis() first and pass its returned object here, not a tool name."
                 ),
             }
+
+    # ISSUE-0061: the outer shape is now a real dict (either path above),
+    # but a cheap model can still hand-reconstruct one of its four nested
+    # sub-dicts down to a bare scalar - reject that here, before it ever
+    # reaches state, rather than letting create_sprint_report crash on it
+    # later (see _KPI_NESTED_DICT_KEYS above for the real incident).
+    for key in _KPI_NESTED_DICT_KEYS:
+        value = kpis.get(key)
+        if value is not None and not isinstance(value, dict):
+            return {
+                "status": "error",
+                "message": (
+                    f"kpis['{key}'] must be a dict (the shape calculate_kpis() actually returns for "
+                    f"it), not {type(value).__name__} ({value!r}). Call calculate_kpis() and pass its "
+                    "returned object here as-is, rather than retyping/summarizing it."
+                ),
+            }
+
     if tool_context and hasattr(tool_context, "state"):
         tool_context.state["sprint_report_kpis"] = kpis
         tool_context.state["kpi_update_count"] = tool_context.state.get("kpi_update_count", 0) + 1

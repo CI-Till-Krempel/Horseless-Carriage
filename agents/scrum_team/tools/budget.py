@@ -1435,10 +1435,21 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     if detail == "full":
         report += "\n## KPI Dashboard\n"
         if kpis:
-            team_effectiveness = kpis.get("team_effectiveness") or {}
-            result_quality = kpis.get("result_quality") or {}
-            maintainability = kpis.get("maintainability") or {}
-            security = kpis.get("security") or {}
+            # ISSUE-0061: `or {}` only catches a falsy value (None/missing) -
+            # a TRUTHY non-dict (e.g. a plain float, if something upstream of
+            # update_sprint_report's own validation ever wrote one directly to
+            # state) would pass straight through and crash the very next
+            # .get() call below with an unhandled AttributeError, exactly
+            # what killed a real eval run (0.1.0-run67) mid-Sprint-3. Defense
+            # in depth, independent of update_sprint_report's own gate.
+            team_effectiveness = kpis.get("team_effectiveness")
+            team_effectiveness = team_effectiveness if isinstance(team_effectiveness, dict) else {}
+            result_quality = kpis.get("result_quality")
+            result_quality = result_quality if isinstance(result_quality, dict) else {}
+            maintainability = kpis.get("maintainability")
+            maintainability = maintainability if isinstance(maintainability, dict) else {}
+            security = kpis.get("security")
+            security = security if isinstance(security, dict) else {}
             if team_effectiveness.get("say_do_ratio") is not None:
                 report += f"- Say-Do Ratio: {team_effectiveness['say_do_ratio']}\n"
             if team_effectiveness.get("commitment_reliability") is not None:
@@ -1472,10 +1483,13 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             # Per-agent, so gated to "full" only, same as Per-Agent Token
             # Usage above - granular per-role detail, not something the
             # rest of this section's team-level summary numbers need.
-            prompt_context_usage = kpis.get("prompt_context_usage") or {}
+            prompt_context_usage = kpis.get("prompt_context_usage")
+            prompt_context_usage = prompt_context_usage if isinstance(prompt_context_usage, dict) else {}
             if prompt_context_usage and detail == "full":
                 report += "\n### Per-Agent Prompt Context Usage\n"
                 for role, entry in prompt_context_usage.items():
+                    if not isinstance(entry, dict):
+                        continue
                     if entry.get("available"):
                         report += (
                             f"  - {role} ({entry.get('model')}): {entry.get('prompt_tokens'):,} / "
