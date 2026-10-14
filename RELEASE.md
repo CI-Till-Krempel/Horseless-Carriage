@@ -1426,6 +1426,51 @@ Now checks `bool(sprint_result.get("sprint_report"))` directly instead - a stric
 the old check, since `stop_reason` is only ever set to `"sprint_report_produced"` right after
 `sprint_report` itself is populated, never the other way around.
 
+### A mechanically-detected loop breaker can blame the wrong story and kill a run that was still making progress (0.1.0-run63, ISSUE-0053)
+
+A real eval run (0.1.0-run63) stopped after just Sprint 1, reporting US-0002 ("Add a Task to a
+List") as blocked by "ScrumOrchestrator and DevTeam bounced transfer_to_agent 3x with no
+progress." The transcript shows US-0002 was never actually worked - no feature branch, no PR, no
+tool call ever named it. The stuck conversation was entirely about US-0001, whose PR was mid-review
+at that exact moment.
+
+`_current_story_in_progress` (`agents/scrum_team/tools/requirements.py`), used by the transfer-loop
+and repeated-call loop breakers to decide which story to attach a blocker to when the loop itself
+carries no story ID, returns the first non-`Accepted`, non-already-`blocked` backlog item. US-0001
+had just been marked `blocked` moments earlier by an unrelated 6-hop rotation, so when a second,
+genuinely-about-US-0001 loop fired right after, the helper skipped it and attached the new blocker
+to US-0002 instead - a story nobody had touched. `run_eval.py`'s "a mechanical loop breaker already
+proved the team can't make progress" stop condition then fired on that misattributed blocker, ending
+a run that was still (slowly) advancing its real story. See ISSUE-0053 for the full mechanism and
+fix shape - not yet implemented.
+
+### `.hc/state.json` merge conflicts dump the full scrum state into tool responses, burning sprint budget (0.1.0-run62, ISSUE-0054)
+
+A real eval run (0.1.0-run62) completed all 5 sprints but exceeded its 5,000,000-token sprint budget
+every single sprint, climbing from 5.3M in Sprint 1 to 7.0M in Sprint 5 - with velocity dropping to
+0 stories implemented in both Sprint 4 and Sprint 5, and US-0006 never advancing past `Ready` across
+the whole run.
+
+`.hc/state.json` is committed to every feature branch, and because nearly every tool call mutates
+it, merging `develop` back into a feature branch hits a real git conflict on it almost every time.
+`resolve_feature_branch_conflicts` (`agents/scrum_team/tools/github.py`) surfaced conflicts the same
+way for every file - the full on-disk content, conflict markers included - which for an application
+source file is a reasonable human-sized diff, but for `.hc/state.json` meant dumping tens of KB of
+backlog/retro/decision-log JSON into the conversation, then having DevTeam hand-reproduce the entire
+file again via `write_file` to resolve it. The transcript shows this exact round-trip costing
+15-20k tokens and 5+ wasted tool calls per occurrence in Sprints 4 and 5, crowding out the budget
+and turns needed to ever start US-0006.
+
+`.hc/state.json` is never hand-authored, though - every `save_state_to_repo` call already fully
+regenerates it from live `tool_context.state`, so the in-memory session state is always
+authoritative and a conflict on the committed file is never a real content conflict to adjudicate.
+`resolve_feature_branch_conflicts` now special-cases `.hc/state.json`: it regenerates the file from
+current state and stages it directly, instead of ever surfacing its raw content to an agent. A
+deliberately minimal fix, not a general JSON-merge engine - `.hc/state.json` itself, and this special
+case along with it, is slated to disappear from this repo entirely once the scrum state machine moves
+into its own MCP-server-owned store in a future release. See ISSUE-0054 for the full mechanism and
+fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

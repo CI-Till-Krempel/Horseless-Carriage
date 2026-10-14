@@ -2550,6 +2550,87 @@ class TestResolveFeatureBranchConflicts(unittest.TestCase):
         self.assertTrue(result["merged"])
         mock_git_push.assert_called_once()
 
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_state_json_conflict_is_resolved_mechanically_not_surfaced(self, mock_run, mock_git_push):
+        """
+        ISSUE-0054: .hc/state.json is never hand-authored - a conflict on it
+        must be regenerated from live tool_context.state and staged
+        automatically, never handed to an agent as raw conflict-marked
+        content to merge via write_file.
+        """
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0001-add-login"}
+        repo_root = _github_module._configured_repo_root(MagicMock(state={}))
+        state_path = repo_root / ".hc" / "state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            "<<<<<<< HEAD\n{\"sprint_number\": 2}\n=======\n{\"sprint_number\": 3}\n>>>>>>> develop\n",
+            encoding="utf-8",
+        )
+
+        mock_run.side_effect = self._base_run({
+            ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): {"status": "ok", "returncode": 0},
+            ("git", "diff", "--name-only", "--diff-filter=U"): {
+                "status": "ok", "returncode": 0, "stdout": ".hc/state.json\n", "stderr": "",
+            },
+        })
+        tool_context = MagicMock()
+        tool_context.state = {
+            "active_feature_branches": {"US-0001": "feature/US-0001-add-login"},
+            "sprint_number": 3,
+            "product_backlog": [{"id": "US-0001"}],
+        }
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["merged"])
+        mock_git_push.assert_called_once()
+
+        import json as _json
+        from agents.scrum_team.tools.scrum import REPO_STATE_KEYS
+        on_disk = _json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["sprint_number"], 3)
+        self.assertEqual(on_disk["product_backlog"], [{"id": "US-0001"}])
+        self.assertEqual(set(on_disk.keys()), set(REPO_STATE_KEYS))
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_state_json_conflict_excluded_even_when_a_real_conflict_also_exists(self, mock_run):
+        """A genuine source-file conflict alongside a .hc/state.json conflict
+        must still surface only the source file to the agent - state.json is
+        resolved mechanically and dropped from conflicted_files entirely."""
+        repo_root = _github_module._configured_repo_root(MagicMock(state={}))
+        state_path = repo_root / ".hc" / "state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            "<<<<<<< HEAD\n{\"sprint_number\": 2}\n=======\n{\"sprint_number\": 3}\n>>>>>>> develop\n",
+            encoding="utf-8",
+        )
+        conflicted_content = "<<<<<<< HEAD\nold code\n=======\nnew code\n>>>>>>> develop\n"
+        (repo_root / "app.py").write_text(conflicted_content, encoding="utf-8")
+
+        mock_run.side_effect = self._base_run({
+            ("git", "rev-parse", "-q", "--verify", "MERGE_HEAD"): {"status": "ok", "returncode": 0},
+            ("git", "diff", "--name-only", "--diff-filter=U"): {
+                "status": "ok", "returncode": 0, "stdout": ".hc/state.json\napp.py\n", "stderr": "",
+            },
+        })
+        tool_context = MagicMock()
+        tool_context.state = {
+            "active_feature_branches": {"US-0001": "feature/US-0001-add-login"},
+            "sprint_number": 3,
+        }
+
+        result = resolve_feature_branch_conflicts("US-0001", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "conflict")
+        self.assertEqual(list(result["conflicted_files"].keys()), ["app.py"])
+
+        import json as _json
+        on_disk_text = state_path.read_text(encoding="utf-8")
+        self.assertNotIn("<<<<<<<", on_disk_text)
+        self.assertEqual(_json.loads(on_disk_text)["sprint_number"], 3)
+
     @patch("agents.scrum_team.tools.github._run")
     def test_resumed_merge_with_some_files_still_unresolved_reports_conflict_again(self, mock_run):
         repo_root = _github_module._configured_repo_root(MagicMock(state={}))
