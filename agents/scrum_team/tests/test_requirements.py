@@ -1514,6 +1514,126 @@ class TestResolveStoryBlocker(unittest.TestCase):
             self.assertIsNone(tc.state["product_backlog"][0]["blocked"])
 
 
+@patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestResolveStoryBlockerMechanicalRecheck(unittest.TestCase):
+    """
+    ISSUE-0060: a "technical" blocker raised by the stage-rejection-loop
+    breaker for a Tested-stage test failure (_attach_mechanical_recheck_
+    evidence) has a real, mechanically-checkable condition behind it -
+    resolve_story_blocker must not accept a resolution claim with no fresh,
+    passing test run to back it up. A real eval run (0.1.0-run66) showed
+    Architect clear this exact blocker 3 times in one sprint with "All test
+    issues resolved and test suite verified passing cleanly" and zero
+    intervening test run.
+    """
+
+    _RESOLUTION = "Fixed the broken foreign key and the missing dependency; tests pass now."
+
+    _FAILING_RUN = {"available": True, "tests_run": 4, "tests_failed": 2, "test_coverage": 0.5, "note": None}
+    _PASSING_RUN = {"available": True, "tests_run": 4, "tests_failed": 0, "test_coverage": 1.0, "note": None}
+
+    def _blocked_via_loop_breaker(self):
+        """Drives advance_story_stage('US-0001', 'Tested') through 3
+        identical rejections (same shape as TestStageRejectionLoopBreaker)
+        so the real mechanical_recheck evidence gets attached by the actual
+        breaker code, not hand-crafted in the test."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        result = None
+        for _ in range(3):
+            with patch(
+                "agents.scrum_team.tools.quality._execute_test_suite_coverage_impl",
+                return_value=dict(self._FAILING_RUN),
+            ):
+                result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertIn("STAGE REJECTION LOOP DETECTED", result["message"])
+        self.assertEqual(
+            tc.state["product_backlog"][0]["blocked"]["mechanical_recheck"]["kind"],
+            "tested_stage_failure",
+        )
+        tc.agent_name = "Architect"
+        return tc
+
+    def _run_calculate_kpis(self, tc, run_result):
+        from agents.scrum_team.tools.quality import calculate_kpis
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage_impl",
+            return_value=dict(run_result),
+        ), patch(
+            "agents.scrum_team.tools.quality._compute_code_complexity",
+            return_value={"code_complexity": None, "available": False, "note": None},
+        ), patch(
+            "agents.scrum_team.tools.quality._scan_security_vulnerabilities",
+            return_value={"available": False, "vulnerability_scan_results": None, "note": None},
+        ), patch(
+            "agents.scrum_team.tools.quality._compute_say_do_ratio",
+            return_value={"say_do_ratio": None, "note": None},
+        ):
+            calculate_kpis(tool_context=tc)
+
+    def test_refuses_a_claim_with_no_fresh_test_run(self, mock_save, mock_md, mock_roadmap):
+        tc = self._blocked_via_loop_breaker()
+        result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("fresh test run", result["message"])
+        self.assertIsNotNone(tc.state["product_backlog"][0]["blocked"])
+
+    def test_refuses_a_claim_when_the_fresh_run_still_fails(self, mock_save, mock_md, mock_roadmap):
+        tc = self._blocked_via_loop_breaker()
+        self._run_calculate_kpis(tc, self._FAILING_RUN)
+        result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("still shows", result["message"])
+        self.assertIsNotNone(tc.state["product_backlog"][0]["blocked"])
+
+    def test_succeeds_once_a_fresh_test_run_actually_passes(self, mock_save, mock_md, mock_roadmap):
+        tc = self._blocked_via_loop_breaker()
+        self._run_calculate_kpis(tc, self._PASSING_RUN)
+        result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["blocked"])
+
+    def test_non_tested_blockers_are_unaffected(self, mock_save, mock_md, mock_roadmap):
+        """A blocker raised directly via raise_story_blocker (not the
+        stage-rejection-loop breaker) has no mechanical_recheck key at all -
+        resolve_story_blocker must behave exactly as it did before this
+        issue for it (AC: don't weaken resolution for non-mechanically-
+        checkable blocker categories)."""
+        tc = _tool_context("DevTeam", ["Ready"])
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            raise_story_blocker(
+                "US-0001",
+                "Which payment gateway should this integrate with - Stripe or the in-house one?",
+                "product",
+                tool_context=tc,
+            )
+        tc.agent_name = "ProductOwner"
+        result = resolve_story_blocker(
+            "US-0001", "Decided on Stripe - it's already used by the billing service.", tool_context=tc
+        )
+        self.assertEqual(result["status"], "ok")
+
+    def test_repeat_block_after_a_resolve_is_visibly_flagged(self, mock_save, mock_md, mock_roadmap):
+        tc = self._blocked_via_loop_breaker()
+        self._run_calculate_kpis(tc, self._PASSING_RUN)
+        result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+        tc.agent_name = "QA"
+        tc.state["pr_review_calls"] = {"QA": 2}
+        result = None
+        for _ in range(3):
+            with patch(
+                "agents.scrum_team.tools.quality._execute_test_suite_coverage_impl",
+                return_value=dict(self._FAILING_RUN),
+            ):
+                result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertIn("repeat #2", result["message"])
+
+
 class TestUpsertBacklogItemGuards(unittest.TestCase):
     """Acceptance Criteria (ISSUE-0007, ISSUE-0008)."""
 

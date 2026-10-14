@@ -100,19 +100,79 @@ def _reject_stage_transition(tool_context, story_id: str, stage: str, error_resp
     )
     block_result = raise_story_blocker(story_id, question, infer_blocker_category(agent_name), tool_context=tool_context)
     if block_result.get("status") == "ok":
+        repeat_count = _attach_mechanical_recheck_evidence(tool_context, story_id, stage)
+        repeat_note = ""
+        if repeat_count > 1:
+            # ISSUE-0060: this exact (story_id, stage) was already "resolved"
+            # once via resolve_story_blocker before re-blocking identically -
+            # make that unmistakable rather than reading like a fresh,
+            # first-time streak (mirrors budget.py's overclaim_rejection_counts
+            # escalating message for the same reason).
+            repeat_note = (
+                f" This is repeat #{repeat_count} of this exact blocker - a previous "
+                "resolve_story_blocker call for this story/stage was followed by the identical "
+                "failure recurring. Whatever was claimed as fixed before was not actually fixed."
+            )
         return {
             "status": "error",
             "message": (
                 f"\U0001f501 [STAGE REJECTION LOOP DETECTED] '{story_id}' has failed to reach {stage} "
                 f"the same way {count} times in a row - marking it BLOCKED instead of rejecting again. "
                 f"{question} Call resolve_story_blocker('{story_id}', resolution) once this has "
-                "genuinely been addressed, then retry."
+                f"genuinely been addressed, then retry.{repeat_note}"
             ),
         }
     # raise_story_blocker itself failed (e.g. this story is already BLOCKED
     # for a different reason) - fall back to the original rejection rather
     # than lose it.
     return error_response
+
+
+def _attach_mechanical_recheck_evidence(tool_context, story_id: str, stage: str) -> int:
+    """
+    ISSUE-0060: called only by _reject_stage_transition right after its own
+    raise_story_blocker call succeeds (same pattern as agent.py's
+    _mark_blocker_mechanically_detected, GH #414 - reaching back into state
+    as a separate step instead of a raise_story_blocker/resolve_story_blocker
+    parameter, so it can never be set by an agent's own tool call).
+
+    Only "Tested" is attached here: it's the one stage whose rejection
+    reason (a failing test run) is mechanically re-checkable by a real tool
+    (_execute_test_suite_coverage, via calculate_kpis or a retried
+    advance_story_stage) - see resolve_story_blocker's own check against
+    this. Other stages (Ready/Implemented/Reviewed/Accepted) get no
+    mechanical_recheck key, so resolve_story_blocker behaves exactly as it
+    did before this issue for them - this is deliberately scoped narrow, not
+    a blanket "all blockers need re-verification" change.
+
+    Returns the running repeat-offense count for this (story_id, stage) pair
+    (1 the first time it's ever blocked; bumped further each time a prior
+    resolve_story_blocker call for the same pair was followed by an
+    identical re-block) - purely for the caller's message, not itself a gate.
+    """
+    from .scrum import save_state_to_repo
+
+    key = f"{story_id}:{stage}"
+    s = tool_context.state
+    repeat_counts = dict(s.get("_stage_block_repeat_counts") or {})
+    was_previously_resolved = (s.get("_stage_block_resolved_once") or {}).get(key, False)
+    if was_previously_resolved:
+        repeat_counts[key] = repeat_counts.get(key, 0) + 1
+    else:
+        repeat_counts.setdefault(key, 1)
+    s["_stage_block_repeat_counts"] = repeat_counts
+
+    if stage == "Tested":
+        for backlog_key in ("product_backlog", "sprint_backlog"):
+            for item in s.get(backlog_key) or []:
+                if (item.get("id") or item.get("title")) == story_id and item.get("blocked"):
+                    item["blocked"]["mechanical_recheck"] = {
+                        "kind": "tested_stage_failure",
+                        "stage": stage,
+                        "test_run_count_at_block": s.get("test_suite_run_count", 0),
+                    }
+    save_state_to_repo(tool_context)
+    return repeat_counts.get(key, 1)
 
 # Mirrors _story_readiness_issues' placeholder philosophy, applied to a
 # denial's own reason text instead of a story's content: a rejection that
@@ -2457,8 +2517,53 @@ def resolve_story_blocker(title_or_id: str, resolution: str, tool_context=None) 
             ),
         }
 
+    # ISSUE-0060: a "technical" blocker raised by the stage-rejection-loop
+    # breaker for a failing test run (_attach_mechanical_recheck_evidence)
+    # has a real, mechanically-checkable condition behind it - unlike a
+    # genuine open question, text alone can't prove it's fixed. A real eval
+    # run (0.1.0-run66) showed Architect clear this exact blocker 3 times in
+    # one sprint with "All test issues resolved and test suite verified
+    # passing cleanly" and zero intervening test run - the very next
+    # advance_story_stage retry failed identically each time. Require an
+    # actual fresh test run (calculate_kpis, or a prior advance_story_stage
+    # attempt) to have happened since the blocker was raised, and for it to
+    # have actually passed, before the claim is trusted - same shape as
+    # budget.py's create_sprint_report overclaim check (GH #210): verify the
+    # claim against real state instead of the words used to make it.
+    mechanical_recheck = blocked.get("mechanical_recheck") or {}
+    if mechanical_recheck.get("kind") == "tested_stage_failure":
+        current_run_count = s.get("test_suite_run_count", 0)
+        required_run_count = mechanical_recheck.get("test_run_count_at_block", 0)
+        last_result = s.get("last_test_suite_result") or {}
+        if current_run_count <= required_run_count:
+            return {
+                "status": "error",
+                "message": (
+                    f"'{story_id}' was blocked by a real failing test run - resolve_story_blocker "
+                    "refuses to clear this without a fresh test run actually having happened since "
+                    "the blocker was raised. Call calculate_kpis (or fix the code and retry "
+                    "advance_story_stage) first - a claim with no new test run behind it will not "
+                    "be accepted."
+                ),
+            }
+        if not last_result.get("available") or last_result.get("tests_failed", 1) > 0:
+            return {
+                "status": "error",
+                "message": (
+                    f"'{story_id}' cannot be resolved - the most recent real test run still shows "
+                    f"{last_result.get('tests_failed', 'an unknown number of')} failing test(s) "
+                    f"(of {last_result.get('tests_run', 'an unknown number')} run), not zero. Fix "
+                    "the actual failure, not just the claim, then retry."
+                ),
+            }
+
     if blocked.get("blocking_interaction_id") is not None:
         resolve_blocking_interaction(blocked["blocking_interaction_id"], tool_context=tool_context)
+
+    if mechanical_recheck.get("kind") == "tested_stage_failure":
+        resolved_once = dict(s.get("_stage_block_resolved_once") or {})
+        resolved_once[f"{story_id}:{mechanical_recheck.get('stage')}"] = True
+        s["_stage_block_resolved_once"] = resolved_once
 
     update = {"blocked": None}
     if sprint_idx is not None:

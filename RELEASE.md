@@ -1615,8 +1615,18 @@ This is a confirmed guardrail gap, not just agent behavior under a working guard
 comparable gap was already found and fixed once, for a different tool: `create_sprint_report`'s own
 "overclaim" check (GH issue #210) refuses a sprint report that claims a story as delivered before it
 has actually reached Accepted, checking the claim against real backlog state instead of trusting the
-words. `resolve_story_blocker` has no equivalent check. See ISSUE-0060 for the full mechanism - not yet
-implemented.
+words. `resolve_story_blocker` had no equivalent check.
+
+Fixed the same way: `_execute_test_suite_coverage` now persists a `test_suite_run_count`/
+`last_test_suite_result` snapshot to state on every real pytest execution (whichever tool triggers
+it - `advance_story_stage`'s Tested gate, or `calculate_kpis`, which is callable even while a story
+is BLOCKED). A blocker raised by the stage-rejection-loop breaker for a Tested-stage test failure
+now carries that snapshot forward; `resolve_story_blocker` refuses to clear it unless a fresh test
+run has actually happened since the blocker was raised *and* that run shows zero failures - a claim
+with no real evidence behind it is rejected outright. A repeat-offense counter also flags re-blocking
+on the identical failure right after a resolve as "repeat #N of this exact blocker" rather than a
+fresh streak. Every other blocker category (genuine open product questions, non-Tested stage denials)
+is untouched. See ISSUE-0060 for the full mechanism and fix.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so

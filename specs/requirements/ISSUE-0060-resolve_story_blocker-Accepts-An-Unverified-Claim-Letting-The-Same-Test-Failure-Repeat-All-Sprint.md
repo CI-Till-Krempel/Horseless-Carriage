@@ -2,7 +2,7 @@
 
 - Issue ID: ISSUE-0060
 - Title: `resolve_story_blocker` Accepts An Unverified Claim, Letting The Exact Same Test Failure Re-Block A Story Three Times In One Sprint
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-10-14
@@ -106,3 +106,42 @@ Accepted stage.
   the fix doesn't just block this category of resolution outright.
 - Re-run (or replay) `0.1.0-run66`'s Sprint 5 shape against the fixed harness and confirm the same
   confabulated resolution text no longer silently clears the blocker.
+
+## Resolution
+`_execute_test_suite_coverage` (`tools/quality.py`) is now a thin wrapper around its own previous
+body (renamed `_execute_test_suite_coverage_impl`) that persists `test_suite_run_count` (bumped on
+every real pytest execution) and `last_test_suite_result` (`available`/`tests_run`/`tests_failed`)
+to state - regardless of caller, so `calculate_kpis` counts exactly as much as a real
+`advance_story_stage` attempt.
+
+`_reject_stage_transition` (`tools/requirements.py`) now calls a new `_attach_mechanical_recheck_
+evidence` right after its own `raise_story_blocker` call succeeds (same reach-into-state-as-a-
+separate-step pattern as agent.py's `_mark_blocker_mechanically_detected`, GH #414 - deliberately
+not a `raise_story_blocker` parameter, so no role's own tool schema can set it). Only `stage ==
+"Tested"` gets a `blocked["mechanical_recheck"] = {"kind": "tested_stage_failure",
+"test_run_count_at_block": ...}` - every other stage is untouched, matching the Acceptance
+Criteria's "don't weaken resolution for non-mechanically-checkable blocker categories".
+
+`resolve_story_blocker` now checks, only when `mechanical_recheck.kind == "tested_stage_failure"`:
+1. a fresh test run has actually happened since the blocker was raised (`test_suite_run_count` has
+   advanced past the snapshot taken at block time) - refused otherwise with a message naming
+   `calculate_kpis` as the reachable path (it's in `ALWAYS_PHASE_ALLOWED_TOOLS`, so it's callable
+   even while BLOCKED, unlike `advance_story_stage` itself, which structurally refuses any call for
+   an already-BLOCKED story);
+2. that fresh run actually shows zero failures (`last_test_suite_result`) - refused otherwise,
+   naming how many tests still fail.
+
+A same-shape `_stage_block_repeat_counts`/`_stage_block_resolved_once` pair (mirrors `budget.py`'s
+`overclaim_rejection_counts`) tracks whether this exact `(story_id, stage)` was already "resolved"
+once before re-blocking identically - the loop-breaker's own rejection message now says "repeat #N
+of this exact blocker" instead of reading like a first-time streak, satisfying the Acceptance
+Criteria's second bullet without forcing human escalation (not required by the ACs as written).
+
+Non-`Tested`/non-mechanically-checkable blockers (a genuine open product question, a "Reviewed"
+content gate, etc.) get no `mechanical_recheck` key at all and are completely unaffected -
+confirmed by a dedicated regression test (`test_non_tested_blockers_are_unaffected`) alongside the
+new `TestResolveStoryBlockerMechanicalRecheck` class in `test_requirements.py`, which also drives
+the real stage-rejection-loop breaker (not a hand-crafted blocked dict) through all 4 new
+scenarios: refuse-with-no-fresh-run, refuse-with-a-still-failing-fresh-run, succeed-with-a-passing-
+fresh-run, and the repeat-offense flag. All 136 pre-existing `test_requirements.py` tests and all
+48 pre-existing `test_quality.py` tests continue to pass unmodified.
