@@ -1655,7 +1655,30 @@ type it actually saw. `create_sprint_report`'s own KPI-rendering code is now def
 of that gate too (`isinstance(..., dict)` instead of `or {}`, which only ever caught a falsy value,
 never a truthy non-dict) - so even a malformed value written to state some other way can't crash this
 step. See ISSUE-0061 for the full mechanism and fix.
-See ISSUE-0061 for the full mechanism - not yet implemented.
+
+### A permanently-broken transfer pair burned over half a sprint's event budget retrying the same doomed hop (0.1.0-run68, ISSUE-0062)
+
+A real eval run (0.1.0-run68) completed all 5 requested sprints, then stopped early with `Stop reason:
+blocked_needs_human` - a "product"-category blocker on US-0002 that genuinely needs a human in real
+deployment, correctly recognized by this scripted driver as something it can't answer. The stop itself
+was correct; the gap is in how much budget was spent reaching it.
+
+`_detect_transfer_loop` correctly broke a ScrumOrchestrator/ProductOwner `transfer_to_agent` ping-pong
+on US-0002 the first time (3 identical hand-offs in a row), remembering the pair so every further hop
+between them is refused again immediately, forever, for the rest of the session - by design (GH issue
+#367). But nothing stopped either agent from retrying that exact, permanently-doomed hop anyway: 49 of
+Sprint 5's 85 total events (58%) were the identical rejection message repeating 21 more times, with
+zero other tool calls or progress in between, before the model finally stopped on its own with a
+closing text summary - not because anything mechanical intervened. The harness's own post-sprint check
+(`_sprint_needs_human_this_harness_cannot_provide`) already treats a mechanically-detected blocker as
+an "immediate-stop signal" per its own docstring, but only ever runs after the sprint's event loop ends
+on its own - there was no mid-sprint early exit for this already-foregone pattern. See ISSUE-0062 for
+the full mechanism - not yet implemented.
+
+Also in this investigation: every tool-call console/GH-Actions log line now also states which sprint
+it belongs to (`[Sprint N | Phase: ... | Tokens: ...]`) - the raw log had no other way to tell, unlike
+transcript.md's per-sprint sections, which made tracing ISSUE-0061's crash (lost before its own
+sprint's section was ever written) harder than it needed to be.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
