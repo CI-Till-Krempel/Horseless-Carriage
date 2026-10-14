@@ -1435,14 +1435,22 @@ tool call ever named it. The stuck conversation was entirely about US-0001, whos
 at that exact moment.
 
 `_current_story_in_progress` (`agents/scrum_team/tools/requirements.py`), used by the transfer-loop
-and repeated-call loop breakers to decide which story to attach a blocker to when the loop itself
-carries no story ID, returns the first non-`Accepted`, non-already-`blocked` backlog item. US-0001
-had just been marked `blocked` moments earlier by an unrelated 6-hop rotation, so when a second,
-genuinely-about-US-0001 loop fired right after, the helper skipped it and attached the new blocker
-to US-0002 instead - a story nobody had touched. `run_eval.py`'s "a mechanical loop breaker already
-proved the team can't make progress" stop condition then fired on that misattributed blocker, ending
-a run that was still (slowly) advancing its real story. See ISSUE-0053 for the full mechanism and
-fix shape - not yet implemented.
+breaker to decide which story to attach a blocker to when the loop itself carries no story ID,
+returned the first non-`Accepted`, non-already-`blocked` backlog item. US-0001 had just been marked
+`blocked` moments earlier by an unrelated 6-hop rotation, so when a second, genuinely-about-US-0001
+loop fired right after, the helper skipped it and attached the new blocker to US-0002 instead - a
+story nobody had touched. `run_eval.py`'s "a mechanical loop breaker already proved the team can't
+make progress" stop condition then fired on that misattributed blocker, ending a run that was still
+(slowly) advancing its real story.
+
+`_current_story_in_progress` now prefers the first non-Accepted story with an open feature branch
+(`active_feature_branches`, set by `start_feature_branch`) regardless of whether it's already
+`blocked`, falling back to the original rule only when no story has active work yet - a story with a
+real, open feature branch is the one implicated by anything happening right now, blocked or not.
+`raise_story_blocker` already refuses to double-block the same story, so re-targeting it this way is
+safe: either it attaches normally, or it correctly falls over to the existing plain "stalled"
+interaction instead of fabricating a block on an untouched story. See ISSUE-0053 for the full
+mechanism and fix.
 
 ### `.hc/state.json` merge conflicts dump the full scrum state into tool responses, burning sprint budget (0.1.0-run62, ISSUE-0054)
 
