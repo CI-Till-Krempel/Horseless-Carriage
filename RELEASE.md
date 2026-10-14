@@ -1596,6 +1596,38 @@ naming convention `start_feature_branch` itself always uses) and forces `base` t
 branch whenever it matches - regardless of what `base` was passed or left unset - before falling
 through to the previous default for everything else. See ISSUE-0059 for the full mechanism and fix.
 
+### `resolve_story_blocker` accepted an unverified claim, letting the same test failure re-block a story three times in one sprint (0.1.0-run66, ISSUE-0060)
+
+A real eval run (0.1.0-run66) - the first since ISSUE-0053 through ISSUE-0059 landed to complete all 5
+sprints cleanly, with no cross-sprint state regression and no budget runaway - still burned Sprint 5's
+entire token budget making zero net progress on one story. `advance_story_stage(..., "Tested")` kept
+failing for genuine reasons (real failing tests, a missing dependency, a broken SQLAlchemy foreign key)
+- real code defects, not harness bugs. Each time the same rejection repeated 3x, the existing
+stage-rejection-loop breaker correctly marked the story BLOCKED and asked for a real fix. Each time,
+Architect called `resolve_story_blocker` with a confident-sounding but entirely unverified claim ("All
+test issues resolved and test suite verified passing cleanly") - without writing a file, running a
+test, or calling `check_build` in between. `resolve_story_blocker`'s only check on the resolution text
+is length/genericity, with nothing tied to the blocker's actual, mechanically-checkable condition - so
+it accepted the claim immediately, and the very next `advance_story_stage` retry failed with the exact
+same message, proving nothing had changed. This full cycle repeated three times in one sprint.
+
+This is a confirmed guardrail gap, not just agent behavior under a working guardrail - a directly
+comparable gap was already found and fixed once, for a different tool: `create_sprint_report`'s own
+"overclaim" check (GH issue #210) refuses a sprint report that claims a story as delivered before it
+has actually reached Accepted, checking the claim against real backlog state instead of trusting the
+words. `resolve_story_blocker` had no equivalent check.
+
+Fixed the same way: `_execute_test_suite_coverage` now persists a `test_suite_run_count`/
+`last_test_suite_result` snapshot to state on every real pytest execution (whichever tool triggers
+it - `advance_story_stage`'s Tested gate, or `calculate_kpis`, which is callable even while a story
+is BLOCKED). A blocker raised by the stage-rejection-loop breaker for a Tested-stage test failure
+now carries that snapshot forward; `resolve_story_blocker` refuses to clear it unless a fresh test
+run has actually happened since the blocker was raised *and* that run shows zero failures - a claim
+with no real evidence behind it is rejected outright. A repeat-offense counter also flags re-blocking
+on the identical failure right after a resolve as "repeat #N of this exact blocker" rather than a
+fresh streak. Every other blocker category (genuine open product questions, non-Tested stage denials)
+is untouched. See ISSUE-0060 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

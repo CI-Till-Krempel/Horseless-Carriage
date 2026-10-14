@@ -146,6 +146,30 @@ _LANGUAGE_SKIP_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__"}
 
 def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
     """
+    Thin wrapper around _execute_test_suite_coverage_impl (the actual pytest
+    run) that additionally persists test_suite_run_count/
+    last_test_suite_result to state - ISSUE-0060: resolve_story_blocker
+    needs a mechanically-checkable signal that a REAL test run happened
+    (and what it showed) since a Tested-stage blocker was raised, the same
+    way check_build's manifest_write_count_at_check lets advance_story_stage
+    itself detect a stale result. Every call persists here regardless of
+    caller (advance_story_stage's Tested gate, calculate_kpis) - whichever
+    one runs it is equally real evidence.
+    """
+    result = _execute_test_suite_coverage_impl(tool_context)
+    if tool_context and getattr(tool_context, "state", None):
+        s = tool_context.state
+        s["test_suite_run_count"] = s.get("test_suite_run_count", 0) + 1
+        s["last_test_suite_result"] = {
+            "available": result.get("available", False),
+            "tests_run": result.get("tests_run", 0),
+            "tests_failed": result.get("tests_failed", 0),
+        }
+    return result
+
+
+def _execute_test_suite_coverage_impl(tool_context=None) -> Dict[str, Any]:
+    """
     Runs pytest with coverage against the configured target repo and parses
     the real coverage percentage and pass/fail counts from its output,
     rather than fabricating a number.
