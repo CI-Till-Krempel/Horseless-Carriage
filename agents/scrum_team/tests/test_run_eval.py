@@ -16,12 +16,14 @@ from agents.scrum_team.scripts.run_eval import (
     _sprint_needs_human_this_harness_cannot_provide,
     _unresolved_high_priority_general_blocker,
     _sprint_message,
+    _start_fresh_sprint_session,
 )
 
 
 class _FakeSession:
-    def __init__(self, state=None):
+    def __init__(self, state=None, session_id="session-1"):
         self.state = state or {}
+        self.id = session_id
 
 
 class _FakeSessionService:
@@ -71,6 +73,29 @@ class _StatefulSessionService:
 
     async def get_session(self, app_name, user_id, session_id):
         return self._session
+
+
+class _FullFakeSessionService:
+    """Unlike _StatefulSessionService (get_session only), also implements
+    create_session/delete_session with call tracking - for testing
+    _start_fresh_sprint_session (ISSUE-0055) in isolation."""
+
+    def __init__(self, state):
+        self._state = dict(state)
+        self.created = []
+        self.deleted = []
+
+    async def get_session(self, app_name, user_id, session_id):
+        return _FakeSession(dict(self._state), session_id=session_id)
+
+    async def create_session(self, app_name, user_id, state=None):
+        new_id = f"session-{len(self.created) + 2}"
+        self._state = dict(state or {})
+        self.created.append({"id": new_id, "state": dict(self._state)})
+        return _FakeSession(dict(self._state), session_id=new_id)
+
+    async def delete_session(self, app_name, user_id, session_id):
+        self.deleted.append(session_id)
 
 
 class _NoProgressRunner:
@@ -602,3 +627,43 @@ def test_sprint_message_names_start_sprint_explicitly():
     text = _sprint_message(2, 5)
 
     assert "start_sprint" in text
+
+
+class TestStartFreshSprintSession:
+    """
+    Acceptance Criteria (ISSUE-0055): starting each new sprint on a fresh
+    ADK session - rather than reusing one session's ever-growing event
+    history for the whole run - must carry the real state forward (backlog,
+    budgets, etc.) while actually dropping the old session, and must read
+    the CURRENT state via get_session rather than trusting a stale session
+    object reference.
+    """
+
+    def test_carries_state_forward_onto_a_new_session_id(self):
+        old_session = _FakeSession({"product_backlog": [{"id": "US-0001"}], "sprint_number": 2}, session_id="session-1")
+        service = _FullFakeSessionService(old_session.state)
+
+        new_session = _run(_start_fresh_sprint_session(service, "app", "user", old_session))
+
+        assert new_session.id != "session-1"
+        assert new_session.state == {"product_backlog": [{"id": "US-0001"}], "sprint_number": 2}
+
+    def test_deletes_the_old_session(self):
+        old_session = _FakeSession({"sprint_number": 1}, session_id="session-1")
+        service = _FullFakeSessionService(old_session.state)
+
+        _run(_start_fresh_sprint_session(service, "app", "user", old_session))
+
+        assert service.deleted == ["session-1"]
+
+    def test_refetches_state_rather_than_trusting_the_passed_in_session_object(self):
+        """ADK's get_session returns a fresh merged copy on every call, not
+        a live-updated reference - the stale object created at the start of
+        the run never reflects what actually happened in the session since,
+        so the fix must re-fetch rather than read session.state directly."""
+        stale_session = _FakeSession({"sprint_number": 1}, session_id="session-1")
+        service = _FullFakeSessionService({"sprint_number": 2, "product_backlog": ["real progress"]})
+
+        new_session = _run(_start_fresh_sprint_session(service, "app", "user", stale_session))
+
+        assert new_session.state == {"sprint_number": 2, "product_backlog": ["real progress"]}

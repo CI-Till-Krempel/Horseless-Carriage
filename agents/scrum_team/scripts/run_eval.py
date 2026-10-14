@@ -802,6 +802,43 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
     }
 
 
+async def _start_fresh_sprint_session(session_service, app_name: str, user_id: str, session):
+    """
+    ISSUE-0055: ADK's own content-request processor replays the full
+    conversation from session.events into every model call's
+    llm_request.contents by default, and nothing in this codebase trims or
+    compacts that for an ongoing session - only history_management_callback's
+    narrow "fresh session" recovery path (agent.py) ever substitutes a
+    bounded history, and that never applies mid-run since a reused session's
+    event list only ever grows. Reusing one ADK session for all 5 sprints
+    meant per-call cost scaled with cumulative run size, not with each
+    sprint's own work - real eval runs (0.1.0-run62/run64) showed average
+    tokens-per-event climbing 17x-plus sprint over sprint even as new events
+    per sprint fell.
+
+    Starting each new sprint on a FRESH ADK session - seeded with the real
+    state (backlog, budgets, token usage, etc.) carried forward via
+    create_session's own state= param, dropping only the raw turn-by-turn
+    event history - bounds this without touching history_management_callback
+    at all: a brand new session's event list is empty, which is exactly the
+    condition that callback's existing recovery path already fires on,
+    replaying a bounded state.messages/_trim_transcript summary as the
+    starting context instead of either nothing or everything since Sprint 1.
+
+    Re-fetches state via get_session rather than trusting the passed-in
+    session object's own .state - ADK's InMemorySessionService returns a
+    merged copy on every get_session call, not a live-updated reference, so
+    the object created at the start of the run never reflects what actually
+    happened in it afterward.
+    """
+    current = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session.id)
+    fresh_state = dict((current or session).state)
+    old_session_id = session.id
+    new_session = await session_service.create_session(app_name=app_name, user_id=user_id, state=fresh_state)
+    await session_service.delete_session(app_name=app_name, user_id=user_id, session_id=old_session_id)
+    return new_session
+
+
 async def _main_async(args: argparse.Namespace) -> dict:
     from google.adk.runners import InMemoryRunner
     from google.adk.sessions import InMemorySessionService
@@ -994,6 +1031,9 @@ async def _main_async(args: argparse.Namespace) -> dict:
         previously_dominant_rejection = dominant_rejection
 
         previously_blocked_ids = set(_blocked_stories(sprint_result).keys())
+
+        if sprint_number < args.sprints:
+            session = await _start_fresh_sprint_session(session_service, app_name, user_id, session)
 
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
     return manifest
