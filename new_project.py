@@ -35,11 +35,14 @@ subsequent project would otherwise collide on if just copy-pasting one
     setup_llm.py's traditional sibling-directory default), since the whole
     point of installing HC *into* a project is that the project itself is
     what the team's specs/reports get written into.
-  - COMPOSE_PROJECT_NAME_PREFIX -> derived from the target repo's own
-    directory name, so this project's containers/images never collide with
-    another HC installation's (GH issue #169's original fix only
+  - COMPOSE_PROJECT_NAME_PREFIX -> "horseless-carriage_<target repo's own
+    directory name>", so this project's containers/images never collide
+    with another HC installation's (GH issue #169's original fix only
     disambiguated *contexts* - dev/eval/test - within one checkout; this
-    disambiguates *installations* from each other).
+    disambiguates *installations* from each other) while still reading as
+    an HC installation at a glance in `docker ps`/`docker images` (rather
+    than the target repo's own name replacing "horseless-carriage"
+    entirely).
   - LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT -> auto-picked free ports if the
     defaults (4000/8000) are already bound on this machine - e.g. another
     HC-powered project's stack is already running - so multiple projects
@@ -168,7 +171,12 @@ def _configure_for_target_project(repo_root: Path, target_repo: Path) -> None:
         info(f"STATE_REPO_PATH defaulted to {target_repo} (the target project itself).")
 
     if not lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX"):
-        prefix = _sanitize_compose_project_prefix(target_repo.name)
+        # "horseless-carriage_" always stays on the front - a bare
+        # target-repo-derived prefix (e.g. "heinzelmann") replaced it
+        # entirely, so `docker ps`/`docker images` on a shared machine
+        # running several unrelated projects had no way to tell an HC
+        # installation's containers apart from anything else by name alone.
+        prefix = f"horseless-carriage_{_sanitize_compose_project_prefix(target_repo.name)}"
         lib_env.update_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX", prefix)
         info(f"COMPOSE_PROJECT_NAME_PREFIX set to '{prefix}' - keeps this project's containers/images "
              "from colliding with another Horseless Carriage installation's.")
