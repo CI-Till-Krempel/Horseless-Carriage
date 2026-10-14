@@ -1628,6 +1628,29 @@ on the identical failure right after a resolve as "repeat #N of this exact block
 fresh streak. Every other blocker category (genuine open product questions, non-Tested stage denials)
 is untouched. See ISSUE-0060 for the full mechanism and fix.
 
+### `update_sprint_report` accepted a malformed KPI shape, crashing the entire harness with an unhandled `AttributeError` (0.1.0-run67, ISSUE-0061)
+
+A real eval run (0.1.0-run67) stopped after only 2 of 5 requested sprints - `Stop reason: crashed`,
+`Crash error: AttributeError: 'float' object has no attribute 'get'`, during Sprint 3. Unlike every
+other finding from this investigation cycle, this isn't wasted budget or stalled progress inside a
+working guardrail - it's an unhandled Python exception that kills the entire process, losing that
+sprint's structured record entirely (no `manifest.json`/`transcript.md` entry for Sprint 3 at all).
+
+`update_sprint_report(kpis=...)` accepts any dict-shaped `kpis` argument - it self-heals two specific
+malformed shapes (the tool name as a literal string, or a JSON/repr string), but never validates that
+the dict actually matches `calculate_kpis()`'s own nested structure (`team_effectiveness`/
+`result_quality`/`maintainability`/`security`, each expected to be a dict), writing whatever survives
+straight to state unchecked. `create_sprint_report`'s own KPI-rendering code then does
+`team_effectiveness = kpis.get("team_effectiveness") or {}` followed by `team_effectiveness.get(...)` -
+the `or {}` only catches falsy values (`None`, missing), not a truthy non-dict like `1.0`, so a
+malformed value sails straight through and crashes on the very next `.get()` call. The raw GH Actions
+log's truncated tool-call previews are consistent with the cheap eval model re-typing this dict from
+its own reading of `calculate_kpis()`'s prior response rather than passing the object through verbatim
+- three different first-key orderings across three calls that should be identical if passed through
+unmodified - plausibly collapsing a nested KPI sub-dict down to just its headline float along the way.
+
+See ISSUE-0061 for the full mechanism - not yet implemented.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
