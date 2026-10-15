@@ -219,6 +219,7 @@ class TestMainDoctorGatekeeper:
         monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
         monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
         monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(run.lib_docker, "ensure_dev_ports_available", lambda *a, **k: [])
 
     def test_exits_before_docker_compose_when_doctor_reports_errors(self, monkeypatch):
         self._common_mocks(monkeypatch)
@@ -267,6 +268,7 @@ class TestDockerComposeUpFailureHint:
         monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
         monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
         monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(run.lib_docker, "ensure_dev_ports_available", lambda *a, **k: [])
         monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
         monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
 
@@ -336,6 +338,7 @@ class TestMainKeyboardInterrupt:
         monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
         monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
         monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(run.lib_docker, "ensure_dev_ports_available", lambda *a, **k: [])
         monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
         monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
 
@@ -392,6 +395,7 @@ class TestMainDeveloperMode:
         monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
         monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
         monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(run.lib_docker, "ensure_dev_ports_available", lambda *a, **k: [])
         monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
         monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
 
@@ -449,6 +453,44 @@ class TestMainDeveloperMode:
         with pytest.raises(SystemExit):
             run.main()
         assert "LOG_LEVEL" not in captured["env"]
+
+
+class TestMainPortReassignment:
+    """GH issue #288's own port auto-assignment only ever ran once, at
+    new_project.py install time - run.py re-checks (and reassigns+persists
+    if needed) via lib_docker.ensure_dev_ports_available right before
+    actually starting the stack, and prints a notice when it did."""
+
+    def _common_mocks(self, monkeypatch):
+        monkeypatch.setattr(run.os, "chdir", lambda _path: None)
+        monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
+        monkeypatch.setattr(run.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
+        monkeypatch.setattr(run.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
+        monkeypatch.setattr(run.subprocess, "run", lambda cmd, **k: run.subprocess.CompletedProcess(cmd, 0))
+
+    def test_no_notice_when_nothing_needed_reassigning(self, monkeypatch, capsys):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+        monkeypatch.setattr(run.lib_docker, "ensure_dev_ports_available", lambda *a, **k: [])
+
+        with pytest.raises(SystemExit):
+            run.main()
+        assert "reassigned" not in capsys.readouterr().out
+
+    def test_prints_a_notice_for_each_reassigned_port(self, monkeypatch, capsys):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py"])
+        monkeypatch.setattr(
+            run.lib_docker, "ensure_dev_ports_available",
+            lambda *a, **k: [("LITELLM_HOST_PORT", 4000, 4001)],
+        )
+
+        with pytest.raises(SystemExit):
+            run.main()
+        out = capsys.readouterr().out
+        assert "4000" in out and "4001" in out and "LITELLM_HOST_PORT" in out
 
 
 def _write_cloud_config(tmp_path, model="gemini/gemini-1.5-pro"):

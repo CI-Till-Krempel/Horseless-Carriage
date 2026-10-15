@@ -62,10 +62,10 @@ on this machine, not just the one you happen to be looking at right now.
 import argparse
 import os
 import shutil
-import socket
 import subprocess
 from pathlib import Path
 
+import lib_docker
 import lib_env
 import project_registry
 import setup_all
@@ -88,26 +88,6 @@ def _sanitize_compose_project_prefix(name: str) -> str:
     if not sanitized or not sanitized[0].isalnum():
         sanitized = f"hc-{sanitized}" if sanitized else "hc-project"
     return sanitized
-
-
-def _is_port_free(port: int, host: str = "127.0.0.1") -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.settimeout(0.5)
-        try:
-            sock.bind((host, port))
-            return True
-        except OSError:
-            return False
-
-
-def _find_free_port(preferred: int, max_attempts: int = 50) -> int:
-    """preferred if free, else the first free port scanning upward - so a
-    second/third concurrent installation gets its own port instead of
-    failing to bind at `docker compose up` time with no clear reason why."""
-    for port in range(preferred, preferred + max_attempts):
-        if _is_port_free(port):
-            return port
-    die(f"Could not find a free port near {preferred} after {max_attempts} attempts.")
 
 
 def _git_remote_url(repo_dir: Path) -> str:
@@ -184,9 +164,11 @@ def _configure_for_target_project(repo_root: Path, target_repo: Path) -> None:
     for var, default_port in (("LITELLM_HOST_PORT", 4000), ("AGENT_WEB_HOST_PORT", 8000)):
         if lib_env.read_env_var(env_path, var):
             continue
-        if _is_port_free(default_port):
+        if lib_docker.is_port_free(default_port):
             continue
-        free_port = _find_free_port(default_port + 1)
+        free_port = lib_docker.find_free_port(default_port + 1)
+        if free_port is None:
+            die(f"Could not find a free port near {default_port} after 50 attempts.")
         lib_env.update_env_var(env_path, var, str(free_port))
         info(f"Port {default_port} is already in use (likely another Horseless Carriage installation) - "
              f"{var} set to {free_port} instead.")
