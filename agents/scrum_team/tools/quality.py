@@ -10,6 +10,7 @@ from ..state import ScrumState
 from ..prompts import ROLE_NAMES, ROLE_PROMPT_TEXT
 from typing import Dict, Any, List
 from .base import _configured_repo_root, _run, _coerce_dict_arg
+from .test_runners import run_test_suite
 
 # A real eval run had QualityGuardian retry update_sprint_report ~15 times in
 # a row with kpis="calculate_kpis"/"calculate_kpis()" - the NAME of the tool
@@ -150,11 +151,6 @@ def calculate_prompt_context_usage() -> Dict[str, Dict[str, Any]]:
         usage[role] = entry
     return usage
 
-_COVERAGE_TOTAL_RE = re.compile(r"^TOTAL\s+\d+\s+\d+\s+(\d+)%", re.MULTILINE)
-_PASSED_RE = re.compile(r"(\d+)\s+passed")
-_FAILED_RE = re.compile(r"(\d+)\s+failed")
-_ERROR_RE = re.compile(r"(\d+)\s+error")
-_NO_TESTS_RE = re.compile(r"no tests ran")
 _AVG_COMPLEXITY_RE = re.compile(r"Average complexity:\s+[A-F]\s+\(([\d.]+)\)")
 _LANGUAGE_SKIP_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__"}
 
@@ -176,7 +172,7 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
         s = tool_context.state
         s["test_suite_run_count"] = s.get("test_suite_run_count", 0) + 1
         s["last_test_suite_result"] = {
-            "available": result.get("available", False),
+            "available": result.get("tests_available", False),
             "tests_run": result.get("tests_run", 0),
             "tests_failed": result.get("tests_failed", 0),
         }
@@ -185,94 +181,24 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
 
 def _execute_test_suite_coverage_impl(tool_context=None) -> Dict[str, Any]:
     """
-    Runs pytest with coverage against the configured target repo and parses
-    the real coverage percentage and pass/fail counts from its output,
-    rather than fabricating a number.
+    Runs the target repo's real test suite and parses real pass/fail counts
+    and (where measurable) a real coverage percentage, rather than
+    fabricating a number.
 
-    PYTHONPATH is explicitly set to repo_root (prepended ahead of anything
-    already set) - ISSUE-0047: a real eval run bounced a story back and
-    forth 9 times (QA/DevTeam) on an identical
-    "ModuleNotFoundError: No module named 'app'", for a project laid out
-    exactly like check_build's own docstring describes as normal (a
-    root-level app.py, tests under tests/). Running pytest with cwd=repo_root
-    does NOT put repo_root on sys.path - pytest's default "prepend" import
-    mode (no tests/__init__.py, no conftest.py/pytest.ini at repo_root)
-    inserts each test file's own containing directory (tests/) instead, so
-    `from app import ...` in tests/test_app.py never resolves regardless of
-    how many times a cheap model rewrites the test file itself (it tried
-    inserting tests/'s own directory into sys.path, which was already
-    implicitly there and never the actual gap). This is the harness's own
-    responsibility to get right, the same way check_build's real `pip
-    install` fixed the sibling case of this exact symptom (a missing
-    third-party dependency) - not something to leave for whichever
-    generated project happens to add its own pytest.ini/conftest.py.
+    ISSUE-0064: this used to hardcode a `pytest` invocation regardless of
+    the target repo's actual language/build tool - every JVM (Gradle/Maven)
+    project got either a confusing collection error or a false "no tests
+    collected" despite a real, passing native test suite. Dispatch now goes
+    through test_runners.run_test_suite's pluggable adapter registry
+    (Gradle/Maven/pytest today); see that module's own docstring for why
+    tests_available/tests_run/tests_failed (language-agnostic, always
+    obtainable for a supported ecosystem) is kept separate from
+    coverage_available/test_coverage (needs extra project-level
+    configuration for some ecosystems, e.g. JaCoCo for JVM - informational,
+    never a reason by itself to call the test suite "unavailable").
     """
     repo_root = _configured_repo_root(tool_context)
-    existing_pythonpath = os.environ.get("PYTHONPATH", "")
-    pythonpath = str(repo_root) if not existing_pythonpath else f"{repo_root}{os.pathsep}{existing_pythonpath}"
-    result = _run(
-        ["pytest", "--cov", "--cov-report=term", "-q", "--no-header"],
-        cwd=str(repo_root),
-        tool_context=tool_context,
-        env_overrides={"PYTHONPATH": pythonpath},
-    )
-
-    if result.get("status") == "error" and "returncode" not in result:
-        # The subprocess itself couldn't be started at all (e.g. pytest not
-        # installed in the target repo) - distinct from pytest running and
-        # exiting non-zero because tests failed (that path still has stdout
-        # to parse below).
-        return {
-            "available": False,
-            "test_coverage": None,
-            "tests_run": 0,
-            "tests_failed": 0,
-            "note": f"pytest could not be executed: {result.get('message', 'unknown error')}",
-        }
-
-    stdout = result.get("stdout", "") or ""
-    stderr = result.get("stderr", "") or ""
-
-    if _NO_TESTS_RE.search(stdout):
-        return {
-            "available": True,
-            "test_coverage": 0.0,
-            "tests_run": 0,
-            "tests_failed": 0,
-            "note": "no tests collected",
-        }
-
-    coverage_match = _COVERAGE_TOTAL_RE.search(stdout)
-    test_coverage = int(coverage_match.group(1)) / 100.0 if coverage_match else None
-
-    passed = int(m.group(1)) if (m := _PASSED_RE.search(stdout)) else 0
-    failed = int(m.group(1)) if (m := _FAILED_RE.search(stdout)) else 0
-    errored = int(m.group(1)) if (m := _ERROR_RE.search(stdout)) else 0
-
-    note = None
-    if test_coverage is None:
-        # A real eval run hit this repeatedly - QA and DevTeam bounced a
-        # story back and forth 9 times, always rejected by the exact same
-        # opaque "coverage summary not found" note, with no way to tell
-        # whether pytest crashed outright, a dependency was missing, or
-        # something else entirely - so every retry guessed blindly at
-        # unrelated tooling changes (CI config, requirements.txt, moving
-        # test files) instead of whatever the real cause actually was.
-        # Surface enough of pytest's own output for that to be diagnosable
-        # instead of a black box.
-        tail = (stdout or stderr)[-800:].strip()
-        note = (
-            f"coverage summary not found in pytest output (exit code {result.get('returncode')})"
-            + (f" - last output:\n{tail}" if tail else " - no output was captured at all.")
-        )
-
-    return {
-        "available": test_coverage is not None,
-        "test_coverage": test_coverage,
-        "tests_run": passed + failed + errored,
-        "tests_failed": failed + errored,
-        "note": note,
-    }
+    return run_test_suite(repo_root, tool_context=tool_context)
 
 
 def _is_trivial_test_body(node) -> bool:
@@ -606,7 +532,8 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
         "code_complexity": complexity_result["code_complexity"],
         "code_complexity_available": complexity_result["available"],
         "test_coverage": coverage_result["test_coverage"],
-        "test_coverage_available": coverage_result["available"],
+        "test_coverage_available": coverage_result["coverage_available"],
+        "tests_available": coverage_result["tests_available"],
         "tests_run": coverage_result["tests_run"],
         "tests_failed": coverage_result["tests_failed"],
     }

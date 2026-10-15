@@ -89,6 +89,8 @@ services:
     build:
       context: .
       dockerfile: agent.Dockerfile
+      args:
+        INSTALL_JDK: ${INSTALL_JDK:-false}
     # ISSUE-0063: see docker-compose.yaml's identical entry - no `ports:`
     # here, deliberately. net-proxy below reverse-proxies the web UI's
     # ingress instead.
