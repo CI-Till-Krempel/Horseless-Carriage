@@ -2790,7 +2790,7 @@ COMMON_AGENT_CALLBACKS = {
 product_owner = LlmAgent(
     name="ProductOwner",
     model=LiteLlm(get_model_name("po")),
-    description="Owns product vision/goals, backlog ordering, acceptance criteria, scope tradeoffs.",
+    description="Owns product vision/goals and maximizes product value through backlog ordering, acceptance criteria, and scope tradeoffs.",
     instruction=PO_PROMPT,
     tools=[
         upsert_story,
@@ -2825,7 +2825,7 @@ product_owner = LlmAgent(
 scrum_master = LlmAgent(
     name="ScrumMaster",
     model=LiteLlm(get_model_name("sm")),
-    description="Facilitates Scrum events, removes impediments, improves process, tracks actions.",
+    description="Increases team effectiveness by facilitating Scrum events, removing impediments, improving process, and tracking actions.",
     instruction=SM_PROMPT,
     tools=[
         start_sprint,
@@ -2863,7 +2863,7 @@ scrum_master = LlmAgent(
 dev_team = LlmAgent(
     name="DevTeam",
     model=LiteLlm(get_model_name("dev")),
-    description="Plans/estimates/implements stories, owns technical decisions, ensures DoD, creates sprint plan.",
+    description="Plans/estimates/implements stories and owns technical decisions, delivering a potentially releasable Increment each Sprint; for stories with user-visible behavior, that means real working code, not just a plan.",
     instruction=DEV_PROMPT,
     tools=[
         plan_sprint_backlog_item,
@@ -2897,7 +2897,7 @@ dev_team = LlmAgent(
 qa_agent = LlmAgent(
     name="QA",
     model=LiteLlm(get_model_name("qa")),
-    description="Improves test strategy and quality signals; proposes test cases and automation.",
+    description="Improves test strategy and quality signals without rubber-stamping Dev Team's work or becoming the team's sole quality bottleneck; proposes test cases and automation.",
     instruction=QA_PROMPT,
     tools=[
         add_impediment,
@@ -2917,7 +2917,7 @@ qa_agent = LlmAgent(
 architect = LlmAgent(
     name="Architect",
     model=LiteLlm(get_model_name("arch")),
-    description="Identifies architectural risks, proposes tradeoffs, writes ADR-like notes.",
+    description="Protects long-term technical health while enabling near-term delivery; identifies architectural risks, proposes tradeoffs, writes ADR-like notes.",
     instruction=ARCH_PROMPT,
     tools=[
         log_decision,
