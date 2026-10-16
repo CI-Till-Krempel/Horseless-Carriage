@@ -776,14 +776,17 @@ class TestGithubAccessCheck:
         _patch_proxy_unreachable(monkeypatch)
         monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: ("tok", "token"))
         monkeypatch.setattr(doctor.lib_github, "check_repo_access", lambda o, r, t: (True, "read access to example/example confirmed"))
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", lambda o, r, b, t: (True, f"branch '{b}' exists"))
         result = doctor.check(valid_repo)
         assert result.warnings() == []
+        assert result.errors() == []
         assert "GitHub access: read access to example/example confirmed" in capsys.readouterr().out
 
     def test_access_problem_warns(self, valid_repo, monkeypatch):
         _patch_proxy_unreachable(monkeypatch)
         monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: ("tok", "token"))
         monkeypatch.setattr(doctor.lib_github, "check_repo_access", lambda o, r, t: (False, "issues read failed (HTTP 403)"))
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", lambda o, r, b, t: (True, f"branch '{b}' exists"))
         result = doctor.check(valid_repo)
         assert any("issues read failed" in w.message for w in result.warnings())
 
@@ -801,6 +804,109 @@ class TestGithubAccessCheck:
 
         result = doctor.check(valid_repo)
         assert any("Could not mint a GitHub App installation token" in w.message for w in result.warnings())
+
+
+class TestGithubBranchExistenceCheck:
+    """A real incident: a freshly `git init`-ed product repo had only its
+    initial branch pushed, no `develop` ever created - this surfaced only
+    mid-sprint as a confusing "no develop branch" failure in the agent's own
+    GitFlow tooling, instead of here at setup time. Checked whenever repo
+    access itself was checked (regardless of whether access_ok came back
+    True or False - a read-only token can still answer "does this branch
+    exist")."""
+
+    def _with_token(self, valid_repo, monkeypatch, access_ok=True):
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: ("tok", "token"))
+        monkeypatch.setattr(doctor.lib_github, "check_repo_access", lambda o, r, t: (access_ok, "access checked"))
+        return valid_repo
+
+    def test_both_branches_present_is_clean(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        self._with_token(valid_repo, monkeypatch)
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", lambda o, r, b, t: (True, f"branch '{b}' exists on {o}/{r}"))
+
+        result = doctor.check(valid_repo)
+
+        assert result.errors() == []
+        out = capsys.readouterr().out
+        assert "branch 'main' exists" in out
+        assert "branch 'develop' exists" in out
+
+    def test_missing_develop_branch_is_an_error(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        self._with_token(valid_repo, monkeypatch)
+
+        def fake_check(owner, repo, branch, token):
+            if branch == "develop":
+                return False, f"branch '{branch}' does not exist on {owner}/{repo}"
+            return True, f"branch '{branch}' exists on {owner}/{repo}"
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", fake_check)
+
+        result = doctor.check(valid_repo)
+
+        assert any("develop" in e.message and "does not exist" in e.message for e in result.errors())
+        assert result.has_errors
+
+    def test_missing_configured_default_branch_is_an_error(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'GITHUB_REPO_BRANCH="trunk"\n')
+        self._with_token(valid_repo, monkeypatch)
+
+        def fake_check(owner, repo, branch, token):
+            if branch == "trunk":
+                return False, f"branch '{branch}' does not exist on {owner}/{repo}"
+            return True, f"branch '{branch}' exists on {owner}/{repo}"
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", fake_check)
+
+        result = doctor.check(valid_repo)
+
+        assert any("trunk" in e.message and "does not exist" in e.message for e in result.errors())
+
+    def test_custom_develop_branch_name_is_respected(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'GITHUB_DEVELOP_BRANCH="integration"\n')
+        self._with_token(valid_repo, monkeypatch)
+        checked_branches = []
+
+        def fake_check(owner, repo, branch, token):
+            checked_branches.append(branch)
+            return True, f"branch '{branch}' exists on {owner}/{repo}"
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", fake_check)
+
+        doctor.check(valid_repo)
+
+        assert "integration" in checked_branches
+        assert "develop" not in checked_branches
+
+    def test_checked_even_when_repo_access_itself_failed(self, valid_repo, monkeypatch):
+        """access_ok=False (e.g. a read-only token) must not skip the branch
+        check - reading branch existence needs less than reading issues/PRs."""
+        _patch_proxy_unreachable(monkeypatch)
+        self._with_token(valid_repo, monkeypatch, access_ok=False)
+        calls = []
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", lambda o, r, b, t: calls.append(b) or (True, "ok"))
+
+        doctor.check(valid_repo)
+
+        assert set(calls) == {"main", "develop"}
+
+    def test_app_token_mint_failure_skips_branch_check_too(self, valid_repo, monkeypatch):
+        """No token at all means no way to call the GitHub API - same guard
+        clause check_repo_access itself already relies on."""
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        text = env.read_text().replace('GITHUB_TOKEN="dummy"\n', "")
+        text += 'GITHUB_APP_ID="1"\nGITHUB_APP_PRIVATE_KEY="key"\nGITHUB_APP_INSTALLATION_ID="2"\n'
+        env.write_text(text)
+        monkeypatch.setattr(doctor.lib_github, "resolve_token", lambda env: (None, "app"))
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("check_branch_exists should not run without a token")
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", fail_if_called)
+
+        doctor.check(valid_repo)
 
 
 class TestOllamaGpuWarning:

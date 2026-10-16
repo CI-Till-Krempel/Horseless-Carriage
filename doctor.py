@@ -290,6 +290,31 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
                 else:
                     warn(f"GitHub access: {access_detail}")
 
+                # GH issue #(new): a repo that passes the access check above
+                # (exists, token can read it) can still be missing a branch
+                # Horseless Carriage's GitFlow tooling hard-depends on - a
+                # real incident: a freshly `git init`-ed product repo with
+                # only a default branch pushed, no `develop` ever created,
+                # surfaced as a confusing "no develop branch" failure
+                # mid-sprint instead of here at setup time. Checked
+                # regardless of access_ok's push-permission result (a
+                # read-only token can still read branch existence).
+                for branch_var, branch_default, branch_label in (
+                    ("GITHUB_REPO_BRANCH", "main", "default"),
+                    ("GITHUB_DEVELOP_BRANCH", "develop", "develop"),
+                ):
+                    branch = env.get(branch_var) or branch_default
+                    branch_ok, branch_detail = lib_github.check_branch_exists(owner, repo, branch, token)
+                    if branch_ok:
+                        print(f"GitHub {branch_label} branch: {branch_detail}")
+                    else:
+                        error(
+                            f"GitHub {branch_label} branch: {branch_detail}. Horseless Carriage's "
+                            f"GitFlow tooling requires this branch to exist on origin - create it "
+                            f"(e.g. `git push origin HEAD:{branch}` from a checkout of the repo) or "
+                            f"fix {branch_var} in .env if it's pointed at the wrong name."
+                        )
+
     # 4. Check if the directories exist
     state_repo_path_str = env.get("STATE_REPO_PATH")
     if state_repo_path_str:
