@@ -213,6 +213,29 @@ def _sync_compose_project_prefix(env_path: Path, state_repo_path: Path, is_repoi
              "from colliding with (or silently replacing) another Horseless Carriage installation's.")
 
 
+def _warn_if_develop_branch_missing(repo_url: str, develop_branch: str) -> None:
+    """A repo that clones successfully can still be missing the `develop`
+    branch Horseless Carriage's GitFlow tooling hard-depends on (e.g. a
+    repo created with only a default branch ever pushed) - the eventual
+    failure (_checkout_develop_or_recover, mid-sprint) is confusing and far
+    removed from this moment. `git ls-remote` needs no local checkout at
+    all, so this is a cheap, best-effort check - never fails setup if it
+    can't run (e.g. git not on PATH, covered by this function's caller only
+    running after a clone that itself needed git)."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--exit-code", "--heads", repo_url, develop_branch],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return
+    if result.returncode == 0:
+        return
+    warn(f"'{develop_branch}' branch not found on {repo_url} - Horseless Carriage's GitFlow tooling "
+         f"needs it to exist before a sprint can run. Create it once you're ready: "
+         f"git push origin HEAD:{develop_branch} (from a checkout of the repo).")
+
+
 def _setup_state_repo(env_path: Path) -> None:
     """Prompts for STATE_REPO_PATH (the team's "source of truth" repo - see
     README.md "State Repository") and gets it into a working state with no
@@ -283,6 +306,8 @@ def _setup_state_repo(env_path: Path) -> None:
     # already printed would then also fail on a no-longer-empty directory.
     repo_usable = False
 
+    develop_branch = lib_env.read_env_var(env_path, "GITHUB_DEVELOP_BRANCH") or "develop"
+
     if is_git_repo:
         info(f"{state_repo_path} is already a git repository - leaving it as-is.")
         repo_usable = True
@@ -295,15 +320,28 @@ def _setup_state_repo(env_path: Path) -> None:
                 warn(f"Its 'origin' remote ({existing_remote}) does not match the URL you entered ({repo_url}) - left unchanged.")
     elif repo_url and is_empty:
         repo_usable = _clone_state_repo(repo_url, branch, state_repo_path)
+        if repo_usable:
+            _warn_if_develop_branch_missing(repo_url, develop_branch)
     elif repo_url and not is_empty:
         warn(f"{state_repo_path} already has files in it and isn't a git repository - not cloning automatically.")
         print(f"To make it a clone of {repo_url}, move its contents aside and re-run this script.")
     else:
+        # GH issue #(new): a real incident - a product repo set up this way
+        # (local-only, remote added later) ended up with only `branch` ever
+        # created, no `develop` - GitFlow tooling (create_release_pr,
+        # _checkout_develop_or_recover) hard-depends on both existing.
+        # Create both locally now, from the same initial commit, while it's
+        # entirely our own call to make (nothing's been pushed anywhere
+        # yet) - cheaper and more reliable than relying on the user to
+        # remember a second branch when they eventually do add a remote.
         info(f"Initializing a local git repository at {state_repo_path} (no GitHub remote yet)...")
         subprocess.run(["git", "init", "-b", branch, str(state_repo_path)], check=False)
+        subprocess.run(["git", "-C", str(state_repo_path), "commit", "--allow-empty", "-m", "chore: initialize repository"], check=False)
+        subprocess.run(["git", "-C", str(state_repo_path), "branch", develop_branch], check=False)
         print("No GitHub repo URL given, so there's no 'origin' remote yet - the agent needs")
-        print("one to push branches/open PRs. Add it whenever you're ready:")
-        print(f"  cd {state_repo_path} && git remote add origin <your-repo-url> && git push -u origin {branch}")
+        print(f"one to push branches/open PRs. Both '{branch}' and '{develop_branch}' were created locally -")
+        print("push both whenever you're ready:")
+        print(f"  cd {state_repo_path} && git remote add origin <your-repo-url> && git push -u origin {branch} {develop_branch}")
         repo_usable = True
 
     # Required by check_state_repo.py / the agents regardless of which path

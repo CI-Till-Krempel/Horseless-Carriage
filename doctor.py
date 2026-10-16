@@ -263,6 +263,22 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
     if not env.get("GITHUB_REPO_URL"):
         warn("GITHUB_REPO_URL is not set in .env. The agent might not know which repository to use.")
 
+    # Pure .env sanity check, no network needed - runs even with
+    # skip_llm_probe=True/no token configured yet, unlike the branch-
+    # existence check below. GITHUB_DEVELOP_BRANCH defaulting to (or being
+    # set to) the same name as GITHUB_REPO_BRANCH would make every GitFlow
+    # release PR (create_release_pr: develop -> main) have identical base
+    # and head - GitHub flatly refuses to open that PR at all.
+    default_branch_name = env.get("GITHUB_REPO_BRANCH") or "main"
+    develop_branch_name = env.get("GITHUB_DEVELOP_BRANCH") or "develop"
+    if default_branch_name == develop_branch_name:
+        error(
+            f"GITHUB_REPO_BRANCH and GITHUB_DEVELOP_BRANCH are both '{default_branch_name}' - "
+            "GitFlow release PRs (develop -> main) would have identical base and head branches, "
+            "which GitHub refuses to open a PR for. Set GITHUB_DEVELOP_BRANCH to a different "
+            "branch name (the default is 'develop')."
+        )
+
     if env.get("GITHUB_TOKEN"):
         print("GitHub Authentication: Using Personal Access Token.")
     elif lib_github.github_app_fully_configured(env):
