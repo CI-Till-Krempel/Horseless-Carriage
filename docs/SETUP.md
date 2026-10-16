@@ -5,6 +5,47 @@
 > **Windows users:** install the prerequisites in [Setting up on Windows](#setting-up-on-windows)
 > below first, then follow steps 1-2 the same way, using `python` instead of `python3`.
 
+## Which setup path should I use?
+
+Two distinct workflows share these scripts, and mixing them up on the same checkout is the single
+most common way to get a confusing, hard-to-diagnose result (see the safeguards noted below):
+
+- **Using Horseless Carriage to build a product** - always install it as a submodule of that
+  product's own repo via `new_project.py`, one installation per product. See
+  "[Installing into your own project instead](#installing-into-your-own-project-instead-new_projectpy-gh-issue-288)"
+  below. Never point a product installation's `STATE_REPO_PATH` at anything other than that
+  product's own repo.
+- **Contributing to Horseless Carriage itself** (fixing a bug, adding a feature, trying out a
+  change) - use a traditional standalone checkout (clone this repo directly, don't add it as a
+  submodule anywhere), and point its `STATE_REPO_PATH` at a dedicated, disposable repo you don't
+  mind the agent team committing work-in-progress output to - never at a real product's repo. A
+  good choice: fork (or create an equivalent copy of) the public eval scenario repo the automated
+  team-performance evals target (`CI-Till-Krempel/horseless-carriage-eval-todo-app` - see
+  `agents/scrum_team/scripts/run_eval.py`) under your own account, rather than reusing the
+  CI-managed original - it's realistic enough to dogfood real changes against without risking
+  contaminating the repo CI's own eval runs depend on. Note GitHub doesn't support forking a repo
+  into an account that already owns it - create a separate copy instead (clone it, push to a new
+  repo you create) and give it a top-level `develop` branch if it doesn't already have one (the
+  original may only have ad hoc `eval/<run>/develop`-style branches, not a standing one - the Tested
+  gate and `_checkout_develop_or_recover` both expect `develop` to exist). Keep this checkout
+  dedicated to that one sandbox repo; don't repoint it at a real product later just because it's
+  already set up (see the safeguards below for what happens if you do, and use a nested
+  installation for the product instead).
+
+Both paths share the same scripts below (`setup_all.py`/`setup_llm.py`/`doctor.py`/`run.py`) - what
+differs is only *what `STATE_REPO_PATH` points at* and *whether this checkout is standalone or a
+submodule*, not which commands you run.
+
+**Safeguards that assume you won't repoint a checkout between unrelated targets:** `setup_llm.py`
+now warns and asks for explicit confirmation before changing an already-configured
+`STATE_REPO_PATH` to a different value (a live installation was once silently repointed from one
+product to another this way, with no warning, while the first product's agent was still running) -
+and `doctor.py` refuses to start a stack if a container is already running under this checkout's
+Compose project name but serving a *different* state repo than what's currently configured, since
+starting it anyway would silently stop and recreate that container. Neither of these is a substitute
+for following the two paths above - they catch the mistake, they don't make repointing between
+products a supported workflow.
+
 ## Guided, all-in-one setup: `setup_all.py`
 
 ```bash

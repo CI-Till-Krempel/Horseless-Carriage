@@ -54,6 +54,48 @@ class TestComposeProjectArgs:
         assert lib_docker.compose_project_args("dev", project_b) == ["-p", "project-b-dev"]
 
 
+class TestSanitizeComposeProjectPrefix:
+    def test_lowercases_and_replaces_spaces(self):
+        assert lib_docker.sanitize_compose_project_prefix("My Cool Project") == "my-cool-project"
+
+    def test_already_valid_name_is_unchanged(self):
+        assert lib_docker.sanitize_compose_project_prefix("my-cool-project") == "my-cool-project"
+
+    def test_collapses_repeated_separators(self):
+        assert lib_docker.sanitize_compose_project_prefix("Project_2.0!!") == "project-2-0"
+
+    def test_leading_digit_is_fine(self):
+        # Compose project names must start with [a-z0-9] - a leading digit
+        # is valid, unlike a leading dash would be.
+        assert lib_docker.sanitize_compose_project_prefix("123abc") == "123abc"
+
+    def test_falls_back_to_a_safe_default_when_nothing_survives(self):
+        assert lib_docker.sanitize_compose_project_prefix("___") == "hc-project"
+        assert lib_docker.sanitize_compose_project_prefix("") == "hc-project"
+
+
+class TestDeriveComposeProjectPrefix:
+    """Shared derivation used by both new_project.py's nested-install path
+    and setup_llm.py's standalone path - COMPOSE_PROJECT_NAME_PREFIX must
+    always track the state repo actually being driven, not the checkout
+    directory happening to drive it, or repointing STATE_REPO_PATH at a
+    different target silently reuses (and recreates) the previous target's
+    containers under the old name."""
+
+    def test_derives_from_state_repo_directory_name(self, tmp_path):
+        state_repo = tmp_path / "jarvis"
+        assert lib_docker.derive_compose_project_prefix(state_repo) == "horseless-carriage_jarvis"
+
+    def test_sanitizes_the_directory_name(self, tmp_path):
+        state_repo = tmp_path / "My Cool Project"
+        assert lib_docker.derive_compose_project_prefix(state_repo) == "horseless-carriage_my-cool-project"
+
+    def test_different_targets_produce_different_prefixes(self, tmp_path):
+        heinzelmann_prefix = lib_docker.derive_compose_project_prefix(tmp_path / "heinzelmann")
+        jarvis_prefix = lib_docker.derive_compose_project_prefix(tmp_path / "jarvis")
+        assert heinzelmann_prefix != jarvis_prefix
+
+
 class TestHostOllamaReachable:
     """GH issue #93: host-Ollama mode has no `ollama` container for
     doctor.py's other checks to inspect, so this checks reachability

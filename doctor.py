@@ -323,6 +323,33 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             error(f"The directory specified by STATE_REPO_PATH does not exist: {state_repo_path}")
             print("Please create this directory before running the agent.")
         else:
+            # GH issue #(new, follow-up to #288): catch a repointed
+            # STATE_REPO_PATH before `docker compose up` silently stops and
+            # recreates a container that's still actually serving a
+            # DIFFERENT project under this same Compose project name - a
+            # real incident: a standalone checkout's STATE_REPO_PATH changed
+            # (see setup_llm.py's _setup_state_repo) while an unrelated
+            # project's agent was still running under the same (default)
+            # project name, and the next `docker compose up` would have
+            # destroyed it with no warning at all. Only meaningful for the
+            # "dev" stack run.py actually starts - eval/test runs override
+            # the mount via INTERNAL_STATE_REPO_PATH, never this value.
+            dev_compose_args = lib_docker.compose_file_args(repo_root) + lib_docker.compose_project_args("dev", repo_root)
+            running_mount = lib_docker.running_state_repo_mount(dev_compose_args, cwd=repo_root)
+            if running_mount is not None:
+                running_resolved = Path(lib_docker.normalize_docker_mount_source(running_mount)).resolve()
+                configured_resolved = state_repo_path.resolve()
+                if running_resolved != configured_resolved:
+                    error(
+                        f"A Horseless Carriage agent is ALREADY RUNNING under this checkout's Compose "
+                        f"project name, but it's serving a DIFFERENT state repo ({running_resolved}) than "
+                        f"what .env currently configures ({configured_resolved}). Starting this stack now "
+                        "would stop and recreate that container against the new target, silently abandoning "
+                        f"whichever project it was actually driving. Stop it first if that's intended "
+                        f"(docker compose {' '.join(dev_compose_args)} down), or give each project its own "
+                        "COMPOSE_PROJECT_NAME_PREFIX in .env if both are meant to keep running."
+                    )
+
             # ISSUE-0064: surfaced here (at doctor/startup time) rather than
             # only discovered mid-sprint when QA's Tested gate runs the real
             # test suite and gets a confusing result - a real incident burned

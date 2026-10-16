@@ -6,6 +6,7 @@ from unittest import mock
 import pytest
 import yaml
 
+import lib_docker
 import lib_env
 import setup_llm
 
@@ -889,6 +890,67 @@ class TestSetupStateRepo:
 
         assert not target.exists()
         assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(target)
+
+    def test_first_time_setup_derives_compose_project_prefix(self, tmp_path, monkeypatch):
+        target = tmp_path / "first-project"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        assert lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX") == \
+            lib_docker.derive_compose_project_prefix(target)
+
+
+class TestSetupStateRepoRepointSafety:
+    """A standalone checkout silently repointed from one product to another
+    this way, in production, with zero warning - see setup_llm.py's
+    _setup_state_repo docstring note and lib_docker.derive_compose_project_
+    prefix's. These lock in the fix: an explicit confirmation gate plus a
+    Compose project identity that actually tracks the repointed target."""
+
+    def test_unchanged_path_is_not_treated_as_a_repoint(self, tmp_path, monkeypatch):
+        target = tmp_path / "same-project"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+        # Re-running with the identical path must NOT prompt for confirmation -
+        # only 3 answers given (path, url, branch), no 4th "confirm" slot.
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+        assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(target)
+
+    def test_repointing_to_a_different_path_warns_and_requires_confirmation(self, tmp_path, monkeypatch, capsys):
+        old_target = tmp_path / "old-project"
+        new_target = tmp_path / "new-project"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(old_target), "", "main"])
+
+        _run_setup_state_repo(monkeypatch, env_path, [str(new_target), "y", "", "main"])
+
+        out = capsys.readouterr().out
+        assert str(old_target) in out
+        assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(new_target)
+
+    def test_declining_the_repoint_confirmation_aborts_and_leaves_env_unchanged(self, tmp_path, monkeypatch):
+        old_target = tmp_path / "old-project"
+        new_target = tmp_path / "new-project"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(old_target), "", "main"])
+
+        with pytest.raises(SystemExit):
+            _run_setup_state_repo(monkeypatch, env_path, [str(new_target), "n"])
+
+        assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(old_target)
+
+    def test_repointing_recomputes_compose_project_prefix_for_the_new_target(self, tmp_path, monkeypatch):
+        old_target = tmp_path / "old-project"
+        new_target = tmp_path / "new-project"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(old_target), "", "main"])
+        old_prefix = lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX")
+
+        _run_setup_state_repo(monkeypatch, env_path, [str(new_target), "y", "", "main"])
+
+        new_prefix = lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX")
+        assert new_prefix != old_prefix
+        assert new_prefix == lib_docker.derive_compose_project_prefix(new_target)
 
 
 class TestHostGitIdentity:

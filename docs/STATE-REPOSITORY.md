@@ -6,6 +6,11 @@ The **State Repository** is the team's "Source of Truth." It is a dedicated dire
 
 `setup_llm.py` sets this up for you interactively (creating the directory, and either cloning your target repo into it or `git init`-ing a fresh one) - see [Setup § 1. Guided LLM/project setup](SETUP.md#1-guided-llmproject-setup-setup_llmpy). This page describes what it is and how to check its health once it exists.
 
+This must always be either the product repo you're actually managing (nested install) or a
+dedicated sandbox repo you don't mind the agents committing to (standalone contributor checkout) -
+never a real product's repo pointed at from a standalone checkout, and never repointed between
+unrelated targets on a whim. See [Setup § Which setup path should I use?](SETUP.md#which-setup-path-should-i-use) for the two supported workflows and the safeguards that catch a mistake here.
+
 ## Concept
 
 Unlike the session history (which is transient and internal), the State Repository contains human-readable artifacts and the official project state. This separation allows the agents to be ephemeral while the project remains permanent.

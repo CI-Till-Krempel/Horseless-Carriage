@@ -58,6 +58,36 @@ def compose_file_args(repo_root: Path) -> list:
     return args
 
 
+def sanitize_compose_project_prefix(name: str) -> str:
+    """Compose project names must match ^[a-z0-9][a-z0-9_-]*$ - derive one
+    from an arbitrary repo directory name (which might contain spaces,
+    dots, uppercase, ...) instead of failing outright on the first
+    project whose directory name isn't already a valid one."""
+    sanitized = "".join(c.lower() if c.isalnum() else "-" for c in name)
+    while "--" in sanitized:
+        sanitized = sanitized.replace("--", "-")
+    sanitized = sanitized.strip("-")
+    if not sanitized or not sanitized[0].isalnum():
+        sanitized = f"hc-{sanitized}" if sanitized else "hc-project"
+    return sanitized
+
+
+def derive_compose_project_prefix(state_repo_path: Path) -> str:
+    """"horseless-carriage_<sanitized state-repo directory name>" - the one
+    COMPOSE_PROJECT_NAME_PREFIX derivation used everywhere a checkout's
+    STATE_REPO_PATH is set (new_project.py's nested-install path,
+    setup_llm.py's standalone path), so container/image names always track
+    *what repo is actually being driven* rather than *which checkout
+    directory happens to be running it*. Without this, repointing a
+    standalone checkout's STATE_REPO_PATH at a different target (e.g. via
+    setup_llm.py, re-run later to add a second project) left
+    COMPOSE_PROJECT_NAME_PREFIX unchanged, so `docker compose up` reused the
+    previous target's exact container names and silently stopped/recreated
+    them under the new target's config - the actual mechanism behind "adding
+    project B made project A's running agent disappear"."""
+    return f"horseless-carriage_{sanitize_compose_project_prefix(Path(state_repo_path).name)}"
+
+
 def compose_project_args(context: str, repo_root: Optional[Path] = None) -> list:
     """["-p", f"{prefix}-{context}"] (prefix defaults to "horseless-carriage")
     - GH issue #169: with no explicit project name, Compose derives one from
@@ -87,6 +117,60 @@ def compose_project_args(context: str, repo_root: Optional[Path] = None) -> list
     repo_root = Path(repo_root) if repo_root is not None else Path(".")
     prefix = lib_env.read_env_var(repo_root / ".env", "COMPOSE_PROJECT_NAME_PREFIX") or "horseless-carriage"
     return ["-p", f"{prefix}-{context}"]
+
+
+def normalize_docker_mount_source(path_str: str) -> str:
+    """Docker Desktop on macOS sometimes reports a bind mount's host source
+    prefixed with /host_mnt (its VM's own view of the host filesystem) and
+    sometimes doesn't, even for different mounts of the very same
+    container - observed directly via `docker inspect` on a real
+    installation. Strip it so a comparison against a plain host-side path
+    (e.g. this checkout's own configured STATE_REPO_PATH) works either
+    way."""
+    if path_str.startswith("/host_mnt/"):
+        return path_str[len("/host_mnt"):]
+    return path_str
+
+
+def running_state_repo_mount(compose_args: list, service: str = "agent", cwd: Optional[Path] = None) -> Optional[str]:
+    """Host path currently bind-mounted to /app/state_repo in `service`'s
+    running container for the compose project resolved from compose_args +
+    cwd, or None if that service isn't running (or the check fails for any
+    reason - best-effort, like compose_running_services, never a hard
+    dependency).
+
+    Lets a caller (doctor.py) catch a repointed STATE_REPO_PATH *before*
+    `docker compose up` silently stops and recreates a container that's
+    still actually serving a DIFFERENT project under the same Compose
+    project name - see derive_compose_project_prefix's docstring for the
+    real incident this guards against: a project name that doesn't track
+    STATE_REPO_PATH lets `docker compose up` treat "a different repo is now
+    configured" as just a container config change to apply, not a reason to
+    stop. Deliberately wraps the whole lookup in one broad try/except (not
+    just the subprocess calls) - best-effort means a malformed/unexpected
+    response (e.g. a generic test double returning a CompletedProcess with
+    stdout=None, same hazard compose_running_services has) must degrade to
+    "can't tell" rather than ever raising into a caller that isn't expecting
+    it."""
+    try:
+        cmd = ["docker", "compose", *compose_args, "ps", "-q", service]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15, cwd=cwd)
+        stdout = (result.stdout or "").strip()
+        if result.returncode != 0 or not stdout:
+            return None
+        container_id = stdout.splitlines()[0]
+
+        inspect_cmd = [
+            "docker", "inspect", container_id,
+            "--format", '{{range .Mounts}}{{if eq .Destination "/app/state_repo"}}{{.Source}}{{end}}{{end}}',
+        ]
+        inspect_result = subprocess.run(inspect_cmd, capture_output=True, text=True, timeout=15)
+        if inspect_result.returncode != 0:
+            return None
+        source = (inspect_result.stdout or "").strip()
+        return source or None
+    except Exception:
+        return None
 
 
 def compose_running_services(compose_args: list, cwd: Optional[Path] = None) -> list:

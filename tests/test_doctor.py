@@ -640,6 +640,47 @@ class TestStateRepoStructureChecks:
         assert "Created default identity.md" not in out
 
 
+class TestRunningStateRepoMountMismatch:
+    """A real incident: a standalone checkout's STATE_REPO_PATH changed
+    while a different project's agent was still running under the same
+    (default) Compose project name - the next `docker compose up` would
+    have silently stopped and recreated it. doctor.py must catch this
+    before that happens, as a hard ERROR (not a warning) since the
+    consequence is destructive."""
+
+    def test_no_container_running_produces_no_error(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "running_state_repo_mount", lambda *a, **k: None)
+        result = doctor.check(valid_repo)
+        assert not any("ALREADY RUNNING" in e.message for e in result.errors())
+
+    def test_running_container_with_matching_mount_produces_no_error(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        monkeypatch.setattr(doctor.lib_docker, "running_state_repo_mount", lambda *a, **k: str(state_repo))
+        result = doctor.check(valid_repo)
+        assert not any("ALREADY RUNNING" in e.message for e in result.errors())
+
+    def test_running_container_with_different_mount_is_an_error(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        other_project = valid_repo / "some-other-project"
+        other_project.mkdir()
+        monkeypatch.setattr(doctor.lib_docker, "running_state_repo_mount", lambda *a, **k: str(other_project))
+        result = doctor.check(valid_repo)
+        assert any("ALREADY RUNNING" in e.message and str(other_project) in e.message for e in result.errors())
+        assert result.has_errors
+
+    def test_host_mnt_prefixed_mount_is_normalized_before_comparing(self, valid_repo, monkeypatch):
+        """Docker Desktop on macOS can report a bind mount's source with a
+        /host_mnt prefix - must not be treated as a mismatch against the
+        same, unprefixed host path."""
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        monkeypatch.setattr(doctor.lib_docker, "running_state_repo_mount", lambda *a, **k: f"/host_mnt{state_repo}")
+        result = doctor.check(valid_repo)
+        assert not any("ALREADY RUNNING" in e.message for e in result.errors())
+
+
 class TestUnsupportedEcosystemAndJvmChecks:
     """ISSUE-0064: the Tested gate's test-runner registry only supports
     Python/Gradle/Maven - a target repo for anything else (Go/Rust/Ruby/PHP/

@@ -198,6 +198,21 @@ def _clone_state_repo(repo_url: str, branch: str, state_repo_path: Path) -> bool
         return False
 
 
+def _sync_compose_project_prefix(env_path: Path, state_repo_path: Path, is_repoint: bool) -> None:
+    """Keeps COMPOSE_PROJECT_NAME_PREFIX tied to whatever STATE_REPO_PATH
+    this checkout actually drives - see lib_docker.derive_compose_project_
+    prefix's docstring for why. Only (re)computed when there's no existing
+    value yet (first-time setup) or STATE_REPO_PATH just changed
+    (is_repoint) - an unrelated, already-customized prefix for an unchanged
+    target is left alone, same spirit as every other value in this
+    function."""
+    if is_repoint or not lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX"):
+        prefix = lib_docker.derive_compose_project_prefix(state_repo_path)
+        lib_env.update_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX", prefix)
+        info(f"COMPOSE_PROJECT_NAME_PREFIX set to '{prefix}' - keeps this project's containers/images "
+             "from colliding with (or silently replacing) another Horseless Carriage installation's.")
+
+
 def _setup_state_repo(env_path: Path) -> None:
     """Prompts for STATE_REPO_PATH (the team's "source of truth" repo - see
     README.md "State Repository") and gets it into a working state with no
@@ -211,8 +226,30 @@ def _setup_state_repo(env_path: Path) -> None:
     print("reports) get written - see README.md \"State Repository\".")
 
     current_path = lib_env.read_env_var(env_path, "STATE_REPO_PATH")
+    old_resolved = Path(current_path).expanduser().resolve() if current_path else None
     path_str = prompt_text("State repository path", current_path or "../Horseless-Carriage-State")
     state_repo_path = Path(path_str).expanduser().resolve()
+    is_repoint = old_resolved is not None and old_resolved != state_repo_path
+
+    if is_repoint:
+        # This checkout is about to stop driving whatever it was pointed at
+        # before - confirmed live incident: a standalone checkout silently
+        # repointed from one product repo to another this way, with no
+        # warning, while the first project's agent was still "the one the
+        # user thought they were talking to" in their browser/terminal
+        # habits. Not auto-rejected - repointing a standalone checkout
+        # between projects one at a time is a legitimate, supported
+        # workflow - but it must be a conscious choice, not a side effect of
+        # re-running setup for what you thought was a brand-new project.
+        warn(f"This checkout is currently configured to drive {old_resolved}.")
+        print(f"Repointing STATE_REPO_PATH to {state_repo_path} stops it from driving that project - "
+              "its own containers (if running) are left alone, but this checkout no longer manages them.")
+        print("To run MULTIPLE projects at once, install a separate Horseless Carriage submodule per "
+              "project instead: python3 new_project.py --target-repo <path> (see docs/SETUP.md) - "
+              "rather than repointing one checkout back and forth.")
+        confirmed = input(f"Repoint this checkout from {old_resolved} to {state_repo_path}? [y/N]: ").strip().lower()
+        if confirmed not in ("y", "yes"):
+            die("Aborted - STATE_REPO_PATH left unchanged.")
 
     current_url = lib_env.read_env_var(env_path, "GITHUB_REPO_URL")
     current_branch = lib_env.read_env_var(env_path, "GITHUB_REPO_BRANCH")
@@ -229,6 +266,7 @@ def _setup_state_repo(env_path: Path) -> None:
         if repo_url:
             lib_env.update_env_var(env_path, "GITHUB_REPO_URL", repo_url)
         lib_env.update_env_var(env_path, "GITHUB_REPO_BRANCH", branch)
+        _sync_compose_project_prefix(env_path, state_repo_path, is_repoint)
         return
 
     state_repo_path.mkdir(parents=True, exist_ok=True)
@@ -278,6 +316,7 @@ def _setup_state_repo(env_path: Path) -> None:
     if repo_url:
         lib_env.update_env_var(env_path, "GITHUB_REPO_URL", repo_url)
     lib_env.update_env_var(env_path, "GITHUB_REPO_BRANCH", branch)
+    _sync_compose_project_prefix(env_path, state_repo_path, is_repoint)
 
     if repo_usable:
         print(f"State repository ready at: {state_repo_path}")
