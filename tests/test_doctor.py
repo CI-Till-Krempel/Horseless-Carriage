@@ -640,6 +640,76 @@ class TestStateRepoStructureChecks:
         assert "Created default identity.md" not in out
 
 
+class TestUnsupportedEcosystemAndJvmChecks:
+    """ISSUE-0064: the Tested gate's test-runner registry only supports
+    Python/Gradle/Maven - a target repo for anything else (Go/Rust/Ruby/PHP/
+    .NET), or a Gradle/Maven repo with no JDK available to the agent image,
+    should be flagged here at doctor/startup time, not discovered mid-sprint
+    as a confusing Tested-gate failure."""
+
+    def test_no_warning_for_a_plain_python_repo(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        result = doctor.check(valid_repo)
+        assert not any("JVM" in w.message or "test-runner adapter" in w.message for w in result.warnings())
+
+    def test_go_mod_warns_with_an_issue_link(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        (state_repo / "go.mod").write_text("module example.com/foo\n")
+
+        result = doctor.check(valid_repo)
+
+        matches = [w.message for w in result.warnings() if "Go project" in w.message]
+        assert len(matches) == 1
+        assert "github.com/CI-Till-Krempel/Horseless-Carriage/issues/new" in matches[0]
+
+    def test_package_json_alone_does_not_warn(self, valid_repo, monkeypatch):
+        """Deliberately not treated as an unsupported ecosystem - too common
+        alongside an unrelated primary Python test suite (frontend tooling,
+        lint configs) to flag on its mere presence."""
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        (state_repo / "package.json").write_text("{}")
+
+        result = doctor.check(valid_repo)
+
+        assert not any("test-runner adapter" in w.message for w in result.warnings())
+
+    def test_gradle_project_without_install_jdk_warns(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        (state_repo / "build.gradle.kts").write_text("")
+
+        result = doctor.check(valid_repo)
+
+        assert any("Gradle/Maven (JVM) project" in w.message for w in result.warnings())
+
+    def test_gradle_project_with_install_jdk_true_does_not_warn(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        (state_repo / "build.gradle.kts").write_text("")
+        env_path = valid_repo / ".env"
+        env_path.write_text(env_path.read_text() + 'INSTALL_JDK="true"\n')
+
+        result = doctor.check(valid_repo)
+
+        assert not any("Gradle/Maven (JVM) project" in w.message for w in result.warnings())
+
+    def test_pom_xml_nested_in_a_subdirectory_is_detected(self, valid_repo, monkeypatch):
+        """The manifest search is recursive (**/pom.xml) - a Maven module
+        several directories deep must still be found, not just one sitting
+        directly at STATE_REPO_PATH's root."""
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+        nested = state_repo / "backend" / "service"
+        nested.mkdir(parents=True)
+        (nested / "pom.xml").write_text("")
+
+        result = doctor.check(valid_repo)
+
+        assert any("Gradle/Maven (JVM) project" in w.message for w in result.warnings())
+
+
 class TestGithubAccessCheck:
     """Acceptance Criteria (GH issue #60): "without the ability to read
     from, write to and read/write pull requests and issues, the setup is

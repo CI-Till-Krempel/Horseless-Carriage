@@ -299,16 +299,19 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
         else:
             # ISSUE-0064: surfaced here (at doctor/startup time) rather than
             # only discovered mid-sprint when QA's Tested gate runs the real
-            # test suite and gets a confusing result - a real incident
-            # (heinzelmann/US-0006) burned a QA cycle on exactly that before
-            # anyone realized the target project's build tool had no
-            # adapter at all, not that something was actually broken.
+            # test suite and gets a confusing result - a real incident burned
+            # a QA cycle on exactly that before anyone realized the target
+            # project's build tool had no adapter at all, not that something
+            # was actually broken.
             unsupported = _detect_unsupported_ecosystem(state_repo_path)
             if unsupported:
                 warn(f"The project at STATE_REPO_PATH looks like a {unsupported} project, which Horseless "
                      "Carriage has no test-runner adapter for yet - the Tested gate won't be able to run or "
                      f"measure its real test suite. Request support: {_new_issue_url(unsupported, state_repo_path)}")
-            elif any(state_repo_path.glob(f"**/{m}") for m in _JVM_MANIFESTS) and env.get("INSTALL_JDK", "").lower() != "true":
+            elif (
+                any(next(state_repo_path.glob(f"**/{m}"), None) is not None for m in _JVM_MANIFESTS)
+                and env.get("INSTALL_JDK", "").lower() != "true"
+            ):
                 warn("The project at STATE_REPO_PATH looks like a Gradle/Maven (JVM) project, but INSTALL_JDK "
                      "isn't set to 'true' in .env - the agent image has no JDK, so `./gradlew test`/`./mvnw test` "
                      "can't run. Set INSTALL_JDK=true in .env and rebuild the agent image.")
