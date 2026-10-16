@@ -1,6 +1,6 @@
 # agents/scrum_team/tests/test_test_runners.py
 """
-ISSUE-0064: tests for the pluggable test-runner registry (Gradle/Maven/
+SPEC-ISSUE-0064: tests for the pluggable test-runner registry (Gradle/Maven/
 pytest) that replaced quality.py's old hardcoded `pytest` invocation.
 
 Gradle/Maven tests write real JUnit XML / JaCoCo XML fixtures to a tmp_path

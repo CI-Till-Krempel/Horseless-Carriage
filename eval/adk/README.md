@@ -695,10 +695,10 @@ failed, this time via `LlmCallsLimitExceededError` again, and for a
 completely different reason: a harness gap, not a prompt-distraction
 repeat. Its own fixture seeds a clean `product_backlog: [US-0099]`, but
 `start_feature_branch` was rejected with `sprint_backlog_pr_missing
-rejecting: ... product_backlog ids=['US-0004', 'ISSUE-0002']` - two IDs
+rejecting: ... product_backlog ids=['US-0004', 'SPEC-ISSUE-0002']` - two IDs
 that belong to *other* eval cases entirely
 (`upsert_story_blocks_direct_status_set`/`log_story_tokens_...`'s
-`US-0004`, an `ISSUE-0002` auto-filed by an earlier case's retrospective -
+`US-0004`, an `SPEC-ISSUE-0002` auto-filed by an earlier case's retrospective -
 see step 8's auto-filing note above), neither ever present in this case's
 own `session_input.state`. Root cause: `run_adk_eval.py`'s
 `prepare_scratch_state_repo()` wipes the on-disk scratch state repo

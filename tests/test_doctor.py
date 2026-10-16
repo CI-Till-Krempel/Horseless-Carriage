@@ -76,7 +76,7 @@ def valid_repo(tmp_path, monkeypatch):
 
 class TestGuardClauses:
     """
-    Acceptance Criteria (ISSUE-0021): none of these are early returns
+    Acceptance Criteria (SPEC-ISSUE-0021): none of these are early returns
     anymore - check() keeps going and collects every ActionableItem, so
     each of these tests must mock the proxy-reachability wait (a later
     check that now always runs) the same way TestWarningsDoNotBlock/
@@ -175,7 +175,7 @@ class TestGuardClauses:
 
 class TestCheckStructuredResult:
     """
-    Acceptance Criteria (ISSUE-0021): check() returns a DoctorResult -
+    Acceptance Criteria (SPEC-ISSUE-0021): check() returns a DoctorResult -
     the actual punch list, not just an exit code - so other scripts
     (run.py's gatekeeper, setup.py's guided flow) can inspect exactly
     what's wrong instead of parsing printed text.
@@ -326,7 +326,7 @@ class TestWarningsDoNotBlock:
 
 
 class TestComposeProjectNamePrefixMigration:
-    """ISSUE-0063 follow-up: new_project.py now keeps 'horseless-carriage_'
+    """SPEC-ISSUE-0063 follow-up: new_project.py now keeps 'horseless-carriage_'
     on the front of an auto-derived COMPOSE_PROJECT_NAME_PREFIX, but an
     installation from before that change has one that's just the bare
     target-repo name - doctor.py should flag it (with migration steps),
@@ -682,7 +682,7 @@ class TestRunningStateRepoMountMismatch:
 
 
 class TestUnsupportedEcosystemAndJvmChecks:
-    """ISSUE-0064: the Tested gate's test-runner registry only supports
+    """SPEC-ISSUE-0064: the Tested gate's test-runner registry only supports
     Python/Gradle/Maven - a target repo for anything else (Go/Rust/Ruby/PHP/
     .NET), or a Gradle/Maven repo with no JDK available to the agent image,
     should be flagged here at doctor/startup time, not discovered mid-sprint
@@ -717,7 +717,7 @@ class TestUnsupportedEcosystemAndJvmChecks:
         assert not any("test-runner adapter" in w.message for w in result.warnings())
 
     def test_gradle_project_with_placeholder_workbench_warns(self, valid_repo, monkeypatch):
-        """ISSUE-0064: a Gradle/Maven manifest with no workbench customized
+        """SPEC-ISSUE-0064: a Gradle/Maven manifest with no workbench customized
         yet (still the auto-created placeholder, or missing entirely) means
         the agent image has no JDK - nudge toward propose_framework_change
         rather than leaving a silent gap."""

@@ -98,7 +98,7 @@ class TestGitHubTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._run")
     def test_gh_pr_create_forces_develop_for_a_feature_branch_head_with_no_base(self, mock_run):
         """
-        ISSUE-0059: a head shaped like a story feature branch must always
+        SPEC-ISSUE-0059: a head shaped like a story feature branch must always
         target develop, even when the caller omits `base` entirely - a real
         eval run showed DevTeam fall back to this general-purpose tool
         directly (after start_feature_branch kept rejecting it for
@@ -337,7 +337,7 @@ class TestGitHubTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._run")
     def test_git_push_refuses_to_push_directly_to_protected_branch(self, mock_run):
         """
-        Acceptance Criteria (ISSUE-0006): git_push refuses a push straight
+        Acceptance Criteria (SPEC-ISSUE-0006): git_push refuses a push straight
         to the configured default branch instead of running it.
         """
         tool_context = MagicMock()
@@ -368,7 +368,7 @@ class TestGitHubTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._run")
     def test_git_push_impl_allow_protected_escape_hatch(self, mock_run):
         """
-        Acceptance Criteria (ISSUE-0006): seed_repository's initial bootstrap
+        Acceptance Criteria (SPEC-ISSUE-0006): seed_repository's initial bootstrap
         commit is the one legitimate exception - allow_protected=True lets
         it through. Only reachable via _git_push_impl (internal Python code,
         never an agent tool call) - see the next two tests.
@@ -692,7 +692,7 @@ class TestGitHubTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._run")
     def test_git_push_retries_as_empty_commit_when_nothing_staged_despite_untracked_files_present(self, mock_run):
         """
-        ISSUE-0050 follow-up / 0.1.0-run34: git prints a DIFFERENT message
+        SPEC-ISSUE-0050 follow-up / 0.1.0-run34: git prints a DIFFERENT message
         - "nothing added to commit but untracked files present" - instead of
         "nothing to commit, working tree clean" whenever there are any
         untracked files sitting around (e.g. .coverage/__pycache__/ left by
@@ -732,7 +732,7 @@ class TestGitHubTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._run")
     def test_gh_pr_review_records_pr_review_call(self, mock_run):
         """
-        Acceptance Criteria (ISSUE-0005): a successful gh_pr_review call is
+        Acceptance Criteria (SPEC-ISSUE-0005): a successful gh_pr_review call is
         counted per calling role, so advance_story_stage's Reviewed/Tested
         gates can tell a claimed stage apart from an actual review.
         """
@@ -775,7 +775,7 @@ class TestGitHubTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.github.gh_pr_create")
     def test_create_release_pr_rejects_without_fresh_release_approval(self, mock_gh_pr_create):
         """
-        Acceptance Criteria (ISSUE-0001): create_release_pr refuses without
+        Acceptance Criteria (SPEC-ISSUE-0001): create_release_pr refuses without
         a fresh record_human_approval("release", ...) since the last one.
         """
         tool_context = MagicMock()
@@ -1198,16 +1198,16 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = self._base_state([
-            {"id": "ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+            {"id": "SPEC-ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
             {"id": "US-0002", "title": "Second", "stages_completed": ["Draft", "Ready"]},
         ])
 
         result = start_feature_branch("US-0002", "second-story", tool_context=tool_context)
 
         self.assertEqual(result["status"], "error")
-        self.assertIn("ISSUE-0001", result["message"])
+        self.assertIn("SPEC-ISSUE-0001", result["message"])
         self.assertIn("resolve it for real", result["message"])
-        self.assertIn("set_priority('ISSUE-0001'", result["message"])
+        self.assertIn("set_priority('SPEC-ISSUE-0001'", result["message"])
         self.assertIn("warranted blocking priority", result["message"])
         # "Resolve it for real" must be the lead instruction, named before
         # the reprioritization escape hatch - not the other way around.
@@ -1678,7 +1678,7 @@ class TestCheckoutDevelopOrRecover(unittest.TestCase):
     failure by integrating dangling specs/.hc writes and retrying once, but
     leaves any other checkout failure (bad branch, network, auth) untouched.
 
-    _preserve_local_only_develop_commits (ISSUE-0050) is patched to a no-op
+    _preserve_local_only_develop_commits (SPEC-ISSUE-0050) is patched to a no-op
     None in these - they're about the self-heal/retry behavior, covered by
     its own TestPreserveLocalOnlyDevelopCommits below.
     """
@@ -1739,7 +1739,7 @@ class TestCheckoutDevelopOrRecover(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
     @patch("agents.scrum_team.tools.github._run")
     def test_uses_plain_checkout_once_local_is_confirmed_in_sync_with_origin(self, mock_run, mock_preserve):
-        # ISSUE-0050: once _preserve_local_only_develop_commits has already
+        # SPEC-ISSUE-0050: once _preserve_local_only_develop_commits has already
         # pushed (or merged-then-pushed) local <develop> to match origin, the
         # usual reset-to-origin checkout is redundant - use a plain checkout
         # instead of re-resetting (harmless either way once in sync, but a
@@ -1777,7 +1777,7 @@ class TestCheckoutDevelopOrRecover(unittest.TestCase):
 
 class TestPreserveLocalOnlyDevelopCommits(unittest.TestCase):
     """
-    ISSUE-0050 / 0.1.0-run33, 0.1.0-run34: _checkout_develop_or_recover's own
+    SPEC-ISSUE-0050 / 0.1.0-run33, 0.1.0-run34: _checkout_develop_or_recover's own
     reset-to-origin checkout silently discarded local-only commits (e.g.
     save_state_to_repo's checkpoint commits) - confirmed via a live git repro
     (fetch/checkout -B/pull --ff-only don't lose anything on their own; the
@@ -2286,14 +2286,14 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         tool_context.state = {
             "sprint_number": 2,
             "product_backlog": [
-                {"id": "ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+                {"id": "SPEC-ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
             ],
         }
 
         result = create_sprint_backlog_pr(tool_context=tool_context)
 
         self.assertEqual(result["status"], "error")
-        self.assertIn("ISSUE-0002", result["message"])
+        self.assertIn("SPEC-ISSUE-0002", result["message"])
         self.assertIn("advance_story_stage", result["message"])
         mock_run.assert_not_called()
 
@@ -2309,7 +2309,7 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             "sprint_number": 2,
             "repo": {"default_branch": "main", "develop_branch": "develop"},
             "product_backlog": [
-                {"id": "ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+                {"id": "SPEC-ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
             ],
         }
 
@@ -2336,7 +2336,7 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             # behavior specifically.
             "product_backlog": _ONE_READY_STORY + [
                 {
-                    "id": "ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"],
+                    "id": "SPEC-ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"],
                     "blocked": {"category": "product", "question": "which fix?"},
                 },
             ],
@@ -2361,7 +2361,7 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             "sprint_number": 2,
             "repo": {"default_branch": "main", "develop_branch": "develop"},
             "product_backlog": _ONE_READY_STORY + [
-                {"id": "ISSUE-0002", "type": "Issue", "priority": "Should", "stages_completed": ["Draft"]},
+                {"id": "SPEC-ISSUE-0002", "type": "Issue", "priority": "Should", "stages_completed": ["Draft"]},
             ],
         }
 
@@ -2598,7 +2598,7 @@ class TestResolveFeatureBranchConflicts(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._run")
     def test_state_json_conflict_is_resolved_mechanically_not_surfaced(self, mock_run, mock_git_push):
         """
-        ISSUE-0054: .hc/state.json is never hand-authored - a conflict on it
+        SPEC-ISSUE-0054: .hc/state.json is never hand-authored - a conflict on it
         must be regenerated from live tool_context.state and staged
         automatically, never handed to an agent as raw conflict-marked
         content to merge via write_file.

@@ -360,7 +360,7 @@ def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
     # this ran instead of re-reading every doc by hand to double-check (a
     # real incident spent much of a session's token budget doing exactly
     # that after a re-init, right before the budget ran out - see
-    # ISSUE-0002 in a state repo's specs/requirements/).
+    # SPEC-ISSUE-0002 in a state repo's specs/requirements/).
     doc_sync = {"stories_synced": 0, "vision_synced": False, "goals_synced": 0, "architecture_synced": False}
     try:
         from .requirements import (
@@ -876,7 +876,7 @@ def record_human_approval(approval_type: str, note: str = "", tool_context=None)
     approval of the sprint goal and sprint backlog", and PO/SM_PROMPT's
     "Ensure Human Review is done for each increment") - the mechanical
     counterpart `advance_story_stage(..., "Implemented")` and
-    `create_release_pr` (see ISSUE-0001) actually check for, instead of
+    `create_release_pr` (see SPEC-ISSUE-0001) actually check for, instead of
     trusting the model's own assertion that a human reviewed something.
     - approval_type: "sprint" (this sprint's goal + backlog), "release"
       (this increment, before create_release_pr), or "budget" (this
@@ -903,12 +903,12 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
     before this tool existed, nothing in the codebase ever set `sprint_goal`
     to a real value (`init_scrum_state` only ever defaults it to ""), so a
     user saying "let's start the sprint" produced narrated text but no
-    persisted sprint at all - see ISSUE-0011.
+    persisted sprint at all - see SPEC-ISSUE-0011.
     - Rejects a blank/generic/too-short goal (mirrors `is_low_quality_retro_text`'s
       guard on retro text) - a real sprint goal states what this sprint is
       actually meant to achieve, not a placeholder.
     - Refuses to start while the previous sprint's close sequence is left
-      unfinished (`new_sprint_item_blocked` - see ISSUE-0010), for the same
+      unfinished (`new_sprint_item_blocked` - see SPEC-ISSUE-0010), for the same
       reason `plan_sprint_backlog_item` refuses new backlog items in that
       state: starting a new sprint goal is exactly the kind of "new sprint
       work" that gate exists to catch, and doing it while the previous
@@ -1050,7 +1050,7 @@ def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_contex
             break
 
     if not updated_item:
-        # ISSUE-0010: this is a genuinely new sprint_backlog item (not an
+        # SPEC-ISSUE-0010: this is a genuinely new sprint_backlog item (not an
         # update to one already there) - refuse it if the previous sprint's
         # close sequence (retro/report done, but release PR never
         # completed) is still hanging open.

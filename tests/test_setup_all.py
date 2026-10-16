@@ -125,7 +125,7 @@ class TestRunDoctorGate:
 
 class TestOfferToStart:
     """
-    Acceptance Criteria (ISSUE-0028 dev-mode ordering fix): dev is decided
+    Acceptance Criteria (SPEC-ISSUE-0028 dev-mode ordering fix): dev is decided
     upfront by main() (step 0), not re-asked here - offer_to_start only
     asks start?/cli?/daemon?, then folds the already-decided dev value
     into argv.
@@ -224,7 +224,7 @@ class TestOfferToStart:
 class TestMain:
     """
     Acceptance Criteria: main() asks about developer mode first (step 0,
-    before any guided step runs - see ISSUE-0028: dev mode must be settled
+    before any guided step runs - see SPEC-ISSUE-0028: dev mode must be settled
     before any container work, not after setup_llm.py's own Local/Ollama
     live test has already started a container it would go on to rebuild),
     then chains setup_llm -> check_state_repo -> setup_project -> the
@@ -263,7 +263,7 @@ class TestMain:
         assert offered == [True]
 
     def test_dev_mode_answer_is_threaded_into_setup_llm(self, monkeypatch):
-        """The whole point of ISSUE-0028: setup_llm.py's own Local/Ollama
+        """The whole point of SPEC-ISSUE-0028: setup_llm.py's own Local/Ollama
         live test needs to know about developer mode too, so it can
         rebuild the ollama image before starting it for that test."""
         self._mock_all_steps_succeed(monkeypatch, dev_answer="y")

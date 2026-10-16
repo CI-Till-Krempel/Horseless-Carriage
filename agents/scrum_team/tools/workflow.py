@@ -278,7 +278,7 @@ def propose_framework_change(
     Never a direct write (see docs.py's write_file, which refuses any path
     under `.hc/` and points here instead).
 
-    ISSUE-0064: a per-language build-arg flag doesn't generalize - every new
+    SPEC-ISSUE-0064: a per-language build-arg flag doesn't generalize - every new
     stack would need its own flag and a Horseless-Carriage code change
     forever. Instead, `.hc/workbench-setup.sh` in the PRODUCT/STATE repo
     (same repo `_configured_repo_root`/`write_file`/`propose_steering_change`

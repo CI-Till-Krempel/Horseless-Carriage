@@ -1,9 +1,9 @@
 # Issue
 
 <!-- AGENT SAFEGUARD: Do NOT implement or fill out this template file directly. -->
-<!-- This is a blueprint. Always create a new file (e.g., ISSUE-0001-My-Issue.md) for actual content. -->
+<!-- This is a blueprint. Always create a new file (e.g., SPEC-ISSUE-0001-My-Issue.md) for actual content. -->
 
-- Issue ID: ISSUE-XXXX
+- Issue ID: SPEC-ISSUE-XXXX
 - Title: <short issue title>
 - Status: Draft | Ready | In Progress | Done | Rejected
 - Priority: Must | Should | Could | Won't

@@ -138,7 +138,7 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   "arguments": {}}`, instead of real text or a real action** — some models occasionally emit a text
   reply shaped exactly like a tool call instead of actually making one, so the intended action never
   runs. **Known issue, not yet fixed in this build** (`main`) — a fix exists on an unmerged branch
-  and is tracked as GitHub issue #89 / `ISSUE-0039`, but is not part of this v0.1.0 release. If it
+  and is tracked as GitHub issue #89 / `SPEC-ISSUE-0039`, but is not part of this v0.1.0 release. If it
   happens: tell the Orchestrator plainly to actually call the tool rather than describe it (a
   regular follow-up message usually gets it to make the real call), and report the occurrence on
   that issue so it's counted toward prioritizing the fix.

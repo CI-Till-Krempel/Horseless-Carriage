@@ -104,7 +104,7 @@ services:
       dockerfile: agent.Dockerfile
       additional_contexts:
         - "workbench=${STATE_REPO_PATH}/.hc"
-    # ISSUE-0063: see docker-compose.yaml's identical entry - no `ports:`
+    # SPEC-ISSUE-0063: see docker-compose.yaml's identical entry - no `ports:`
     # here, deliberately. net-proxy below reverse-proxies the web UI's
     # ingress instead.
     volumes:
@@ -232,7 +232,7 @@ services:
       context: .
       dockerfile: net-proxy.Dockerfile
     ports:
-      # ISSUE-0063: see docker-compose.yaml's identical entry.
+      # SPEC-ISSUE-0063: see docker-compose.yaml's identical entry.
       - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
     networks:
       - external-net

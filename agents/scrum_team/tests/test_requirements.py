@@ -90,8 +90,8 @@ def _tool_context(agent_name, stages_completed):
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestAdvanceStoryStageGates(unittest.TestCase):
     """
-    Acceptance Criteria (ISSUE-0001, ISSUE-0002, ISSUE-0003, ISSUE-0005,
-    ISSUE-0010): advance_story_stage's Implemented/Reviewed/Tested
+    Acceptance Criteria (SPEC-ISSUE-0001, SPEC-ISSUE-0002, SPEC-ISSUE-0003, SPEC-ISSUE-0005,
+    SPEC-ISSUE-0010): advance_story_stage's Implemented/Reviewed/Tested
     transitions must mechanically verify the precondition they claim,
     instead of accepting the call on ordering/ownership grounds alone.
     """
@@ -136,7 +136,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
 
     def test_implemented_rejects_blank_or_placeholder_earlier_work_justification(self, mock_save, mock_md, mock_roadmap):
         """
-        Acceptance Criteria (ISSUE-0046): implemented_via_earlier_work is an
+        Acceptance Criteria (SPEC-ISSUE-0046): implemented_via_earlier_work is an
         honest escape hatch, not a universal bypass - a blank or generic
         placeholder justification must still be rejected, same as
         is_low_quality_retro_text already does for retro/impediment text.
@@ -154,7 +154,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
 
     def test_implemented_accepts_a_real_earlier_work_justification(self, mock_save, mock_md, mock_roadmap):
         """
-        Acceptance Criteria (ISSUE-0046): a real eval run's DevTeam wrote the
+        Acceptance Criteria (SPEC-ISSUE-0046): a real eval run's DevTeam wrote the
         entire app (app.py/templates/index.html/test_app.py) once during
         US-0001, then had genuinely nothing new to write for US-0002 through
         US-0005 - with no honest way to say so, it fabricated a throwaway
@@ -422,7 +422,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertIn("test_app.py::test_dummy", result["warning"])
 
     def test_tested_succeeds_without_coverage_when_tests_actually_ran_and_passed(self, mock_save, mock_md, mock_roadmap):
-        """ISSUE-0064: coverage_available used to be required for Tested too
+        """SPEC-ISSUE-0064: coverage_available used to be required for Tested too
         (conflating "tests ran and passed" with "coverage % was measured") -
         that permanently blocked the gate for any ecosystem (e.g. a JVM
         project without JaCoCo configured) where coverage can't be measured
@@ -444,7 +444,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
 
     def test_accepted_requires_a_recorded_acceptance_check(self, mock_save, mock_md, mock_roadmap):
-        """Acceptance Criteria (ISSUE-0043): Accepted previously had no
+        """Acceptance Criteria (SPEC-ISSUE-0043): Accepted previously had no
         evidence gate at all - any role could call advance_story_stage
         on assertion alone."""
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
@@ -769,7 +769,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         """
         tc = self._two_story_context("DevTeam", ["Ready"])
         tc.state["product_backlog"].insert(0, {
-            "id": "ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue",
+            "id": "SPEC-ISSUE-0001", "title": "Ensure robust test isolation", "type": "Issue",
             "priority": "Must", "stages_completed": ["Draft"],
         })
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
@@ -779,10 +779,10 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
 
         self.assertEqual(result["status"], "error")
-        self.assertIn("ISSUE-0001", result["message"])
+        self.assertIn("SPEC-ISSUE-0001", result["message"])
         self.assertIn("must reach Accepted first", result["message"])
         self.assertIn("resolve it for real", result["message"])
-        self.assertIn("set_priority('ISSUE-0001'", result["message"])
+        self.assertIn("set_priority('SPEC-ISSUE-0001'", result["message"])
         self.assertIn("warranted blocking priority", result["message"])
         # "Resolve it for real" must be the lead instruction, named before
         # the reprioritization escape hatch - not the other way around.
@@ -977,10 +977,10 @@ class TestDraftStage(unittest.TestCase):
 
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestRecordAcceptanceCheck(unittest.TestCase):
-    """Acceptance Criteria (ISSUE-0043): record_acceptance_check sets a
+    """Acceptance Criteria (SPEC-ISSUE-0043): record_acceptance_check sets a
     per-story COUNTER (not a one-time boolean like design_approved) on both
     backlog copies, so a denial can later require a genuinely fresh check
-    (ISSUE-0044) rather than reuse of the one that got denied."""
+    (SPEC-ISSUE-0044) rather than reuse of the one that got denied."""
 
     def test_increments_counter_on_both_backlog_copies(self, mock_save):
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
@@ -1145,7 +1145,7 @@ class TestDenyReview(unittest.TestCase):
 
     def test_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md, mock_pr_comment):
         """
-        Acceptance Criteria (ISSUE-0044): the Reviewed/Tested gate's own
+        Acceptance Criteria (SPEC-ISSUE-0044): the Reviewed/Tested gate's own
         evidence check is sprint-wide (pr_review_calls), not scoped to one
         story - so a story that was just denied could previously still
         advance right away, as long as *some* Architect review call (even
@@ -1178,7 +1178,7 @@ class TestDenyReview(unittest.TestCase):
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 
     def test_tested_denial_blocks_advance_even_if_the_sprintwide_counter_already_passes(self, mock_save, mock_md, mock_pr_comment):
-        """Same ISSUE-0044 fix, QA/Tested side."""
+        """Same SPEC-ISSUE-0044 fix, QA/Tested side."""
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         tc.state["pr_review_calls"] = {"QA": 1}
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
@@ -1204,8 +1204,8 @@ class TestDenyReview(unittest.TestCase):
         self.assertIsNone(tc.state["product_backlog"][0]["review_denial"])
 
     def test_accepted_denial_blocks_advance_even_if_already_checked_once(self, mock_save, mock_md, mock_pr_comment):
-        """Same ISSUE-0044 fix, Accepted/record_acceptance_check side
-        (ISSUE-0043): a denial must require a genuinely NEW
+        """Same SPEC-ISSUE-0044 fix, Accepted/record_acceptance_check side
+        (SPEC-ISSUE-0043): a denial must require a genuinely NEW
         record_acceptance_check call, not just reuse of the check that led
         to the denial."""
         tc = _tool_context("ProductOwner", ["Ready", "Implemented", "Reviewed", "Tested"])
@@ -1541,7 +1541,7 @@ class TestResolveStoryBlocker(unittest.TestCase):
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestResolveStoryBlockerMechanicalRecheck(unittest.TestCase):
     """
-    ISSUE-0060: a "technical" blocker raised by the stage-rejection-loop
+    SPEC-ISSUE-0060: a "technical" blocker raised by the stage-rejection-loop
     breaker for a Tested-stage test failure (_attach_mechanical_recheck_
     evidence) has a real, mechanically-checkable condition behind it -
     resolve_story_blocker must not accept a resolution claim with no fresh,
@@ -1657,7 +1657,7 @@ class TestResolveStoryBlockerMechanicalRecheck(unittest.TestCase):
 
 
 class TestUpsertBacklogItemGuards(unittest.TestCase):
-    """Acceptance Criteria (ISSUE-0007, ISSUE-0008)."""
+    """Acceptance Criteria (SPEC-ISSUE-0007, SPEC-ISSUE-0008)."""
 
     @patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"})
     @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
@@ -1731,7 +1731,7 @@ class TestUpsertStoryEpicIssueCoerceJsonStringArg(unittest.TestCase):
     def test_upsert_issue_accepts_json_string(self, mock_save, mock_md):
         tc = MagicMock()
         tc.state = ScrumState().model_dump()
-        result = upsert_issue('{"id": "ISSUE-0001", "title": "Foo"}', tool_context=tc)
+        result = upsert_issue('{"id": "SPEC-ISSUE-0001", "title": "Foo"}', tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
     def test_upsert_story_malformed_json_string_returns_error_not_crash(self):
@@ -2031,7 +2031,7 @@ class TestSyncStoriesFromMarkdownMigratesLegacyPriority(unittest.TestCase):
 @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
 class TestDeclareBacklogScopeComplete(unittest.TestCase):
     """
-    Acceptance Criteria (ISSUE-0046): an honest, justified escape hatch from
+    Acceptance Criteria (SPEC-ISSUE-0046): an honest, justified escape hatch from
     ready_backlog_shortfall's target - a real eval run's fixed,
     deliberately-closed-scope product genuinely ran out of real stories
     against the target and, with no honest way to say so, fabricated two
@@ -2066,7 +2066,7 @@ class TestDeclareBacklogScopeComplete(unittest.TestCase):
 
 class TestResolveStoryRef(unittest.TestCase):
     """
-    Acceptance Criteria (ISSUE-0048): update_roadmap's stories= lookup must
+    Acceptance Criteria (SPEC-ISSUE-0048): update_roadmap's stories= lookup must
     resolve a combined "ID: Title"/"ID - Title" string to the real ID, not
     just an exact id/title match - a real eval run's Product Owner called
     update_roadmap with exactly this shape, silently rendering every story

@@ -375,7 +375,7 @@ class TestHistoryManagement(unittest.TestCase):
         banner is mechanically prepended to the actual visible response
         text (not just a prompt instruction the model might ignore), and a
         blocking interaction is recorded so a human not reading every
-        reply still gets notified (GH issue #53/ISSUE-0025).
+        reply still gets notified (GH issue #53/SPEC-ISSUE-0025).
         """
         state = ScrumState()
         state.orchestrator_stall_count = ORCHESTRATOR_STALL_THRESHOLD - 1

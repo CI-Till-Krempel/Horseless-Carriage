@@ -115,7 +115,7 @@ def closeout_grace_percent(state=None) -> float:
     Architect get none of this grace - their work is frozen at exhaustion;
     only closing the sprint out still needs turns. Configurable via
     SPRINT_CLOSEOUT_GRACE_PERCENT; default 20.0 (20%, raised from an
-    original 5.0 - see ISSUE-0046). 5% (a real run's main sprint ceiling was
+    original 5.0 - see SPEC-ISSUE-0046). 5% (a real run's main sprint ceiling was
     5,000,000, so 250,000 tokens of grace) wasn't enough headroom in
     practice: the close-out sequence used to be several sequential agent
     hops (a non-grace role's redirect to ProductOwner, ProductOwner ->
@@ -144,7 +144,7 @@ def closeout_grace_percent(state=None) -> float:
     hasn't started, while never going below 25% of the configured value (a
     real incident showed even the *last* remaining step - a bad hand-off
     guess right before create_release_pr - can burn real tokens on its own,
-    see ISSUE-0046 above). Omit state (or pass None) to get the flat,
+    see SPEC-ISSUE-0046 above). Omit state (or pass None) to get the flat,
     unscaled percentage - existing callers that never dealt with per-sprint
     progress signals keep today's exact behavior.
     """
@@ -409,7 +409,7 @@ def blocks_direct_status_set(status) -> bool:
 
 
 # Paths under these prefixes are spec/process documents, not application
-# source code - see ISSUE-0002 (advance_story_stage's "Implemented" gate
+# source code - see SPEC-ISSUE-0002 (advance_story_stage's "Implemented" gate
 # needs to tell "wrote real code" apart from "wrote a story markdown file").
 _NON_SOURCE_PREFIXES = ("specs/", "spec-templates/", ".hc/")
 
@@ -421,7 +421,7 @@ def is_source_file(rel_path: str) -> bool:
 # Placeholder/generic retro content the model can produce to trivially
 # satisfy create_sprint_report's retro_baseline gate (which only checks
 # *count*, not quality) without actually doing the concrete reflection
-# SM_PROMPT's RETROSPECTIVE REASONING section asks for - see ISSUE-0009.
+# SM_PROMPT's RETROSPECTIVE REASONING section asks for - see SPEC-ISSUE-0009.
 _MIN_RETRO_FIELD_LEN = 8
 _GENERIC_RETRO_PHRASES = {
     "communicate better", "improve communication", "do better", "be more careful",
@@ -661,7 +661,7 @@ def ready_backlog_shortfall(product_backlog: list, backlog_scope_complete: bool 
     backlog work (agents/scrum_team/tools/requirements.py).
 
     `backlog_scope_complete` (state key set by declare_backlog_scope_complete,
-    tools/requirements.py - ISSUE-0046): an honest escape hatch, deliberately
+    tools/requirements.py - SPEC-ISSUE-0046): an honest escape hatch, deliberately
     NOT an automatic cap based on however many items merely happen to be in
     product_backlog right now - that would silently satisfy this gate for
     any real, open-ended backlog too (a PO could just never enter more than
@@ -694,7 +694,7 @@ def new_sprint_item_blocked(state: dict) -> str | None:
     `sprint_report_pending_release` is still set - create_sprint_report
     succeeded (so the retro/report step did happen, see retro_baseline) but
     create_release_pr never followed, regardless of whether that prior
-    sprint's stories all reached Accepted. See ISSUE-0010.
+    sprint's stories all reached Accepted. See SPEC-ISSUE-0010.
 
     GH issue #401: this used to return None the moment every planned story
     reached Accepted, even with sprint_report_pending_release still set -
@@ -755,13 +755,13 @@ def new_sprint_item_blocked(state: dict) -> str | None:
 # turn (agent.py's phase_awareness_injection_callback), and as a console-
 # log prefix a human watching a live run can see at a glance.
 #
-# ISSUE-0057: originally nudge-only ("nothing here may ever refuse a tool
+# SPEC-ISSUE-0057: originally nudge-only ("nothing here may ever refuse a tool
 # call") - PHASE_TOOL_POLICY/ALWAYS_PHASE_ALLOWED_TOOLS below turn this into
 # a real, if forgiving, gate (see agent.py's _detect_phase_violation): the
 # FIRST out-of-phase attempt at a given tool this phase is refused with a
 # clear explanation; an immediate identical retry is let through and
 # logged as an override, never a silent, unrecoverable block - this must
-# not ship without ISSUE-0056's fix landing first (or an equivalent one),
+# not ship without SPEC-ISSUE-0056's fix landing first (or an equivalent one),
 # since a `current_sprint_phase` that can get stuck (e.g. on a stale,
 # never-reset token budget) would otherwise turn a silent bug into a
 # genuine deadlock.
@@ -794,7 +794,7 @@ SPRINT_PHASE_GUIDANCE = {
     ),
 }
 
-# ISSUE-0057: tools whose EXISTENCE is phase-specific - calling them at all
+# SPEC-ISSUE-0057: tools whose EXISTENCE is phase-specific - calling them at all
 # outside the listed phase(s) is premature regardless of arguments. Deliberately
 # excludes advance_story_stage/record_acceptance_check (agent.py's
 # _detect_phase_violation evaluates those by their actual stage/story
@@ -871,7 +871,7 @@ ALWAYS_PHASE_ALLOWED_TOOLS = {
     "record_acceptance_check",
 }
 
-# ISSUE-0057: advance_story_stage/record_acceptance_check are evaluated by
+# SPEC-ISSUE-0057: advance_story_stage/record_acceptance_check are evaluated by
 # their actual effect, not gated as a whole tool - stage names reachable in
 # a planning phase vs. ones that mean real development progress.
 PLANNING_STAGE_NAMES = {"Draft", "Ready"}

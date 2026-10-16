@@ -431,7 +431,7 @@ def prompt_project_settings(env_path: Path, is_local: bool = False) -> None:
     entirely rather than asking a question whose answer never matters - a
     self-hosted model has no real per-token price, so TOTAL_USD_BUDGET is a
     no-op there (check_cost_budget_callback skips it outright when
-    LLM_LOCAL_PROVIDER=true - see ISSUE-0033/GH issue #75, #81)."""
+    LLM_LOCAL_PROVIDER=true - see SPEC-ISSUE-0033/GH issue #75, #81)."""
     print()
     print("--- Git identity ---")
     print("Used for commits the agent makes on your behalf.")
@@ -492,7 +492,7 @@ def prompt_project_settings(env_path: Path, is_local: bool = False) -> None:
 
     if is_local:
         # A self-hosted model has no real per-token price, so this budget
-        # would never be enforceable in any meaningful way (ISSUE-0033) -
+        # would never be enforceable in any meaningful way (SPEC-ISSUE-0033) -
         # asking the question would only invite false confidence. Still
         # written (harmlessly ignored) so .env stays consistent, and any
         # config from a previous cloud setup on this same .env isn't lost.
@@ -1107,7 +1107,7 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         # GH issue #117: run.py already turns a Ctrl+C during its own
         # foreground `docker compose up` into a clean message instead of a
-        # raw traceback (see ISSUE-0032) - this wizard had no equivalent,
+        # raw traceback (see SPEC-ISSUE-0032) - this wizard had no equivalent,
         # despite a user being arguably more likely to hit Ctrl+C here
         # (second-guessing a prompt, a mistyped key) than during run.py's
         # mostly-unattended container startup. Only wraps the standalone

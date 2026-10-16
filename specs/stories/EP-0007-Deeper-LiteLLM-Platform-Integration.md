@@ -26,7 +26,7 @@ memory - see Notes for sources), that's directly relevant to this system's own g
 
 - **Fallbacks/retries/cooldowns** (`docs.litellm.ai/docs/proxy/reliability`): the router can fail
   over to a different model/provider automatically on error/rate-limit, instead of the request just
-  failing. Directly relevant to `check_cost_budget_callback`'s `[BUDGET ERROR]` halt (ISSUE-0025 /
+  failing. Directly relevant to `check_cost_budget_callback`'s `[BUDGET ERROR]` halt (SPEC-ISSUE-0025 /
   GH issue #53) and general provider flakiness - a transient Gemini outage currently halts the whole
   sprint for every agent; a configured fallback to Anthropic/OpenAI could keep it running.
 - **Guardrails** (18+ built-in providers - Presidio for PII redaction, Aporia/Lakera for prompt-
@@ -40,7 +40,7 @@ memory - see Notes for sources), that's directly relevant to this system's own g
   directly relevant to this system's own token/USD budget guardrails (`docs/BUDGET.md`).
 - **Alerting/webhooks** (`docs.litellm.ai/docs/proxy/alerting` - Slack/email on spend thresholds and
   hung requests, soft vs. hard budget alerts): overlaps directly with the blocking-interactions
-  notification system just added (ISSUE-0025 / GH issue #53,
+  notification system just added (SPEC-ISSUE-0025 / GH issue #53,
   `agents/scrum_team/tools/notifications.py`) - LiteLLM's own alerting could be a second, complementary
   signal path (proxy-level spend/hang detection) rather than something to duplicate.
 - **MCP Gateway** (native Model Context Protocol support - a single `/mcp` endpoint, per-key/team/org
@@ -83,7 +83,7 @@ prioritized when picked up) - each below is scoped small enough to be one story 
 - At least one reliability story (fallbacks) and one safety story (a guardrail) are broken out as
   real stories in `specs/stories/` and picked up through the standard 5-stage pipeline.
 - The relationship between LiteLLM's own alerting and this system's `blocking_interactions`/
-  `Notifier` plugin system (ISSUE-0025) is explicitly decided - integrate, or deliberately keep
+  `Notifier` plugin system (SPEC-ISSUE-0025) is explicitly decided - integrate, or deliberately keep
   separate - rather than the two silently overlapping or duplicating.
 - The MCP Gateway adoption spike produces a documented decision (adopt now / adopt later / defer
   indefinitely) with reasoning, before any tool-registration migration work is scoped as its own epic.
@@ -108,7 +108,7 @@ prioritized when picked up) - each below is scoped small enough to be one story 
 - **Not proposed**: A2A protocol adoption as an actual story - noted above for completeness (it's a
   real LiteLLM capability relevant to "agents... and so forth" from the issue), but this repo has no
   current need to interoperate with non-ADK agent frameworks; revisit if/when that changes.
-- Depends on / relates to: ISSUE-0025 (blocking-interactions notification system - the alerting
+- Depends on / relates to: SPEC-ISSUE-0025 (blocking-interactions notification system - the alerting
   overlap above), GH issue #48 (parallel/event-driven agents) and #58 (coordinator delegation) - both
   independently relevant to whether centralizing tool access via MCP Gateway is worth it.
 

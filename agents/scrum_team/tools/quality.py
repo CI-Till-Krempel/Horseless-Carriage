@@ -19,7 +19,7 @@ from .test_runners import run_test_suite
 # below so that shape self-heals instead of looping.
 _CALCULATE_KPIS_CALL_ALIASES = {"calculate_kpis", "calculate_kpis()"}
 
-# ISSUE-0061: the four top-level keys calculate_kpis() always returns as
+# SPEC-ISSUE-0061: the four top-level keys calculate_kpis() always returns as
 # nested dicts (team_effectiveness/result_quality/maintainability/security -
 # see its own return statement below). update_sprint_report's existing
 # self-healing only recovers two specific malformed *outer* shapes (the tool
@@ -159,7 +159,7 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
     """
     Thin wrapper around _execute_test_suite_coverage_impl (the actual pytest
     run) that additionally persists test_suite_run_count/
-    last_test_suite_result to state - ISSUE-0060: resolve_story_blocker
+    last_test_suite_result to state - SPEC-ISSUE-0060: resolve_story_blocker
     needs a mechanically-checkable signal that a REAL test run happened
     (and what it showed) since a Tested-stage blocker was raised, the same
     way check_build's manifest_write_count_at_check lets advance_story_stage
@@ -185,7 +185,7 @@ def _execute_test_suite_coverage_impl(tool_context=None) -> Dict[str, Any]:
     and (where measurable) a real coverage percentage, rather than
     fabricating a number.
 
-    ISSUE-0064: this used to hardcode a `pytest` invocation regardless of
+    SPEC-ISSUE-0064: this used to hardcode a `pytest` invocation regardless of
     the target repo's actual language/build tool - every JVM (Gradle/Maven)
     project got either a confusing collection error or a false "no tests
     collected" despite a real, passing native test suite. Dispatch now goes
@@ -445,7 +445,7 @@ def check_build(tool_context=None) -> Dict[str, Any]:
         return result
 
     passing = result.get("status") == "ok"
-    # Persisted so advance_story_stage's "Tested" gate (ISSUE-0004) can
+    # Persisted so advance_story_stage's "Tested" gate (SPEC-ISSUE-0004) can
     # verify check_build actually ran and passed, instead of trusting QA's
     # own say-so that it did. manifest_write_count_at_check snapshots
     # write_file's dependency-manifest counter (docs.py) at the moment this
@@ -601,7 +601,7 @@ def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, A
     which agent's - nowhere near this tool or this call.
 
     Bumps kpi_update_count (see create_sprint_report's kpi_baseline gate,
-    tools/budget.py) - ISSUE-0046: across every real eval run so far,
+    tools/budget.py) - SPEC-ISSUE-0046: across every real eval run so far,
     QualityGuardian was never once transferred to, since nothing in the
     SPRINT CLOSE SEQUENCE actually told another agent to hand off to it -
     the KPI trends in every report came back "never computed." The prompt
@@ -624,7 +624,7 @@ def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, A
                 ),
             }
 
-    # ISSUE-0061: the outer shape is now a real dict (either path above),
+    # SPEC-ISSUE-0061: the outer shape is now a real dict (either path above),
     # but a cheap model can still hand-reconstruct one of its four nested
     # sub-dicts down to a bare scalar - reject that here, before it ever
     # reaches state, rather than letting create_sprint_report crash on it

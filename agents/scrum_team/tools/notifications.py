@@ -7,7 +7,7 @@ value the calling LLM agent might (or might not) paraphrase into the chat.
 
 blocking_interactions (see state.py) is the "task list style list of
 blocking interactions" the issue asks for - a persisted, checkpointed
-(save_state_to_repo already commits it - see ISSUE-0024) record of every
+(save_state_to_repo already commits it - see SPEC-ISSUE-0024) record of every
 interaction that has ever needed a human, open or resolved, independent of
 whatever's currently visible in the chat transcript.
 

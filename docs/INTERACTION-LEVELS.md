@@ -29,7 +29,7 @@ on a typo.
 ## What's actually mechanically enforced
 
 Two tool-level gates already exist to stop the team from skipping human review entirely (see
-`specs/requirements/ISSUE-0001-Human-Review-Gates-Are-Not-Mechanically-Enforced.md`):
+`specs/requirements/SPEC-ISSUE-0001-Human-Review-Gates-Are-Not-Mechanically-Enforced.md`):
 
 - `advance_story_stage(title_or_id, "Implemented")` - refuses unless a fresh approval was recorded
   for this sprint via `record_human_approval(approval_type, note)`.
@@ -132,7 +132,7 @@ Just by Prompting" section.
 At the CEO level, the orchestrator should run the story pipeline continuously between the two points
 where the human actually needs to be involved (approving the sprint goal/backlog, and the sprint
 review at the end), rather than stopping for a user-facing reply after every internal hand-off (see
-`specs/requirements/ISSUE-0016-Sprint-Stays-Interactive-Instead-Of-Autonomous-At-Stakeholder-And-CEO-
+`specs/requirements/SPEC-ISSUE-0016-Sprint-Stays-Interactive-Instead-Of-Autonomous-At-Stakeholder-And-CEO-
 Levels.md`). This - *how often* the orchestrator stops to address the human, as opposed to *what it
 says* when it does (covered above) - is its own named section in `ORCHESTRATOR_PROMPT` (AUTONOMY BY
 INTERACTION LEVEL), deliberately prompt-only: "did the team stop and chat unnecessarily" isn't

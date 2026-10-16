@@ -48,7 +48,7 @@ class TestAgent(unittest.TestCase):
 
     def test_init_scrum_state_is_not_an_agent_callable_tool(self):
         """
-        ISSUE-0052: init_scrum_state must never be directly callable by any
+        SPEC-ISSUE-0052: init_scrum_state must never be directly callable by any
         role - the mechanical ensure_state_initialized_callback already
         guarantees it runs exactly once per session, correctly, before any
         agent's first real turn, so no role ever legitimately needs to call
@@ -763,7 +763,7 @@ class TestPhaseAndTokensPrefix(unittest.TestCase):
         The raw console/GH Actions log has no other way to tell which
         sprint a given tool-call line belongs to (unlike transcript.md,
         grouped into per-sprint sections) - a crash that happens before a
-        sprint's section is ever written (ISSUE-0061's 0.1.0-run67) left
+        sprint's section is ever written (SPEC-ISSUE-0061's 0.1.0-run67) left
         investigation guessing the sprint boundary from timestamps alone.
         """
         state = ScrumState()
@@ -1147,7 +1147,7 @@ class TestLogToolInvocationCallbackBlocksSelfTransfer(unittest.TestCase):
 
     def test_transfer_loop_does_not_misattach_to_an_untouched_story_when_the_active_story_is_already_blocked(self):
         """
-        ISSUE-0053: a real eval run (0.1.0-run63) showed a second, unrelated
+        SPEC-ISSUE-0053: a real eval run (0.1.0-run63) showed a second, unrelated
         loop fire moments after an earlier one had already blocked the
         story actually being worked (one with an open feature branch) - the
         old rule unconditionally skipped any already-`blocked` item and
@@ -2274,7 +2274,7 @@ class TestSprintCloseoutGrace(unittest.TestCase):
     def test_grace_role_gets_a_real_call_through_within_the_grace_ceiling(self):
         # 100 main budget, pinned 5% grace -> ceiling 105; 104 is over the
         # main budget but still under grace. Pinned explicitly, not relying
-        # on the ambient default (see ISSUE-0046).
+        # on the ambient default (see SPEC-ISSUE-0046).
         for agent_name in ("ProductOwner", "ScrumOrchestrator"):
             with self.subTest(agent_name=agent_name):
                 mock_context = self._context(agent_name, 100, 104)
@@ -2298,7 +2298,7 @@ class TestSprintCloseoutGrace(unittest.TestCase):
                 self.assertIsNotNone(result, f"{agent_name} must not get any grace")
 
     def test_non_grace_role_halt_redirects_to_product_owner_instead_of_freezing(self):
-        # ISSUE-0045 / 0.1.0-run25: a non-grace role halted with a plain-text
+        # SPEC-ISSUE-0045 / 0.1.0-run25: a non-grace role halted with a plain-text
         # canned reply has no tools left (including transfer_to_agent) - if
         # it's the *active* agent when the budget trips, the grace allowance
         # above can never actually be used by anyone, and every subsequent
@@ -2320,7 +2320,7 @@ class TestSprintCloseoutGrace(unittest.TestCase):
         # 100 main budget, pinned 5% grace -> ceiling 105; 106 is past both.
         # Pinned explicitly (not relying on the ambient default) so this
         # test doesn't silently break the next time the default itself
-        # changes (see ISSUE-0046, which raised it from 5.0 to 20.0).
+        # changes (see SPEC-ISSUE-0046, which raised it from 5.0 to 20.0).
         mock_context = self._context("ProductOwner", 100, 106)
         with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "5"}):
             with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
@@ -2638,7 +2638,7 @@ class TestRestrictToSprintReportStep(unittest.TestCase):
         tool = BaseTool(name="write_file", description="Write a file.")
         tool_context = MagicMock()
         tool_context.agent_name = "DevTeam"
-        # Development-phase shape (ISSUE-0057's phase gate otherwise refuses
+        # Development-phase shape (SPEC-ISSUE-0057's phase gate otherwise refuses
         # write_file outside it, unrelated to what this test is actually
         # about - _restrict_to_sprint_report_step's role scoping).
         state = self._active_state()
@@ -2864,7 +2864,7 @@ class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):
 class TestEnsureSprintReportOnFinalHalt(unittest.TestCase):
     """
     Acceptance Criteria: a real incident found specs/ROADMAP.md, several
-    new specs/requirements/ISSUE-*.md (filed by Scrum Master's retro),
+    new specs/requirements/SPEC-ISSUE-*.md (filed by Scrum Master's retro),
     specs/workflow.puml (generate_workflow_diagram), and a story file edit
     all still dangling uncommitted after a sprint hit its budget-exhaustion
     grace ceiling - an earlier version of this safety net only committed
@@ -3452,7 +3452,7 @@ def _state_for_phase(phase):
 
 class TestDetectPhaseViolation(unittest.TestCase):
     """
-    Acceptance Criteria (ISSUE-0057): sprint-phase awareness is no longer
+    Acceptance Criteria (SPEC-ISSUE-0057): sprint-phase awareness is no longer
     nudge-only - a tool shaped for a different phase is refused, with an
     immediate identical retry let through and logged as an explicit
     override (never a silent, unrecoverable second gate).

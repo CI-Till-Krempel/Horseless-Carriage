@@ -81,7 +81,7 @@ def ensure_role_identity_defaults(state_repo_path: Path) -> dict:
 
 _WORKBENCH_SCRIPT_PLACEHOLDER = (
     "#!/bin/sh\n"
-    "# ISSUE-0064: per-project \"workbench\" - whatever toolchain THIS\n"
+    "# SPEC-ISSUE-0064: per-project \"workbench\" - whatever toolchain THIS\n"
     "# product's tech stack needs (JDK, Node, Go, ...) gets installed here,\n"
     "# e.g. `apt-get update && apt-get install -y default-jdk`.\n"
     "#\n"
@@ -101,7 +101,7 @@ _WORKBENCH_SCRIPT_PLACEHOLDER = (
 
 def ensure_workbench_script_default(state_repo_path: Path) -> str:
     """
-    ISSUE-0064: guarantees `.hc/workbench-setup.sh` always exists in the
+    SPEC-ISSUE-0064: guarantees `.hc/workbench-setup.sh` always exists in the
     state repo, so the agent image's build (agent.Dockerfile's `COPY
     --from=workbench workbench-setup.sh ...`, docker-compose.yaml's
     `additional_contexts` pointed at `<STATE_REPO_PATH>/.hc`) never fails
@@ -168,7 +168,7 @@ def _walk_git_history_for_valid_state_json(state_repo_path: Path) -> str:
 
 
 def _rebuild_state_from_specs(repo_root: Path, state_repo_path: Path) -> int:
-    """ISSUE-0052 last resort: re-derive state.json from whatever specs/
+    """SPEC-ISSUE-0052 last resort: re-derive state.json from whatever specs/
     already has on disk (the same doc-sync step init_scrum_state() runs on
     a session's first-ever init - see agents/scrum_team/scripts/
     rebuild_state_from_specs.py), for when neither resetting to a git

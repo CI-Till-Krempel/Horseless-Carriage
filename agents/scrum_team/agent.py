@@ -584,7 +584,7 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
     second real incident: by the time THIS safety net fires (only after
     the grace-eligible role's own grace allowance is *also* exhausted -
     see below), the grace period's own SPRINT CLOSE SEQUENCE work
-    (Scrum Master's retro filing new ISSUE-*.md, generate_workflow_diagram's
+    (Scrum Master's retro filing new SPEC-ISSUE-*.md, generate_workflow_diagram's
     specs/workflow.puml, a final update_roadmap/upsert_story) had already
     produced MORE dangling specs/ writes than just the report/transcript -
     an earlier version of this function, scoped only to specs/reports/,
@@ -711,7 +711,7 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str, detail: s
     canned halt response repeats on every turn once the budget's exhausted),
     appending a new blocking_interactions entry and re-firing every
     configured notifier again and again, undoing the alert-fatigue fix
-    ISSUE-0025 was meant to deliver. Cleared by start_sprint's own
+    SPEC-ISSUE-0025 was meant to deliver. Cleared by start_sprint's own
     mechanical reset (GH #413), same as budget_exhaustion_synced, so a halt
     in a later sprint notifies again."""
     if callback_context.state.get("critical_halt_notified"):
@@ -751,7 +751,7 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
     (meaning it exhausted its own grace allowance too) has nowhere better to
     go, so it still just gets the plain halt text as before.
 
-    ISSUE-0046: 0.1.0-run26 showed the redirect alone isn't sufficient - the
+    SPEC-ISSUE-0046: 0.1.0-run26 showed the redirect alone isn't sufficient - the
     grace ceiling is small on purpose (see closeout_grace_percent), and
     ProductOwner's first two moves after being handed off to were both wrong
     (an invalid stage transition, then a stray transfer to Architect),
@@ -812,7 +812,7 @@ def ensure_state_initialized_callback(callback_context: CallbackContext, llm_req
 
     This also fixes a knock-on effect of that gap: check_cost_budget_callback
     (which runs right after this one) halts the *entire* session outright -
-    before the model, and therefore the ISSUE-0027 proactive greeting, ever
+    before the model, and therefore the SPEC-ISSUE-0027 proactive greeting, ever
     runs - if state.budgets.total_usd is <= 0 and the SPRINT_USD_BUDGET env
     var also resolves to <= 0. init_scrum_state()'s own "HARD GUARDRAIL"
     (agents/scrum_team/tools/scrum.py) already replaces a 0/negative budget
@@ -1650,7 +1650,7 @@ def _phase_and_tokens_prefix(state: dict) -> str:
     other way to tell which sprint a given line belongs to (unlike
     transcript.md, which is grouped into "## Raw agent activity log -
     sprint N" sections) - investigating a crash or a stuck-run artifact
-    that never made it into transcript.md (e.g. ISSUE-0061's 0.1.0-run67)
+    that never made it into transcript.md (e.g. SPEC-ISSUE-0061's 0.1.0-run67)
     otherwise means guessing the sprint boundary from timestamps/token
     totals alone.
     """
@@ -1768,7 +1768,7 @@ def _track_orchestrator_stall(callback_context: CallbackContext, llm_response: L
     clear"). Once that streak hits ORCHESTRATOR_STALL_THRESHOLD, mechanically
     prepends a hard-to-miss banner directly onto the visible response text
     - not just a prompt instruction the model might not follow - and
-    records a blocking interaction (GH issue #53/ISSUE-0025) so a human not
+    records a blocking interaction (GH issue #53/SPEC-ISSUE-0025) so a human not
     reading every reply closely still gets notified. A real tool call (most
     commonly transfer_to_agent, itself a tool call) resets the streak - the
     Orchestrator delegating work is exactly the "acting, not just talking"
@@ -2302,7 +2302,7 @@ def _detect_repeated_call_loop(tool_context: ToolContext, agent_name: str, tool_
 
 def _advance_story_stage_phase_violation(phase: str, args: Dict[str, Any]) -> bool:
     """
-    ISSUE-0057: advance_story_stage spans multiple phases depending on
+    SPEC-ISSUE-0057: advance_story_stage spans multiple phases depending on
     WHICH stage it's actually moving a story to - Draft/Ready is a planning
     action, Implemented/Reviewed/Tested is real development work, and
     Accepted legitimately happens either mid-Development (one story
@@ -2325,7 +2325,7 @@ def _advance_story_stage_phase_violation(phase: str, args: Dict[str, Any]) -> bo
 
 def _detect_phase_violation(tool_context: ToolContext, agent_name: str, tool_name: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    ISSUE-0057: turns sprint-phase awareness from a pure nudge
+    SPEC-ISSUE-0057: turns sprint-phase awareness from a pure nudge
     (phase_awareness_injection_callback/SPRINT_PHASE_GUIDANCE) into a real,
     but forgiving, gate - a real eval run (0.1.0-run52, see
     current_sprint_phase's own module comment) showed DevTeam jump straight
@@ -2341,7 +2341,7 @@ def _detect_phase_violation(tool_context: ToolContext, agent_name: str, tool_nam
     phase) is let through - logged as an override, never silently - rather
     than becoming a second, truly unrecoverable gate stacked on top of
     whatever the real mechanical gates already enforce. This must not ship
-    while current_sprint_phase can get stuck (ISSUE-0056) - a wrong phase
+    while current_sprint_phase can get stuck (SPEC-ISSUE-0056) - a wrong phase
     that can never correct itself would turn this gate into a genuine
     deadlock instead of a one-time nudge.
     """

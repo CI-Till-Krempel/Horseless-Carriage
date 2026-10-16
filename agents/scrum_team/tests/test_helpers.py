@@ -148,7 +148,7 @@ class TestGetEnvWithDeprecatedFallback(unittest.TestCase):
 @patch.dict("os.environ", {"TARGET_STORIES_PER_SPRINT": "3", "READY_BACKLOG_SPRINTS_TARGET": "2"})
 class TestReadyBacklogShortfall(unittest.TestCase):
     """
-    Acceptance Criteria (ISSUE-0046): backlog_scope_complete is an explicit,
+    Acceptance Criteria (SPEC-ISSUE-0046): backlog_scope_complete is an explicit,
     justified escape hatch from the target - never an automatic cap based on
     however many items merely happen to be in product_backlog, which would
     silently satisfy the gate for any real, open-ended backlog too (a real
@@ -237,7 +237,7 @@ class TestCloseoutGraceScaling(unittest.TestCase):
     def test_closeout_grace_percent_never_scales_below_a_quarter_of_configured(self):
         # Even with everything done bar the release PR (the smallest
         # possible remaining fraction the model produces), the ceiling must
-        # not collapse below 25% of the configured percentage - ISSUE-0046
+        # not collapse below 25% of the configured percentage - SPEC-ISSUE-0046
         # already showed even the last step alone can burn real tokens on
         # wrong guesses.
         state = ScrumState()

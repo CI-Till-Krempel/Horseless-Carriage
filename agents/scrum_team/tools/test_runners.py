@@ -1,7 +1,7 @@
 # agents/scrum_team/tools/test_runners.py
 """
 Pluggable test-runner detection and execution for the Tested gate
-(advance_story_stage) and calculate_kpis - ISSUE-0064.
+(advance_story_stage) and calculate_kpis - SPEC-ISSUE-0064.
 
 _execute_test_suite_coverage_impl (quality.py) used to shell out to a
 hardcoded `pytest` regardless of the target repo's actual language/build
@@ -54,7 +54,7 @@ _NO_TESTS_RE = re.compile(r"no tests ran")
 # are cached (~/.gradle, ~/.m2) and finish in a fraction of this.
 _JVM_BUILD_TIMEOUT_SECONDS = 600
 
-# ISSUE-0064: markers for ecosystems that have a real, recognizable project
+# SPEC-ISSUE-0064: markers for ecosystems that have a real, recognizable project
 # manifest but no adapter below yet - surfaced as a specific, actionable
 # "not supported yet" note (with a pre-filled GitHub issue link) rather than
 # silently falling through to pytest and producing a nonsense result for a
@@ -71,7 +71,7 @@ _KNOWN_UNSUPPORTED_ECOSYSTEMS = (
 # unrelated primary Python test suite (frontend tooling, lint configs,
 # build scripts) to treat its mere presence as "this project is Node and
 # needs its own adapter" the way a go.mod/Cargo.toml/pom.xml safely can.
-# Node/npm support itself is still deferred (unchanged from pre-ISSUE-0064
+# Node/npm support itself is still deferred (unchanged from pre-SPEC-ISSUE-0064
 # behavior: falls through to the pytest adapter either way).
 _ISSUE_TRACKER_NEW_ISSUE_URL = "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new"
 
@@ -216,7 +216,7 @@ class _MavenRunner:
 
 class _PytestRunner:
     """
-    Today's exact pre-ISSUE-0064 logic, unchanged - the default/fallback
+    Today's exact pre-SPEC-ISSUE-0064 logic, unchanged - the default/fallback
     adapter so every currently-working Python project keeps working exactly
     as before. detect() always returns True: this is the last adapter tried
     in REGISTRY, after every more-specific ecosystem has already had its
@@ -287,7 +287,7 @@ REGISTRY: List[Any] = [_GradleRunner(), _MavenRunner(), _PytestRunner()]
 
 def _detect_unsupported_ecosystem(repo_root: Path) -> Optional[str]:
     """
-    ISSUE-0064: a repo can have a real, recognizable manifest for a language
+    SPEC-ISSUE-0064: a repo can have a real, recognizable manifest for a language
     no adapter above supports yet (Go/Rust/Ruby/PHP/.NET/plain Node) - this
     says so explicitly, with a link to request support, rather than letting
     it silently fall through to pytest and get misreported as "no tests

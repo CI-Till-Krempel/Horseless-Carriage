@@ -73,7 +73,7 @@ def main() -> None:
     # regardless, and since both compose files define a same-named
     # `litellm` service, Compose would recreate it against the WRONG
     # (cloud) config, silently undoing what setup_llm.py just configured
-    # and verified (see ISSUE-0028: a real Windows Local/Ollama setup_all.py
+    # and verified (see SPEC-ISSUE-0028: a real Windows Local/Ollama setup_all.py
     # run hit exactly this - the subsequent doctor.py gate failed the live
     # test with "Missing Gemini API key", despite no cloud provider ever
     # being chosen).

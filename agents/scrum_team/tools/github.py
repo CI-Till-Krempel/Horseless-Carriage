@@ -179,7 +179,7 @@ def _checkout_with_auto_integrate(checkout_cmd: list, repo_root: str, tool_conte
 
 def _preserve_local_only_develop_commits(repo_root: str, develop: str, tool_context=None) -> Dict[str, Any] | None:
     """
-    ISSUE-0050 / 0.1.0-run33, 0.1.0-run34: _checkout_develop_or_recover's own
+    SPEC-ISSUE-0050 / 0.1.0-run33, 0.1.0-run34: _checkout_develop_or_recover's own
     `git checkout -B <develop> origin/<develop>` (right after this call)
     unconditionally resets the local branch to match origin - confirmed via a
     live repro to silently discard any commits that exist locally but were
@@ -270,7 +270,7 @@ def _preserve_local_only_develop_commits(repo_root: str, develop: str, tool_cont
                     f"'{rescue_branch}' ({pushed_note}) before {develop} was reset to origin/{develop}."
                 ),
                 "rationale": (
-                    "ISSUE-0050: a real merge conflict between local-only progress (e.g. a story's "
+                    "SPEC-ISSUE-0050: a real merge conflict between local-only progress (e.g. a story's "
                     "own stage-transition state) and origin's own newer commits couldn't be "
                     "auto-resolved safely - see the rescue branch to recover it by hand."
                 ),
@@ -295,7 +295,7 @@ def _checkout_develop_or_recover(repo_root: str, develop: str, tool_context=None
 
     Before that reset-checkout - which unconditionally overwrites local
     <develop> with origin/<develop> - _preserve_local_only_develop_commits
-    (ISSUE-0050) gets a chance to push (or merge-then-push) any commits local
+    (SPEC-ISSUE-0050) gets a chance to push (or merge-then-push) any commits local
     has that origin doesn't, so the reset is provably a no-op instead of a
     silent discard. See that function's own docstring for the real incident
     this fixes.
@@ -505,7 +505,7 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
     a protected branch: seed_repository's initial bootstrap commit onto
     develop, and the mechanical roadmap sync when the sprint budget runs out
     (_sync_and_commit_roadmap_on_exhaustion in agent.py). Defaults False -
-    see ISSUE-0006: DEV_PROMPT's "the configured default branch is
+    see SPEC-ISSUE-0006: DEV_PROMPT's "the configured default branch is
     PROTECTED... cannot push to it directly" had no code backing it at all
     before this.
     """
@@ -610,7 +610,7 @@ def _git_push_impl(branch: str, commit_message: str = "chore: update", add_all: 
         r1 = _run(["git", "add", "-A"], cwd=repo_root, tool_context=tool_context)
         if r1.get("status") == "error":
             return r1
-    # ISSUE-0050 follow-up / 0.1.0-run34: whether there's actually anything
+    # SPEC-ISSUE-0050 follow-up / 0.1.0-run34: whether there's actually anything
     # staged to commit is checked via `git diff --cached --quiet` plumbing
     # (exit 0 = nothing staged, 1 = something staged) BEFORE attempting a
     # real commit, rather than attempting one and then string-matching
@@ -670,7 +670,7 @@ def gh_pr_create(title: str, body: str = "", base: str | None = None, head: str 
       `head` shaped like a story feature branch (feature/<id>-<slug>, see
       start_feature_branch) always overrides this to the develop branch
       instead (see _develop_branch_name) - regardless of what `base` was
-      passed or left unset (ISSUE-0059: a real eval run showed DevTeam fall
+      passed or left unset (SPEC-ISSUE-0059: a real eval run showed DevTeam fall
       back to this general-purpose tool directly - after start_feature_branch
       itself kept rejecting it for unrelated reasons - with no `base`
       argument, silently defaulting into main and completely bypassing
@@ -985,7 +985,7 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 "READY_BACKLOG_SPRINTS_TARGET in helpers.py). Keep running the requirements "
                 "engineering loop - upsert_prd/upsert_srs/update_roadmap/upsert_epic/upsert_story, "
                 "then advance_story_stage(..., 'Ready') - until enough stories are Ready, then retry. "
-                "If the product's real remaining scope is genuinely smaller than this target (ISSUE-0046: "
+                "If the product's real remaining scope is genuinely smaller than this target (SPEC-ISSUE-0046: "
                 "never invent filler/'buffer' stories just to clear it), call "
                 "declare_backlog_scope_complete(justification) instead."
             ),
@@ -1069,7 +1069,7 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 if tool_context and getattr(tool_context, "state", None) else False
             )
             if not content_already_landed:
-                # ISSUE-0050/0.1.0-run34: git_push's own --allow-empty fallback
+                # SPEC-ISSUE-0050/0.1.0-run34: git_push's own --allow-empty fallback
                 # exists so a DIFFERENT caller (create_release_pr, after
                 # integrate_open_changes already committed everything itself)
                 # doesn't hard-fail on "nothing staged" - reusing that same
@@ -1493,7 +1493,7 @@ def resolve_feature_branch_conflicts(story_id: str, tool_context=None) -> Dict[s
     for rel_path in conflicted_paths:
         abs_path = (Path(repo_root) / rel_path).resolve()
         if rel_path == ".hc/state.json":
-            # ISSUE-0054: .hc/state.json is never hand-authored - every
+            # SPEC-ISSUE-0054: .hc/state.json is never hand-authored - every
             # save_state_to_repo() call fully regenerates it from live
             # tool_context.state (see REPO_STATE_KEYS there), so the
             # in-memory state this session already holds is always
@@ -1668,7 +1668,7 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     generate_workflow_diagram call, via integrate_open_changes) - see the
     checkout+render+integrate+push block below.
     """
-    # ISSUE-0001: "Ensure Human Review is done for each increment" had no
+    # SPEC-ISSUE-0001: "Ensure Human Review is done for each increment" had no
     # code backing it - refuse until a fresh approval was recorded via
     # record_human_approval since the last release PR. Which approval type
     # (if any) is required depends on INTERACTION_LEVEL (see
@@ -1764,7 +1764,7 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         # Bumping only on success mirrors retro_baseline: a failed PR
         # creation shouldn't consume this increment's approval, and
         # sprint_report_pending_release only clears once the release
-        # actually went out (see ISSUE-0010).
+        # actually went out (see SPEC-ISSUE-0010).
         if required_approval and release_approvals is not None:
             state["release_approval_baseline"] = release_approvals
         state["sprint_report_pending_release"] = False
@@ -1793,7 +1793,7 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
 def _record_pr_review_call(tool_context) -> None:
     """
     Counts a gh_pr_review/gh_pr_comment call per calling role, so
-    advance_story_stage's Reviewed/Tested gates (ISSUE-0005) can tell "a
+    advance_story_stage's Reviewed/Tested gates (SPEC-ISSUE-0005) can tell "a
     role claimed this stage" apart from "a role actually left a review
     comment on the PR".
     """

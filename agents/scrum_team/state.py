@@ -117,7 +117,7 @@ class ScrumState(BaseModel):
     # need to audit the proposal later, since the PR body itself may be
     # lost once the PR merges/closes.
     steering_proposals: List[Dict[str, Any]] = Field(default_factory=list)
-    # ISSUE-0064: same shape as steering_proposal_count/steering_proposals
+    # SPEC-ISSUE-0064: same shape as steering_proposal_count/steering_proposals
     # above, for propose_framework_change (tools/workflow.py) - the
     # Architect-only, gated path for changing this project's workbench
     # (.hc/workbench-setup.sh). A bare counter plus a durable, structured

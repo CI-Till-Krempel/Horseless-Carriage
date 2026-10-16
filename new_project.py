@@ -48,7 +48,7 @@ subsequent project would otherwise collide on if just copy-pasting one
     HC-powered project's stack is already running - so multiple projects
     can run concurrently instead of the second one just failing to bind.
 
-ISSUE-0064: this project's toolchain (JDK, Node, Go, ...) is not configured
+SPEC-ISSUE-0064: this project's toolchain (JDK, Node, Go, ...) is not configured
 here at all - it's a per-project "workbench" (a shell script at
 .hc/workbench-setup.sh) the Architect persists via propose_framework_change
 once the agent is running (agents/scrum_team/tools/workflow.py), not
