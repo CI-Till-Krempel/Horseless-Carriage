@@ -786,7 +786,12 @@ class TestWarnIfDevelopBranchMissing:
 
     def test_silent_when_branch_present(self, fake_git_remote, tmp_path, capsys):
         checkout = tmp_path / "_check"
-        subprocess.run(["git", "clone", "--quiet", fake_git_remote, str(checkout)], check=True)
+        # --branch main explicitly: a bare remote's symbolic HEAD default is
+        # not guaranteed to resolve to "main" across git versions/configs -
+        # a plain `git clone` with no --branch depends on it and failed in
+        # CI ("remote HEAD refers to nonexistent ref") despite working fine
+        # locally, where a global init.defaultBranch happened to mask it.
+        subprocess.run(["git", "clone", "--quiet", "--branch", "main", fake_git_remote, str(checkout)], check=True)
         subprocess.run(["git", "-C", str(checkout), "checkout", "-b", "develop"], check=True)
         subprocess.run(["git", "-C", str(checkout), "push", "--quiet", "-u", "origin", "develop"], check=True)
 
@@ -862,7 +867,7 @@ class TestSetupStateRepo:
         assert "'develop' branch not found" in result.out + result.err
 
     def test_clone_does_not_warn_when_develop_branch_exists_on_remote(self, tmp_path, fake_git_remote, monkeypatch, capsys):
-        subprocess.run(["git", "clone", "--quiet", fake_git_remote, str(tmp_path / "_check")], check=True)
+        subprocess.run(["git", "clone", "--quiet", "--branch", "main", fake_git_remote, str(tmp_path / "_check")], check=True)
         subprocess.run(["git", "-C", str(tmp_path / "_check"), "checkout", "-b", "develop"], check=True)
         subprocess.run(["git", "-C", str(tmp_path / "_check"), "push", "--quiet", "-u", "origin", "develop"], check=True)
 

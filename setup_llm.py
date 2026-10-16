@@ -336,7 +336,20 @@ def _setup_state_repo(env_path: Path) -> None:
         # remember a second branch when they eventually do add a remote.
         info(f"Initializing a local git repository at {state_repo_path} (no GitHub remote yet)...")
         subprocess.run(["git", "init", "-b", branch, str(state_repo_path)], check=False)
-        subprocess.run(["git", "-C", str(state_repo_path), "commit", "--allow-empty", "-m", "chore: initialize repository"], check=False)
+        # -c user.name/user.email inline (not relying on global/repo config
+        # being set yet - this runs before this function's own Git identity
+        # step elsewhere in setup, and a CI/fresh-machine environment has
+        # neither configured) - a real incident: this commit silently failed
+        # ("please tell me who you are"), cascading into *zero* commits and
+        # therefore zero branches at all (an unborn HEAD has no commit to
+        # branch from), caught only by CI (a dev machine's own global git
+        # config masked it entirely).
+        subprocess.run(
+            ["git", "-C", str(state_repo_path), "-c", "user.name=Horseless Carriage Setup",
+             "-c", "user.email=setup@horseless-carriage.local",
+             "commit", "--allow-empty", "-m", "chore: initialize repository"],
+            check=False,
+        )
         subprocess.run(["git", "-C", str(state_repo_path), "branch", develop_branch], check=False)
         print("No GitHub repo URL given, so there's no 'origin' remote yet - the agent needs")
         print(f"one to push branches/open PRs. Both '{branch}' and '{develop_branch}' were created locally -")
