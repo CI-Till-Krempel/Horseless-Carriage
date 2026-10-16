@@ -287,6 +287,17 @@ def _main(argv: list = None) -> None:
     # lib_docker.compose_project_args.
     full_compose_args = compose_args + lib_docker.compose_project_args("dev")
 
+    # GH issue #288's own LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT auto-
+    # assignment only ever ran once, at new_project.py install time - two
+    # projects installed back-to-back while neither's stack was running yet
+    # could still end up configured with the same port, surfacing only as
+    # an opaque Docker bind failure once both were actually started.
+    # Re-check (and reassign if needed) right before this stack actually
+    # comes up; a no-op if this project's own stack is already running.
+    port_changes = lib_docker.ensure_dev_ports_available(Path("."), full_compose_args)
+    for var, old_port, new_port in port_changes:
+        print(f"NOTE: port {old_port} ({var}) is now in use by something else - reassigned to {new_port}.")
+
     print(f"--- Starting Horseless Carriage agent via Docker Compose (mode: {mode}) ---")
     if compose_args:
         print(f"(Local/Ollama setup detected - using {compose_args[1]})")

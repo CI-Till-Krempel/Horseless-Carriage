@@ -94,6 +94,27 @@ class TestProjectSnapshot:
 
         assert snap["interaction_level"] == "Product"
 
+    def test_defaults_ports_when_unset(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["litellm_port"] == "4000"
+        assert snap["agent_web_port"] == "8000"
+
+    def test_reads_configured_ports_from_env(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("LITELLM_HOST_PORT='4001'\nAGENT_WEB_HOST_PORT='8001'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["litellm_port"] == "4001"
+        assert snap["agent_web_port"] == "8001"
+
 
 class TestProductVersion:
     def test_reads_version_file_if_present(self, tmp_path):
@@ -137,3 +158,59 @@ class TestRenderPage:
 
         assert "<script>alert(1)</script>" not in page
         assert "&lt;script&gt;" in page
+
+    def test_renders_the_projects_assigned_ports(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("LITELLM_HOST_PORT='4001'\nAGENT_WEB_HOST_PORT='8001'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "4001" in page
+        assert "8001" in page
+
+
+class TestStartStack:
+    def test_no_build_flag_when_ports_are_unchanged(self, tmp_path):
+        hc_path, _ = _make_project(tmp_path)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return dashboard.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch.object(dashboard.lib_docker, "ensure_dev_ports_available", return_value=[]), \
+             patch.object(dashboard.subprocess, "run", side_effect=fake_run):
+            message = dashboard._start_stack(hc_path)
+
+        assert "--build" not in calls[0]
+        assert message == "Started."
+
+    def test_build_flag_added_and_change_reported_when_a_port_was_reassigned(self, tmp_path):
+        hc_path, _ = _make_project(tmp_path)
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return dashboard.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch.object(dashboard.lib_docker, "ensure_dev_ports_available",
+                           return_value=[("LITELLM_HOST_PORT", 4000, 4001)]), \
+             patch.object(dashboard.subprocess, "run", side_effect=fake_run):
+            message = dashboard._start_stack(hc_path)
+
+        assert "--build" in calls[0]
+        assert "LITELLM_HOST_PORT 4000 -> 4001" in message
+
+    def test_start_failure_is_reported_even_with_a_port_change(self, tmp_path):
+        hc_path, _ = _make_project(tmp_path)
+
+        with patch.object(dashboard.lib_docker, "ensure_dev_ports_available",
+                           return_value=[("LITELLM_HOST_PORT", 4000, 4001)]), \
+             patch.object(dashboard.subprocess, "run",
+                           return_value=dashboard.subprocess.CompletedProcess([], 1, stdout="out", stderr="err")):
+            message = dashboard._start_stack(hc_path)
+
+        assert "Start failed" in message
