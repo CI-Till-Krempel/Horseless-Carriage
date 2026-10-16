@@ -1,6 +1,6 @@
 # Issue
 
-- Issue ID: ISSUE-0064
+- Issue ID: ISSUE-0065
 - Title: Multi-Instance Port Assignment Only Ran Once, At Install Time
 - Status: Done
 - Priority: Should
@@ -41,9 +41,9 @@ tell which port belongs to which from the dashboard.
   reassignment and let the real `docker compose up` failure (if any) surface on its own.
 - Scope decision (confirmed with the project owner): display-only ports in the dashboard (no
   manual edit UI) - automatic reassignment already resolves the conflict.
-- Numbering note: this was authored in parallel with another ISSUE-0064 (test-suite platform-
-  agnosticism, PR #451) off a different base - whichever merges second should renumber to avoid
-  a collision in `specs/requirements/`.
+- Originally numbered ISSUE-0064 (authored in parallel, off a different base, with the unrelated
+  test-suite platform-agnosticism work in PR #451 which had already claimed that number) -
+  renumbered to ISSUE-0065 to avoid a collision in `specs/requirements/`.
 
 ## Test Approach
 - `tests/test_lib_docker.py`: `is_port_free`/`find_free_port` (moved from `new_project.py`'s
