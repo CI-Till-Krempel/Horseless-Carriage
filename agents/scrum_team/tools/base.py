@@ -449,13 +449,25 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
             and _refresh_github_app_token(tool_context)
         ):
             return _run(original_cmd, cwd, tool_context, timeout, env_overrides, _retry_on_auth_failure=False)
-        return {
+        stdout_text = p.stdout.strip()
+        stderr_text = p.stderr.strip()
+        result = {
             "status": "ok" if p.returncode == 0 else "error",
             "returncode": p.returncode,
-            "stdout": p.stdout.strip(),
-            "stderr": p.stderr.strip(),
+            "stdout": stdout_text,
+            "stderr": stderr_text,
             "cmd": _redact_cmd(cmd),
         }
+        if p.returncode != 0:
+            # Callers/logging (e.g. agent.py's tool-failure narration) read
+            # "message" first and otherwise print a useless "no message" -
+            # stderr is usually where gh/git actually put the real reason,
+            # with stdout and a bare exit-code fallback for the rare command
+            # that writes its error to stdout instead or produces neither.
+            result["message"] = stderr_text or stdout_text or (
+                f"'{' '.join(_redact_cmd(cmd))}' exited with code {p.returncode}"
+            )
+        return result
     except subprocess.TimeoutExpired:
         return {
             "status": "error",

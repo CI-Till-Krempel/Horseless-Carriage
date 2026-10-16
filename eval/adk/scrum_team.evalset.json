@@ -98,6 +98,8 @@
           ],
           "sprint_number": 1,
           "sprint_backlog_pr_sprint": 1,
+          "pr_review_calls": {"Architect": 1, "DevTeam": 1, "QA": 1},
+          "sprint_backlog_engagement_baseline": {"Architect": 0, "DevTeam": 0, "QA": 0},
           "litellm_keys": {"DevTeam": "eval-fixture-key-devteam"}
         }
       }
