@@ -330,7 +330,7 @@ class TestPromptProjectSettings:
     """
     Acceptance Criteria (GH issue #81): TOTAL_USD_BUDGET is the canonical
     name for the whole-engagement USD ceiling; the local/Ollama flow must
-    skip asking about it entirely (it's a no-op there - ISSUE-0033), while
+    skip asking about it entirely (it's a no-op there - SPEC-ISSUE-0033), while
     the cloud flow still asks, prefilling from either the new name or the
     older SPRINT_USD_BUDGET (kept working via get_env_with_deprecated_fallback
     at runtime, but no longer written forward once this wizard has run).
@@ -533,7 +533,7 @@ class TestRunConfigurationTest:
 
     def test_dev_mode_rebuilds_ollama_before_starting_it_for_local_provider(self, tmp_path, monkeypatch):
         """
-        Acceptance Criteria (ISSUE-0028): developer mode must be settled
+        Acceptance Criteria (SPEC-ISSUE-0028): developer mode must be settled
         before any container work - if dev=True and the provider is Local/
         Ollama, the ollama image is rebuilt fresh (rebuild_images.rebuild)
         BEFORE this test starts a container with it, not after (which

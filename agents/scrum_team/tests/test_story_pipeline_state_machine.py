@@ -312,7 +312,7 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
 
         _as(tc, "ProductOwner")
         # A fresh acceptance check is required after the denial - re-using
-        # the one that led to it wouldn't satisfy the gate (ISSUE-0044).
+        # the one that led to it wouldn't satisfy the gate (SPEC-ISSUE-0044).
         self.assertEqual(record_acceptance_check(story_id, "Re-checked after fix", tool_context=tc)["status"], "ok")
         result = advance_story_stage(story_id, "Accepted", tool_context=tc)
         self.assertEqual(result["status"], "ok")

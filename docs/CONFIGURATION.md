@@ -122,7 +122,7 @@ ProductOwner/ScrumOrchestrator may still spend, combined, after the main
 budget is exhausted, specifically to finish the one remaining SPRINT CLOSE
 SEQUENCE step (`create_release_pr`) for real rather than skipping it
 entirely (see `agents/scrum_team/helpers.py:closeout_grace_percent`,
-ISSUE-0046). DevTeam/QA/Architect get none of this grace — their work stays
+SPEC-ISSUE-0046). DevTeam/QA/Architect get none of this grace — their work stays
 frozen at exhaustion; only closing the sprint out still gets turns. GH
 #392: Scrum Master no longer shares this grace at all — its own
 retro/KPIs/sprint-report work draws on the separate ritual budget above
@@ -145,7 +145,7 @@ x READY_BACKLOG_SPRINTS_TARGET` stories, naming the shortfall in its error
 message and in agent prompts guiding requirements-engineering loops. A team
 can instead call `declare_backlog_scope_complete(justification)` as an
 honest escape hatch if the product's real remaining scope is genuinely
-smaller than this target (ISSUE-0046).
+smaller than this target (SPEC-ISSUE-0046).
 
 ## GitHub auth axis
 

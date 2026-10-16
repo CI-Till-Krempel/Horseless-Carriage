@@ -297,7 +297,7 @@ def _merge_open_prs(local_path: Path, base_branch: str, sprint_result: dict | No
 
 def _unresolvable_release_pr_conflict(merges: list) -> Optional[dict]:
     """
-    ISSUE-0058: the first entry in `merges` (as returned by _merge_open_prs)
+    SPEC-ISSUE-0058: the first entry in `merges` (as returned by _merge_open_prs)
     that failed for a reason no retry can ever fix - a genuine git merge
     conflict ("not mergeable: the merge commit cannot be cleanly created",
     the exact message a real eval run's release PR hit, 0.1.0-run65) - or
@@ -666,7 +666,7 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
     `local_path`/`base_branch`: when both are given, a `create_release_pr`
     tool call that succeeds mid-sprint immediately triggers an attempt to
     merge it (see _merge_open_prs), rather than waiting for this whole
-    function to return. ISSUE-0058: the harness's merge sweep otherwise only
+    function to return. SPEC-ISSUE-0058: the harness's merge sweep otherwise only
     runs once, after _run_one_sprint's caller gets control back - which can
     never help a mid-sprint recovery attempt (e.g. ProductOwner opening the
     previous sprint's release PR in response to start_sprint's own
@@ -840,7 +840,7 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # was produced" alone doesn't prove the release also went out.
         # Captured here so _sprint_should_abort_run can tell the two apart.
         "sprint_report_pending_release": bool(session.state.get("sprint_report_pending_release")),
-        # ISSUE-0058: any merge attempts triggered mid-sprint by a
+        # SPEC-ISSUE-0058: any merge attempts triggered mid-sprint by a
         # create_release_pr success (see this function's own docstring) -
         # the caller folds these into the same manifest["pr_merges"] list
         # the end-of-sprint sweep's results go into.
@@ -850,7 +850,7 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
 
 async def _start_fresh_sprint_session(session_service, app_name: str, user_id: str, session):
     """
-    ISSUE-0055: ADK's own content-request processor replays the full
+    SPEC-ISSUE-0055: ADK's own content-request processor replays the full
     conversation from session.events into every model call's
     llm_request.contents by default, and nothing in this codebase trims or
     compacts that for an ongoing session - only history_management_callback's
@@ -962,7 +962,7 @@ async def _main_async(args: argparse.Namespace) -> dict:
             sprint_result["sprint_number"] = sprint_number
             manifest["sprints"].append(sprint_result)
 
-            # ISSUE-0058: fold in whatever _run_one_sprint already merged
+            # SPEC-ISSUE-0058: fold in whatever _run_one_sprint already merged
             # mid-sprint (see its own docstring) before this sprint's
             # own end-of-sprint sweep runs below - and stop the run if any
             # of those attempts hit a genuine, unresolvable conflict rather

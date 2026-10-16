@@ -27,7 +27,7 @@ def happy_path(monkeypatch):
 
 class TestComposeFileSelection:
     """
-    Acceptance Criteria (ISSUE-0028): step 4 must reuse whatever compose
+    Acceptance Criteria (SPEC-ISSUE-0028): step 4 must reuse whatever compose
     file(s) are actually active (docker-compose.local.yaml [+ the GPU
     override] for a Local/Ollama setup) rather than always defaulting to
     docker-compose.yaml - a bare `docker compose up -d db litellm` here

@@ -1,6 +1,6 @@
 ---
 name: investigate-eval-run
-description: Investigate a "Team Performance Evaluation" GitHub Actions run (the 5-sprint AI Scrum team eval harness) to pinpoint why the team stalled, thrashed, or underperformed, then write up a root-caused ISSUE-NNNN.md in specs/requirements/. Use when asked to look at a team eval run/report, a run number (e.g. "run 61", "team eval run #61", "0.1.0-run61"), or to figure out why an eval's Team Efficiency/Code Quality score dropped. Pulls the run's manifest/transcript/report artifact plus the matching PRs/branches in the separate CI-Till-Krempel/horseless-carriage-eval-todo-app repo, correlates them against this repo's actual tool code, and distinguishes a genuine code-level bug from an agent/prompt behavior issue.
+description: Investigate a "Team Performance Evaluation" GitHub Actions run (the 5-sprint AI Scrum team eval harness) to pinpoint why the team stalled, thrashed, or underperformed, then write up a root-caused SPEC-ISSUE-NNNN.md in specs/requirements/. Use when asked to look at a team eval run/report, a run number (e.g. "run 61", "team eval run #61", "0.1.0-run61"), or to figure out why an eval's Team Efficiency/Code Quality score dropped. Pulls the run's manifest/transcript/report artifact plus the matching PRs/branches in the separate CI-Till-Krempel/horseless-carriage-eval-todo-app repo, correlates them against this repo's actual tool code, and distinguishes a genuine code-level bug from an agent/prompt behavior issue.
 ---
 
 # Investigating a Team Performance Evaluation run
@@ -16,8 +16,8 @@ assumes you've skimmed it.
 
 Every eval run adds one `### <heading>` entry to `RELEASE.md` describing what a real run showed and
 what got fixed because of it ("A real eval run (0.1.0-runNN) showed ..."), and (when the finding is a
-genuine code-level gap, not just an agent having a bad run) a matching `specs/requirements/ISSUE-NNNN.md`
-filed via this same investigation process. Skim a few recent ones (e.g. ISSUE-0050, ISSUE-0051) before
+genuine code-level gap, not just an agent having a bad run) a matching `specs/requirements/SPEC-ISSUE-NNNN.md`
+filed via this same investigation process. Skim a few recent ones (e.g. SPEC-ISSUE-0050, SPEC-ISSUE-0051) before
 writing a new one - they show the expected evidence density and tone: concrete quotes/line numbers,
 not "the agent seemed confused."
 
@@ -64,7 +64,7 @@ code/specs state, not a verified root cause. Your job is to go find the actual m
 `manifest.json` is large (hundreds of KB) - don't read it whole. It's valid JSON; query it with
 Python/`jq` for exactly what you need. The most useful single query for "did a story's progress
 regress between sprints" (this has been the dominant failure class across multiple past runs -
-ISSUE-0050, ISSUE-0052):
+SPEC-ISSUE-0050, SPEC-ISSUE-0052):
 
 ```python
 import json
@@ -110,18 +110,18 @@ comments (Architect/QA/DevTeam) for where a human-review-shaped gate got stuck.
 Once you have a candidate mechanism from the transcript (a specific rejected tool call, a stale-state
 symptom, a repeated confabulation), **read the actual tool implementation in this repo** -
 `agents/scrum_team/tools/*.py` - rather than guessing from the error message alone. Past investigations
-(ISSUE-0050, ISSUE-0051, ISSUE-0052) all needed the real source to go from "symptom" to "root cause":
+(SPEC-ISSUE-0050, SPEC-ISSUE-0051, SPEC-ISSUE-0052) all needed the real source to go from "symptom" to "root cause":
 e.g. a guardrail doing exactly what its message says but reading state that got silently clobbered
 upstream, or a git helper with no status-checking on its own subprocess calls. Trace the data
 backwards: which function last wrote the value that's wrong, under what condition, and whether that
-write path has ever been exercised safely before (check `RELEASE.md`/existing `ISSUE-*.md` for whether
+write path has ever been exercised safely before (check `RELEASE.md`/existing `SPEC-ISSUE-*.md` for whether
 this exact symptom already has a "Done" fix that this run's mechanism evades).
 
 ## Step 4 - Decide: code bug, or agent/prompt behavior?
 
 Not everything is a code fix. Distinguish:
 - **Mechanical/data-integrity bug** (state silently lost or corrupted, a guardrail with a logic gap,
-  an unhandled subprocess failure) - write it up as a new `specs/requirements/ISSUE-NNNN.md` (Step 5).
+  an unhandled subprocess failure) - write it up as a new `specs/requirements/SPEC-ISSUE-NNNN.md` (Step 5).
 - **Agent behavior under a working guardrail** (e.g. ScrumMaster repeatedly drafting an
   over-optimistic sprint report that a validation gate correctly rejects, then retrying) - worth
   naming as a secondary finding/retro item, but don't file it as a code "Issue" unless the guardrail
@@ -131,14 +131,14 @@ Not everything is a code fix. Distinguish:
 
 ## Step 5 - Write the ISSUE doc
 
-Find the next free ID (`ls specs/requirements/ | grep -oE 'ISSUE-[0-9]+' | sort -u | tail -1`), then
+Find the next free ID (`ls specs/requirements/ | grep -oE 'SPEC-ISSUE-[0-9]+' | sort -u | tail -1`), then
 start from `spec-templates/requirements/TEMPLATE-ISSUE.md` - never edit the template in place, create
-`specs/requirements/ISSUE-NNNN-Short-Slug.md`. Match the density and evidence style of recent issues
-(ISSUE-0050/0051/0052): every claim backed by a quoted error string, a `transcript.md`/`manifest.json`
+`specs/requirements/SPEC-ISSUE-NNNN-Short-Slug.md`. Match the density and evidence style of recent issues
+(SPEC-ISSUE-0050/0051/0052): every claim backed by a quoted error string, a `transcript.md`/`manifest.json`
 line reference, or a source file:line citation - no "the model seemed to struggle" without a pointer to
 where you saw it. Fields:
 - **Status**: `Ready` if you've confirmed the mechanism (even without writing the fix yet) - matches
-  how ISSUE-0050/0052 were filed; `Draft` only if you're documenting an effect without a confirmed
+  how SPEC-ISSUE-0050/0052 were filed; `Draft` only if you're documenting an effect without a confirmed
   mechanism, expecting a follow-up run/investigation to pin it down.
 - **Priority**: `Must` for anything that stalls real delivery (most of these); `Should`/`Could` for
   quality-of-reporting gaps that don't block the team itself.
@@ -152,7 +152,7 @@ where you saw it. Fields:
   (`upsert_issue` -> `advance_story_stage`, see `spec-templates/requirements/README.md`).
 
 Do not implement the fix as part of this investigation unless explicitly asked to - this skill is
-about pinpointing and documenting, matching how ISSUE-0050 itself was "originally filed (Ready, not
+about pinpointing and documenting, matching how SPEC-ISSUE-0050 itself was "originally filed (Ready, not
 yet implemented) ... without a confirmed git-level root cause" before a follow-up pass landed the fix.
 
 ## Step 6 - Report back

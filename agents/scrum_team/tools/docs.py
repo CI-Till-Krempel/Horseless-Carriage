@@ -83,7 +83,7 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
     if not str(abs_path).startswith(str(repo_root)):
         return {"status": "error", "message": f"Path '{path}' is outside the repository root."}
 
-    # ISSUE-0064: .hc/ is Horseless-Carriage-internal, mechanically-managed
+    # SPEC-ISSUE-0064: .hc/ is Horseless-Carriage-internal, mechanically-managed
     # content (state.json via save_state_to_repo, workbench-setup.sh via
     # propose_framework_change) - never a plain write_file target. Mirrors
     # the existing "must go through advance_story_stage instead of a direct
@@ -106,7 +106,7 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         if abs_path.exists() and not overwrite:
             return {"status": "error", "message": f"File exists: {path}"}
-        # ISSUE-0008: overwrite=True still silently clobbers pre-existing,
+        # SPEC-ISSUE-0008: overwrite=True still silently clobbers pre-existing,
         # unrelated content with no signal to the caller - surface it
         # (without blocking; overwrite=True is an explicit, deliberate ask)
         # so an agent has a chance to notice an accidental overwrite.
@@ -158,7 +158,7 @@ def delete_file(path: str, tool_context=None) -> Dict[str, Any]:
     if not str(abs_path).startswith(str(repo_root)):
         return {"status": "error", "message": f"Path '{path}' is outside the repository root."}
 
-    # ISSUE-0064: same .hc/ guardrail as write_file - mechanically-managed
+    # SPEC-ISSUE-0064: same .hc/ guardrail as write_file - mechanically-managed
     # content, never a direct delete_file target either.
     try:
         relative_parts = abs_path.relative_to(repo_root).parts
@@ -445,7 +445,7 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
         # untracked build/test artifacts sitting in the working tree that
         # ANY later checkout (create_release_pr, start_feature_branch, ...)
         # could trip over. A comment on git_push's own "nothing staged"
-        # handling (ISSUE-0050 follow-up) already diagnosed the identical
+        # handling (SPEC-ISSUE-0050 follow-up) already diagnosed the identical
         # root cause once before, for a different symptom (a commit
         # failure, not a checkout failure) - .gitignore existing from the
         # very first commit prevents the whole class of failure at the
@@ -487,7 +487,7 @@ def seed_repository(overwrite: bool = False, tool_context=None) -> Dict[str, Any
                 add_all=True,
                 # The very first commit to a fresh repo has no other branch
                 # to PR from yet - one of the legitimate exceptions to
-                # git_push's protected-branch guard (see ISSUE-0006).
+                # git_push's protected-branch guard (see SPEC-ISSUE-0006).
                 allow_protected=True,
                 tool_context=tool_context
             )

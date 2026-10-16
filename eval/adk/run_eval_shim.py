@@ -104,7 +104,7 @@ this shim).
    this: git_push_allows_feature_branch's fixture seeds a clean
    `product_backlog: [US-0099]`, but start_feature_branch failed with
    "sprint_backlog_pr_missing rejecting: ... product_backlog
-   ids=['US-0004', 'ISSUE-0002']" - both IDs left over from unrelated
+   ids=['US-0004', 'SPEC-ISSUE-0002']" - both IDs left over from unrelated
    earlier cases in the same run, not anything this case's own fixture ever
    set. Deleting `.hc/state.json` before each case's inference (patching
    LocalEvalService._perform_inference_single_eval_item, the one natural

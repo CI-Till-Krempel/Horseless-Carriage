@@ -85,7 +85,7 @@ class TestSprintFilesTouched(unittest.TestCase):
 
     def test_write_file_flags_overwrite_of_different_content(self):
         """
-        Acceptance Criteria (ISSUE-0008): overwriting a file whose existing
+        Acceptance Criteria (SPEC-ISSUE-0008): overwriting a file whose existing
         content differs is surfaced, not silently clobbered.
         """
         write_file("notes/foo.md", "original", tool_context=self.tool_context)
@@ -154,7 +154,7 @@ class TestSprintFilesTouched(unittest.TestCase):
         self.assertIn("outside the repository root", result["message"])
 
     def test_write_file_refuses_a_path_under_hc(self):
-        """ISSUE-0064: .hc/ is Horseless-Carriage-internal (state.json via
+        """SPEC-ISSUE-0064: .hc/ is Horseless-Carriage-internal (state.json via
         save_state_to_repo, workbench-setup.sh via propose_framework_change)
         - never a direct write_file target."""
         result = write_file(".hc/workbench-setup.sh", "RUN apt-get install -y default-jdk", tool_context=self.tool_context)

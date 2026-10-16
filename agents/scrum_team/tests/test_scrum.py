@@ -213,7 +213,7 @@ class TestScrumTools(unittest.TestCase):
 
     def test_add_impediment_rejects_generic_placeholder_text(self):
         """
-        Acceptance Criteria (ISSUE-0009): blank/generic/too-short impediment
+        Acceptance Criteria (SPEC-ISSUE-0009): blank/generic/too-short impediment
         text is rejected outright, not silently accepted as a real one.
         """
         tool_context = MagicMock()
@@ -223,7 +223,7 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(tool_context.state["impediment_log"], [])
 
     def test_add_retro_action_rejects_generic_placeholder_text(self):
-        """Acceptance Criteria (ISSUE-0009): same guard for retro actions."""
+        """Acceptance Criteria (SPEC-ISSUE-0009): same guard for retro actions."""
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         result = add_retro_action("communicate better", "ScrumMaster", "n/a", category="technical", tool_context=tool_context)
@@ -320,7 +320,7 @@ class TestScrumTools(unittest.TestCase):
 
     def test_record_human_approval(self):
         """
-        Acceptance Criteria (ISSUE-0001): a human approval event is recorded
+        Acceptance Criteria (SPEC-ISSUE-0001): a human approval event is recorded
         and distinguishable by type.
         """
         tool_context = MagicMock()
@@ -369,7 +369,7 @@ class TestScrumTools(unittest.TestCase):
 
     def test_update_roadmap_tags_stories_with_their_version(self):
         """
-        Acceptance Criteria (ISSUE-0047): a story placed under a version via
+        Acceptance Criteria (SPEC-ISSUE-0047): a story placed under a version via
         update_roadmap's own `stories` argument (not plan_backlog_item) must
         still get its product_backlog.version field set - otherwise
         _sync_roadmap_for_story's later automatic re-syncs (every
@@ -408,7 +408,7 @@ class TestScrumTools(unittest.TestCase):
 
     def test_update_roadmap_resolves_a_combined_id_and_title_string(self):
         """
-        Acceptance Criteria (ISSUE-0048): a real eval run's Product Owner
+        Acceptance Criteria (SPEC-ISSUE-0048): a real eval run's Product Owner
         called update_roadmap(stories=["US-0001: Create To-Do List", ...])
         instead of bare IDs. The old exact id/title match found neither (id
         is "US-0001", title is "Create To-Do List" - the combined string
@@ -453,7 +453,7 @@ class TestScrumTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
     def test_plan_sprint_backlog_item_rejects_new_work_while_release_pending(self, mock_md):
         """
-        Acceptance Criteria (ISSUE-0010): a genuinely new sprint_backlog item is
+        Acceptance Criteria (SPEC-ISSUE-0010): a genuinely new sprint_backlog item is
         refused while the previous sprint's retro/report happened but its
         release PR never completed and it still has unaccepted stories -
         accepted again once create_release_pr succeeds (clearing the flag).
@@ -482,7 +482,7 @@ class TestScrumTools(unittest.TestCase):
 
     def test_start_sprint_sets_sprint_goal(self):
         """
-        Acceptance Criteria (ISSUE-0011): start_sprint is the only tool that
+        Acceptance Criteria (SPEC-ISSUE-0011): start_sprint is the only tool that
         ever sets sprint_goal to a real value, and it persists the change.
         """
         tool_context = MagicMock()
@@ -524,7 +524,7 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
 
     def test_start_sprint_rejects_blank_or_placeholder_goal(self):
-        """Acceptance Criteria (ISSUE-0011): mirrors is_low_quality_retro_text's guard."""
+        """Acceptance Criteria (SPEC-ISSUE-0011): mirrors is_low_quality_retro_text's guard."""
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
@@ -539,7 +539,7 @@ class TestScrumTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
     def test_start_sprint_rejects_new_work_while_release_pending(self, mock_md):
         """
-        Acceptance Criteria (ISSUE-0010/0011): starting a new sprint's goal is
+        Acceptance Criteria (SPEC-ISSUE-0010/0011): starting a new sprint's goal is
         "new sprint work" for new_sprint_item_blocked's purposes - refused
         while the previous sprint's release PR never completed, accepted once
         it does.

@@ -18,19 +18,21 @@ from ..helpers import (
     is_low_quality_retro_text,
 )
 
-# Matches a bare item ID (US-0001, EP-0002, ISSUE-0003, ...) and nothing
+# Matches a bare item ID (US-0001, EP-0002, SPEC-ISSUE-0003, ...) and nothing
 # else. Guards against building a filename like "US-0007-US-0001.md" when a
 # story was (mis)titled with another item's ID instead of a real
 # description - seen in real eval runs (0.1.0-run4/run5's
-# specs/stories/US-0010-US-009.md, US-0007-US-0001.md, etc.).
-_BARE_ID_PATTERN = re.compile(r"^[A-Za-z]{2,6}-\d{2,6}$")
+# specs/stories/US-0010-US-009.md, US-0007-US-0001.md, etc.). The prefix
+# group allows multiple hyphen-joined segments (e.g. SPEC-ISSUE) so
+# multi-word prefixes aren't mistaken for "no bare ID" matches.
+_BARE_ID_PATTERN = re.compile(r"^[A-Za-z]{2,6}(?:-[A-Za-z]{2,10})*-\d{2,6}$")
 
 # Backlog item type -> ID prefix. "User Story" (the implicit default for
 # any unrecognized/absent type) isn't listed here on purpose - see
 # upsert_backlog_item's prefix lookup.
 _ID_PREFIXES = {
     "Epic": "EP",
-    "Issue": "ISSUE",
+    "Issue": "SPEC-ISSUE",
 }
 
 # Matches a "filled-in" user story with every slot left empty (e.g. "As a ,
@@ -103,7 +105,7 @@ def _reject_stage_transition(tool_context, story_id: str, stage: str, error_resp
         repeat_count = _attach_mechanical_recheck_evidence(tool_context, story_id, stage)
         repeat_note = ""
         if repeat_count > 1:
-            # ISSUE-0060: this exact (story_id, stage) was already "resolved"
+            # SPEC-ISSUE-0060: this exact (story_id, stage) was already "resolved"
             # once via resolve_story_blocker before re-blocking identically -
             # make that unmistakable rather than reading like a fresh,
             # first-time streak (mirrors budget.py's overclaim_rejection_counts
@@ -130,7 +132,7 @@ def _reject_stage_transition(tool_context, story_id: str, stage: str, error_resp
 
 def _attach_mechanical_recheck_evidence(tool_context, story_id: str, stage: str) -> int:
     """
-    ISSUE-0060: called only by _reject_stage_transition right after its own
+    SPEC-ISSUE-0060: called only by _reject_stage_transition right after its own
     raise_story_blocker call succeeds (same pattern as agent.py's
     _mark_blocker_mechanically_detected, GH #414 - reaching back into state
     as a separate step instead of a raise_story_blocker/resolve_story_blocker
@@ -245,7 +247,7 @@ def _validate_priority(priority: str) -> str | None:
 
 
 # GH issue #355 (migration follow-up, PR review comment): a repo's
-# specs/stories/*.md or specs/requirements/ISSUE-*.md files may predate this
+# specs/stories/*.md or specs/requirements/SPEC-ISSUE-*.md files may predate this
 # mechanical enforcement and still carry a pre-MoSCoW value in their own
 # "- Priority:" line - the old BACKLOG ITEM TEMPLATE literally taught
 # "P0/P1/P2 (or numeric)" before this fix. set_priority/upsert_backlog_item
@@ -333,7 +335,7 @@ def _resort_backlog_by_priority(s: Dict[str, Any]) -> None:
 
 
 def _normalize_title_for_dup_check(title: str) -> str:
-    """Case/punctuation-insensitive key for near-exact title matches (see ISSUE-0008)."""
+    """Case/punctuation-insensitive key for near-exact title matches (see SPEC-ISSUE-0008)."""
     return _NON_ALNUM_RE.sub("", (title or "").lower())
 
 
@@ -450,7 +452,7 @@ def upsert_epic(epic: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
 
 def upsert_issue(issue: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     """
-    Requirements Management: Add or update an Issue by ID or Title (ISSUE-XXXX,
+    Requirements Management: Add or update an Issue by ID or Title (SPEC-ISSUE-XXXX,
     auto-generated if not provided). An Issue documents a concrete gap
     (e.g. a mandatory process rule that isn't actually enforced in code) -
     it's a requirement type, but goes through the same story development
@@ -468,7 +470,7 @@ def upsert_issue(issue: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
     return upsert_backlog_item(issue, tool_context=tool_context)
 
 
-# ISSUE-0048: matches a real item ID at the START of a longer string (e.g.
+# SPEC-ISSUE-0048: matches a real item ID at the START of a longer string (e.g.
 # "US-0001: Create To-Do List", "US-0001 - Create To-Do List") - a real
 # eval run's Product Owner called update_roadmap(stories=["US-0001: Create
 # To-Do List", ...]) instead of bare IDs. update_roadmap's lookup only ever
@@ -478,7 +480,7 @@ def upsert_issue(issue: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
 # empty/garbled title and no stages_completed (everything unchecked),
 # permanently, since nothing about that mismatch was ever surfaced as an
 # error for anyone to notice or retry.
-_LEADING_ID_PATTERN = re.compile(r"^([A-Za-z]{2,6}-\d{2,6})\s*[:\-–—]?\s+")
+_LEADING_ID_PATTERN = re.compile(r"^([A-Za-z]{2,6}(?:-[A-Za-z]{2,10})*-\d{2,6})\s*[:\-–—]?\s+")
 
 
 def _resolve_story_ref(s: str) -> str:
@@ -628,7 +630,7 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
                     sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == key or x.get("title") == key), {})
                     product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == key or x.get("title") == key), {})
                     if product_data:
-                        # ISSUE-0047: without this, a story placed under a
+                        # SPEC-ISSUE-0047: without this, a story placed under a
                         # version here (rather than via plan_backlog_item)
                         # never gets its product_backlog.version field set -
                         # _sync_roadmap_for_story's later automatic re-syncs
@@ -668,7 +670,7 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
                 sprint_data = next((x for x in tool_context.state.get("sprint_backlog", []) if x.get("id") == key or x.get("title") == key), {})
                 product_data = next((x for x in tool_context.state.get("product_backlog", []) if x.get("id") == key or x.get("title") == key), {})
                 if product_data:
-                    # ISSUE-0047: same version-tagging as the existing-section
+                    # SPEC-ISSUE-0047: same version-tagging as the existing-section
                     # branch above - without it, _sync_roadmap_for_story's
                     # later automatic re-syncs never find this section again.
                     product_data["version"] = version
@@ -803,7 +805,7 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     def matches(x: Dict[str, Any]) -> bool:
         return (item_id and x.get("id") == item_id) or (title and x.get("title") == title)
 
-    # ISSUE-0008: warn (don't block - a naive check would false-positive on
+    # SPEC-ISSUE-0008: warn (don't block - a naive check would false-positive on
     # legitimately similar titles) when this title is a near-exact match of
     # a *different* existing item's title, so duplicate/conflicting story
     # files are at least surfaced instead of silently created.
@@ -839,7 +841,7 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     _resort_backlog_by_priority(s)
     save_state_to_repo(tool_context)
 
-    # ISSUE-0007: a story's version can be set directly here, bypassing
+    # SPEC-ISSUE-0007: a story's version can be set directly here, bypassing
     # plan_backlog_item - without this, specs/ROADMAP.md would silently
     # never learn about it, the same class of bug as the already-fixed
     # direct-status bypass (see blocks_direct_status_set), just for
@@ -877,8 +879,11 @@ def _generate_next_id(prefix: str, tool_context=None) -> str:
         item_id = item.get("id", "")
         if item_id.startswith(f"{prefix}-"):
             try:
-                # Handle cases like EP-0001 or US-0042
-                num_str = item_id.split("-")[1]
+                # Handle cases like EP-0001, US-0042, or a multi-hyphen
+                # prefix like SPEC-ISSUE-0001 - split only on the LAST
+                # hyphen so the numeric suffix is isolated regardless of
+                # how many hyphen-joined segments the prefix itself has.
+                num_str = item_id.rsplit("-", 1)[1]
                 # Only take the numeric part if there's more text (though IDs should ideally just be Prefix-Number)
                 numeric_part = ""
                 for char in num_str:
@@ -932,7 +937,7 @@ def declare_backlog_scope_complete(justification: str, tool_context=None) -> Dic
     """
     Product Owner's honest escape hatch from create_sprint_backlog_pr's
     Ready-backlog sufficiency gate (ready_backlog_shortfall, helpers.py) -
-    ISSUE-0046. That gate demands target_stories_per_sprint() x
+    SPEC-ISSUE-0046. That gate demands target_stories_per_sprint() x
     ready_backlog_sprints_target() stories be Ready-or-further, with no
     automatic ceiling tied to how much real backlog remains (an automatic
     cap based on however many items merely happen to be in product_backlog
@@ -979,7 +984,7 @@ def declare_backlog_scope_complete(justification: str, tool_context=None) -> Dic
 
 def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
     """
-    Scan specs/stories/*.md and specs/requirements/ISSUE-*.md (Issues are
+    Scan specs/stories/*.md and specs/requirements/SPEC-ISSUE-*.md (Issues are
     filed under requirements/, see upsert_issue, but go through this same
     story-sync path since they're driven through the same advance_story_stage
     pipeline) and update state.
@@ -991,7 +996,7 @@ def sync_stories_from_markdown(tool_context=None) -> Dict[str, Any]:
     if stories_dir.exists():
         candidates.extend(stories_dir.glob("*.md"))
     if requirements_dir.exists():
-        candidates.extend(requirements_dir.glob("ISSUE-*.md"))
+        candidates.extend(requirements_dir.glob("SPEC-ISSUE-*.md"))
     if not candidates:
         return {"status": "ok", "message": "No stories or issues directory found."}
     s = tool_context.state
@@ -1385,7 +1390,7 @@ def _current_story_in_progress(product_backlog: List[Dict[str, Any]], active_fea
     `blocked` - since a story the team has genuinely started real work on
     is the one implicated by anything happening right now, blocked or not.
 
-    ISSUE-0053: a real eval run (0.1.0-run63) showed an earlier, correctly-
+    SPEC-ISSUE-0053: a real eval run (0.1.0-run63) showed an earlier, correctly-
     attributed block on a story (from an unrelated loop a few events
     earlier) make a SECOND loop-detection trip - about that very same
     story's own PR review - skip straight past it (the old rule
@@ -1505,7 +1510,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     (see RELEASE.md "Story workflow" and spec-templates/DOD.md, DOR.md).
 
     `implemented_via_earlier_work`: only meaningful for the Implemented
-    transition - see its check below (ISSUE-0046). An honest escape hatch,
+    transition - see its check below (SPEC-ISSUE-0046). An honest escape hatch,
     parallel to the existing `spike` backlog-item flag, for when this
     story's real work already landed as part of an *earlier* story's
     write_file calls this sprint (e.g. one broad app.py edit covering
@@ -1672,8 +1677,8 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                 ),
             }
 
-    # Stage-specific content/process gates (ISSUE-0001 through ISSUE-0005,
-    # ISSUE-0010) - advance_story_stage's ordering/ownership checks above
+    # Stage-specific content/process gates (SPEC-ISSUE-0001 through SPEC-ISSUE-0005,
+    # SPEC-ISSUE-0010) - advance_story_stage's ordering/ownership checks above
     # don't verify anything actually happened at the stage being claimed;
     # these do. Each baseline is bumped only once the transition actually
     # succeeds (see below), following the same "must be NEW since last
@@ -1725,7 +1730,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
         touched = s.get("sprint_files_touched", []) or []
         source_touch_count = sum(1 for f in touched if is_source_file(f))
         if not is_spike and source_touch_count <= s.get("dev_touch_baseline", 0):
-            # ISSUE-0046: a real eval run's app.py already covered several
+            # SPEC-ISSUE-0046: a real eval run's app.py already covered several
             # closely-related stories' logic in one broad write_file pass
             # (US-0001's), so US-0002 through US-0005 each hit this branch
             # with genuinely nothing new to write - and, with no honest way
@@ -1817,7 +1822,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "review comment on the PR first."
                 ),
             })
-        # ISSUE-0044: the check above is sprint-wide, not per-story - without
+        # SPEC-ISSUE-0044: the check above is sprint-wide, not per-story - without
         # this, a story deny_review just denied could still advance right
         # after, as long as *some* Architect review call (even the very one
         # that led to the denial) already satisfied it. Require a review
@@ -1844,7 +1849,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "comment on the PR first."
                 ),
             })
-        # ISSUE-0044: same per-story freshness requirement as Reviewed above.
+        # SPEC-ISSUE-0044: same per-story freshness requirement as Reviewed above.
         denial = product_item.get("review_denial") or sprint_item.get("review_denial")
         if denial and denial.get("stage") == "Tested" and qa_review_count <= denial.get("review_count_at_denial", -1):
             return _reject_stage_transition(tool_context, story_id, stage, {
@@ -1908,7 +1913,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "A story can't be Tested with an empty or unrunnable test suite."
                 ),
             })
-        # ISSUE-0064: coverage_available (not just tests_available/tests_run)
+        # SPEC-ISSUE-0064: coverage_available (not just tests_available/tests_run)
         # used to block here too - fine for pytest (pytest-cov ships with
         # every project this harness sets up), but it permanently blocked
         # the Tested gate for any JVM project without JaCoCo already
@@ -1943,7 +1948,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                 "it rather than hedging with a stub alongside it."
             )
     elif stage == "Accepted":
-        # ISSUE-0043: Accepted previously had no evidence gate at all - any
+        # SPEC-ISSUE-0043: Accepted previously had no evidence gate at all - any
         # role could call advance_story_stage(id, "Accepted") on assertion
         # alone. Require record_acceptance_check to have actually run for
         # THIS story first.
@@ -1956,7 +1961,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "note) first to record that the acceptance criteria were actually verified."
                 ),
             })
-        # ISSUE-0044: same per-story freshness requirement as Reviewed/Tested
+        # SPEC-ISSUE-0044: same per-story freshness requirement as Reviewed/Tested
         # above - a denial recorded here must be followed by a genuinely NEW
         # record_acceptance_check call, not just re-use of the check that led
         # to the denial.
@@ -2104,11 +2109,11 @@ def record_acceptance_check(title_or_id: str, note: str = "", tool_context=None)
     Records that Product Owner has actually verified this story's acceptance
     criteria are met (docs/DEVELOPMENT-WORKFLOW.md "Verify" node) - the
     mechanical evidence advance_story_stage(..., "Accepted") now requires
-    (ISSUE-0043), instead of trusting the model's own assertion that
+    (SPEC-ISSUE-0043), instead of trusting the model's own assertion that
     acceptance criteria were checked.
 
     Deliberately a per-story COUNTER (`acceptance_check_count`), not a
-    one-time boolean - Accepted is deniable via deny_review, and ISSUE-0044's snapshot
+    one-time boolean - Accepted is deniable via deny_review, and SPEC-ISSUE-0044's snapshot
     mechanism (a denial must be followed by a genuinely NEW signal, not just
     re-use of whatever satisfied the gate before) needs something that can
     grow past a snapshot taken at deny time. A boolean would already read
@@ -2197,7 +2202,7 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
     advance_story_stage) - a resolved denial shouldn't linger as stale
     feedback forever.
 
-    For Reviewed/Tested specifically (ISSUE-0044), this also snapshots the
+    For Reviewed/Tested specifically (SPEC-ISSUE-0044), this also snapshots the
     denying role's current `pr_review_calls` count - advance_story_stage's
     own gate for those two stages requires the count to have grown past
     THIS snapshot, not just past the sprint-wide baseline, before the SAME
@@ -2205,7 +2210,7 @@ def deny_review(title_or_id: str, stage: str, reason: str, tool_context=None) ->
     teeth: that sprint-wide counter (shared across every story, not scoped
     to this one) could already be satisfied by the very review call that
     prompted the denial, letting the stage complete right away regardless.
-    Accepted has its own per-story counter instead (ISSUE-0043's
+    Accepted has its own per-story counter instead (SPEC-ISSUE-0043's
     `record_acceptance_check` / `acceptance_check_count`, since Product
     Owner doesn't leave PR reviews) - this snapshots that count instead, so
     a denied acceptance check requires a genuinely new
@@ -2506,7 +2511,7 @@ def resolve_story_blocker(title_or_id: str, resolution: str, tool_context=None) 
             ),
         }
 
-    # ISSUE-0060: a "technical" blocker raised by the stage-rejection-loop
+    # SPEC-ISSUE-0060: a "technical" blocker raised by the stage-rejection-loop
     # breaker for a failing test run (_attach_mechanical_recheck_evidence)
     # has a real, mechanically-checkable condition behind it - unlike a
     # genuine open question, text alone can't prove it's fixed. A real eval

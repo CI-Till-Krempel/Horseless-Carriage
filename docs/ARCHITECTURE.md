@@ -173,7 +173,7 @@ nicely in a prompt:
   until that PR merges, this mechanically forces Product Owner to keep drafting/readying stories
   (using `product_vision`/`architecture_vision` to plan the roadmap/MVP scope and Epics top-down)
   instead of publishing a thin sprint.
-- **Acceptance evidence before Accepted** (ISSUE-0043): `record_acceptance_check(title_or_id, note)`
+- **Acceptance evidence before Accepted** (SPEC-ISSUE-0043): `record_acceptance_check(title_or_id, note)`
   must have been called for this story - a per-story **counter**
   (`acceptance_check_count`), not a one-time flag, so a subsequent denial (see below) can require a
   genuinely fresh check rather than reuse of the one that got denied.

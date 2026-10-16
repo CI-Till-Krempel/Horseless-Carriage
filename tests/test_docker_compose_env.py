@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #   docker-compose at all.
 # - EVAL_RUN_ID: the eval harness's own internal run-isolation id, set by
 #   run_eval.py itself for its own subprocess, not read from the host .env.
-# - PYTHONPATH: _execute_test_suite_coverage (tools/quality.py, ISSUE-0047)
+# - PYTHONPATH: _execute_test_suite_coverage (tools/quality.py, SPEC-ISSUE-0047)
 #   reads this only to preserve+prepend the container's own already-running
 #   process environment when it sets PYTHONPATH for the pytest subprocess it
 #   shells out to (repo_root, so a generated project's own tests/ can import
@@ -243,7 +243,7 @@ class TestWebUiAndProxyPortsBindToLocalhostByDefault:
         # #239 guarantee this class exists for (bind host defaults to
         # 127.0.0.1), not the exact literal string anymore.
         #
-        # ISSUE-0063: the publish itself moved from `agent` to `net-proxy` -
+        # SPEC-ISSUE-0063: the publish itself moved from `agent` to `net-proxy` -
         # `agent` sits on agent-net only (internal: true, GH issue #287),
         # and a container with no route on any non-internal network can
         # never have a port published to the host at all. net-proxy (the
@@ -255,7 +255,7 @@ class TestWebUiAndProxyPortsBindToLocalhostByDefault:
                 f"{compose_file}: agent service publishes a port directly, but it's agent-net-only "
                 "(internal: true) - a container with no route on any non-internal network can never "
                 "have a port actually published to the host. See net-proxy's own port instead "
-                "(ISSUE-0063)."
+                "(SPEC-ISSUE-0063)."
             )
             ports = data["services"]["net-proxy"]["ports"]
             assert any("${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000" == p for p in ports), (
@@ -277,7 +277,7 @@ class TestWebUiAndProxyPortsBindToLocalhostByDefault:
 
 class TestAgentHasNoDirectEgressRoute:
     """
-    ISSUE-0063: `agent` must stay agent-net-only (no `external-net`
+    SPEC-ISSUE-0063: `agent` must stay agent-net-only (no `external-net`
     membership) - that's the actual GH issue #287 guarantee (no direct
     route to the internet except through net-proxy's allowlist). The web
     UI's port was moved to net-proxy specifically so this invariant could

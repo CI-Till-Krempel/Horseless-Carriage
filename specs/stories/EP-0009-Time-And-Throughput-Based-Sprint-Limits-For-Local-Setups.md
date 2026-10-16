@@ -8,7 +8,7 @@
 - Last Updated: 2026-07-29
 
 ## Overview
-Follow-up to GH issue #75 and ISSUE-0033 (`fix/local-provider-usd-budget-noop`), which fixed the
+Follow-up to GH issue #75 and SPEC-ISSUE-0033 (`fix/local-provider-usd-budget-noop`), which fixed the
 immediate bug: the USD budget guardrail was a silent no-op for local/Ollama setups, since a
 self-hosted model has no real per-token price for LiteLLM to track. That fix only *skips* the
 meaningless check - it doesn't give a local sprint any replacement signal of its own for "is this
@@ -18,7 +18,7 @@ User feedback while that fix was in review: for the local case, a virtual USD bu
 thing to be measuring at all. What's actually interesting there is **runtime and token throughput**,
 and **how much of that time the LLM spends idle** (queued/loading/thinking vs. actually generating) -
 local inference speed varies enormously by hardware, so a token-count-only budget (the one guardrail
-ISSUE-0033 left in place) can mean a 10-minute sprint on a GPU box or an hours-long one on CPU-only,
+SPEC-ISSUE-0033 left in place) can mean a 10-minute sprint on a GPU box or an hours-long one on CPU-only,
 with no visibility into which. Alternative proposal: let a sprint be time-boxed directly, in hours,
 rather than only by a token count that doesn't map to wall-clock time in any predictable way for a
 local model.
@@ -52,7 +52,7 @@ Proposed, not yet filed as individual stories:
   - **Check**: a third step in `check_cost_budget_callback`, alongside the existing token check (step
     1) and USD/local-provider-skip check (step 2) - compares wall-clock time elapsed since the sprint
     start anchor against `SPRINT_TIME_BUDGET_HOURS`. Naturally complements
-    `LLM_LOCAL_PROVIDER=true` sprints (ISSUE-0033), where the USD check is already skipped and the
+    `LLM_LOCAL_PROVIDER=true` sprints (SPEC-ISSUE-0033), where the USD check is already skipped and the
     token budget alone doesn't map predictably to wall-clock time on slow hardware - but not
     exclusive to local mode; a cloud sprint that's technically under budget in tokens/dollars but has
     been running for days is arguably just as worth flagging.
@@ -72,10 +72,10 @@ Proposed, not yet filed as individual stories:
 - Whatever metric is added is visible the same places the existing budgets are (`get_budget_status`,
   sprint report), not a side-channel a human has to go look for separately.
 - No change to cloud/proxy-mode behavior - this epic is scoped to what a local setup needs in place of
-  (or in addition to) the USD budget ISSUE-0033 already established doesn't apply there.
+  (or in addition to) the USD budget SPEC-ISSUE-0033 already established doesn't apply there.
 
 ## Notes
-- Directly follows from ISSUE-0033/GH issue #75 - that fix is the minimal correctness fix (stop a
+- Directly follows from SPEC-ISSUE-0033/GH issue #75 - that fix is the minimal correctness fix (stop a
   no-op check from giving false confidence); this epic is the follow-up "what should a local sprint
   actually be bounded by instead" design work the user flagged during that fix's review.
 - Worth deciding, when this is scoped into real stories, whether the time budget is a hard halt (like

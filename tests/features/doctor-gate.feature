@@ -26,7 +26,7 @@ Feature: Doctor gate (doctor.py)
 
   # doctor.py:124-137 (TestGuardClauses::test_multiple_errors_are_all_collected_not_just_the_first
   # in tests/test_doctor.py) - the whole point of the punch-list refactor
-  # (ISSUE-0021): every blocking problem surfaces in one pass.
+  # (SPEC-ISSUE-0021): every blocking problem surfaces in one pass.
   @automatable
   Scenario: Every problem is collected in one pass, not just the first one found
     Given docker, docker-compose, and gh are all missing from PATH

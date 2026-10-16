@@ -8,16 +8,16 @@
 - Last Updated: 2026-07-29
 
 ## Overview
-Follow-up to GH issue #48 (ISSUE-0026, `watch_roadmap.py`) and a review comment on its PR: "We could
+Follow-up to GH issue #48 (SPEC-ISSUE-0026, `watch_roadmap.py`) and a review comment on its PR: "We could
 fix the mutual write problem by using git for the updates to the state, no? ... If we change the
 tooling around the roadmap to use atomic git commits instead of raw writes, that might make the
 updates more robust and traceable. Let's create an epic for this parallel execution topic and fill in
 the tasks/stories needed to have a working parallel loop in place."
 
 **Worth clarifying up front**: atomic writes + git-commit checkpoints on every state save already
-exist (ISSUE-0024, `agents/scrum_team/tools/scrum.py`'s `_write_state_atomically`/
+exist (SPEC-ISSUE-0024, `agents/scrum_team/tools/scrum.py`'s `_write_state_atomically`/
 `_checkpoint_state_commit`) - that part of the suggestion is done. What that change does *not* do is
-solve the actual "mutual write" problem ISSUE-0026 flagged: `save_state_to_repo()` writes the calling
+solve the actual "mutual write" problem SPEC-ISSUE-0026 flagged: `save_state_to_repo()` writes the calling
 process's **entire current in-memory snapshot**, unconditionally, every time - not a diff, not a
 merge. If two live processes (say, a human's interactive session and a headless-triggered one) each
 hold their own in-memory copy of `sprint_backlog`/`impediment_log`/etc. and both eventually save,
@@ -39,7 +39,7 @@ the ones before it exist):
   since then. If it has, don't blindly overwrite - reload the latest checkpoint and either (a) merge
   the caller's own delta on top per-key (most `REPO_STATE_KEYS` are append-only lists - safe to
   concatenate/dedupe rather than replace), or (b), where a clean merge isn't obvious, refuse the write
-  and surface it as a blocking interaction (GH issue #53/ISSUE-0025 - "state changed underneath you,
+  and surface it as a blocking interaction (GH issue #53/SPEC-ISSUE-0025 - "state changed underneath you,
   reconcile before continuing") rather than silently discarding one side. This is the actual mechanism
   that turns "we commit to git" into "concurrent writers are safe", which plain commits alone aren't.
 - **Session/process locking** - a lightweight advisory lock (e.g. a `.hc/session.lock` file recording
@@ -57,7 +57,7 @@ the ones before it exist):
   the agent" from GH issue #48, unblocked by the state-safety work above.
 - **Resume-after-interruption via git** - if a live session (interactive or headless-triggered) is
   killed mid-turn, the next session/trigger reloads via `load_state_from_repo`'s existing git-recovery
-  path (ISSUE-0024) *and* the optimistic-concurrency check above, so it picks up from the last real
+  path (SPEC-ISSUE-0024) *and* the optimistic-concurrency check above, so it picks up from the last real
   checkpoint rather than assuming the ADK sqlite session db (`sessions/adk_sessions.db`) survived
   intact.
 - **Real concurrent sub-agent execution (the "parallel loop" itself)** - the literal "have the agents
@@ -77,19 +77,19 @@ the ones before it exist):
   business-logic tool calls against the same state repository concurrently - the lock, not luck,
   prevents it.
 - `watch_roadmap.py` (or its successor) can actually start a real sprint-processing turn when it
-  detects new work, not just print a notification - the deferred half of GH issue #48/ISSUE-0026.
+  detects new work, not just print a notification - the deferred half of GH issue #48/SPEC-ISSUE-0026.
 - The final "real concurrent execution" story explicitly requires its own spike/decision output before
   implementation work is scoped - this epic does not commit to a specific concurrency model up front.
 
 ## Notes
-- **This directly builds on, and clarifies, ISSUE-0024** (state.json checkpointing, GH issue #59) -
+- **This directly builds on, and clarifies, SPEC-ISSUE-0024** (state.json checkpointing, GH issue #59) -
   see the Overview above for exactly what that change already solved (atomic writes, a git history to
   recover from) versus what it didn't (concurrent-write safety, which needs the optimistic-concurrency
   story above).
-- **This directly builds on ISSUE-0026** (`watch_roadmap.py`, GH issue #48) - that change deliberately
+- **This directly builds on SPEC-ISSUE-0026** (`watch_roadmap.py`, GH issue #48) - that change deliberately
   stopped at "notify a human" specifically because the concurrency-safety work in this epic didn't
   exist yet; see its Notes section for the original reasoning.
-- Also relates to GH issue #53/ISSUE-0025 (`blocking_interactions`) - the optimistic-concurrency
+- Also relates to GH issue #53/SPEC-ISSUE-0025 (`blocking_interactions`) - the optimistic-concurrency
   story's conflict-surfacing path is a natural new use of that same mechanism, not a new one.
 - Most `REPO_STATE_KEYS` (`impediment_log`, `retro_actions`, `decision_log`, `human_approvals`,
   `transcript`, `blocking_interactions`, ...) are append-only lists - a real per-key merge strategy for

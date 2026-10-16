@@ -33,7 +33,7 @@ Reusing it against this repo's real, persistent production session (the
 sqlite-backed session a live web/CLI user may simultaneously have open)
 risks two writers racing on the same session.state - a real correctness
 problem, not a paperwork one. save_state_to_repo()'s git-commit checkpoint
-(ISSUE-0024) is a safety net for *recovering* from that, not a fix for it
+(SPEC-ISSUE-0024) is a safety net for *recovering* from that, not a fix for it
 happening in the first place - it still writes each caller's full
 in-memory snapshot unconditionally, so a second writer's save can silently
 discard a first writer's unique changes. Closing that gap (optimistic

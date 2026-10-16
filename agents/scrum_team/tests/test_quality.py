@@ -34,7 +34,7 @@ class TestQualityTools(unittest.TestCase):
         Acceptance Criteria:
         - KPIs are calculated and returned as a dictionary.
         """
-        # Pytest's own _run call now lives in test_runners.py (ISSUE-0064's
+        # Pytest's own _run call now lives in test_runners.py (SPEC-ISSUE-0064's
         # pluggable dispatch); quality._run is still called directly for
         # radon then bandit.
         mock_test_runners_run.return_value = {
@@ -112,7 +112,7 @@ class TestQualityTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.test_runners._run")
     def test_execute_test_suite_coverage_puts_repo_root_on_pythonpath(self, mock_run, mock_repo_root):
         """
-        Acceptance Criteria (ISSUE-0047): a real eval run bounced a story
+        Acceptance Criteria (SPEC-ISSUE-0047): a real eval run bounced a story
         back and forth 9 times (QA/DevTeam) on an identical
         "ModuleNotFoundError: No module named 'app'" for a completely normal
         layout (root-level app.py, tests under tests/) - cwd=repo_root alone
@@ -474,7 +474,7 @@ class TestQualityTools(unittest.TestCase):
 
     def test_update_sprint_report_bumps_kpi_update_count(self):
         """
-        Acceptance Criteria (ISSUE-0046): create_sprint_report's kpi_baseline
+        Acceptance Criteria (SPEC-ISSUE-0046): create_sprint_report's kpi_baseline
         gate (tools/budget.py) needs a real signal that QualityGuardian
         actually ran this sprint, mirroring retro_baseline's
         len(retro_actions)+len(impediment_log) pattern - across every real
@@ -508,7 +508,7 @@ class TestQualityTools(unittest.TestCase):
 
     def test_update_sprint_report_rejects_a_scalar_in_place_of_a_nested_kpi_dict(self):
         """
-        ISSUE-0061: a real eval run (0.1.0-run67) crashed the entire harness
+        SPEC-ISSUE-0061: a real eval run (0.1.0-run67) crashed the entire harness
         with an unhandled AttributeError because update_sprint_report wrote
         a kpis dict straight to state with no check that its nested
         sub-dicts (team_effectiveness/result_quality/maintainability/
@@ -587,7 +587,7 @@ class TestQualityTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.quality._run")
     def test_check_build_persists_result_for_the_tested_gate(self, mock_run, mock_repo_root):
         """
-        Acceptance Criteria (ISSUE-0004): check_build's result is persisted
+        Acceptance Criteria (SPEC-ISSUE-0004): check_build's result is persisted
         into state so advance_story_stage's Tested gate can verify it
         actually ran and passed, instead of trusting QA's own say-so.
         """

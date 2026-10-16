@@ -55,7 +55,7 @@ def main() -> None:
     if state_repo_test_path:
         resolved_state_repo = Path(state_repo_test_path).expanduser()
         resolved_state_repo.mkdir(parents=True, exist_ok=True)
-        # ISSUE-0064: docker-compose.yaml's agent service build now points a
+        # SPEC-ISSUE-0064: docker-compose.yaml's agent service build now points a
         # named build context at <STATE_REPO_PATH>/.hc (agent.Dockerfile's
         # workbench setup) - that directory/file must exist before `docker
         # compose ... run` even starts the build, same as new_project.py/

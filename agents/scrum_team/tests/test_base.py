@@ -208,7 +208,7 @@ class TestRunTimeoutAndStdin(unittest.TestCase):
         self.assertEqual(mock_subprocess_run.call_args.kwargs["stdin"], subprocess_module.DEVNULL)
 
     def test_env_overrides_are_applied_to_the_subprocess_environment(self):
-        """Acceptance Criteria (ISSUE-0047): env_overrides must reach the
+        """Acceptance Criteria (SPEC-ISSUE-0047): env_overrides must reach the
         actual subprocess call, layered on top of (not replacing) the
         inherited environment/GH_TOKEN/git-identity injection above."""
         with patch("subprocess.run") as mock_subprocess_run:

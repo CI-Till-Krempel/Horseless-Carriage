@@ -52,7 +52,7 @@ import project_registry
 import lib_github
 import lib_llm_test
 
-# ISSUE-0064: kept independent of agents/scrum_team/tools/test_runners.py
+# SPEC-ISSUE-0064: kept independent of agents/scrum_team/tools/test_runners.py
 # (the in-container, non-stdlib-only tool of record for this same
 # detection) deliberately - this module is stdlib-only by design (see its
 # own docstring) and runs on the host before any agent container exists,
@@ -217,7 +217,7 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
     if not env.get("LOG_LEVEL"):
         print("NOTE: LOG_LEVEL is not set in .env. Defaulting to 'info'.")
 
-    # ISSUE-0063 follow-up: an installation from before new_project.py kept
+    # SPEC-ISSUE-0063 follow-up: an installation from before new_project.py kept
     # "horseless-carriage_" on the front of an auto-derived
     # COMPOSE_PROJECT_NAME_PREFIX has one that's just the bare target-repo
     # name (e.g. "heinzelmann") - on a shared machine running several
@@ -366,7 +366,7 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
                         "COMPOSE_PROJECT_NAME_PREFIX in .env if both are meant to keep running."
                     )
 
-            # ISSUE-0064: surfaced here (at doctor/startup time) rather than
+            # SPEC-ISSUE-0064: surfaced here (at doctor/startup time) rather than
             # only discovered mid-sprint when QA's Tested gate runs the real
             # test suite and gets a confusing result - a real incident burned
             # a QA cycle on exactly that before anyone realized the target
@@ -386,7 +386,7 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
                      "so `./gradlew test`/`./mvnw test` can't run. The Architect should call "
                      "propose_framework_change to add one.")
 
-            # ISSUE-0064: guarantees the agent image's build (agent.Dockerfile's
+            # SPEC-ISSUE-0064: guarantees the agent image's build (agent.Dockerfile's
             # `COPY --from=workbench ...`) never fails for a project that has
             # no workbench yet - purely additive, same idempotent shape as
             # ensure_role_identity_defaults below (never overwrites a real

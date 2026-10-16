@@ -685,7 +685,7 @@ def prepare_scratch_state_repo() -> str:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
-    # ISSUE-0064: docker-compose.*.yaml's agent service build points a named
+    # SPEC-ISSUE-0064: docker-compose.*.yaml's agent service build points a named
     # build context at <STATE_REPO_PATH>/.hc (agent.Dockerfile's workbench
     # setup) - that path must exist before the container this script starts
     # ever triggers a build, same as new_project.py/doctor.py/run_tests.py

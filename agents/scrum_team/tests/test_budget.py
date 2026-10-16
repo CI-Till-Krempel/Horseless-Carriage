@@ -67,7 +67,7 @@ class TestBudgetTools(unittest.TestCase):
 
     def test_sprint_budget_reset_state_delta_clears_every_grace_and_safety_net_guard(self):
         """
-        ISSUE-0049 / 0.1.0-run33: a prior sprint's halt can leave
+        SPEC-ISSUE-0049 / 0.1.0-run33: a prior sprint's halt can leave
         critical_halt_notified/sprint_report_safety_net_fired stuck True -
         this dict must clear all of them, not just token_usage, or the NEXT
         sprint's own final halt silently produces no report. GH #413:
@@ -662,7 +662,7 @@ class TestBudgetTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_rejects_without_fresh_kpi_update(self, mock_write_file, mock_getenv):
         """
-        Acceptance Criteria (ISSUE-0046): create_sprint_report must refuse to
+        Acceptance Criteria (SPEC-ISSUE-0046): create_sprint_report must refuse to
         close the sprint unless update_sprint_report was called since the
         last successful report, mirroring the retro gate immediately above -
         across every real eval run before this existed, the former
@@ -931,7 +931,7 @@ class TestBudgetTools(unittest.TestCase):
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_renders_kpi_dashboard(self, mock_write_file, mock_getenv):
-        """Acceptance Criteria (ISSUE-0046): the KPI dashboard was computed
+        """Acceptance Criteria (SPEC-ISSUE-0046): the KPI dashboard was computed
         and stored (sprint_report_kpis) but never actually rendered anywhere
         in the report document itself - SM_PROMPT's own "YOU DO" (formerly
         QUALITY_GUARDIAN_PROMPT's, GH #395) says to include it, but
@@ -994,7 +994,7 @@ class TestBudgetTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_survives_a_malformed_kpi_shape(self, mock_write_file, mock_getenv):
         """
-        ISSUE-0061: a real eval run (0.1.0-run67) crashed the entire harness
+        SPEC-ISSUE-0061: a real eval run (0.1.0-run67) crashed the entire harness
         with an unhandled AttributeError ('float' object has no attribute
         'get') because this KPI-rendering code trusted sprint_report_kpis'
         nested shape unconditionally (`kpis.get("team_effectiveness") or
@@ -1812,7 +1812,7 @@ class TestRenderRetroDoc(unittest.TestCase):
             "retro_actions": [{
                 "action": "Keep feature branches synchronized with develop",
                 "owner": "DevTeam", "status": "open", "category": "steering",
-                "success_metric": "No stale branches at sprint end", "issue_id": "ISSUE-0012",
+                "success_metric": "No stale branches at sprint end", "issue_id": "SPEC-ISSUE-0012",
             }],
             "impediment_log": [],
         }
@@ -1821,7 +1821,7 @@ class TestRenderRetroDoc(unittest.TestCase):
         self.assertIn("Category: steering", doc)
         self.assertIn("Owner: DevTeam", doc)
         self.assertIn("No stale branches at sprint end", doc)
-        self.assertIn("ISSUE-0012", doc)
+        self.assertIn("SPEC-ISSUE-0012", doc)
 
     def test_renders_impediment_detail(self):
         s = {

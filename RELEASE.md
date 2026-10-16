@@ -226,7 +226,7 @@ stages at all.
 `advance_story_stage`'s Reviewed/Tested gates only ever checked that *some* `gh_pr_review`/
 `gh_pr_comment` call had been made since the last attempt - never whether it was an approval or a
 rejection, let alone what it said. Accepted had no stage-specific gate at all (see
-`record_acceptance_check` below - ISSUE-0043). So "denying" a review was mechanically
+`record_acceptance_check` below - SPEC-ISSUE-0043). So "denying" a review was mechanically
 indistinguishable from "haven't gotten to it yet": there was no tool call representing a rejection,
 and whatever reason a model did give only ever existed in free-text conversation, with no guarantee
 Dev Team ever saw it or that it said anything concrete.
@@ -252,7 +252,7 @@ separate free-text call the model might get wrong or skip - best-effort, same as
 notification in this codebase (a comment-post failure doesn't turn an already-recorded denial into an
 error).
 
-**Accepted has its own evidence gate (ISSUE-0043).** Unlike Reviewed/Tested, Product Owner doesn't
+**Accepted has its own evidence gate (SPEC-ISSUE-0043).** Unlike Reviewed/Tested, Product Owner doesn't
 leave PR reviews, so there was nothing for Accepted's gate to check at all - any role could
 previously call `advance_story_stage(id, "Accepted")` on assertion alone.
 `record_acceptance_check(title_or_id, note, tool_context=None)` (`agents/scrum_team/tools/
@@ -261,7 +261,7 @@ per-story **counter** (`acceptance_check_count`) rather than a one-time flag.
 `advance_story_stage`'s Accepted gate now refuses unless
 this count is above zero.
 
-**A denial has teeth, for Reviewed/Tested/Accepted (ISSUE-0044).** The Reviewed/Tested gates' own
+**A denial has teeth, for Reviewed/Tested/Accepted (SPEC-ISSUE-0044).** The Reviewed/Tested gates' own
 evidence check (`pr_review_calls[role] > baseline`) is sprint-wide, not scoped to one story - so a
 story that was just denied could otherwise still advance right away, as long as *some* review call
 from that role (even the very one that led to the denial) already satisfied the sprint-wide count.
@@ -332,7 +332,7 @@ value someone explicitly tried to set using the wrong scale, which validation no
 being saved in the first place.
 
 **Migrating existing data** (PR review follow-up): validation on *new* writes does nothing about a
-`priority` value already sitting in an existing repo's `specs/stories/*.md`/`specs/requirements/ISSUE-
+`priority` value already sitting in an existing repo's `specs/stories/*.md`/`specs/requirements/SPEC-ISSUE-
 *.md` files from before this was enforced - the old BACKLOG ITEM TEMPLATE literally taught "P0/P1/P2 (or
 numeric)". `sync_stories_from_markdown` (`agents/scrum_team/tools/requirements.py`) now self-heals this
 on every sync: `_migrated_priority` maps a recognized legacy value to its MoSCoW equivalent (`P0`→`Must`,
@@ -345,7 +345,7 @@ silently drop any Notes/Test Approach/owner/tasks content `_parse_story_markdown
 into state at all) - so the fix is durable, not just a one-session in-memory correction the very next
 sync would otherwise re-derive and then forget again. Idempotent: a file whose value is already valid is
 never rewritten. Retro findings that get auto-filed as Issues (`_file_retro_items_as_issues`) are covered
-the same way once filed, since a filed Issue is just another `specs/requirements/ISSUE-*.md` file this
+the same way once filed, since a filed Issue is just another `specs/requirements/SPEC-ISSUE-*.md` file this
 same sync already scans - `add_retro_action`/`add_impediment`'s own `priority` field (`"normal"`/`"high"`)
 is a separate, unrelated escalation scale that was never part of MoSCoW and needs no migration.
 
@@ -608,7 +608,7 @@ more-useful reason instead of misrepresenting the team's process.
 ### Human interaction levels
 
 `record_human_approval`'s two gates (`advance_story_stage(..., "Implemented")` and
-`create_release_pr`, see ISSUE-0001 above) support three approval types depending on
+`create_release_pr`, see SPEC-ISSUE-0001 above) support three approval types depending on
 `INTERACTION_LEVEL` (`agents/scrum_team/helpers.py`'s `get_interaction_level()`, see
 `docs/INTERACTION-LEVELS.md`), via a level-driven lookup
 (`required_pre_implementation_approval`/`required_pre_release_approval`):
@@ -843,7 +843,7 @@ edits in them. Root cause: `create_sprint_backlog_pr` committed via `git add -A`
 file `upsert_story` had already written to disk - and merged it into `develop` before the later,
 deliberately-scoped `create_story_spec_pr` ever got a chance to claim it, leaving that PR empty.
 `git_push`'s own `--allow-empty` fallback (a deliberate fix for a different, earlier bug - see
-ISSUE-0050/0.1.0-run34) meant even a sprint with genuinely nothing new yet still silently
+SPEC-ISSUE-0050/0.1.0-run34) meant even a sprint with genuinely nothing new yet still silently
 opened/merged a content-free "Sprint Backlog" PR.
 
 `create_sprint_backlog_pr` now calls `integrate_open_changes` (scoped to `specs/`+`.hc/` only - the
@@ -1280,7 +1280,7 @@ just fixed a different cause of, recurring from a new one.
 This is the same underlying class of failure 0.1.0-run54 hit on `instance/todo.db` (GH #415's own
 report flagged it): the generated project has no `.gitignore` at all, so DevTeam/QA's own ordinary
 local work (running tests, a local SQLite db) leaves real, untracked build/test artifacts in the
-working tree for a later GitFlow checkout to trip over. A `git_push` code comment (ISSUE-0050
+working tree for a later GitFlow checkout to trip over. A `git_push` code comment (SPEC-ISSUE-0050
 follow-up / 0.1.0-run34) had already diagnosed this exact root cause once before, for a different
 symptom (a commit failure, not a checkout failure).
 
@@ -1426,7 +1426,7 @@ Now checks `bool(sprint_result.get("sprint_report"))` directly instead - a stric
 the old check, since `stop_reason` is only ever set to `"sprint_report_produced"` right after
 `sprint_report` itself is populated, never the other way around.
 
-### A mechanically-detected loop breaker can blame the wrong story and kill a run that was still making progress (0.1.0-run63, ISSUE-0053)
+### A mechanically-detected loop breaker can blame the wrong story and kill a run that was still making progress (0.1.0-run63, SPEC-ISSUE-0053)
 
 A real eval run (0.1.0-run63) stopped after just Sprint 1, reporting US-0002 ("Add a Task to a
 List") as blocked by "ScrumOrchestrator and DevTeam bounced transfer_to_agent 3x with no
@@ -1449,10 +1449,10 @@ make progress" stop condition then fired on that misattributed blocker, ending a
 real, open feature branch is the one implicated by anything happening right now, blocked or not.
 `raise_story_blocker` already refuses to double-block the same story, so re-targeting it this way is
 safe: either it attaches normally, or it correctly falls over to the existing plain "stalled"
-interaction instead of fabricating a block on an untouched story. See ISSUE-0053 for the full
+interaction instead of fabricating a block on an untouched story. See SPEC-ISSUE-0053 for the full
 mechanism and fix.
 
-### `.hc/state.json` merge conflicts dump the full scrum state into tool responses, burning sprint budget (0.1.0-run62, ISSUE-0054)
+### `.hc/state.json` merge conflicts dump the full scrum state into tool responses, burning sprint budget (0.1.0-run62, SPEC-ISSUE-0054)
 
 A real eval run (0.1.0-run62) completed all 5 sprints but exceeded its 5,000,000-token sprint budget
 every single sprint, climbing from 5.3M in Sprint 1 to 7.0M in Sprint 5 - with velocity dropping to
@@ -1476,12 +1476,12 @@ authoritative and a conflict on the committed file is never a real content confl
 current state and stages it directly, instead of ever surfacing its raw content to an agent. A
 deliberately minimal fix, not a general JSON-merge engine - `.hc/state.json` itself, and this special
 case along with it, is slated to disappear from this repo entirely once the scrum state machine moves
-into its own MCP-server-owned store in a future release. See ISSUE-0054 for the full mechanism and
+into its own MCP-server-owned store in a future release. See SPEC-ISSUE-0054 for the full mechanism and
 fix.
 
-### ADK's own session history, never trimmed across sprint boundaries, is the real driver behind every run's budget overrun (0.1.0-run64, ISSUE-0055)
+### ADK's own session history, never trimmed across sprint boundaries, is the real driver behind every run's budget overrun (0.1.0-run64, SPEC-ISSUE-0055)
 
-A real eval run (0.1.0-run64) - run *after* ISSUE-0054's fix landed, and with zero `.hc/state.json`
+A real eval run (0.1.0-run64) - run *after* SPEC-ISSUE-0054's fix landed, and with zero `.hc/state.json`
 conflicts anywhere in its transcript - still blew its token budget on all 3 sprints it completed
 before stopping early. Average tokens spent per transcript event climbed steadily every sprint even as
 the number of new events per sprint fell: Sprint 1 averaged ~18k tokens/event across 300 events,
@@ -1503,8 +1503,8 @@ usage) carries forward via `create_session`'s own `state=` parameter, and the ol
 No change was needed to the crash-recovery history replay already in `agent.py` - a brand new
 session's empty event list already triggers that same existing bounded-recovery path, so each sprint
 now starts with a small, bounded context summary instead of either nothing or everything since Sprint
-1. See ISSUE-0055 for the full mechanism and fix.
-### `start_sprint` never got called again after Sprint 1, so the token budget and sprint phase got stuck for the rest of the run (0.1.0-run64, ISSUE-0056)
+1. See SPEC-ISSUE-0055 for the full mechanism and fix.
+### `start_sprint` never got called again after Sprint 1, so the token budget and sprint phase got stuck for the rest of the run (0.1.0-run64, SPEC-ISSUE-0056)
 
 Watching a real eval run (0.1.0-run64), the sprint token budget visibly never reset even though a new
 sprint had clearly started, and separately, implementation-shaped work kept happening while the system
@@ -1523,12 +1523,12 @@ anyway. The scripted driver's own per-sprint message never names `start_sprint` 
 names `create_sprint_report` and `create_release_pr`, but never the one call that would have kept
 budget and phase in sync.
 
-The scripted message now names `start_sprint` explicitly too. See ISSUE-0056 for the full mechanism
+The scripted message now names `start_sprint` explicitly too. See SPEC-ISSUE-0056 for the full mechanism
 and fix.
 
-### Sprint-phase awareness is now a real, if forgiving, gate - not just a nudge (ISSUE-0057)
+### Sprint-phase awareness is now a real, if forgiving, gate - not just a nudge (SPEC-ISSUE-0057)
 
-Following up on ISSUE-0056: `current_sprint_phase` already computed which ritual phase the team was in
+Following up on SPEC-ISSUE-0056: `current_sprint_phase` already computed which ritual phase the team was in
 every turn, but nothing acted on it - `phase_awareness_injection_callback`'s own docstring said so
 directly, "this never refuses a tool call itself." A tool call shaped for the wrong phase (writing new
 implementation code during backlog grooming, say) was only ever caught reactively, by whichever
@@ -1547,13 +1547,13 @@ mechanical gates. ScrumMaster's own closing ritual (`create_sprint_report`, `cal
 deliberately never phase-gated at all - it's already governed by its own, separately-tested budget/
 grace machinery that can correctly trigger before `current_sprint_phase`'s simpler classification
 agrees the team has reached closing, and gating it anyway broke 9 pre-existing tests that proved
-exactly this conflict. This also depended on ISSUE-0056 landing first: a phase that could get
+exactly this conflict. This also depended on SPEC-ISSUE-0056 landing first: a phase that could get
 permanently stuck would have turned this gate into a genuine deadlock instead of a one-time nudge.
 
-### A failed or incomplete release PR at sprint close leaves `start_sprint` permanently stuck for the rest of that sprint (0.1.0-run65, ISSUE-0058)
+### A failed or incomplete release PR at sprint close leaves `start_sprint` permanently stuck for the rest of that sprint (0.1.0-run65, SPEC-ISSUE-0058)
 
 A real eval run (0.1.0-run65) stopped after 2 of 5 sprints - Sprint 2 alone burned 6.25M tokens (125%
-of budget) and accepted zero of the 5 remaining stories. Unlike 0.1.0-run64 (ISSUE-0056), the team
+of budget) and accepted zero of the 5 remaining stories. Unlike 0.1.0-run64 (SPEC-ISSUE-0056), the team
 here wasn't failing to call `start_sprint` - it called it twice in Sprint 2, and both times correctly
 diagnosed and even correctly attempted the fix its own error message asked for.
 
@@ -1575,12 +1575,12 @@ for the sprint to end, giving a recovery attempt like this one a real chance to 
 `start_sprint` within the same sprint. Separately, a release PR that genuinely can't be merged due to
 a real conflict (no tool exists to resolve this, the same gap noted above) now stops the run cleanly
 with a clear reason, instead of silently burning further sprints' budget on a `start_sprint` retry
-loop that could never succeed. See ISSUE-0058 for the full mechanism and fix.
+loop that could never succeed. See SPEC-ISSUE-0058 for the full mechanism and fix.
 
-### `gh_pr_create`'s silent default-to-main let a feature-branch PR bypass `develop` entirely (0.1.0-run65, ISSUE-0059)
+### `gh_pr_create`'s silent default-to-main let a feature-branch PR bypass `develop` entirely (0.1.0-run65, SPEC-ISSUE-0059)
 
 Tracing why 0.1.0-run65's Sprint 1 `create_release_pr` saw "no commits between main and develop"
-(ISSUE-0058) found the true trigger: US-0001's own story PR never targeted `develop` at all.
+(SPEC-ISSUE-0058) found the true trigger: US-0001's own story PR never targeted `develop` at all.
 `start_feature_branch` - which always correctly targets `develop` - rejected DevTeam's story four times
 in a row for different legitimate reasons (not yet planned into the sprint, then a missing
 Architect/QA sign-off on the Sprint Backlog PR). DevTeam never retried it after the fourth rejection -
@@ -1594,11 +1594,11 @@ commit for the rest of the run, which is exactly why the later release PR found 
 `gh_pr_create` now recognizes a `head` shaped like a story feature branch (the `feature/<id>-<slug>`
 naming convention `start_feature_branch` itself always uses) and forces `base` to the resolved develop
 branch whenever it matches - regardless of what `base` was passed or left unset - before falling
-through to the previous default for everything else. See ISSUE-0059 for the full mechanism and fix.
+through to the previous default for everything else. See SPEC-ISSUE-0059 for the full mechanism and fix.
 
-### `resolve_story_blocker` accepted an unverified claim, letting the same test failure re-block a story three times in one sprint (0.1.0-run66, ISSUE-0060)
+### `resolve_story_blocker` accepted an unverified claim, letting the same test failure re-block a story three times in one sprint (0.1.0-run66, SPEC-ISSUE-0060)
 
-A real eval run (0.1.0-run66) - the first since ISSUE-0053 through ISSUE-0059 landed to complete all 5
+A real eval run (0.1.0-run66) - the first since SPEC-ISSUE-0053 through SPEC-ISSUE-0059 landed to complete all 5
 sprints cleanly, with no cross-sprint state regression and no budget runaway - still burned Sprint 5's
 entire token budget making zero net progress on one story. `advance_story_stage(..., "Tested")` kept
 failing for genuine reasons (real failing tests, a missing dependency, a broken SQLAlchemy foreign key)
@@ -1626,9 +1626,9 @@ run has actually happened since the blocker was raised *and* that run shows zero
 with no real evidence behind it is rejected outright. A repeat-offense counter also flags re-blocking
 on the identical failure right after a resolve as "repeat #N of this exact blocker" rather than a
 fresh streak. Every other blocker category (genuine open product questions, non-Tested stage denials)
-is untouched. See ISSUE-0060 for the full mechanism and fix.
+is untouched. See SPEC-ISSUE-0060 for the full mechanism and fix.
 
-### `update_sprint_report` accepted a malformed KPI shape, crashing the entire harness with an unhandled `AttributeError` (0.1.0-run67, ISSUE-0061)
+### `update_sprint_report` accepted a malformed KPI shape, crashing the entire harness with an unhandled `AttributeError` (0.1.0-run67, SPEC-ISSUE-0061)
 
 A real eval run (0.1.0-run67) stopped after only 2 of 5 requested sprints - `Stop reason: crashed`,
 `Crash error: AttributeError: 'float' object has no attribute 'get'`, during Sprint 3. Unlike every
@@ -1654,9 +1654,9 @@ sub-keys is present but not an actual dict, before it ever reaches state - namin
 type it actually saw. `create_sprint_report`'s own KPI-rendering code is now defensive independently
 of that gate too (`isinstance(..., dict)` instead of `or {}`, which only ever caught a falsy value,
 never a truthy non-dict) - so even a malformed value written to state some other way can't crash this
-step. See ISSUE-0061 for the full mechanism and fix.
+step. See SPEC-ISSUE-0061 for the full mechanism and fix.
 
-### A permanently-broken transfer pair burned over half a sprint's event budget retrying the same doomed hop (0.1.0-run68, ISSUE-0062)
+### A permanently-broken transfer pair burned over half a sprint's event budget retrying the same doomed hop (0.1.0-run68, SPEC-ISSUE-0062)
 
 A real eval run (0.1.0-run68) completed all 5 requested sprints, then stopped early with `Stop reason:
 blocked_needs_human` - a "product"-category blocker on US-0002 that genuinely needs a human in real
@@ -1672,12 +1672,12 @@ zero other tool calls or progress in between, before the model finally stopped o
 closing text summary - not because anything mechanical intervened. The harness's own post-sprint check
 (`_sprint_needs_human_this_harness_cannot_provide`) already treats a mechanically-detected blocker as
 an "immediate-stop signal" per its own docstring, but only ever runs after the sprint's event loop ends
-on its own - there was no mid-sprint early exit for this already-foregone pattern. See ISSUE-0062 for
+on its own - there was no mid-sprint early exit for this already-foregone pattern. See SPEC-ISSUE-0062 for
 the full mechanism - not yet implemented.
 
 Also in this investigation: every tool-call console/GH-Actions log line now also states which sprint
 it belongs to (`[Sprint N | Phase: ... | Tokens: ...]`) - the raw log had no other way to tell, unlike
-transcript.md's per-sprint sections, which made tracing ISSUE-0061's crash (lost before its own
+transcript.md's per-sprint sections, which made tracing SPEC-ISSUE-0061's crash (lost before its own
 sprint's section was ever written) harder than it needed to be.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
@@ -1717,14 +1717,14 @@ of only being noticed anecdotally.
   same guardrails from ["Budget Management"](docs/BUDGET.md)), currently
   5,000,000 tokens/$3 per sprint (GH issue #81: 2,600,000 was too tight for later,
   more complex sprints - a real run hit ~2.8M tokens and truncated sprints 4-5;
-  ISSUE-0045: 4,000,000 was then too tight for a sprint 1 that also has to draft
+  SPEC-ISSUE-0045: 4,000,000 was then too tight for a sprint 1 that also has to draft
   and merge the whole product's requirements up front). `eval.yml` also sets
   `READY_BACKLOG_SPRINTS_TARGET=1` for this workflow only (real usage keeps the
   product default of 2, see `helpers.py`'s `ready_backlog_sprints_target`) -
   this fixed scenario's entire backlog is 6 stories, so the product default of
   2 sprints × 3 stories/sprint demanded the *whole* backlog be Ready before
   Sprint 1 could even publish, forcing 100% of requirements engineering into a
-  single pre-Sprint-1 burst (see ISSUE-0045).
+  single pre-Sprint-1 burst (see SPEC-ISSUE-0045).
   The **token** budget resets at the start
   of every sprint (`_run_one_sprint`'s `state_delta` zeroes `token_usage`, the
   harness-side equivalent of the `reset_sprint_budget` tool used in

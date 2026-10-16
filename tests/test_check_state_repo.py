@@ -159,7 +159,7 @@ class TestRoleIdentityDefaultsMigration:
 
 class TestWorkbenchScriptDefaultMigration:
     """
-    Acceptance Criteria (ISSUE-0064): a state repo with no `.hc/
+    Acceptance Criteria (SPEC-ISSUE-0064): a state repo with no `.hc/
     workbench-setup.sh` yet gets one created (a harmless placeholder),
     without ever touching a real one that already exists - same additive-
     only shape as TestRoleIdentityDefaultsMigration above.
@@ -404,7 +404,7 @@ class TestInteractiveStateRepair:
 
     def test_rebuild_from_specs_option_prefers_docker_when_available(self, repo_with_state, monkeypatch, capsys):
         """
-        ISSUE-0052: option 4 is the new "rebuild state.json from specs/ on
+        SPEC-ISSUE-0052: option 4 is the new "rebuild state.json from specs/ on
         disk" last resort, invoking agents/scrum_team/scripts/
         rebuild_state_from_specs.py the same way state.json validation
         itself already prefers Docker (so pydantic/the agents package are

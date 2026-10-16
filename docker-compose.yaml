@@ -66,7 +66,7 @@ services:
     build:
       context: .
       dockerfile: agent.Dockerfile
-      # ISSUE-0064: the product repo's own per-project toolchain ("workbench"
+      # SPEC-ISSUE-0064: the product repo's own per-project toolchain ("workbench"
       # - see agent.Dockerfile) as a separate named build context, not part
       # of this image's main context (`.` = horseless-carriage's own
       # checkout). ensure_workbench_script_default (check_state_repo.py)
@@ -75,7 +75,7 @@ services:
       # propose_framework_change), so this path is never missing.
       additional_contexts:
         - "workbench=${STATE_REPO_PATH}/.hc"
-    # ISSUE-0063: no `ports:` here, deliberately - a container with no
+    # SPEC-ISSUE-0063: no `ports:` here, deliberately - a container with no
     # attachment to any non-internal network can never have a port
     # published to the host at all (Docker has no gateway path to forward
     # through), which silently broke the ADK web UI (port 8000) the moment
@@ -228,7 +228,7 @@ services:
       context: .
       dockerfile: net-proxy.Dockerfile
     ports:
-      # ISSUE-0063: the ADK web UI's actual host-facing port - moved here
+      # SPEC-ISSUE-0063: the ADK web UI's actual host-facing port - moved here
       # from `agent` (which can never have a port published to the host
       # while it's agent-net-only, see that service's own comment). Same
       # env vars/defaults as before - this is a transparent relocation, not

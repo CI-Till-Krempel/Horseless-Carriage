@@ -373,7 +373,7 @@ def _run(cmd: list[str], cwd: str | None = None, tool_context=None,
     normally instead of looping.
 
     env_overrides: applied last, after the GH_TOKEN/git-identity injection
-    below - see _execute_test_suite_coverage (tools/quality.py, ISSUE-0047)
+    below - see _execute_test_suite_coverage (tools/quality.py, SPEC-ISSUE-0047)
     for why PYTHONPATH specifically needs this.
     """
     original_cmd = cmd

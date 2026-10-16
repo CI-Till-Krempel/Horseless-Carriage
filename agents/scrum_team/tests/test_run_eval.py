@@ -79,7 +79,7 @@ class _StatefulSessionService:
 class _FullFakeSessionService:
     """Unlike _StatefulSessionService (get_session only), also implements
     create_session/delete_session with call tracking - for testing
-    _start_fresh_sprint_session (ISSUE-0055) in isolation."""
+    _start_fresh_sprint_session (SPEC-ISSUE-0055) in isolation."""
 
     def __init__(self, state):
         self._state = dict(state)
@@ -273,7 +273,7 @@ def test_sprint_should_not_abort_when_no_critical_halt_occurred():
 
 
 def test_sprint_should_not_abort_when_a_critical_halt_still_closed_out_cleanly():
-    # ISSUE-0045 / 0.1.0-run25: check_cost_budget_callback's SPRINT CLOSE
+    # SPEC-ISSUE-0045 / 0.1.0-run25: check_cost_budget_callback's SPRINT CLOSE
     # SEQUENCE grace now redirects a frozen non-grace agent back to
     # ProductOwner (agent.py's _budget_halt_response) instead of leaving the
     # sprint permanently stuck - if that worked and a real sprint report came
@@ -643,7 +643,7 @@ class _FakeEventWithContent:
 class _CreateReleasePrSuccessRunner:
     """Yields one event representing a create_release_pr tool call that
     just succeeded - simulates ProductOwner's mid-sprint recovery after
-    start_sprint's own new_sprint_item_blocked gate (ISSUE-0058)."""
+    start_sprint's own new_sprint_item_blocked gate (SPEC-ISSUE-0058)."""
 
     async def run_async(self, user_id, session_id, new_message, state_delta=None):
         yield _FakeEventWithContent("ProductOwner", [
@@ -653,7 +653,7 @@ class _CreateReleasePrSuccessRunner:
 
 class TestRunOneSprintMidSprintReleasePrMerge:
     """
-    Acceptance Criteria (ISSUE-0058): a create_release_pr call that succeeds
+    Acceptance Criteria (SPEC-ISSUE-0058): a create_release_pr call that succeeds
     mid-sprint must have a real chance to actually unblock a subsequent
     start_sprint retry within that same sprint - the harness's merge sweep
     otherwise only runs once, after _run_one_sprint returns, which can never
@@ -703,7 +703,7 @@ class TestRunOneSprintMidSprintReleasePrMerge:
 
 class TestUnresolvableReleasePrConflict:
     """
-    Acceptance Criteria (ISSUE-0058): a release PR merge failure must be
+    Acceptance Criteria (SPEC-ISSUE-0058): a release PR merge failure must be
     distinguished by whether it's genuinely unresolvable (a real git merge
     conflict - no tool exists to fix this) versus something that might
     still resolve on its own (not yet mergeable, pending checks).
@@ -738,7 +738,7 @@ class TestUnresolvableReleasePrConflict:
 
 def test_sprint_message_names_start_sprint_explicitly():
     """
-    ISSUE-0056: a real eval run (0.1.0-run64) never called start_sprint
+    SPEC-ISSUE-0056: a real eval run (0.1.0-run64) never called start_sprint
     again after Sprint 1 - the only place that mechanically resets the
     sprint's own token budget - because the scripted per-sprint message
     never named it at all, unlike create_sprint_report/create_release_pr
@@ -752,7 +752,7 @@ def test_sprint_message_names_start_sprint_explicitly():
 
 class TestStartFreshSprintSession:
     """
-    Acceptance Criteria (ISSUE-0055): starting each new sprint on a fresh
+    Acceptance Criteria (SPEC-ISSUE-0055): starting each new sprint on a fresh
     ADK session - rather than reusing one session's ever-growing event
     history for the whole run - must carry the real state forward (backlog,
     budgets, etc.) while actually dropping the old session, and must read

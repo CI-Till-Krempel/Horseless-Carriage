@@ -27,7 +27,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get update \
     && apt-get install gh -y
 
-# ISSUE-0064: per-project "workbench" - whatever toolchain THIS product's
+# SPEC-ISSUE-0064: per-project "workbench" - whatever toolchain THIS product's
 # tech stack needs (JDK, Node, Go, ...), as a plain shell script the
 # Architect persists at .hc/workbench-setup.sh in the PRODUCT repo (via
 # propose_framework_change - see agents/scrum_team/tools/workflow.py),

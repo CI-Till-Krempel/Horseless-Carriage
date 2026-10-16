@@ -6,7 +6,7 @@ already runs automatically on a session's first-ever init (see
 agents/scrum_team/tools/scrum.py), exposed here as an explicit, host-run
 last resort instead.
 
-ISSUE-0052: init_scrum_state is deliberately NOT an agent-callable tool -
+SPEC-ISSUE-0052: init_scrum_state is deliberately NOT an agent-callable tool -
 nothing in a live session ever legitimately needs to re-run it (the
 mechanical ensure_state_initialized_callback already guarantees it ran
 once, correctly, before any agent's first turn), and exposing it let an

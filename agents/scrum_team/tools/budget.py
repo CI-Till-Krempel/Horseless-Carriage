@@ -131,7 +131,7 @@ def sprint_budget_reset_state_delta() -> Dict[str, Any]:
     can no longer drift out of sync with "the rest of the sprint process"
     this way.
 
-    ISSUE-0049 / 0.1.0-run33: before this, start_sprint's own enforcement
+    SPEC-ISSUE-0049 / 0.1.0-run33: before this, start_sprint's own enforcement
     and run_eval.py's harness-side copy were independent, hand-copied key
     lists that drifted apart (run_eval.py's predated critical_halt_notified/
     sprint_report_safety_net_fired and was missing them, leaving a stuck
@@ -960,7 +960,7 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
             report += "None logged before the budget ran out.\n"
 
         s["sprint_report"] = report
-        # Mirrors create_sprint_report's own ISSUE-0010 bookkeeping below so
+        # Mirrors create_sprint_report's own SPEC-ISSUE-0010 bookkeeping below so
         # the state machine stays consistent either way a report came to
         # exist - the next sprint's stories still can't reach Implemented
         # again until a real create_release_pr clears this.
@@ -1029,7 +1029,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             ),
         }
 
-    # ISSUE-0046: same "prompt-only wasn't enough" lesson as the retro gate
+    # SPEC-ISSUE-0046: same "prompt-only wasn't enough" lesson as the retro gate
     # right above - the former QualityGuardian role (now ScrumMaster, GH
     # #392) was never once transferred to across every real eval run before
     # this gate existed (nothing in the SPRINT CLOSE SEQUENCE actually told
@@ -1423,7 +1423,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     elif estimates:
         omitted_sections.append("Story Estimates vs Actual Tokens")
 
-    # ISSUE-0046: previously computed via calculate_kpis/update_sprint_report
+    # SPEC-ISSUE-0046: previously computed via calculate_kpis/update_sprint_report
     # (tools/quality.py) but never actually rendered anywhere in the report
     # itself - stored in state.sprint_report_kpis purely for
     # run_eval_analysis.py's cross-sprint trend charts, with no human-visible
@@ -1435,7 +1435,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     if detail == "full":
         report += "\n## KPI Dashboard\n"
         if kpis:
-            # ISSUE-0061: `or {}` only catches a falsy value (None/missing) -
+            # SPEC-ISSUE-0061: `or {}` only catches a falsy value (None/missing) -
             # a TRUTHY non-dict (e.g. a plain float, if something upstream of
             # update_sprint_report's own validation ever wrote one directly to
             # state) would pass straight through and crash the very next
@@ -1596,7 +1596,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # again, not just the same count from a sprint ago.
     s["accepted_count_baseline"] = accepted_count
 
-    # ISSUE-0001: closing this sprint's report "uses up" its human
+    # SPEC-ISSUE-0001: closing this sprint's report "uses up" its human
     # pre-implementation approval - the next sprint's stories can't reach
     # Implemented again until a fresh one is recorded via
     # record_human_approval(<type>, ...), where <type> depends on the
@@ -1609,7 +1609,7 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             1 for a in s.get("human_approvals", []) if a.get("type") == required_approval
         )
 
-    # ISSUE-0010: a report now exists for this sprint but its release PR
+    # SPEC-ISSUE-0010: a report now exists for this sprint but its release PR
     # hasn't necessarily gone out yet - advance_story_stage's Implemented
     # gate refuses further story work until create_release_pr clears this.
     s["sprint_report_pending_release"] = True

@@ -62,7 +62,7 @@ BUDGET & PROCESS
 WORKFLOW
 - **Sprint Planning, mechanically**: call `start_sprint(goal)` with a real, concrete goal (not a
   placeholder - it will reject one) to actually kick off a new sprint. This is the ONLY thing that
-  sets `sprint_goal` (see ISSUE-0011) - describing a sprint plan in conversation, or Product
+  sets `sprint_goal` (see SPEC-ISSUE-0011) - describing a sprint plan in conversation, or Product
   Owner having ordered the backlog, does not by itself start a sprint. It also refuses to run while
   the previous sprint's close sequence is unfinished - retro/report done, but no successful
   `create_release_pr` yet (GH #401: this now fires even once every story reached Accepted, not only
