@@ -777,6 +777,27 @@ class TestCloneStateRepo:
         setup_llm._clone_state_repo("https://example.com/owner/repo.git", "main", tmp_path / "target")
 
 
+class TestWarnIfDevelopBranchMissing:
+    def test_warns_when_branch_absent(self, fake_git_remote, capsys):
+        setup_llm._warn_if_develop_branch_missing(fake_git_remote, "develop")
+        result = capsys.readouterr()
+        assert "'develop' branch not found" in result.out + result.err
+
+    def test_silent_when_branch_present(self, fake_git_remote, tmp_path, capsys):
+        checkout = tmp_path / "_check"
+        subprocess.run(["git", "clone", "--quiet", fake_git_remote, str(checkout)], check=True)
+        subprocess.run(["git", "-C", str(checkout), "checkout", "-b", "develop"], check=True)
+        subprocess.run(["git", "-C", str(checkout), "push", "--quiet", "-u", "origin", "develop"], check=True)
+
+        setup_llm._warn_if_develop_branch_missing(fake_git_remote, "develop")
+
+        result = capsys.readouterr()
+        assert result.out == "" and result.err == ""
+
+    def test_never_raises_on_an_unreachable_url(self):
+        setup_llm._warn_if_develop_branch_missing("/nonexistent/path/to/nowhere.git", "develop")
+
+
 class TestSetupStateRepo:
     def test_clones_into_empty_directory(self, tmp_path, fake_git_remote, monkeypatch):
         target = tmp_path / "clone-target"
@@ -800,6 +821,56 @@ class TestSetupStateRepo:
         assert lib_env.read_env_var(env_path, "STATE_REPO_PATH") == str(target)
         assert lib_env.read_env_var(env_path, "GITHUB_REPO_URL") == ""
         assert lib_env.read_env_var(env_path, "GITHUB_REPO_BRANCH") == "main"
+
+    def test_git_init_also_creates_a_local_develop_branch(self, tmp_path, monkeypatch):
+        """A real incident: a local-only-initialized repo (remote added
+        later) ended up with only its default branch ever created, no
+        `develop` - GitFlow tooling hard-depends on both existing."""
+        target = tmp_path / "init-target"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        branches = subprocess.run(
+            ["git", "-C", str(target), "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert set(branches) == {"main", "develop"}
+
+    def test_git_init_respects_a_custom_configured_develop_branch_name(self, tmp_path, monkeypatch):
+        target = tmp_path / "init-target"
+        env_path = tmp_path / ".env"
+        env_path.write_text('GITHUB_DEVELOP_BRANCH="integration"\n')
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        branches = subprocess.run(
+            ["git", "-C", str(target), "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert "integration" in branches
+        assert "develop" not in branches
+
+    def test_clone_warns_if_develop_branch_missing_on_remote(self, tmp_path, fake_git_remote, monkeypatch, capsys):
+        """fake_git_remote only has 'main' - mirrors the real incident where
+        a cloned repo was otherwise perfectly usable but had no `develop`,
+        surfacing only much later as a confusing mid-sprint failure."""
+        target = tmp_path / "clone-target"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), fake_git_remote, "main"])
+
+        result = capsys.readouterr()
+        assert "'develop' branch not found" in result.out + result.err
+
+    def test_clone_does_not_warn_when_develop_branch_exists_on_remote(self, tmp_path, fake_git_remote, monkeypatch, capsys):
+        subprocess.run(["git", "clone", "--quiet", fake_git_remote, str(tmp_path / "_check")], check=True)
+        subprocess.run(["git", "-C", str(tmp_path / "_check"), "checkout", "-b", "develop"], check=True)
+        subprocess.run(["git", "-C", str(tmp_path / "_check"), "push", "--quiet", "-u", "origin", "develop"], check=True)
+
+        target = tmp_path / "clone-target"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), fake_git_remote, "main"])
+
+        result = capsys.readouterr()
+        assert "branch not found" not in result.out + result.err
 
     def test_leaves_existing_git_repo_alone_but_still_ensures_specs(self, tmp_path, fake_git_remote, monkeypatch, capsys):
         target = tmp_path / "already-git"

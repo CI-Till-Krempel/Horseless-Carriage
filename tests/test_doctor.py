@@ -892,6 +892,49 @@ class TestGithubBranchExistenceCheck:
         doctor.check(valid_repo)
 
 
+class TestDefaultAndDevelopBranchNameCollision:
+    """Pure .env sanity check, no network/token needed - GITHUB_DEVELOP_
+    BRANCH resolving to the same name as GITHUB_REPO_BRANCH would make every
+    GitFlow release PR (develop -> main) have identical base and head,
+    which GitHub flatly refuses to open."""
+
+    def test_defaults_do_not_collide(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        result = doctor.check(valid_repo)
+        assert not any("identical base and head" in e.message for e in result.errors())
+
+    def test_explicit_same_name_is_an_error(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'GITHUB_DEVELOP_BRANCH="main"\n')
+
+        result = doctor.check(valid_repo)
+
+        assert any("GITHUB_REPO_BRANCH and GITHUB_DEVELOP_BRANCH are both 'main'" in e.message for e in result.errors())
+
+    def test_custom_but_distinct_names_do_not_collide(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'GITHUB_REPO_BRANCH="trunk"\nGITHUB_DEVELOP_BRANCH="integration"\n')
+
+        result = doctor.check(valid_repo)
+
+        assert not any("identical base and head" in e.message for e in result.errors())
+
+    def test_checked_even_without_a_token_or_network(self, valid_repo, monkeypatch):
+        """No token configured at all - the existence check can't run, but
+        this one needs no network and must still catch the misconfiguration."""
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        text = env.read_text().replace('GITHUB_TOKEN="dummy"\n', "")
+        text += 'GITHUB_DEVELOP_BRANCH="main"\n'
+        env.write_text(text)
+
+        result = doctor.check(valid_repo)
+
+        assert any("GITHUB_REPO_BRANCH and GITHUB_DEVELOP_BRANCH are both 'main'" in e.message for e in result.errors())
+
+
 class TestOllamaGpuWarning:
     """Acceptance Criteria (GH issue #49): a driver/WSL2 misconfiguration
     otherwise leaves Ollama silently running on CPU with no error from
