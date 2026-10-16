@@ -27,16 +27,22 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get update \
     && apt-get install gh -y
 
-# ISSUE-0064: opt-in JDK for JVM (Gradle/Maven) target projects - see
-# test_runners.py. Off by default: most projects managed by Horseless
-# Carriage aren't JVM-based, and a JDK adds real image size/build time this
-# image shouldn't pay unconditionally. new_project.py defaults INSTALL_JDK
-# to "true" in .env when it detects a Gradle/Maven manifest in the target
-# repo at install time; doctor.py warns if that drifts out of sync. Each
-# project still supplies its own Gradle/Maven version via a committed
-# gradlew/mvnw wrapper - this only provides the JDK those wrappers need.
-ARG INSTALL_JDK=false
-RUN if [ "$INSTALL_JDK" = "true" ]; then apt-get update && apt-get install -y default-jdk; fi
+# ISSUE-0064: per-project "workbench" - whatever toolchain THIS product's
+# tech stack needs (JDK, Node, Go, ...), as a plain shell script the
+# Architect persists at .hc/workbench-setup.sh in the PRODUCT repo (via
+# propose_framework_change - see agents/scrum_team/tools/workflow.py),
+# never horseless-carriage's own. A per-language ARG (the previous
+# INSTALL_JDK) doesn't generalize - every new stack would need its own flag
+# and a horseless-carriage code change forever. `workbench` is a named
+# Docker build context (docker-compose's build.additional_contexts, see
+# docker-compose.yaml) pointed at the product repo's .hc/ directory -
+# ensure_workbench_script_default (check_state_repo.py) guarantees
+# workbench-setup.sh always exists there (a harmless placeholder until the
+# Architect customizes it), so this COPY never fails the build. This only
+# ever runs commands a human has already merged via that gated PR flow -
+# nothing here is agent-writable at runtime.
+COPY --from=workbench workbench-setup.sh /tmp/workbench-setup.sh
+RUN chmod +x /tmp/workbench-setup.sh && /tmp/workbench-setup.sh
 
 # Set the PATH for pip executables
 ENV PATH="/root/.local/bin:${PATH}"

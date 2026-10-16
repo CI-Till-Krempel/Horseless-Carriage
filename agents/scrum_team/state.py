@@ -117,6 +117,14 @@ class ScrumState(BaseModel):
     # need to audit the proposal later, since the PR body itself may be
     # lost once the PR merges/closes.
     steering_proposals: List[Dict[str, Any]] = Field(default_factory=list)
+    # ISSUE-0064: same shape as steering_proposal_count/steering_proposals
+    # above, for propose_framework_change (tools/workflow.py) - the
+    # Architect-only, gated path for changing this project's workbench
+    # (.hc/workbench-setup.sh). A bare counter plus a durable, structured
+    # record (rationale/script/PR link/requested allowlist hosts) of every
+    # call that actually succeeded, for future sprint-report rendering.
+    framework_change_proposal_count: int = 0
+    framework_change_proposals: List[Dict[str, Any]] = Field(default_factory=list)
     # GH issue #359: snapshot of which stories were BLOCKED as of the last
     # successful create_sprint_report/render_fallback_sprint_report close -
     # compared against who's still blocked now to find a story that's been

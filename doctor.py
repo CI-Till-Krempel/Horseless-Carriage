@@ -8,8 +8,9 @@ This script will:
 3. Check if the STATE_REPO_PATH directory exists, has a 'specs' subdirectory
    with no stray template files (see check_state_repo.py for the fuller,
    heavier version of this check, including state.json validation), and
-   materialize each role's default `<Role>-identity.md` if it doesn't
-   already exist (additive only - never overwrites an existing file).
+   materialize each role's default `<Role>-identity.md` and the project's
+   default `.hc/workbench-setup.sh` if either doesn't already exist
+   (additive only - never overwrites an existing file).
 4. Check gh CLI authentication, and - given a GITHUB_REPO_URL and either
    GITHUB_TOKEN or a resolvable GitHub App token - live read access to that
    repo's issues and pull requests (see lib_github.py).
@@ -310,11 +311,19 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
                      f"measure its real test suite. Request support: {_new_issue_url(unsupported, state_repo_path)}")
             elif (
                 any(next(state_repo_path.glob(f"**/{m}"), None) is not None for m in _JVM_MANIFESTS)
-                and env.get("INSTALL_JDK", "").lower() != "true"
+                and check_state_repo.is_workbench_script_placeholder(state_repo_path)
             ):
-                warn("The project at STATE_REPO_PATH looks like a Gradle/Maven (JVM) project, but INSTALL_JDK "
-                     "isn't set to 'true' in .env - the agent image has no JDK, so `./gradlew test`/`./mvnw test` "
-                     "can't run. Set INSTALL_JDK=true in .env and rebuild the agent image.")
+                warn("The project at STATE_REPO_PATH looks like a Gradle/Maven (JVM) project, but "
+                     ".hc/workbench-setup.sh is still the untouched placeholder - the agent image has no JDK, "
+                     "so `./gradlew test`/`./mvnw test` can't run. The Architect should call "
+                     "propose_framework_change to add one.")
+
+            # ISSUE-0064: guarantees the agent image's build (agent.Dockerfile's
+            # `COPY --from=workbench ...`) never fails for a project that has
+            # no workbench yet - purely additive, same idempotent shape as
+            # ensure_role_identity_defaults below (never overwrites a real
+            # workbench-setup.sh).
+            check_state_repo.ensure_workbench_script_default(state_repo_path)
 
             specs_dir = state_repo_path / "specs"
             if not specs_dir.is_dir():

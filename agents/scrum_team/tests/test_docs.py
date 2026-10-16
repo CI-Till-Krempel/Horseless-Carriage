@@ -153,6 +153,35 @@ class TestSprintFilesTouched(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("outside the repository root", result["message"])
 
+    def test_write_file_refuses_a_path_under_hc(self):
+        """ISSUE-0064: .hc/ is Horseless-Carriage-internal (state.json via
+        save_state_to_repo, workbench-setup.sh via propose_framework_change)
+        - never a direct write_file target."""
+        result = write_file(".hc/workbench-setup.sh", "RUN apt-get install -y default-jdk", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_framework_change", result["message"])
+        self.assertFalse((self.repo_root / ".hc" / "workbench-setup.sh").exists())
+
+    def test_write_file_refuses_a_nested_path_under_hc(self):
+        result = write_file(".hc/some/nested/file.txt", "content", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_framework_change", result["message"])
+
+    def test_write_file_allows_paths_that_merely_start_with_hc(self):
+        """A real sibling directory/file that happens to share .hc's prefix
+        (e.g. '.hc-notes/foo.md') must not be caught by the .hc/ guardrail -
+        it's a different path, not a subpath of .hc/."""
+        result = write_file(".hc-notes/foo.md", "content", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+
+    def test_delete_file_refuses_a_path_under_hc(self):
+        (self.repo_root / ".hc").mkdir(parents=True, exist_ok=True)
+        (self.repo_root / ".hc" / "state.json").write_text("{}")
+        result = delete_file(".hc/state.json", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(".hc/", result["message"])
+        self.assertTrue((self.repo_root / ".hc" / "state.json").exists())
+
     def test_upsert_prd_records_touched_path(self):
         upsert_prd("This is a PRD.", "test.md", tool_context=self.tool_context)
         self.assertIn("specs/requirements/PRD-test.md", self.tool_context.state["sprint_files_touched"])

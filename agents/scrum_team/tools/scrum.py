@@ -70,6 +70,8 @@ REPO_STATE_KEYS = [
     "steering_proposal_count",
     "steering_baseline",
     "steering_proposals",
+    "framework_change_proposal_count",
+    "framework_change_proposals",
     "blocked_story_ids_as_of_last_report",
     "accepted_count_baseline",
     "version_goals",
@@ -227,6 +229,8 @@ def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
     s.setdefault("accepted_count_baseline", 0)
     s.setdefault("steering_baseline", 0)
     s.setdefault("steering_proposals", [])
+    s.setdefault("framework_change_proposal_count", 0)
+    s.setdefault("framework_change_proposals", [])
     s.setdefault("version_goals", {})
     s.setdefault("backlog_scope_complete", False)
     s.setdefault("human_approvals", [])

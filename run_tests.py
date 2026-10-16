@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import check_state_repo
 import lib_docker
 import lib_env
 
@@ -52,7 +53,14 @@ def main() -> None:
     # before starting.
     state_repo_test_path = lib_env.read_env_var(env_test_path, "STATE_REPO_PATH")
     if state_repo_test_path:
-        Path(state_repo_test_path).expanduser().mkdir(parents=True, exist_ok=True)
+        resolved_state_repo = Path(state_repo_test_path).expanduser()
+        resolved_state_repo.mkdir(parents=True, exist_ok=True)
+        # ISSUE-0064: docker-compose.yaml's agent service build now points a
+        # named build context at <STATE_REPO_PATH>/.hc (agent.Dockerfile's
+        # workbench setup) - that directory/file must exist before `docker
+        # compose ... run` even starts the build, same as new_project.py/
+        # doctor.py guarantee for a real installation.
+        check_state_repo.ensure_workbench_script_default(resolved_state_repo)
 
     # Run pytest inside the agent container with access to LiteLLM and DB
     # services. --entrypoint "" skips entrypoint.sh (GitHub CLI auth, git

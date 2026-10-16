@@ -65,6 +65,14 @@ jobs:
           EVAL_GITHUB_APP_INSTALLATION_ID: ${{ secrets.EVAL_GITHUB_APP_INSTALLATION_ID }}
         run: |
           mkdir -p /tmp/hc-eval-state-scratch eval-output
+          # ISSUE-0064: docker-compose.yaml's agent service build points a
+          # named build context at <STATE_REPO_PATH>/.hc (agent.Dockerfile's
+          # workbench setup) - that path must exist before the agent image
+          # build further below, same as new_project.py/doctor.py/
+          # run_tests.py guarantee elsewhere.
+          mkdir -p /tmp/hc-eval-state-scratch/.hc
+          printf '#!/bin/sh\n# No workbench-specific setup for this eval scenario.\n' \
+            > /tmp/hc-eval-state-scratch/.hc/workbench-setup.sh
           # A .env file must be one KEY=VALUE per line, but a GitHub App
           # private key is a multi-line PEM. Collapse any real newlines in
           # the secret into literal "\n" first - agents/scrum_team/tools/
