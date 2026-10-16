@@ -15,6 +15,19 @@ ADK_WEB_PORT=${ADK_WEB_PORT:-8000}
 # Ensure sessions directory exists (though it should be mounted)
 mkdir -p /app/sessions
 
+# GH issue #(new, follow-up to #288): every Horseless Carriage installation
+# serves the identical baked-in agent - the ADK web UI has no way to show
+# which running instance/project a given browser tab is actually talking to,
+# now that several installations run concurrently on one machine. adk web's
+# --logo-text/--logo-image-url (both required together, or the server raises
+# on startup) render a custom banner in the UI - use them to show the one
+# thing that's actually different per installation: STATE_REPO_PATH's own
+# directory name. The image itself is a small fixed placeholder (a data: URI
+# - no network access needed, nothing to host) since the text is what
+# actually identifies the project; only --logo-text varies per run.
+PROJECT_LABEL=$(basename "${STATE_REPO_PATH:-Horseless Carriage}")
+HC_LOGO_DATA_URI="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMiIgaGVpZ2h0PSIzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNiIgZmlsbD0iIzRiMzYyMSIvPjx0ZXh0IHg9IjE2IiB5PSIyMiIgZm9udC1mYW1pbHk9InNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMTMiIGZpbGw9IiNmZmYiIHRleHQtYW5jaG9yPSJtaWRkbGUiPkhDPC90ZXh0Pjwvc3ZnPgo="
+
 # AGENT_MODE=web (default): start the ADK dev web UI, backed by the same
 # persistent SQLite session store used by CLI mode.
 # AGENT_MODE=cli: fall back to the original interactive terminal session.
@@ -27,6 +40,8 @@ if [ "$AGENT_MODE" = "web" ]; then
     exec adk web --host 0.0.0.0 --port "${ADK_WEB_PORT}" \
         --session_service_uri "sqlite:///${DB_FILE}" \
         --log_level "${LOG_LEVEL_VAL}" \
+        --logo-text "$PROJECT_LABEL" \
+        --logo-image-url "$HC_LOGO_DATA_URI" \
         agents
 fi
 

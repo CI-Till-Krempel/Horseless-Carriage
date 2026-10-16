@@ -81,20 +81,6 @@ warn = setup_llm.warn
 die = setup_llm.die
 
 
-def _sanitize_compose_project_prefix(name: str) -> str:
-    """Compose project names must match ^[a-z0-9][a-z0-9_-]*$ - derive one
-    from an arbitrary repo directory name (which might contain spaces,
-    dots, uppercase, ...) instead of failing outright on the first
-    project whose directory name isn't already a valid one."""
-    sanitized = "".join(c.lower() if c.isalnum() else "-" for c in name)
-    while "--" in sanitized:
-        sanitized = sanitized.replace("--", "-")
-    sanitized = sanitized.strip("-")
-    if not sanitized or not sanitized[0].isalnum():
-        sanitized = f"hc-{sanitized}" if sanitized else "hc-project"
-    return sanitized
-
-
 _JVM_MANIFEST_NAMES = ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pom.xml")
 _SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "target"}
 
@@ -192,12 +178,7 @@ def _configure_for_target_project(repo_root: Path, target_repo: Path) -> None:
         info(f"STATE_REPO_PATH defaulted to {target_repo} (the target project itself).")
 
     if not lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX"):
-        # "horseless-carriage_" always stays on the front - a bare
-        # target-repo-derived prefix (e.g. "heinzelmann") replaced it
-        # entirely, so `docker ps`/`docker images` on a shared machine
-        # running several unrelated projects had no way to tell an HC
-        # installation's containers apart from anything else by name alone.
-        prefix = f"horseless-carriage_{_sanitize_compose_project_prefix(target_repo.name)}"
+        prefix = lib_docker.derive_compose_project_prefix(target_repo)
         lib_env.update_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX", prefix)
         info(f"COMPOSE_PROJECT_NAME_PREFIX set to '{prefix}' - keeps this project's containers/images "
              "from colliding with another Horseless Carriage installation's.")

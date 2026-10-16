@@ -15,26 +15,6 @@ import new_project
 import project_registry
 
 
-class TestSanitizeComposeProjectPrefix:
-    def test_lowercases_and_replaces_spaces(self):
-        assert new_project._sanitize_compose_project_prefix("My Cool Project") == "my-cool-project"
-
-    def test_already_valid_name_is_unchanged(self):
-        assert new_project._sanitize_compose_project_prefix("my-cool-project") == "my-cool-project"
-
-    def test_collapses_repeated_separators(self):
-        assert new_project._sanitize_compose_project_prefix("Project_2.0!!") == "project-2-0"
-
-    def test_leading_digit_is_fine(self):
-        # Compose project names must start with [a-z0-9] - a leading digit
-        # is valid, unlike a leading dash would be.
-        assert new_project._sanitize_compose_project_prefix("123abc") == "123abc"
-
-    def test_falls_back_to_a_safe_default_when_nothing_survives(self):
-        assert new_project._sanitize_compose_project_prefix("___") == "hc-project"
-        assert new_project._sanitize_compose_project_prefix("") == "hc-project"
-
-
 class TestConfigureForTargetProject:
     def test_creates_env_from_example_when_missing(self, tmp_path):
         repo_root = tmp_path / "horseless-carriage"
