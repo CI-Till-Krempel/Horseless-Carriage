@@ -79,6 +79,59 @@ def ensure_role_identity_defaults(state_repo_path: Path) -> dict:
     return results
 
 
+_WORKBENCH_SCRIPT_PLACEHOLDER = (
+    "#!/bin/sh\n"
+    "# ISSUE-0064: per-project \"workbench\" - whatever toolchain THIS\n"
+    "# product's tech stack needs (JDK, Node, Go, ...) gets installed here,\n"
+    "# e.g. `apt-get update && apt-get install -y default-jdk`.\n"
+    "#\n"
+    "# Never hand-edit this file directly - it's built into the agent image\n"
+    "# at every rebuild, so a direct edit here has no effect until it's\n"
+    "# actually committed and the image is rebuilt, and (more importantly)\n"
+    "# the Architect's propose_framework_change tool is the only way this\n"
+    "# is meant to change: it always opens a human-reviewed Pull Request,\n"
+    "# the same way propose_steering_change does for <Role>-identity.md -\n"
+    "# see agents/scrum_team/tools/workflow.py.\n"
+    "#\n"
+    "# No workbench-specific setup yet - this placeholder is a harmless\n"
+    "# no-op so the agent image still builds for a project with no\n"
+    "# toolchain needs beyond horseless-carriage's own Python base.\n"
+)
+
+
+def ensure_workbench_script_default(state_repo_path: Path) -> str:
+    """
+    ISSUE-0064: guarantees `.hc/workbench-setup.sh` always exists in the
+    state repo, so the agent image's build (agent.Dockerfile's `COPY
+    --from=workbench workbench-setup.sh ...`, docker-compose.yaml's
+    `additional_contexts` pointed at `<STATE_REPO_PATH>/.hc`) never fails
+    for a project that has no workbench yet - same idempotent,
+    create-only-if-missing shape as ensure_role_identity_defaults above
+    (never overwrites a real one, including an empty file - that's either a
+    prior migration or a deliberate choice, not this function's place to
+    touch).
+
+    Returns "created" or "already-present".
+    """
+    workbench_path = state_repo_path / ".hc" / "workbench-setup.sh"
+    if workbench_path.is_file():
+        return "already-present"
+    workbench_path.parent.mkdir(parents=True, exist_ok=True)
+    workbench_path.write_text(_WORKBENCH_SCRIPT_PLACEHOLDER, encoding="utf-8")
+    return "created"
+
+
+def is_workbench_script_placeholder(state_repo_path: Path) -> bool:
+    """True if `.hc/workbench-setup.sh` is missing entirely or still exactly
+    the auto-created placeholder - i.e. the Architect hasn't customized it
+    for this project's actual tech stack yet. Used by doctor.py to nudge
+    toward `propose_framework_change` instead of leaving a silent gap."""
+    workbench_path = state_repo_path / ".hc" / "workbench-setup.sh"
+    if not workbench_path.is_file():
+        return True
+    return workbench_path.read_text(encoding="utf-8", errors="replace") == _WORKBENCH_SCRIPT_PLACEHOLDER
+
+
 def _walk_git_history_for_valid_state_json(state_repo_path: Path) -> str:
     """Host-side equivalent of agents/scrum_team/tools/scrum.py's
     _recover_state_json_from_git - walks .hc/state.json's git history
@@ -235,6 +288,14 @@ def run(repo_root: Path, interactive: bool = None, prompt=input) -> int:
         print(f"  [OK] Created default identity.md for {len(created)} role(s) not yet customized: {', '.join(created)}.")
     else:
         print("  [OK] Every role already has its own identity.md.")
+
+    # 5b. Migrate/verify .hc/workbench-setup.sh exists - same additive-only
+    # shape (see ensure_workbench_script_default's own docstring), required
+    # for the agent image's build (agent.Dockerfile's workbench context).
+    if ensure_workbench_script_default(state_repo_path) == "created":
+        print("  [OK] Created default .hc/workbench-setup.sh (no workbench-specific setup yet).")
+    else:
+        print("  [OK] .hc/workbench-setup.sh already exists.")
 
     # 6. Validate state.json structure
     state_file = state_repo_path / ".hc" / "state.json"

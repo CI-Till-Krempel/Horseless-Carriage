@@ -675,7 +675,11 @@ class TestUnsupportedEcosystemAndJvmChecks:
 
         assert not any("test-runner adapter" in w.message for w in result.warnings())
 
-    def test_gradle_project_without_install_jdk_warns(self, valid_repo, monkeypatch):
+    def test_gradle_project_with_placeholder_workbench_warns(self, valid_repo, monkeypatch):
+        """ISSUE-0064: a Gradle/Maven manifest with no workbench customized
+        yet (still the auto-created placeholder, or missing entirely) means
+        the agent image has no JDK - nudge toward propose_framework_change
+        rather than leaving a silent gap."""
         _patch_proxy_unreachable(monkeypatch)
         state_repo = valid_repo / "state_repo"
         (state_repo / "build.gradle.kts").write_text("")
@@ -683,17 +687,30 @@ class TestUnsupportedEcosystemAndJvmChecks:
         result = doctor.check(valid_repo)
 
         assert any("Gradle/Maven (JVM) project" in w.message for w in result.warnings())
+        assert any("propose_framework_change" in w.message for w in result.warnings())
 
-    def test_gradle_project_with_install_jdk_true_does_not_warn(self, valid_repo, monkeypatch):
+    def test_gradle_project_with_customized_workbench_does_not_warn(self, valid_repo, monkeypatch):
         _patch_proxy_unreachable(monkeypatch)
         state_repo = valid_repo / "state_repo"
         (state_repo / "build.gradle.kts").write_text("")
-        env_path = valid_repo / ".env"
-        env_path.write_text(env_path.read_text() + 'INSTALL_JDK="true"\n')
+        (state_repo / ".hc").mkdir(parents=True, exist_ok=True)
+        (state_repo / ".hc" / "workbench-setup.sh").write_text(
+            "#!/bin/sh\napt-get install -y default-jdk\n", encoding="utf-8"
+        )
 
         result = doctor.check(valid_repo)
 
         assert not any("Gradle/Maven (JVM) project" in w.message for w in result.warnings())
+
+    def test_doctor_run_creates_the_default_workbench_script(self, valid_repo, monkeypatch):
+        """Purely additive migration (ensure_workbench_script_default),
+        same shape as the identity.md one right below it in doctor.py."""
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+
+        doctor.check(valid_repo)
+
+        assert (state_repo / ".hc" / "workbench-setup.sh").is_file()
 
     def test_pom_xml_nested_in_a_subdirectory_is_detected(self, valid_repo, monkeypatch):
         """The manifest search is recursive (**/pom.xml) - a Maven module
