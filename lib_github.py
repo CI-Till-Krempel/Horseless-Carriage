@@ -113,3 +113,23 @@ def check_repo_access(owner: str, repo: str, token: str) -> Tuple[bool, str]:
         return True, f"read access to {owner}/{repo} confirmed (issues, pull requests); repo-level permissions include push"
     return False, (f"read access to {owner}/{repo} confirmed (issues, pull requests), but repo-level "
                     f"permissions do NOT include push - writes (PR merges, comments) will likely fail")
+
+
+def check_branch_exists(owner: str, repo: str, branch: str, token: str) -> Tuple[bool, str]:
+    """True iff `branch` exists on origin for owner/repo - a repo passing
+    check_repo_access (it exists, the token can read it) says nothing about
+    which branches it actually has. Horseless Carriage's GitFlow tooling
+    (_checkout_develop_or_recover, advance_story_stage's release PRs, ...)
+    hard-depends on both the configured default branch (GITHUB_REPO_BRANCH,
+    "main" if unset) and the develop branch (GITHUB_DEVELOP_BRANCH,
+    "develop" if unset) existing on origin - a repo created via `git init`
+    with only one initial branch, or one whose default branch isn't
+    actually named what .env configures, otherwise surfaces this only much
+    later, mid-sprint, as a confusing "no develop branch" failure instead of
+    here at setup time."""
+    status, body = _api_get(f"/repos/{owner}/{repo}/branches/{branch}", token)
+    if status == 200:
+        return True, f"branch '{branch}' exists on {owner}/{repo}"
+    if status == 404:
+        return False, f"branch '{branch}' does not exist on {owner}/{repo}"
+    return False, f"could not check branch '{branch}' on {owner}/{repo} (HTTP {status or 'network error'}): {body[:200]}"

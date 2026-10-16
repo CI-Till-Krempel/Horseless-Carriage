@@ -103,3 +103,37 @@ class TestCheckRepoAccess:
         ok, detail = lib_github.check_repo_access("example", "example", "tok")
         assert ok is False
         assert "pull requests read failed" in detail
+
+
+class TestCheckBranchExists:
+    def test_branch_exists(self, monkeypatch):
+        calls = []
+
+        def fake_get(path, token):
+            calls.append(path)
+            return 200, json.dumps({"name": "develop"})
+        monkeypatch.setattr(lib_github, "_api_get", fake_get)
+
+        ok, detail = lib_github.check_branch_exists("example", "example", "develop", "tok")
+
+        assert ok is True
+        assert "exists" in detail
+        assert calls == ["/repos/example/example/branches/develop"]
+
+    def test_branch_missing(self, monkeypatch):
+        monkeypatch.setattr(lib_github, "_api_get", lambda path, token: (404, "Branch not found"))
+
+        ok, detail = lib_github.check_branch_exists("example", "example", "develop", "tok")
+
+        assert ok is False
+        assert "does not exist" in detail
+
+    def test_other_http_error_reported_distinctly_from_missing(self, monkeypatch):
+        monkeypatch.setattr(lib_github, "_api_get", lambda path, token: (403, "forbidden"))
+
+        ok, detail = lib_github.check_branch_exists("example", "example", "develop", "tok")
+
+        assert ok is False
+        assert "does not exist" not in detail
+        assert "could not check" in detail
+        assert "403" in detail
