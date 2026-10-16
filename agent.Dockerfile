@@ -27,6 +27,17 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | d
     && apt-get update \
     && apt-get install gh -y
 
+# ISSUE-0064: opt-in JDK for JVM (Gradle/Maven) target projects - see
+# test_runners.py. Off by default: most projects managed by Horseless
+# Carriage aren't JVM-based, and a JDK adds real image size/build time this
+# image shouldn't pay unconditionally. new_project.py defaults INSTALL_JDK
+# to "true" in .env when it detects a Gradle/Maven manifest in the target
+# repo at install time; doctor.py warns if that drifts out of sync. Each
+# project still supplies its own Gradle/Maven version via a committed
+# gradlew/mvnw wrapper - this only provides the JDK those wrappers need.
+ARG INSTALL_JDK=false
+RUN if [ "$INSTALL_JDK" = "true" ]; then apt-get update && apt-get install -y default-jdk; fi
+
 # Set the PATH for pip executables
 ENV PATH="/root/.local/bin:${PATH}"
 

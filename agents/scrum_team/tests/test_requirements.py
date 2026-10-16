@@ -298,7 +298,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+            return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0},
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -343,7 +343,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["dependency_manifest_write_count"] = 2
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+            return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0},
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -360,7 +360,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 0, "tests_failed": 0, "note": "no tests collected"},
+            return_value={"tests_available": True, "tests_run": 0, "tests_failed": 0, "note": "no tests collected"},
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "error")
@@ -372,7 +372,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": False, "tests_run": 0, "tests_failed": 0, "note": "pytest could not be executed"},
+            return_value={"tests_available": False, "tests_run": 0, "tests_failed": 0, "note": "pytest could not be executed"},
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "error")
@@ -383,7 +383,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 10, "tests_failed": 2},
+            return_value={"tests_available": True, "tests_run": 10, "tests_failed": 2},
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "error")
@@ -395,7 +395,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 12, "tests_failed": 0},
+            return_value={"tests_available": True, "tests_run": 12, "tests_failed": 0},
         ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -411,7 +411,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 12, "tests_failed": 0},
+            return_value={"tests_available": True, "tests_run": 12, "tests_failed": 0},
         ), patch(
             "agents.scrum_team.tools.quality.detect_stubbed_tests",
             return_value=[{"file": "tests/test_app.py", "function": "test_dummy"}],
@@ -420,6 +420,28 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIn("warning", result)
         self.assertIn("test_app.py::test_dummy", result["warning"])
+
+    def test_tested_succeeds_without_coverage_when_tests_actually_ran_and_passed(self, mock_save, mock_md, mock_roadmap):
+        """ISSUE-0064: coverage_available used to be required for Tested too
+        (conflating "tests ran and passed" with "coverage % was measured") -
+        that permanently blocked the gate for any ecosystem (e.g. a JVM
+        project without JaCoCo configured) where coverage can't be measured
+        out of the box, even with every real test passing. Coverage is now
+        informational only, the same way code_complexity/vulnerability_scan
+        already degrade gracefully instead of blocking."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={
+                "tests_available": True, "tests_run": 12, "tests_failed": 0,
+                "coverage_available": False, "test_coverage": None,
+                "note": "no JaCoCo report found",
+            },
+        ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
 
     def test_accepted_requires_a_recorded_acceptance_check(self, mock_save, mock_md, mock_roadmap):
         """Acceptance Criteria (ISSUE-0043): Accepted previously had no
@@ -641,7 +663,7 @@ class TestStageRejectionLoopBreaker(unittest.TestCase):
         tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+            return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0},
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -1166,7 +1188,7 @@ class TestDenyReview(unittest.TestCase):
 
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+            return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0},
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "error")
@@ -1175,7 +1197,7 @@ class TestDenyReview(unittest.TestCase):
         tc.state["pr_review_calls"] = {"QA": 2}
         with patch(
             "agents.scrum_team.tools.quality._execute_test_suite_coverage",
-            return_value={"available": True, "tests_run": 5, "tests_failed": 0},
+            return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0},
         ), patch("agents.scrum_team.tools.requirements._sync_roadmap_for_story", return_value={"status": "ok"}):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
@@ -1531,8 +1553,8 @@ class TestResolveStoryBlockerMechanicalRecheck(unittest.TestCase):
 
     _RESOLUTION = "Fixed the broken foreign key and the missing dependency; tests pass now."
 
-    _FAILING_RUN = {"available": True, "tests_run": 4, "tests_failed": 2, "test_coverage": 0.5, "note": None}
-    _PASSING_RUN = {"available": True, "tests_run": 4, "tests_failed": 0, "test_coverage": 1.0, "note": None}
+    _FAILING_RUN = {"tests_available": True, "tests_run": 4, "tests_failed": 2, "coverage_available": True, "test_coverage": 0.5, "note": None}
+    _PASSING_RUN = {"tests_available": True, "tests_run": 4, "tests_failed": 0, "coverage_available": True, "test_coverage": 1.0, "note": None}
 
     def _blocked_via_loop_breaker(self):
         """Drives advance_story_stage('US-0001', 'Tested') through 3

@@ -51,6 +51,44 @@ import project_registry
 import lib_github
 import lib_llm_test
 
+# ISSUE-0064: kept independent of agents/scrum_team/tools/test_runners.py
+# (the in-container, non-stdlib-only tool of record for this same
+# detection) deliberately - this module is stdlib-only by design (see its
+# own docstring) and runs on the host before any agent container exists,
+# while importing anything under agents/ would pull in google-adk/litellm
+# just to check for a manifest file.
+_JVM_MANIFESTS = ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pom.xml")
+_UNSUPPORTED_ECOSYSTEM_MANIFESTS = (
+    ("go.mod", "Go"),
+    ("Cargo.toml", "Rust"),
+    ("Gemfile", "Ruby"),
+    ("composer.json", "PHP"),
+    ("*.csproj", ".NET"),
+    ("*.sln", ".NET"),
+)
+_NEW_ISSUE_URL = "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new"
+
+
+def _detect_unsupported_ecosystem(state_repo_path: Path) -> str | None:
+    for pattern, ecosystem in _UNSUPPORTED_ECOSYSTEM_MANIFESTS:
+        if "*" in pattern:
+            if list(state_repo_path.glob(pattern)):
+                return ecosystem
+        elif (state_repo_path / pattern).exists():
+            return ecosystem
+    return None
+
+
+def _new_issue_url(ecosystem: str, state_repo_path: Path) -> str:
+    from urllib.parse import quote
+    title = f"Add test-runner support for {ecosystem}"
+    body = (
+        f"Horseless Carriage detected a {ecosystem} project at `{state_repo_path}` with no "
+        "test-runner adapter (see agents/scrum_team/tools/test_runners.py) - the Tested gate "
+        "and calculate_kpis can't run or measure this project's real test suite yet."
+    )
+    return f"{_NEW_ISSUE_URL}?title={quote(title)}&body={quote(body)}"
+
 
 @dataclass
 class ActionableItem:
@@ -259,6 +297,25 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             error(f"The directory specified by STATE_REPO_PATH does not exist: {state_repo_path}")
             print("Please create this directory before running the agent.")
         else:
+            # ISSUE-0064: surfaced here (at doctor/startup time) rather than
+            # only discovered mid-sprint when QA's Tested gate runs the real
+            # test suite and gets a confusing result - a real incident burned
+            # a QA cycle on exactly that before anyone realized the target
+            # project's build tool had no adapter at all, not that something
+            # was actually broken.
+            unsupported = _detect_unsupported_ecosystem(state_repo_path)
+            if unsupported:
+                warn(f"The project at STATE_REPO_PATH looks like a {unsupported} project, which Horseless "
+                     "Carriage has no test-runner adapter for yet - the Tested gate won't be able to run or "
+                     f"measure its real test suite. Request support: {_new_issue_url(unsupported, state_repo_path)}")
+            elif (
+                any(next(state_repo_path.glob(f"**/{m}"), None) is not None for m in _JVM_MANIFESTS)
+                and env.get("INSTALL_JDK", "").lower() != "true"
+            ):
+                warn("The project at STATE_REPO_PATH looks like a Gradle/Maven (JVM) project, but INSTALL_JDK "
+                     "isn't set to 'true' in .env - the agent image has no JDK, so `./gradlew test`/`./mvnw test` "
+                     "can't run. Set INSTALL_JDK=true in .env and rebuild the agent image.")
+
             specs_dir = state_repo_path / "specs"
             if not specs_dir.is_dir():
                 warn(f"The state repository at {state_repo_path} has no 'specs' directory yet - "

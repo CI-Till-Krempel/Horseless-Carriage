@@ -66,6 +66,8 @@ services:
     build:
       context: .
       dockerfile: agent.Dockerfile
+      args:
+        INSTALL_JDK: ${INSTALL_JDK:-false}
     # ISSUE-0063: no `ports:` here, deliberately - a container with no
     # attachment to any non-internal network can never have a port
     # published to the host at all (Docker has no gateway path to forward

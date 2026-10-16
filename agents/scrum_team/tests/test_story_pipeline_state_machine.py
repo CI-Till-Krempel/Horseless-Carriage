@@ -10,9 +10,11 @@ three review-fix loops (Architect's code review, QA's, Product Owner's
 acceptance check).
 
 Only genuine external boundaries are mocked: git/gh subprocess calls
-(agents.scrum_team.tools.github._run) and the real pytest run
-_execute_test_suite_coverage shells out to (agents.scrum_team.tools.
-quality._run). State mutations, gate logic, and file writes
+(agents.scrum_team.tools.github._run), check_build's pip/npm install
+(agents.scrum_team.tools.quality._run), and the real pytest run
+_execute_test_suite_coverage dispatches to via test_runners.py
+(agents.scrum_team.tools.test_runners._run). State mutations, gate logic,
+and file writes
 (write_file/upsert_story/upsert_prd/update_roadmap/_update_story_markdown)
 all run for real, into the isolated tmp repo root the autouse
 `_isolated_repo_root` fixture (conftest.py) already redirects every test to -
@@ -54,11 +56,11 @@ _OK_RUN_RESULT = {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
 
 
 def _fake_run(cmd, cwd=None, tool_context=None, timeout=None, env_overrides=None):
-    """Stands in for every real git/gh subprocess call (github.py) and the
-    real pytest run check_build/_execute_test_suite_coverage would otherwise
-    shell out to (quality.py) - this file never touches a real repo, network,
-    or test runner. `cmd` is inspected only to give the pytest invocation a
-    stdout shape _execute_test_suite_coverage's own regexes can parse
+    """Stands in for every real git/gh subprocess call (github.py), check_build's
+    install (quality.py), and the real pytest run _execute_test_suite_coverage
+    dispatches to (test_runners.py) - this file never touches a real repo,
+    network, or test runner. `cmd` is inspected only to give the pytest
+    invocation a stdout shape test_runners.py's own regexes can parse
     (_COVERAGE_TOTAL_RE/_PASSED_RE); every other command just succeeds."""
     if cmd and "pytest" in cmd:
         return {
@@ -90,6 +92,7 @@ def _as(tool_context, agent_name):
     return tool_context
 
 
+@patch("agents.scrum_team.tools.test_runners._run", side_effect=_fake_run)
 @patch("agents.scrum_team.tools.quality._run", side_effect=_fake_run)
 @patch("agents.scrum_team.tools.github._run", side_effect=_fake_run)
 @patch.dict(os.environ, {
@@ -187,7 +190,7 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
     # Golden path: every review/check passes on the first try.
     # ------------------------------------------------------------------
 
-    def test_golden_path_reaches_accepted(self, mock_gh_run, mock_quality_run):
+    def test_golden_path_reaches_accepted(self, mock_gh_run, mock_quality_run, mock_test_runners_run):
         tc = self._new_context()
         story_id = self._plan_story(tc)
         self._draft_to_ready(tc, story_id)
@@ -218,7 +221,7 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
     # fixes, Architect approves.
     # ------------------------------------------------------------------
 
-    def test_architect_code_review_fix_loop(self, mock_gh_run, mock_quality_run):
+    def test_architect_code_review_fix_loop(self, mock_gh_run, mock_quality_run, mock_test_runners_run):
         tc = self._new_context()
         story_id = self._plan_story(tc)
         self._draft_to_ready(tc, story_id)
@@ -249,7 +252,7 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
     # denies, DevTeam fixes, QA approves.
     # ------------------------------------------------------------------
 
-    def test_qa_review_fix_loop(self, mock_gh_run, mock_quality_run):
+    def test_qa_review_fix_loop(self, mock_gh_run, mock_quality_run, mock_test_runners_run):
         tc = self._new_context()
         story_id = self._plan_story(tc)
         self._draft_to_ready(tc, story_id)
@@ -282,7 +285,7 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
     # actually met, denies, DevTeam fixes, PO accepts.
     # ------------------------------------------------------------------
 
-    def test_acceptance_fix_loop(self, mock_gh_run, mock_quality_run):
+    def test_acceptance_fix_loop(self, mock_gh_run, mock_quality_run, mock_test_runners_run):
         tc = self._new_context()
         story_id = self._plan_story(tc)
         self._draft_to_ready(tc, story_id)
@@ -324,7 +327,7 @@ class TestStoryPipelineStateMachine(unittest.TestCase):
     # story can continue.
     # ------------------------------------------------------------------
 
-    def test_blocked_story_is_skipped_and_next_story_proceeds(self, mock_gh_run, mock_quality_run):
+    def test_blocked_story_is_skipped_and_next_story_proceeds(self, mock_gh_run, mock_quality_run, mock_test_runners_run):
         tc = self._new_context()
         story_a = self._plan_story(tc)
         self._draft_to_ready(tc, story_a)

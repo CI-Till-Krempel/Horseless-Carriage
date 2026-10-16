@@ -27,20 +27,23 @@ _TOOL_NOT_INSTALLED = {
 
 class TestQualityTools(unittest.TestCase):
     @patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={})
+    @patch("agents.scrum_team.tools.test_runners._run")
     @patch("agents.scrum_team.tools.quality._run")
-    def test_calculate_kpis(self, mock_run, mock_fetch_context_windows):
+    def test_calculate_kpis(self, mock_run, mock_test_runners_run, mock_fetch_context_windows):
         """
         Acceptance Criteria:
         - KPIs are calculated and returned as a dictionary.
         """
-        # _run is called for pytest coverage, then radon, then bandit.
+        # Pytest's own _run call now lives in test_runners.py (ISSUE-0064's
+        # pluggable dispatch); quality._run is still called directly for
+        # radon then bandit.
+        mock_test_runners_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": "TOTAL 100 10 90%\n5 passed in 1.23s",
+            "stderr": "",
+        }
         mock_run.side_effect = [
-            {
-                "status": "ok",
-                "returncode": 0,
-                "stdout": "TOTAL 100 10 90%\n5 passed in 1.23s",
-                "stderr": "",
-            },
             {
                 "status": "ok",
                 "returncode": 0,
@@ -74,7 +77,7 @@ class TestQualityTools(unittest.TestCase):
             {"critical": 0, "high": 1, "medium": 3, "low": 5},
         )
 
-    @patch("agents.scrum_team.tools.quality._run")
+    @patch("agents.scrum_team.tools.test_runners._run")
     def test_execute_test_suite_coverage_parses_real_output(self, mock_run):
         """
         Acceptance Criteria (US-0005):
@@ -99,13 +102,14 @@ class TestQualityTools(unittest.TestCase):
 
         result = _execute_test_suite_coverage(tool_context=tool_context)
 
-        self.assertTrue(result["available"])
+        self.assertTrue(result["tests_available"])
+        self.assertTrue(result["coverage_available"])
         self.assertEqual(result["test_coverage"], 0.8)
         self.assertEqual(result["tests_run"], 5)
         self.assertEqual(result["tests_failed"], 2)
 
     @patch("agents.scrum_team.tools.quality._configured_repo_root")
-    @patch("agents.scrum_team.tools.quality._run")
+    @patch("agents.scrum_team.tools.test_runners._run")
     def test_execute_test_suite_coverage_puts_repo_root_on_pythonpath(self, mock_run, mock_repo_root):
         """
         Acceptance Criteria (ISSUE-0047): a real eval run bounced a story
@@ -129,7 +133,7 @@ class TestQualityTools(unittest.TestCase):
         self.assertEqual(mock_run.call_args.kwargs["env_overrides"], {"PYTHONPATH": "/app/eval-output/clone"})
 
     @patch("agents.scrum_team.tools.quality._configured_repo_root")
-    @patch("agents.scrum_team.tools.quality._run")
+    @patch("agents.scrum_team.tools.test_runners._run")
     def test_execute_test_suite_coverage_prepends_to_existing_pythonpath(self, mock_run, mock_repo_root):
         from pathlib import Path
         mock_repo_root.return_value = Path("/app/eval-output/clone")
@@ -145,7 +149,7 @@ class TestQualityTools(unittest.TestCase):
             {"PYTHONPATH": f"/app/eval-output/clone{os.pathsep}/some/other/path"},
         )
 
-    @patch("agents.scrum_team.tools.quality._run")
+    @patch("agents.scrum_team.tools.test_runners._run")
     def test_execute_test_suite_coverage_zero_tests(self, mock_run):
         """
         Acceptance Criteria (US-0005 edge case):
@@ -162,12 +166,13 @@ class TestQualityTools(unittest.TestCase):
 
         result = _execute_test_suite_coverage(tool_context=tool_context)
 
-        self.assertTrue(result["available"])
+        self.assertTrue(result["tests_available"])
+        self.assertTrue(result["coverage_available"])
         self.assertEqual(result["test_coverage"], 0.0)
         self.assertEqual(result["tests_run"], 0)
         self.assertEqual(result["note"], "no tests collected")
 
-    @patch("agents.scrum_team.tools.quality._run")
+    @patch("agents.scrum_team.tools.test_runners._run")
     def test_execute_test_suite_coverage_tool_unavailable(self, mock_run):
         """
         pytest itself couldn't be executed (e.g. not installed) - must
@@ -183,7 +188,8 @@ class TestQualityTools(unittest.TestCase):
 
         result = _execute_test_suite_coverage(tool_context=tool_context)
 
-        self.assertFalse(result["available"])
+        self.assertFalse(result["tests_available"])
+        self.assertFalse(result["coverage_available"])
         self.assertIsNone(result["test_coverage"])
         self.assertIn("could not be executed", result["note"])
 
@@ -365,15 +371,17 @@ class TestQualityTools(unittest.TestCase):
         self.assertEqual(result["note"], "could not parse bandit output")
 
     @patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={})
+    @patch("agents.scrum_team.tools.test_runners._run")
     @patch("agents.scrum_team.tools.quality._run")
-    def test_calculate_kpis_all_tools_unavailable(self, mock_run, mock_fetch_context_windows):
+    def test_calculate_kpis_all_tools_unavailable(self, mock_run, mock_test_runners_run, mock_fetch_context_windows):
         """
         Acceptance Criteria (US-0008):
         - With pytest, radon, and bandit all unavailable, calculate_kpis()
           flags each metric as unavailable independently rather than
           substituting a default/dummy value, and does not raise.
         """
-        mock_run.side_effect = [_TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED]
+        mock_test_runners_run.return_value = _TOOL_NOT_INSTALLED
+        mock_run.side_effect = [_TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
@@ -393,24 +401,22 @@ class TestQualityTools(unittest.TestCase):
         self.assertIn("bandit", kpis["security"]["vulnerability_scan_note"])
 
     @patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={})
+    @patch("agents.scrum_team.tools.test_runners._run")
     @patch("agents.scrum_team.tools.quality._run")
-    def test_calculate_kpis_partial_tooling_flags_independently(self, mock_run, mock_fetch_context_windows):
+    def test_calculate_kpis_partial_tooling_flags_independently(self, mock_run, mock_test_runners_run, mock_fetch_context_windows):
         """
         Acceptance Criteria (US-0008):
         - With pytest present but radon/bandit unavailable, the available
           metric is reported normally and the unavailable ones are flagged
           independently rather than dragging the whole result down.
         """
-        mock_run.side_effect = [
-            {
-                "status": "ok",
-                "returncode": 0,
-                "stdout": "TOTAL 100 10 90%\n5 passed in 1.23s",
-                "stderr": "",
-            },
-            _TOOL_NOT_INSTALLED,
-            _TOOL_NOT_INSTALLED,
-        ]
+        mock_test_runners_run.return_value = {
+            "status": "ok",
+            "returncode": 0,
+            "stdout": "TOTAL 100 10 90%\n5 passed in 1.23s",
+            "stderr": "",
+        }
+        mock_run.side_effect = [_TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
@@ -428,15 +434,17 @@ class TestQualityTools(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={})
     @patch("agents.scrum_team.tools.docs.write_file")
+    @patch("agents.scrum_team.tools.test_runners._run")
     @patch("agents.scrum_team.tools.quality._run")
-    def test_sprint_report_generation_survives_total_tooling_failure(self, mock_run, mock_write_file, mock_fetch_context_windows):
+    def test_sprint_report_generation_survives_total_tooling_failure(self, mock_run, mock_test_runners_run, mock_write_file, mock_fetch_context_windows):
         """
         Acceptance Criteria (US-0008 edge case):
         - Total tooling failure degrades gracefully: calculate_kpis() ->
           update_sprint_report() -> create_sprint_report() completes
           without raising, even though every KPI tool is unavailable.
         """
-        mock_run.side_effect = [_TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED]
+        mock_test_runners_run.return_value = _TOOL_NOT_INSTALLED
+        mock_run.side_effect = [_TOOL_NOT_INSTALLED, _TOOL_NOT_INSTALLED]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]

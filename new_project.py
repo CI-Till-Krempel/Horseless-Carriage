@@ -47,6 +47,11 @@ subsequent project would otherwise collide on if just copy-pasting one
     defaults (4000/8000) are already bound on this machine - e.g. another
     HC-powered project's stack is already running - so multiple projects
     can run concurrently instead of the second one just failing to bind.
+  - INSTALL_JDK (ISSUE-0064) -> defaulted to "true" if a Gradle/Maven
+    manifest is found anywhere in the target repo, so the agent image gets
+    a JDK (needed for `./gradlew test`/`./mvnw test` - see
+    agents/scrum_team/tools/test_runners.py) without every project paying
+    for one unconditionally.
 
 None of this ever overwrites an already-configured value in `.env` (a
 re-run is always safe), and none of it applies at all if this checkout
@@ -88,6 +93,42 @@ def _sanitize_compose_project_prefix(name: str) -> str:
     if not sanitized or not sanitized[0].isalnum():
         sanitized = f"hc-{sanitized}" if sanitized else "hc-project"
     return sanitized
+
+
+_JVM_MANIFEST_NAMES = ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "pom.xml")
+_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", "build", "target"}
+
+
+def _looks_like_jvm_project(target_repo: Path) -> bool:
+    """Best-effort: True if a Gradle/Maven manifest exists anywhere under
+    target_repo - same detection agents/scrum_team/tools/test_runners.py's
+    Gradle/Maven adapters use, duplicated here (this script is stdlib-only
+    and runs before any agent container exists) rather than imported."""
+    for dirpath, dirnames, filenames in os.walk(target_repo):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS and not d.startswith(".")]
+        if any(name in filenames for name in _JVM_MANIFEST_NAMES):
+            return True
+    return False
+
+
+def _is_port_free(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _find_free_port(preferred: int, max_attempts: int = 50) -> int:
+    """preferred if free, else the first free port scanning upward - so a
+    second/third concurrent installation gets its own port instead of
+    failing to bind at `docker compose up` time with no clear reason why."""
+    for port in range(preferred, preferred + max_attempts):
+        if _is_port_free(port):
+            return port
+    die(f"Could not find a free port near {preferred} after {max_attempts} attempts.")
 
 
 def _git_remote_url(repo_dir: Path) -> str:
@@ -172,6 +213,12 @@ def _configure_for_target_project(repo_root: Path, target_repo: Path) -> None:
         lib_env.update_env_var(env_path, var, str(free_port))
         info(f"Port {default_port} is already in use (likely another Horseless Carriage installation) - "
              f"{var} set to {free_port} instead.")
+
+    if not lib_env.read_env_var(env_path, "INSTALL_JDK") and _looks_like_jvm_project(target_repo):
+        lib_env.update_env_var(env_path, "INSTALL_JDK", "true")
+        info("Detected a Gradle/Maven manifest in the target repo - INSTALL_JDK set to 'true' so the "
+             "agent image can actually run ./gradlew test/./mvnw test. Rebuild the agent image to pick "
+             "this up (docker compose build agent).")
 
 
 def _install_if_nested(repo_root: Path) -> None:
