@@ -76,12 +76,31 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
     """
     Write content to a repository-relative file path.
     """
-    repo_root = _configured_repo_root(tool_context)
+    repo_root = _configured_repo_root(tool_context).resolve()
     abs_path = (repo_root / path).resolve()
 
     # Safety: ensure the path is within the repo_root
-    if not str(abs_path).startswith(str(repo_root.resolve())):
+    if not str(abs_path).startswith(str(repo_root)):
         return {"status": "error", "message": f"Path '{path}' is outside the repository root."}
+
+    # ISSUE-0064: .hc/ is Horseless-Carriage-internal, mechanically-managed
+    # content (state.json via save_state_to_repo, workbench-setup.sh via
+    # propose_framework_change) - never a plain write_file target. Mirrors
+    # the existing "must go through advance_story_stage instead of a direct
+    # write" redirect pattern already used elsewhere in this codebase.
+    try:
+        relative_parts = abs_path.relative_to(repo_root).parts
+    except ValueError:
+        relative_parts = ()
+    if relative_parts[:1] == (".hc",):
+        return {
+            "status": "error",
+            "message": (
+                f"Path '{path}' is under .hc/, which is Horseless-Carriage-internal and never a "
+                "direct write_file target. To change this project's workbench toolchain, call "
+                "propose_framework_change instead - it opens a human-reviewed Pull Request."
+            ),
+        }
 
     try:
         abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,11 +152,23 @@ def delete_file(path: str, tool_context=None) -> Dict[str, Any]:
     (and, via the one-story-at-a-time ordering gate, every story behind it)
     for the rest of the run.
     """
-    repo_root = _configured_repo_root(tool_context)
+    repo_root = _configured_repo_root(tool_context).resolve()
     abs_path = (repo_root / path).resolve()
 
-    if not str(abs_path).startswith(str(repo_root.resolve())):
+    if not str(abs_path).startswith(str(repo_root)):
         return {"status": "error", "message": f"Path '{path}' is outside the repository root."}
+
+    # ISSUE-0064: same .hc/ guardrail as write_file - mechanically-managed
+    # content, never a direct delete_file target either.
+    try:
+        relative_parts = abs_path.relative_to(repo_root).parts
+    except ValueError:
+        relative_parts = ()
+    if relative_parts[:1] == (".hc",):
+        return {
+            "status": "error",
+            "message": f"Path '{path}' is under .hc/, which is Horseless-Carriage-internal and never a direct delete_file target.",
+        }
 
     if not abs_path.exists():
         return {"status": "error", "message": f"File does not exist: {path}"}

@@ -97,6 +97,7 @@ from pathlib import Path
 # happens for free when stdout is a real terminal.
 sys.stdout.reconfigure(line_buffering=True)
 
+import check_state_repo
 import lib_docker
 
 EVAL_SET_PATH = "eval/adk/scrum_team.evalset.json"
@@ -684,6 +685,12 @@ def prepare_scratch_state_repo() -> str:
     if work_dir.exists():
         shutil.rmtree(work_dir)
     work_dir.mkdir(parents=True)
+    # ISSUE-0064: docker-compose.*.yaml's agent service build points a named
+    # build context at <STATE_REPO_PATH>/.hc (agent.Dockerfile's workbench
+    # setup) - that path must exist before the container this script starts
+    # ever triggers a build, same as new_project.py/doctor.py/run_tests.py
+    # guarantee elsewhere.
+    check_state_repo.ensure_workbench_script_default(work_dir)
     remote_dir = work_dir / STATE_REPO_SCRATCH_REMOTE_SUBDIR
     remote_dir.mkdir(parents=True)
 

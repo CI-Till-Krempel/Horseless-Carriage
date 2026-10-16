@@ -66,8 +66,15 @@ services:
     build:
       context: .
       dockerfile: agent.Dockerfile
-      args:
-        INSTALL_JDK: ${INSTALL_JDK:-false}
+      # ISSUE-0064: the product repo's own per-project toolchain ("workbench"
+      # - see agent.Dockerfile) as a separate named build context, not part
+      # of this image's main context (`.` = horseless-carriage's own
+      # checkout). ensure_workbench_script_default (check_state_repo.py)
+      # guarantees .hc/workbench-setup.sh always exists in the product repo
+      # (a harmless placeholder until the Architect proposes one via
+      # propose_framework_change), so this path is never missing.
+      additional_contexts:
+        - "workbench=${STATE_REPO_PATH}/.hc"
     # ISSUE-0063: no `ports:` here, deliberately - a container with no
     # attachment to any non-internal network can never have a port
     # published to the host at all (Docker has no gateway path to forward
