@@ -110,6 +110,45 @@ class TestOpenDashboardsGpuConfirmation:
 
         run.open_dashboards("cli")
 
+class TestOpenDashboardsPortAwareness:
+    """GH issue #288: LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT can be reassigned
+    at startup (lib_docker.ensure_dev_ports_available) if the default host
+    ports are already taken by another running instance. The printed/opened
+    dashboard links must reflect the actual configured ports, not the
+    hardcoded 4000/8000 defaults."""
+
+    def test_uses_reassigned_ports_from_env_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env").write_text(
+            "LITELLM_HOST_PORT='14000'\nAGENT_WEB_HOST_PORT='18000'\n"
+        )
+        urls_waited = []
+        urls_opened = []
+        monkeypatch.setattr(run, "wait_for_http", lambda url, *a, **k: urls_waited.append(url) or True)
+        monkeypatch.setattr(run, "open_url", lambda url: urls_opened.append(url))
+        monkeypatch.setattr(run.doctor, "print_ollama_gpu_confirmation", lambda repo_root: None)
+
+        run.open_dashboards("web")
+
+        assert urls_waited == [
+            "http://localhost:14000/health/readiness",
+            "http://localhost:18000",
+        ]
+        assert urls_opened == ["http://localhost:14000/ui", "http://localhost:18000"]
+
+    def test_falls_back_to_defaults_without_env_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        urls_opened = []
+        monkeypatch.setattr(run, "wait_for_http", lambda *a, **k: True)
+        monkeypatch.setattr(run, "open_url", lambda url: urls_opened.append(url))
+        monkeypatch.setattr(run.doctor, "print_ollama_gpu_confirmation", lambda repo_root: None)
+
+        run.open_dashboards("web")
+
+        assert urls_opened == ["http://localhost:4000/ui", "http://localhost:8000"]
+
+
+class TestLocalSetupDetection:
     def test_local_setup_with_gpu_enabled_adds_gpu_compose_file(self, tmp_path):
         """OLLAMA_GPU_ENABLED=true (set by setup_llm.py's GPU prompt) must
         merge in docker-compose.gpu.yaml automatically - the user shouldn't
