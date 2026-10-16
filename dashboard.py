@@ -4,8 +4,11 @@ GH issue #310: a small always-on local web dashboard listing every
 Horseless Carriage project registered on this machine (project_registry.py
 - populated by new_project.py, GH issue #288) - name, config mode
 (local/cloud), state (working/waiting for confirmation/resting),
-interaction level, sprint goal, budget, and product version - with manual
-start/stop per project's docker stack.
+interaction level, sprint goal, budget, product version, and assigned
+LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT - with manual start/stop per
+project's docker stack. Starting a stopped project re-checks its ports are
+still actually free and reassigns+persists (then rebuilds) if another
+process has since taken one - see lib_docker.ensure_dev_ports_available.
 
 Minimal first cut, per GH issue #310's own decision comment: reads each
 project's cached `.hc/state.json` and `.env` (and, only while that
@@ -84,6 +87,8 @@ def project_snapshot(entry: dict) -> dict:
         config_mode = "unknown"
 
     interaction_level = lib_env.read_env_var(hc_path / ".env", "INTERACTION_LEVEL") or "Product"
+    litellm_port = lib_env.read_env_var(hc_path / ".env", "LITELLM_HOST_PORT") or "4000"
+    agent_web_port = lib_env.read_env_var(hc_path / ".env", "AGENT_WEB_HOST_PORT") or "8000"
 
     try:
         running_services = lib_docker.compose_running_services(_compose_args(hc_path), cwd=hc_path)
@@ -118,17 +123,35 @@ def project_snapshot(entry: dict) -> dict:
         "token_budget": budgets.get("total", "unset"),
         "usd_budget": budgets.get("total_usd"),
         "product_version": product_version,
+        "litellm_port": litellm_port,
+        "agent_web_port": agent_web_port,
         "error": None,
     }
 
 
 def _start_stack(hc_path: Path) -> str:
+    # GH issue #288's own port auto-assignment only ever ran once, at
+    # new_project.py install time - re-check (and reassign+persist if
+    # something else has since taken the configured port) right before this
+    # project's stack actually comes up. A rebuild (--build) is only forced
+    # when a port genuinely had to change (the image itself doesn't embed a
+    # port, but a changed .env is exactly the kind of drift `docker compose
+    # up` with no rebuild can silently serve stale against) - otherwise this
+    # stays a plain, fast `up -d`.
+    port_changes = lib_docker.ensure_dev_ports_available(hc_path, _compose_args(hc_path))
     cmd = ["docker", "compose", *_compose_args(hc_path), "up", "-d"]
+    if port_changes:
+        cmd.append("--build")
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=hc_path, timeout=_STACK_ACTION_TIMEOUT_SECS)
     except Exception as e:
         return f"Failed to start: {e}"
-    return "Started." if result.returncode == 0 else f"Start failed:\n{result.stdout}\n{result.stderr}"
+    if result.returncode != 0:
+        return f"Start failed:\n{result.stdout}\n{result.stderr}"
+    if port_changes:
+        summary = ", ".join(f"{var} {old} -> {new}" for var, old, new in port_changes)
+        return f"Started (port(s) reassigned - {summary})."
+    return "Started."
 
 
 def _stop_stack(hc_path: Path) -> str:
@@ -157,7 +180,7 @@ def _render_page(message: str = "") -> str:
         hc_path = snap["hc_path"]
         if snap.get("error"):
             rows.append(
-                f"<tr><td>{e(snap['name'])}</td><td colspan='7'><em>{e(snap['error'])}</em></td></tr>"
+                f"<tr><td>{e(snap['name'])}</td><td colspan='8'><em>{e(snap['error'])}</em></td></tr>"
             )
             continue
         color = _STATE_BADGE_COLOR.get(snap["state"], "#616161")
@@ -176,12 +199,13 @@ def _render_page(message: str = "") -> str:
             f"<td>{e(snap['sprint_goal'])}</td>"
             f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {usd}</td>"
             f"<td>{e(snap['product_version'])}</td>"
+            f"<td>LiteLLM: {e(snap['litellm_port'])} / Web: {e(snap['agent_web_port'])}</td>"
             f"<td>{action}</td>"
             "</tr>"
         )
     if not rows:
         rows.append(
-            "<tr><td colspan='8'><em>No projects registered yet - run "
+            "<tr><td colspan='9'><em>No projects registered yet - run "
             "<code>python3 new_project.py --target-repo /path/to/your-project</code> to add one.</em></td></tr>"
         )
     message_html = f"<p style='color:#1565c0'>{html.escape(message)}</p>" if message else ""
@@ -199,7 +223,7 @@ th {{ background: #f0f0f0; }}
 {message_html}
 <table>
 <tr><th>Name</th><th>State</th><th>Config</th><th>Interaction Level</th>
-<th>Sprint Goal</th><th>Budget</th><th>Product Version</th><th>Action</th></tr>
+<th>Sprint Goal</th><th>Budget</th><th>Product Version</th><th>Ports</th><th>Action</th></tr>
 {"".join(rows)}
 </table>
 <p><small>Auto-refreshes every 10s. Registry: {html.escape(str(project_registry.REGISTRY_PATH))}</small></p>

@@ -1,8 +1,10 @@
 import json
+import socket
 import subprocess
 import urllib.error
 
 import lib_docker
+import lib_env
 
 
 def _completed(cmd, returncode=0, stdout="", stderr=""):
@@ -196,6 +198,106 @@ class TestMaybeStopExistingStack:
         lib_docker.maybe_stop_existing_stack([])
 
         assert "did not complete cleanly" in capsys.readouterr().out
+
+
+class TestIsPortFree:
+    def test_true_for_an_unbound_port(self):
+        # Bind briefly to find a genuinely free ephemeral port, then release
+        # it and confirm is_port_free agrees.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        assert lib_docker.is_port_free(port) is True
+
+    def test_false_for_a_bound_port(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+            assert lib_docker.is_port_free(port) is False
+
+
+class TestFindFreePort:
+    def test_returns_preferred_when_free(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            free_port = s.getsockname()[1]
+        assert lib_docker.find_free_port(free_port) == free_port
+
+    def test_skips_a_bound_port(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("127.0.0.1", 0))
+            s.listen(1)
+            bound_port = s.getsockname()[1]
+            result = lib_docker.find_free_port(bound_port)
+            assert result != bound_port
+
+    def test_returns_none_if_nothing_free_in_range(self, monkeypatch):
+        monkeypatch.setattr(lib_docker, "is_port_free", lambda port: False)
+        assert lib_docker.find_free_port(4000, max_attempts=3) is None
+
+
+class TestEnsureDevPortsAvailable:
+    """GH issue #288's install-time-only port assignment left a gap: two
+    projects installed back-to-back (neither's stack running yet) could end
+    up configured with the same port, surfacing only as an opaque Docker
+    bind failure once both were actually started. This re-checks (and
+    reassigns+persists if needed) immediately before a stack actually comes
+    up."""
+
+    def test_noop_when_this_projects_own_stack_is_already_running(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text("LITELLM_HOST_PORT='4000'\n")
+        monkeypatch.setattr(lib_docker, "compose_running_services", lambda compose_args, cwd=None: ["agent"])
+
+        def fail_if_called(port):
+            raise AssertionError("must not check ports when this project's own stack is already running")
+        monkeypatch.setattr(lib_docker, "is_port_free", fail_if_called)
+
+        assert lib_docker.ensure_dev_ports_available(tmp_path, []) == []
+        assert lib_env.read_env_var(tmp_path / ".env", "LITELLM_HOST_PORT") == "4000"
+
+    def test_noop_when_ports_are_genuinely_free(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text("LITELLM_HOST_PORT='4000'\nAGENT_WEB_HOST_PORT='8000'\n")
+        monkeypatch.setattr(lib_docker, "compose_running_services", lambda compose_args, cwd=None: [])
+        monkeypatch.setattr(lib_docker, "is_port_free", lambda port: True)
+
+        assert lib_docker.ensure_dev_ports_available(tmp_path, []) == []
+        assert lib_env.read_env_var(tmp_path / ".env", "LITELLM_HOST_PORT") == "4000"
+        assert lib_env.read_env_var(tmp_path / ".env", "AGENT_WEB_HOST_PORT") == "8000"
+
+    def test_reassigns_and_persists_an_occupied_port(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text("LITELLM_HOST_PORT='4000'\nAGENT_WEB_HOST_PORT='8000'\n")
+        monkeypatch.setattr(lib_docker, "compose_running_services", lambda compose_args, cwd=None: [])
+        monkeypatch.setattr(lib_docker, "is_port_free", lambda port: port != 4000)
+        monkeypatch.setattr(lib_docker, "find_free_port", lambda preferred, max_attempts=50: 4001)
+
+        changes = lib_docker.ensure_dev_ports_available(tmp_path, [])
+
+        assert changes == [("LITELLM_HOST_PORT", 4000, 4001)]
+        assert lib_env.read_env_var(tmp_path / ".env", "LITELLM_HOST_PORT") == "4001"
+        assert lib_env.read_env_var(tmp_path / ".env", "AGENT_WEB_HOST_PORT") == "8000"
+
+    def test_uses_default_ports_when_env_has_no_explicit_value(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(lib_docker, "compose_running_services", lambda compose_args, cwd=None: [])
+        checked_ports = []
+
+        def record_and_check(port):
+            checked_ports.append(port)
+            return True
+        monkeypatch.setattr(lib_docker, "is_port_free", record_and_check)
+
+        assert lib_docker.ensure_dev_ports_available(tmp_path, []) == []
+        assert checked_ports == [4000, 8000]
+
+    def test_leaves_env_unchanged_when_no_free_port_is_found(self, tmp_path, monkeypatch):
+        (tmp_path / ".env").write_text("LITELLM_HOST_PORT='4000'\n")
+        monkeypatch.setattr(lib_docker, "compose_running_services", lambda compose_args, cwd=None: [])
+        monkeypatch.setattr(lib_docker, "is_port_free", lambda port: False)
+        monkeypatch.setattr(lib_docker, "find_free_port", lambda preferred, max_attempts=50: None)
+
+        assert lib_docker.ensure_dev_ports_available(tmp_path, []) == []
+        assert lib_env.read_env_var(tmp_path / ".env", "LITELLM_HOST_PORT") == "4000"
 
 
 class TestPrintStackConflictHint:

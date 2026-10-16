@@ -5,12 +5,12 @@ host ports) when Horseless Carriage is installed as a submodule of a target
 project, so a second/third project's installation doesn't collide with an
 already-running one.
 """
-import socket
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import lib_docker
 import new_project
 import project_registry
 
@@ -35,42 +35,6 @@ class TestSanitizeComposeProjectPrefix:
         assert new_project._sanitize_compose_project_prefix("") == "hc-project"
 
 
-class TestFreePortDetection:
-    def test_is_port_free_true_for_an_unbound_port(self):
-        # Bind briefly to find a genuinely free ephemeral port, then release
-        # it and confirm _is_port_free agrees.
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            port = s.getsockname()[1]
-        assert new_project._is_port_free(port) is True
-
-    def test_is_port_free_false_for_a_bound_port(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            s.listen(1)
-            port = s.getsockname()[1]
-            assert new_project._is_port_free(port) is False
-
-    def test_find_free_port_returns_preferred_when_free(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            free_port = s.getsockname()[1]
-        assert new_project._find_free_port(free_port) == free_port
-
-    def test_find_free_port_skips_a_bound_port(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            s.listen(1)
-            bound_port = s.getsockname()[1]
-            result = new_project._find_free_port(bound_port)
-            assert result != bound_port
-
-    def test_find_free_port_dies_if_nothing_free_in_range(self):
-        with patch.object(new_project, "_is_port_free", return_value=False):
-            with pytest.raises(SystemExit):
-                new_project._find_free_port(4000, max_attempts=3)
-
-
 class TestConfigureForTargetProject:
     def test_creates_env_from_example_when_missing(self, tmp_path):
         repo_root = tmp_path / "horseless-carriage"
@@ -78,7 +42,7 @@ class TestConfigureForTargetProject:
         (repo_root / ".env.example").write_text('SOME_VAR="placeholder"\n')
         target_repo = tmp_path
 
-        with patch.object(new_project, "_is_port_free", return_value=True):
+        with patch.object(lib_docker, "is_port_free", return_value=True):
             new_project._configure_for_target_project(repo_root, target_repo)
 
         assert (repo_root / ".env").is_file()
@@ -90,7 +54,7 @@ class TestConfigureForTargetProject:
         (repo_root / ".env.example").write_text("")
         target_repo = tmp_path
 
-        with patch.object(new_project, "_is_port_free", return_value=True):
+        with patch.object(lib_docker, "is_port_free", return_value=True):
             new_project._configure_for_target_project(repo_root, target_repo)
 
         import lib_env
@@ -102,7 +66,7 @@ class TestConfigureForTargetProject:
         (repo_root / ".env.example").write_text("")
         target_repo = tmp_path / "My Project"
 
-        with patch.object(new_project, "_is_port_free", return_value=True):
+        with patch.object(lib_docker, "is_port_free", return_value=True):
             new_project._configure_for_target_project(repo_root, target_repo)
 
         import lib_env
@@ -114,13 +78,24 @@ class TestConfigureForTargetProject:
         (repo_root / ".env.example").write_text("")
         target_repo = tmp_path
 
-        with patch.object(new_project, "_is_port_free", side_effect=lambda port: port != 4000), \
-             patch.object(new_project, "_find_free_port", return_value=4001) as mock_find:
+        with patch.object(lib_docker, "is_port_free", side_effect=lambda port: port != 4000), \
+             patch.object(lib_docker, "find_free_port", return_value=4001) as mock_find:
             new_project._configure_for_target_project(repo_root, target_repo)
 
         mock_find.assert_any_call(4001)
         import lib_env
         assert lib_env.read_env_var(repo_root / ".env", "LITELLM_HOST_PORT") == "4001"
+
+    def test_dies_if_no_free_port_found(self, tmp_path):
+        repo_root = tmp_path / "horseless-carriage"
+        repo_root.mkdir()
+        (repo_root / ".env.example").write_text("")
+        target_repo = tmp_path
+
+        with patch.object(lib_docker, "is_port_free", return_value=False), \
+             patch.object(lib_docker, "find_free_port", return_value=None):
+            with pytest.raises(SystemExit):
+                new_project._configure_for_target_project(repo_root, target_repo)
 
     def test_never_overwrites_an_already_configured_value(self, tmp_path):
         """A re-run (e.g. after `git pull`-ing a newer Horseless Carriage
@@ -135,7 +110,7 @@ class TestConfigureForTargetProject:
         )
         target_repo = tmp_path
 
-        with patch.object(new_project, "_is_port_free", return_value=True):
+        with patch.object(lib_docker, "is_port_free", return_value=True):
             new_project._configure_for_target_project(repo_root, target_repo)
 
         import lib_env

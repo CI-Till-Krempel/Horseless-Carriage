@@ -5,6 +5,7 @@ run/setup scripts. Stdlib-only, works identically on macOS/Linux/Windows.
 
 import json
 import re
+import socket
 import subprocess
 import urllib.error
 import urllib.request
@@ -189,6 +190,77 @@ def maybe_stop_existing_stack(compose_args: list) -> None:
             print("WARNING: 'docker compose down' did not complete cleanly - proceeding anyway.")
     except Exception as e:
         print(f"WARNING: 'docker compose down' did not complete cleanly ({e}) - proceeding anyway.")
+
+
+def is_port_free(port: int, host: str = "127.0.0.1") -> bool:
+    """True if nothing on this machine currently has `port` bound - used both
+    at install time (new_project.py) and at every actual stack startup
+    (ensure_dev_ports_available below) to decide whether LITELLM_HOST_PORT/
+    AGENT_WEB_HOST_PORT need reassigning."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def find_free_port(preferred: int, max_attempts: int = 50) -> Optional[int]:
+    """preferred if free, else the first free port scanning upward - so a
+    second/third concurrent installation gets its own port instead of
+    failing to bind at `docker compose up` time with no clear reason why.
+    Returns None (rather than raising/exiting) if nothing was free in range -
+    callers with different error-handling needs (new_project.py's one-shot
+    interactive setup dies outright; run.py/dashboard.py's startup checks
+    below just skip reassignment and let the real `docker compose up`
+    failure, if any, surface normally) decide how to react themselves."""
+    for port in range(preferred, preferred + max_attempts):
+        if is_port_free(port):
+            return port
+    return None
+
+
+_DEV_HOST_PORT_VARS = (("LITELLM_HOST_PORT", 4000), ("AGENT_WEB_HOST_PORT", 8000))
+
+
+def ensure_dev_ports_available(repo_root: Path, compose_args: list) -> list:
+    """Re-checks LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT immediately before a
+    stack actually starts (not just once at new_project.py install time) -
+    GH issue #288's own port auto-assignment only ever ran then, so two
+    projects installed back-to-back while neither's stack was running yet
+    could still end up configured with the same port, surfacing only as an
+    opaque Docker bind failure once both were actually started.
+
+    No-op (returns []) if this project's own stack is already running
+    (compose_running_services non-empty) - a port this project is already
+    bound to isn't a conflict with "another" installation, it's just itself
+    continuing to run; without this check, re-running `run.py` against an
+    already-up stack would wrongly treat its own ports as taken and
+    reassign them out from under it.
+
+    Otherwise, for each var: if its current (or default) port is genuinely
+    free, leave it; if something else now holds it, find a new free one and
+    persist it via lib_env.update_env_var. Returns a list of
+    (var, old_port, new_port) for whatever actually changed - empty if
+    nothing did, so callers (run.py/dashboard.py) know whether a rebuild is
+    warranted."""
+    if compose_running_services(compose_args, cwd=repo_root):
+        return []
+
+    env_path = Path(repo_root) / ".env"
+    changes = []
+    for var, default_port in _DEV_HOST_PORT_VARS:
+        current = lib_env.read_env_var(env_path, var)
+        port = int(current) if current else default_port
+        if is_port_free(port):
+            continue
+        new_port = find_free_port(port + 1)
+        if new_port is None:
+            continue  # best-effort; the real `docker compose up` bind failure (if any) will surface on its own
+        lib_env.update_env_var(env_path, var, str(new_port))
+        changes.append((var, port, new_port))
+    return changes
 
 
 def print_stack_conflict_hint(project_args: list) -> None:

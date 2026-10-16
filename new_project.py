@@ -67,10 +67,10 @@ on this machine, not just the one you happen to be looking at right now.
 import argparse
 import os
 import shutil
-import socket
 import subprocess
 from pathlib import Path
 
+import lib_docker
 import lib_env
 import project_registry
 import setup_all
@@ -205,9 +205,11 @@ def _configure_for_target_project(repo_root: Path, target_repo: Path) -> None:
     for var, default_port in (("LITELLM_HOST_PORT", 4000), ("AGENT_WEB_HOST_PORT", 8000)):
         if lib_env.read_env_var(env_path, var):
             continue
-        if _is_port_free(default_port):
+        if lib_docker.is_port_free(default_port):
             continue
-        free_port = _find_free_port(default_port + 1)
+        free_port = lib_docker.find_free_port(default_port + 1)
+        if free_port is None:
+            die(f"Could not find a free port near {default_port} after 50 attempts.")
         lib_env.update_env_var(env_path, var, str(free_port))
         info(f"Port {default_port} is already in use (likely another Horseless Carriage installation) - "
              f"{var} set to {free_port} instead.")
