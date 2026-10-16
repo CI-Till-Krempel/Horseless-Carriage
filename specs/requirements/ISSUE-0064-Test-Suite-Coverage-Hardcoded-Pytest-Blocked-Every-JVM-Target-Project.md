@@ -56,14 +56,30 @@ installation would have left every future JVM installation to hit this same wall
   primary Python test suite to treat its mere presence as "this project is Node"; Node/npm adapter
   support itself remains deferred (unchanged from pre-ISSUE-0064 behavior).
 - The agent image can actually execute `./gradlew test`/`./mvnw test` when asked to (no JVM existed
-  anywhere in `agent.Dockerfile` before this), behind an opt-in `INSTALL_JDK` build arg (default
-  `false` - most managed projects aren't JVM-based, and a JDK adds real image size/build time this
-  image shouldn't pay unconditionally). `new_project.py` auto-detects a Gradle/Maven manifest in the
-  target repo and defaults `INSTALL_JDK=true` in `.env`; `doctor.py` warns if that drifts out of sync
-  (a Gradle/Maven project detected but `INSTALL_JDK` not set).
+  anywhere in `agent.Dockerfile` before this) via a per-project **workbench** - a plain shell script
+  at `.hc/workbench-setup.sh` in the PRODUCT repo (not a per-language build-arg flag, which doesn't
+  generalize: every new stack would need its own flag and a Horseless-Carriage code change forever).
+  `agent.Dockerfile` `COPY`s it in from a named Docker build context
+  (`docker-compose.yaml`'s `build.additional_contexts`, pointed at `<STATE_REPO_PATH>/.hc`) and `RUN`s
+  it once at image-build time. `ensure_workbench_script_default` (`check_state_repo.py`) guarantees
+  the file always exists (a harmless placeholder until customized), so this never fails the build for
+  a project with no workbench yet; `doctor.py` warns if a Gradle/Maven manifest is detected while the
+  placeholder is still untouched.
+- The workbench is never a direct `write_file`/`delete_file` target - both tools now refuse any path
+  under `.hc/` outright. Changing it goes through a new, gated `propose_framework_change` tool
+  (`agents/scrum_team/tools/workflow.py`, Architect-only), modeled directly on
+  `propose_steering_change`: it always opens a draft PR against `develop` for human review, never a
+  direct write. If the workbench needs new *runtime* network access (e.g. Maven Central, the npm
+  registry - the agent's `agent-net`/net-proxy sandbox only allows `github.com`/`api.github.com`
+  today), the tool cannot apply that itself (`config/net-proxy/allowlist.filter` lives in
+  Horseless-Carriage's own repo, which this tool has no filesystem access to or git credentials for)
+  - the PR body calls this out explicitly as a required human-operator step outside this repo, and a
+  blocking interaction is raised so it surfaces as an immediate "ACTION NEEDED" item, not just another
+  PR in a queue.
 - Full existing suite (`pytest --cov=agents agents/scrum_team/tests`) stays green; new tests cover
   the Gradle/Maven adapters (real JUnit XML/JaCoCo XML fixtures on disk, only the subprocess boundary
-  mocked) and the unsupported-ecosystem detection/issue-link path.
+  mocked), the unsupported-ecosystem detection/issue-link path, `propose_framework_change`'s full
+  contract (mirroring `test_steering_proposals.py`), and the `.hc/` write/delete guardrails.
 
 ## Notes
 - Scope decision (confirmed with the project owner): Gradle + Maven adapters now; npm/Go/Rust
@@ -80,6 +96,18 @@ installation would have left every future JVM installation to hit this same wall
 - `last_test_suite_result`'s own persisted key is kept as `"available"` (now sourced from
   `tests_available`) rather than renamed, to avoid churn in `ScrumState`'s persisted shape beyond
   what this fix actually requires; `resolve_story_blocker`'s freshness check needed no change.
+- Execution-model decision (confirmed with the project owner): a single-image overlay (the
+  workbench script is `RUN` once at build time, in the one existing agent container) rather than
+  separate, sibling "workbench" containers the agent would have to reach into at runtime. The
+  sibling-container shape would need either Docker-socket access (a serious widening of the current
+  trust boundary - effectively host-root) or a new RPC/exec subsystem built from scratch, for a
+  benefit (per-stack image isolation) nobody asked for. The overlay needs neither: no new runtime
+  containers, no socket access, `test_runners.py` keeps running commands exactly as it does today.
+- An earlier version of this fix (now superseded, before the workbench design) used a single
+  `INSTALL_JDK` Docker build arg instead - replaced because it doesn't generalize (every new stack
+  needs its own flag and a Horseless-Carriage code change) and had no gate on its own: `write_file`
+  had (and, for the workbench path specifically, now no longer has) zero path-based guardrails, so
+  nothing stopped an agent from writing Docker/CI-adjacent files directly.
 
 ## Test Approach
 - `agents/scrum_team/tests/test_test_runners.py` (new): Gradle/Maven detection, wrapper-vs-system-
@@ -92,3 +120,15 @@ installation would have left every future JVM installation to hit this same wall
 - `agents/scrum_team/tests/test_story_pipeline_state_machine.py`: added the new
   `test_runners._run` mock alongside the existing `github._run`/`quality._run` boundary mocks (the
   real pytest subprocess call moved modules).
+- `agents/scrum_team/tests/test_framework_change.py` (new): `propose_framework_change`'s full
+  contract, mirroring `test_steering_proposals.py` - rejects missing/short rationale, requires
+  `tool_context.state`, no-op on identical content, writes `.hc/workbench-setup.sh` + pushes +
+  opens a draft PR, bumps `framework_change_proposal_count` only on a real change, the PR body's
+  "HUMAN OPERATOR ACTION REQUIRED" section appears if and only if `additional_allowlist_hosts` is
+  non-empty, and a blocking interaction is raised in exactly that same case.
+- `agents/scrum_team/tests/test_docs.py`: `write_file`/`delete_file` refuse any path under `.hc/`
+  with a message pointing at `propose_framework_change`, while a merely similarly-named path
+  (`.hc-notes/...`) is unaffected.
+- `tests/test_check_state_repo.py`/`tests/test_doctor.py`: `ensure_workbench_script_default`/
+  `is_workbench_script_placeholder` - creates the placeholder only when absent, never overwrites a
+  real one, and doctor.py's Gradle/Maven warning fires only while the placeholder is still untouched.

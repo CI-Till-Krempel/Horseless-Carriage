@@ -157,6 +157,66 @@ class TestRoleIdentityDefaultsMigration:
         assert "Every role already has its own identity.md" in capsys.readouterr().out
 
 
+class TestWorkbenchScriptDefaultMigration:
+    """
+    Acceptance Criteria (ISSUE-0064): a state repo with no `.hc/
+    workbench-setup.sh` yet gets one created (a harmless placeholder),
+    without ever touching a real one that already exists - same additive-
+    only shape as TestRoleIdentityDefaultsMigration above.
+    """
+
+    def test_missing_workbench_script_is_created(self, repo_with_state, capsys):
+        repo_root, state_repo = repo_with_state
+        code = check_state_repo.run(repo_root)
+        assert code == 0
+
+        workbench_path = state_repo / ".hc" / "workbench-setup.sh"
+        assert workbench_path.is_file()
+        assert workbench_path.read_text(encoding="utf-8").strip()
+        assert "Created default .hc/workbench-setup.sh" in capsys.readouterr().out
+
+    def test_existing_workbench_script_is_never_touched(self, repo_with_state, capsys):
+        repo_root, state_repo = repo_with_state
+        custom = "#!/bin/sh\napt-get install -y default-jdk\n"
+        (state_repo / ".hc").mkdir(parents=True)
+        (state_repo / ".hc" / "workbench-setup.sh").write_text(custom, encoding="utf-8")
+
+        result = check_state_repo.ensure_workbench_script_default(state_repo)
+
+        assert result == "already-present"
+        assert (state_repo / ".hc" / "workbench-setup.sh").read_text(encoding="utf-8") == custom
+
+    def test_already_migrated_repo_is_a_pure_noop(self, repo_with_state, capsys):
+        repo_root, state_repo = repo_with_state
+        check_state_repo.ensure_workbench_script_default(state_repo)
+        first_content = (state_repo / ".hc" / "workbench-setup.sh").read_text(encoding="utf-8")
+
+        code = check_state_repo.run(repo_root)
+
+        assert code == 0
+        assert (state_repo / ".hc" / "workbench-setup.sh").read_text(encoding="utf-8") == first_content
+        assert ".hc/workbench-setup.sh already exists" in capsys.readouterr().out
+
+
+class TestIsWorkbenchScriptPlaceholder:
+    def test_true_when_no_workbench_script_exists_at_all(self, repo_with_state):
+        _repo_root, state_repo = repo_with_state
+        assert check_state_repo.is_workbench_script_placeholder(state_repo) is True
+
+    def test_true_for_the_auto_created_placeholder(self, repo_with_state):
+        _repo_root, state_repo = repo_with_state
+        check_state_repo.ensure_workbench_script_default(state_repo)
+        assert check_state_repo.is_workbench_script_placeholder(state_repo) is True
+
+    def test_false_once_customized(self, repo_with_state):
+        _repo_root, state_repo = repo_with_state
+        (state_repo / ".hc").mkdir(parents=True)
+        (state_repo / ".hc" / "workbench-setup.sh").write_text(
+            "#!/bin/sh\napt-get install -y default-jdk\n", encoding="utf-8"
+        )
+        assert check_state_repo.is_workbench_script_placeholder(state_repo) is False
+
+
 class TestStateJsonValidation:
     def test_missing_state_json_is_informational_only(self, repo_with_state, capsys):
         repo_root, _state_repo = repo_with_state

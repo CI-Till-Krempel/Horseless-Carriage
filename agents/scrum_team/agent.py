@@ -355,6 +355,7 @@ from .tools.workflow import (
     generate_workflow_diagram,
     gather_workflow_improvement_proposals,
     propose_steering_change,
+    propose_framework_change,
 )
 from .tools.budget import (
     calculate_cost_breakdown,
@@ -2932,6 +2933,7 @@ architect = LlmAgent(
         deny_review,
         raise_story_blocker,
         resolve_story_blocker,
+        propose_framework_change,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
