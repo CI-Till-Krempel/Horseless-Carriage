@@ -53,8 +53,8 @@ import lib_env
 import lib_llm_test
 import rebuild_images
 
-LITELLM_DASHBOARD_URL = "http://localhost:4000/ui"
-ADK_WEB_URL = "http://localhost:8000"
+LITELLM_DASHBOARD_PORT_DEFAULT = "4000"
+ADK_WEB_PORT_DEFAULT = "8000"
 
 # GH issue #263: link used to prefill a "report an experimental-feature
 # issue" URL from the startup warning banner below.
@@ -207,10 +207,22 @@ def open_url(url: str) -> None:
 def open_dashboards(mode: str) -> None:
     """Waits for each dashboard to become reachable, then opens it in the
     browser. Runs in a background thread so it doesn't block the foreground
-    container output."""
-    if wait_for_http("http://localhost:4000/health/readiness"):
-        print(f"--- LiteLLM dashboard ready: {LITELLM_DASHBOARD_URL} ---")
-        open_url(LITELLM_DASHBOARD_URL)
+    container output.
+
+    GH issue #288: LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT can be reassigned at
+    startup (lib_docker.ensure_dev_ports_available, called synchronously in
+    _main before this thread starts) if the dashboard's default host ports
+    are already taken - read the actual configured ports from .env instead
+    of assuming the defaults, or the printed/opened links silently point at
+    the wrong (and possibly someone else's) stack."""
+    litellm_port = lib_env.read_env_var(Path(".env"), "LITELLM_HOST_PORT") or LITELLM_DASHBOARD_PORT_DEFAULT
+    adk_port = lib_env.read_env_var(Path(".env"), "AGENT_WEB_HOST_PORT") or ADK_WEB_PORT_DEFAULT
+    litellm_dashboard_url = f"http://localhost:{litellm_port}/ui"
+    adk_web_url = f"http://localhost:{adk_port}"
+
+    if wait_for_http(f"http://localhost:{litellm_port}/health/readiness"):
+        print(f"--- LiteLLM dashboard ready: {litellm_dashboard_url} ---")
+        open_url(litellm_dashboard_url)
         # GH issue #235: litellm depends_on ollama, so by the time litellm's
         # own health check passes, a dockerized ollama container (if this is
         # a GPU/local-Ollama setup) has had a real chance to log whether it
@@ -218,14 +230,14 @@ def open_dashboards(mode: str) -> None:
         # that now instead of requiring a separate `python3 doctor.py` run.
         doctor.print_ollama_gpu_confirmation(Path("."))
     else:
-        print(f"WARNING: LiteLLM dashboard did not become ready in time. Open manually: {LITELLM_DASHBOARD_URL}")
+        print(f"WARNING: LiteLLM dashboard did not become ready in time. Open manually: {litellm_dashboard_url}")
 
     if mode == "web":
-        if wait_for_http(ADK_WEB_URL):
-            print(f"--- ADK web frontend ready: {ADK_WEB_URL} ---")
-            open_url(ADK_WEB_URL)
+        if wait_for_http(adk_web_url):
+            print(f"--- ADK web frontend ready: {adk_web_url} ---")
+            open_url(adk_web_url)
         else:
-            print(f"WARNING: ADK web frontend did not become ready in time. Open manually: {ADK_WEB_URL}")
+            print(f"WARNING: ADK web frontend did not become ready in time. Open manually: {adk_web_url}")
 
 
 def compose_file_args(repo_root: Path) -> list:
