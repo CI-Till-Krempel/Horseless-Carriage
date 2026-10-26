@@ -846,6 +846,7 @@ PHASE_TOOL_POLICY = {
 # just a dedicated planning one.
 ALWAYS_PHASE_ALLOWED_TOOLS = {
     "create_sprint_report", "update_sprint_report_with_kpis", "calculate_kpis",
+    "recheck_test_suite",
     "add_retro_action", "create_release_pr", "gh_release_create",
     "propose_steering_change", "gather_workflow_improvement_proposals",
     "generate_workflow_diagram", "calculate_cost_breakdown",

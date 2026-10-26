@@ -2519,11 +2519,24 @@ def resolve_story_blocker(title_or_id: str, resolution: str, tool_context=None) 
     # one sprint with "All test issues resolved and test suite verified
     # passing cleanly" and zero intervening test run - the very next
     # advance_story_stage retry failed identically each time. Require an
-    # actual fresh test run (calculate_kpis, or a prior advance_story_stage
-    # attempt) to have happened since the blocker was raised, and for it to
-    # have actually passed, before the claim is trusted - same shape as
-    # budget.py's create_sprint_report overclaim check (GH #210): verify the
-    # claim against real state instead of the words used to make it.
+    # actual fresh test run to have happened since the blocker was raised,
+    # and for it to have actually passed, before the claim is trusted - same
+    # shape as budget.py's create_sprint_report overclaim check (GH #210):
+    # verify the claim against real state instead of the words used to make
+    # it.
+    #
+    # SPEC-ISSUE-0068: the rejection message below used to point here at
+    # calculate_kpis - a tool that only exists on ScrumMaster's tool list
+    # (agent.py), not Architect's (the only role with resolve_story_blocker
+    # at all) - and at "retry advance_story_stage", which is unconditionally
+    # refused while a story is BLOCKED regardless of args. A real eval run
+    # (0.1.0-run71) showed Architect/QA/DevTeam cycle this exact rejection
+    # for 18 events, never once transferring to ScrumMaster, because nothing
+    # told them to - the blocker never cleared and the sprint's whole budget
+    # burned for zero progress. recheck_test_suite is the same real test run
+    # as calculate_kpis's own _execute_test_suite_coverage call, minus the
+    # unrelated KPI reporting, and is on Architect's own tool list - a path
+    # the blocked role can actually take without a cross-role hand-off.
     mechanical_recheck = blocked.get("mechanical_recheck") or {}
     if mechanical_recheck.get("kind") == "tested_stage_failure":
         current_run_count = s.get("test_suite_run_count", 0)
@@ -2535,9 +2548,8 @@ def resolve_story_blocker(title_or_id: str, resolution: str, tool_context=None) 
                 "message": (
                     f"'{story_id}' was blocked by a real failing test run - resolve_story_blocker "
                     "refuses to clear this without a fresh test run actually having happened since "
-                    "the blocker was raised. Call calculate_kpis (or fix the code and retry "
-                    "advance_story_stage) first - a claim with no new test run behind it will not "
-                    "be accepted."
+                    "the blocker was raised. Call recheck_test_suite first - a claim with no new "
+                    "test run behind it will not be accepted."
                 ),
             }
         if not last_result.get("available") or last_result.get("tests_failed", 1) > 0:

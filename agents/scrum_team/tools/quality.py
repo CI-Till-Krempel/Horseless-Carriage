@@ -164,8 +164,9 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
     (and what it showed) since a Tested-stage blocker was raised, the same
     way check_build's manifest_write_count_at_check lets advance_story_stage
     itself detect a stale result. Every call persists here regardless of
-    caller (advance_story_stage's Tested gate, calculate_kpis) - whichever
-    one runs it is equally real evidence.
+    caller (advance_story_stage's Tested gate, calculate_kpis,
+    recheck_test_suite - SPEC-ISSUE-0068) - whichever one runs it is equally
+    real evidence.
     """
     result = _execute_test_suite_coverage_impl(tool_context)
     if tool_context and getattr(tool_context, "state", None):
@@ -465,6 +466,41 @@ def check_build(tool_context=None) -> Dict[str, Any]:
         "command": " ".join(cmd),
         "passing": passing,
         "output": ((result.get("stdout") or "") + (result.get("stderr") or ""))[-4000:],
+    }
+
+
+def recheck_test_suite(tool_context=None) -> Dict[str, Any]:
+    """
+    Runs the target repo's real test suite and reports pass/fail counts -
+    exactly the test-run half of calculate_kpis (_execute_test_suite_coverage),
+    without the unrelated code-complexity/security-scan/say-do-ratio reporting
+    that role has no reason to trigger here.
+
+    SPEC-ISSUE-0068: a real eval run (0.1.0-run71) showed resolve_story_blocker
+    correctly refuse 3 unverified resolution claims in a row for a
+    tested_stage_failure blocker (SPEC-ISSUE-0060 working as designed) - but its
+    own rejection message named calculate_kpis as the way to produce the
+    fresh-test-run evidence it requires, and calculate_kpis is ScrumMaster-
+    exclusive (agent.py's tool lists). Architect - the only role with
+    resolve_story_blocker - had no reachable tool to satisfy the gate, and
+    retrying advance_story_stage directly is unconditionally refused while a
+    story is BLOCKED (see its own "is BLOCKED" check). No agent in that run
+    ever thought to transfer to ScrumMaster just to call calculate_kpis, so
+    the blocker never cleared and the sprint's whole budget burned for zero
+    progress. This tool gives Architect (and any other role that hits this
+    gate) a direct, reachable way to produce the same mechanically-tracked
+    test_suite_run_count/last_test_suite_result evidence
+    _execute_test_suite_coverage already persists for calculate_kpis and
+    advance_story_stage's own Tested gate.
+    """
+    result = _execute_test_suite_coverage(tool_context)
+    passing = bool(result.get("tests_available")) and result.get("tests_failed", 0) == 0
+    return {
+        "status": "ok" if passing else "error",
+        "tests_available": result.get("tests_available", False),
+        "tests_run": result.get("tests_run", 0),
+        "tests_failed": result.get("tests_failed", 0),
+        "note": result.get("note"),
     }
 
 

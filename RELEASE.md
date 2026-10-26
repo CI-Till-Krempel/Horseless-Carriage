@@ -1714,6 +1714,44 @@ happened here) was waved through as clean. It now checks unconditionally, so eve
 still somehow ends with the release stuck pending, the harness stops the run instead of silently
 continuing into a team it already knows is structurally blocked.
 
+### `resolve_story_blocker`'s own rejection message names two recovery paths Architect can't reach, deadlocking a blocker for a full sprint (0.1.0-run71, SPEC-ISSUE-0068)
+
+A real eval run (0.1.0-run71) stopped after only 3 of 5 sprints - `Stop reason:
+blocked_unresolved_across_sprint` - after US-0002 stayed BLOCKED across all of Sprint 3, burning that
+sprint's entire 5.5M-token budget (111% of its 5,000,000 budget) for zero net progress.
+`manifest.json` rules out state corruption: `stages_completed` for US-0002 is identical at the end of
+Sprint 2 and Sprint 3 - it just never moved past Reviewed.
+
+Unlike past findings, SPEC-ISSUE-0060's confabulation fix worked exactly as designed here - all 3 of
+Architect's `resolve_story_blocker` attempts carried unverified claims ("All tests verified and
+passing cleanly via pytest execution") and all 3 were correctly refused. The gap is in what the
+refusal message tells Architect to do next: *"Call calculate_kpis (or fix the code and retry
+advance_story_stage) first"* - but `calculate_kpis` is ScrumMaster-exclusive (absent from
+Architect's, DevTeam's, and QA's tool lists), and `advance_story_stage` is unconditionally refused
+for an already-BLOCKED story by a separate guard. `check_build` (QA's only build-check tool) never
+runs the test suite at all - only `pip install -r requirements.txt`, by its own design. `transcript.md`
+shows QA, DevTeam, and Architect cycle this loop textbook-perfectly for 18 events (deny -> fix ->
+rebuild -> resolve -> refuse -> transfer -> repeat) without ever once transferring to ScrumMaster -
+nothing in any prompt or in the rejection message itself names that hand-off. ScrumMaster's only
+`calculate_kpis` call all sprint happens at its own unrelated end-of-sprint KPI routine, by which
+point the sprint is already closing - and that one real run shows `tests_run: 3, tests_failed: 1`,
+proving DevTeam's "fix" commit never actually worked either.
+
+This is a follow-on gap from SPEC-ISSUE-0060, not a regression of it: SPEC-ISSUE-0060 closed the confabulation
+hole but never checked whether the recovery path named in its own rejection message is reachable by
+the role being rejected - "callable even while BLOCKED" (the phase gate) turned out to be a different
+question from "callable by this role at all" (the tool-list gate).
+
+Fixed with a new, narrower tool: `recheck_test_suite` (`agents/scrum_team/tools/quality.py`) is the
+test-run half of `calculate_kpis` - same `_execute_test_suite_coverage` call, same
+`test_suite_run_count`/`last_test_suite_result` evidence persisted, minus the unrelated code-
+complexity/security-scan/say-do-ratio reporting - added to Architect's own tool list (next to
+`resolve_story_blocker`) and to `ALWAYS_PHASE_ALLOWED_TOOLS` so it's callable at any phase, including
+while BLOCKED. `resolve_story_blocker`'s rejection message now names `recheck_test_suite` instead of
+`calculate_kpis`/"retry advance_story_stage" - no cross-role hand-off to ScrumMaster required to clear
+this gate anymore. SPEC-ISSUE-0060's confabulation check is unaffected either way. See SPEC-ISSUE-0068
+for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

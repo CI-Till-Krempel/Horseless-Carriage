@@ -1596,11 +1596,63 @@ class TestResolveStoryBlockerMechanicalRecheck(unittest.TestCase):
         ):
             calculate_kpis(tool_context=tc)
 
+    def _run_recheck_test_suite(self, tc, run_result):
+        from agents.scrum_team.tools.quality import recheck_test_suite
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage_impl",
+            return_value=dict(run_result),
+        ):
+            return recheck_test_suite(tool_context=tc)
+
     def test_refuses_a_claim_with_no_fresh_test_run(self, mock_save, mock_md, mock_roadmap):
         tc = self._blocked_via_loop_breaker()
         result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("fresh test run", result["message"])
+        self.assertIsNotNone(tc.state["product_backlog"][0]["blocked"])
+
+    def test_refusal_names_a_tool_architect_can_actually_call(self, mock_save, mock_md, mock_roadmap):
+        """SPEC-ISSUE-0068: a real eval run (0.1.0-run71) showed this exact
+        message name calculate_kpis - a tool absent from Architect's own
+        tool list (the only role with resolve_story_blocker at all) - and
+        suggest retrying advance_story_stage, which is unconditionally
+        refused while BLOCKED. Architect cycled this rejection for 18
+        events with no reachable way to satisfy it. The message must name
+        recheck_test_suite - a tool actually on Architect's tool list -
+        instead."""
+        from agents.scrum_team.agent import architect
+        from agents.scrum_team.tools.quality import recheck_test_suite
+        tc = self._blocked_via_loop_breaker()
+        result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
+        self.assertIn("recheck_test_suite", result["message"])
+        self.assertNotIn("calculate_kpis", result["message"])
+        self.assertIn(recheck_test_suite, architect.tools)
+
+    def test_succeeds_once_architect_reaches_a_fresh_passing_run_via_recheck_test_suite(
+        self, mock_save, mock_md, mock_roadmap
+    ):
+        """The actual fix: Architect (not ScrumMaster) can produce the
+        fresh-run evidence itself, without a cross-role hand-off, and
+        resolve_story_blocker accepts it exactly as it would a calculate_kpis-
+        sourced run."""
+        tc = self._blocked_via_loop_breaker()
+        recheck_result = self._run_recheck_test_suite(tc, self._PASSING_RUN)
+        self.assertEqual(recheck_result["status"], "ok")
+        self.assertEqual(recheck_result["tests_failed"], 0)
+        result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertIsNone(tc.state["product_backlog"][0]["blocked"])
+
+    def test_still_refuses_via_recheck_test_suite_when_the_fresh_run_still_fails(
+        self, mock_save, mock_md, mock_roadmap
+    ):
+        """SPEC-ISSUE-0060's confabulation gate must still hold when evidence
+        comes from recheck_test_suite instead of calculate_kpis."""
+        tc = self._blocked_via_loop_breaker()
+        self._run_recheck_test_suite(tc, self._FAILING_RUN)
+        result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("still shows", result["message"])
         self.assertIsNotNone(tc.state["product_backlog"][0]["blocked"])
 
     def test_refuses_a_claim_when_the_fresh_run_still_fails(self, mock_save, mock_md, mock_roadmap):

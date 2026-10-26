@@ -350,6 +350,7 @@ from .tools.quality import (
     calculate_kpis,
     update_sprint_report as update_sprint_report_with_kpis,
     check_build,
+    recheck_test_suite,
 )
 from .tools.workflow import (
     generate_workflow_diagram,
@@ -2934,6 +2935,7 @@ architect = LlmAgent(
         raise_story_blocker,
         resolve_story_blocker,
         propose_framework_change,
+        recheck_test_suite,
     ],
     **COMMON_AGENT_CALLBACKS,
 )

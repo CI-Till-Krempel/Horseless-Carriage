@@ -10,6 +10,7 @@ from agents.scrum_team.tools.quality import (
     calculate_kpis,
     update_sprint_report,
     check_build,
+    recheck_test_suite,
     _execute_test_suite_coverage,
     _compute_code_complexity,
     _scan_security_vulnerabilities,
@@ -192,6 +193,48 @@ class TestQualityTools(unittest.TestCase):
         self.assertFalse(result["coverage_available"])
         self.assertIsNone(result["test_coverage"])
         self.assertIn("could not be executed", result["note"])
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_recheck_test_suite_reports_pass_fail_counts(self, mock_run):
+        """
+        SPEC-ISSUE-0068: recheck_test_suite is the test-run half of calculate_kpis,
+        reachable by a role (Architect) that doesn't need - and shouldn't
+        have to trigger - the rest of the KPI dashboard just to produce the
+        fresh test-run evidence resolve_story_blocker requires.
+        """
+        mock_run.return_value = {
+            "status": "ok", "returncode": 0,
+            "stdout": "TOTAL 100 10 90%\n4 passed, 1 failed in 0.3s", "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = recheck_test_suite(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(result["tests_available"])
+        self.assertEqual(result["tests_run"], 5)
+        self.assertEqual(result["tests_failed"], 1)
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_recheck_test_suite_persists_evidence_for_resolve_story_blocker(self, mock_run):
+        """Same state-persistence contract as calculate_kpis's own test-run
+        call - test_suite_run_count must advance so resolve_story_blocker
+        can see this as fresh evidence."""
+        mock_run.return_value = {
+            "status": "ok", "returncode": 0,
+            "stdout": "TOTAL 100 0 100%\n5 passed in 0.2s", "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["test_suite_run_count"] = 2
+
+        result = recheck_test_suite(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["tests_failed"], 0)
+        self.assertEqual(tool_context.state["test_suite_run_count"], 3)
+        self.assertEqual(tool_context.state["last_test_suite_result"]["tests_failed"], 0)
 
     @patch("agents.scrum_team.tools.quality._run")
     def test_compute_code_complexity_parses_real_output(self, mock_run):
