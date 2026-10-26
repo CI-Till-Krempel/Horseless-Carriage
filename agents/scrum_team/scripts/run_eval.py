@@ -471,11 +471,19 @@ def _sprint_should_abort_run(sprint_result: dict) -> bool:
     only ever set to "sprint_report_produced" right after sprint_report
     itself is populated - never the other way around), so this also
     covers every case the old check already handled correctly.
+
+    SPEC-ISSUE-0067: a stuck sprint_report_pending_release is unsafe to
+    continue from regardless of WHY the sprint ended, not only when a
+    critical budget halt occurred. A real run (0.1.0-run70) hit this via its
+    own per-sprint turn loop simply running out of turns one step before
+    create_release_pr - no critical_halt involved at all - and this
+    function waved it through, so the harness started the next sprint
+    against a team already structurally blocked by the inherited phase.
     """
-    return bool(sprint_result["critical_halt"]) and not (
-        bool(sprint_result.get("sprint_report"))
-        and not sprint_result.get("sprint_report_pending_release")
-    )
+    cleanly_closed = bool(sprint_result.get("sprint_report")) and not sprint_result.get("sprint_report_pending_release")
+    if sprint_result["critical_halt"]:
+        return not cleanly_closed
+    return bool(sprint_result.get("sprint_report")) and bool(sprint_result.get("sprint_report_pending_release"))
 
 
 def _blocked_stories(sprint_result: dict) -> dict:
@@ -755,9 +763,21 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         session = await session_service.get_session(app_name=app_name, user_id=user_id, session_id=session_id)
         current_report = session.state.get("sprint_report")
         if current_report and current_report != report_baseline:
+            # SPEC-ISSUE-0066: a new report alone isn't proof the sprint is
+            # actually done - mirrors _sprint_should_abort_run's own
+            # invariant (GH #421), but applied here, where a real run
+            # (0.1.0-run70) showed the premature stop actually happens.
+            # Remember the report either way (it's real, and downstream
+            # metrics/manifest should reflect it even if we keep going), but
+            # only treat the sprint as cleanly finished - and break the loop -
+            # once the release has also actually gone out. Otherwise keep
+            # nudging so ScrumMaster has a real chance to reach
+            # create_release_pr in this same sprint, same as SPEC-ISSUE-0058's
+            # mid-sprint recovery path intends.
             sprint_report = current_report
-            stop_reason = "sprint_report_produced"
-            break
+            if not session.state.get("sprint_report_pending_release"):
+                stop_reason = "sprint_report_produced"
+                break
         if len(events) >= max_events:
             stop_reason = "max_events_reached"
             break

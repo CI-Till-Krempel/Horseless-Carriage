@@ -1680,6 +1680,40 @@ it belongs to (`[Sprint N | Phase: ... | Tokens: ...]`) - the raw log had no oth
 transcript.md's per-sprint sections, which made tracing SPEC-ISSUE-0061's crash (lost before its own
 sprint's section was ever written) harder than it needed to be.
 
+### A sprint's turn loop could stop right after its own report, one step before the release PR - pinning the next sprint's phase for its whole duration (0.1.0-run70, SPEC-ISSUE-0066, SPEC-ISSUE-0067)
+
+A real eval run (0.1.0-run70) stopped early (`blocked_needs_human` against US-0002) after burning its
+entire 5,024,360-token Sprint 5 budget on a 6-hop ProductOwner/ScrumMaster transfer loop, having
+delivered nothing past Sprint 1 - `specs/ROADMAP.md` showed US-0002 through US-0006 stuck at READY the
+whole run despite Velocity having flatlined at 0 since Sprint 1.
+
+Sprint 4 authored its sprint report, then ScrumMaster started the release step
+(`record_human_approval`) - but the turn ended right there, one call short of `create_release_pr`.
+`_run_one_sprint`'s own per-sprint loop treated "a new report exists" alone as proof the sprint was
+done, with no check on whether the release had also gone out, so it stopped the sprint immediately -
+leaving `sprint_report_pending_release` stuck `True` into Sprint 5. That pinned `current_sprint_phase()`
+to `"Review, Retro & Release"` for the entirety of Sprint 5: ScrumMaster correctly skipped retrying
+`start_sprint` and went straight to the close sequence, but `create_sprint_report`'s own gate (GH issue
+#246) then required a story to be freshly advanced to `Tested` - impossible, since no story had reached
+an implementable state past Sprint 1 and the only "advanceable" one (US-0001) was already Accepted,
+making a re-advance a documented no-op. The result was an unsatisfiable catch-22 for the whole sprint
+(24 phase-gate rejections) before the mechanical transfer-loop breaker finally intervened. The
+SPEC-ISSUE-0057 phase gate itself worked exactly as designed throughout (its identical-retry override
+correctly let QA's blocked tool calls through once retried) - the stale flag was the real problem, and
+it originated one layer below any agent-facing mechanism, in the harness's own per-sprint completion
+check.
+
+The per-sprint loop (`_run_one_sprint`, SPEC-ISSUE-0066) now only declares a sprint done once the
+release has also actually gone out, not merely once a report exists - mirroring the invariant
+`_sprint_should_abort_run` already enforced for deciding whether to abort the *whole run* (GH #421), but
+applied where the premature stop actually happens; the team now gets real further turns to reach
+`create_release_pr` in the same sprint instead of being cut off one step short. Separately,
+`_sprint_should_abort_run` itself (SPEC-ISSUE-0067) only ever checked for this stuck-release condition
+when a critical budget halt had occurred - a non-critical-halt sprint ending mid-close-out (exactly what
+happened here) was waved through as clean. It now checks unconditionally, so even if a future sprint
+still somehow ends with the release stuck pending, the harness stops the run instead of silently
+continuing into a team it already knows is structurally blocked.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

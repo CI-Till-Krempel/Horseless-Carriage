@@ -267,6 +267,70 @@ def test_run_one_sprint_reports_whether_the_release_is_still_pending():
     assert result["sprint_report_pending_release"] is False
 
 
+def test_run_one_sprint_keeps_nudging_when_a_report_appears_but_the_release_is_still_pending():
+    """
+    SPEC-ISSUE-0066 / 0.1.0-run70: a new sprint_report alone is NOT proof the
+    sprint actually closed - mirrors _sprint_should_abort_run's own
+    GH #421 invariant, but applied here, where a real run showed the
+    premature stop actually happens. Sprint 4 of 0.1.0-run70 had its turn
+    loop end ("sprint_report_produced") one step before ScrumMaster reached
+    create_release_pr, leaving sprint_report_pending_release stuck True for
+    all of the next sprint. The loop must keep nudging instead of declaring
+    the sprint done while the release is still pending - only exhausting
+    max_nudges/max_events/max_duration like it would with no report at all.
+    """
+    state = {
+        "sprint_report": "Stale report from a prior sprint",
+        "sprint_report_pending_release": True,
+    }
+    session_service = _StatefulSessionService(state)
+
+    class _ReportWithoutReleaseRunner:
+        async def run_async(self, user_id, session_id, new_message, state_delta=None):
+            state["sprint_report"] = "Fresh report, release still pending"
+            return
+            yield  # pragma: no cover
+
+    result = _run(_run_one_sprint(
+        _ReportWithoutReleaseRunner(), session_service, "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=2,
+    ))
+
+    assert result["stop_reason"] != "sprint_report_produced"
+    assert result["stop_reason"] == "max_nudges_exhausted"
+    # The report is real and should still be surfaced even though the sprint
+    # isn't considered cleanly closed - downstream metrics/manifest and
+    # _sprint_should_abort_run both need to see it alongside the still-True
+    # pending flag.
+    assert result["sprint_report"] == "Fresh report, release still pending"
+    assert result["sprint_report_pending_release"] is True
+
+
+def test_run_one_sprint_still_stops_immediately_once_the_release_has_also_gone_out():
+    """Unchanged, already-correct behavior: a new report with the release
+    flag already clear is a genuinely clean close-out and should still stop
+    the loop right away, same as before this fix."""
+    state = {
+        "sprint_report": "Stale report from a prior sprint",
+        "sprint_report_pending_release": False,
+    }
+    session_service = _StatefulSessionService(state)
+
+    class _CleanCloseoutRunner:
+        async def run_async(self, user_id, session_id, new_message, state_delta=None):
+            state["sprint_report"] = "Fresh report, release already merged"
+            return
+            yield  # pragma: no cover
+
+    result = _run(_run_one_sprint(
+        _CleanCloseoutRunner(), session_service, "app", "user", "session-1",
+        "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=2,
+    ))
+
+    assert result["stop_reason"] == "sprint_report_produced"
+    assert result["sprint_report"] == "Fresh report, release already merged"
+
+
 def test_sprint_should_not_abort_when_no_critical_halt_occurred():
     assert _sprint_should_abort_run({"critical_halt": False, "stop_reason": "sprint_report_produced"}) is False
     assert _sprint_should_abort_run({"critical_halt": False, "stop_reason": "max_nudges_exhausted"}) is False
@@ -334,12 +398,31 @@ def test_sprint_should_abort_when_the_report_was_produced_but_the_release_never_
     }) is True
 
 
-def test_sprint_should_not_abort_without_a_critical_halt_even_if_release_is_still_pending():
-    """A non-critical-halt sprint ending mid-close-out is an entirely
-    different (and already-handled) signal - this function only ever fires
-    on critical_halt in the first place."""
+def test_sprint_should_abort_when_release_is_still_pending_even_without_a_critical_halt():
+    """
+    SPEC-ISSUE-0067 / 0.1.0-run70: a stuck sprint_report_pending_release is
+    unsafe to continue from regardless of why the sprint ended - not only
+    when a critical budget halt occurred. 0.1.0-run70's Sprint 4 hit exactly
+    this combination (no critical halt at all, just its own per-sprint turn
+    loop running out of turns one step before create_release_pr) and nothing
+    caught it before Sprint 5 began structurally blocked by the inherited
+    phase. (Previously this asserted False, on the mistaken assumption this
+    case was "already handled" elsewhere - SPEC-ISSUE-0066 narrows how often
+    it arises, but doesn't eliminate it, so this function needs its own fix.)
+    """
     assert _sprint_should_abort_run({
-        "critical_halt": False, "stop_reason": "sprint_report_produced", "sprint_report_pending_release": True,
+        "critical_halt": False, "stop_reason": "sprint_report_produced",
+        "sprint_report": "a real report", "sprint_report_pending_release": True,
+    }) is True
+
+
+def test_sprint_should_not_abort_without_a_critical_halt_when_nothing_was_ever_produced():
+    """A non-critical-halt sprint that simply hasn't produced a report yet
+    (e.g. still early/healthy, mid-development) must not be treated as stuck
+    - only an actual report-exists-but-release-still-pending signal should
+    trigger an abort on the non-critical-halt path."""
+    assert _sprint_should_abort_run({
+        "critical_halt": False, "stop_reason": "max_events_reached", "sprint_report_pending_release": True,
     }) is False
 
 
