@@ -152,6 +152,7 @@ the background beyond the dashboard's own lightweight polling (GH issue #310).
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Symptom → cause → fix reference: setup, Docker/containers, budget/cost, mid-session agent behavior, GitHub integration |
 | [FAQ.md](FAQ.md) | Frequently asked questions: providers, cost, oversight, what's not ready yet, where to get help |
 | [qa/](qa/) | Manual test plans run before each release |
+| [AGENTS.md](AGENTS.md) | How to develop *this* repo as an AI coding agent: spec-issue workflow, branching/PRs, tests, evals, migrations, and guardrail/budget change policy |
 
 ## What's in this repo
 
