@@ -1797,7 +1797,8 @@ agent proactively invoking the phase gate's immediate-retry override. See SPEC-I
 mechanism and fix. A related, lower-severity finding from the same run's log review -
 `advance_story_stage`'s rejection message blaming "roadmap sync" for what was in every observed case
 only a story-markdown DoR-content failure (roadmap sync itself reported `"status": "ok"` every time) -
-is filed separately as SPEC-ISSUE-0071.
+fixed separately as SPEC-ISSUE-0071: the message now names whichever of story-markdown/roadmap-sync
+actually failed, never both by default.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so

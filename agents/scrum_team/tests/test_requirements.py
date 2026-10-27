@@ -411,6 +411,58 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("TemplateSyntaxError", result["message"])
 
+    def test_sync_failure_message_blames_only_story_markdown_when_roadmap_sync_ok(
+        self, mock_save, mock_md, mock_roadmap
+    ):
+        """
+        SPEC-ISSUE-0071: a real eval run (0.1.0-run73) showed this message
+        say "syncing specs/ROADMAP.md and/or the story file failed" every
+        time a story failed only the DoR content check, with roadmap_sync
+        itself reporting "status": "ok" - reading, to a human skimming the
+        logs, as a roadmap-sync bug that was never actually happening.
+        """
+        mock_md.return_value = {"status": "error", "message": "still the template placeholder"}
+        mock_roadmap.return_value = {"status": "ok", "message": "Roadmap updated for v1.0.0"}
+        tc = _tool_context("ProductOwner", ["Draft"])
+
+        result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("still the template placeholder", result["message"])
+        # Must not claim the roadmap sync itself failed - it didn't. Fine to
+        # mention it's clean (reassuring the reader it's not the cause), but
+        # never "syncing specs/ROADMAP.md ... failed" when roadmap_sync.status == "ok".
+        self.assertNotIn("roadmap.md failed", result["message"].lower())
+        self.assertIn("synced fine", result["message"])
+
+    def test_sync_failure_message_blames_only_roadmap_sync_when_story_markdown_ok(
+        self, mock_save, mock_md, mock_roadmap
+    ):
+        """Mirror case: a genuine roadmap-sync failure must be named, not
+        blamed on the story's own markdown file when that wrote fine."""
+        mock_md.return_value = {"status": "ok", "path": "specs/stories/US-0001.md"}
+        mock_roadmap.return_value = {"status": "error", "message": "ROADMAP.md not found and could not be seeded."}
+        tc = _tool_context("ProductOwner", ["Draft"])
+
+        result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ROADMAP.md not found", result["message"])
+        self.assertNotIn("markdown file failed", result["message"])
+
+    def test_sync_failure_message_names_both_when_both_genuinely_fail(
+        self, mock_save, mock_md, mock_roadmap
+    ):
+        mock_md.return_value = {"status": "error", "message": "still the template placeholder"}
+        mock_roadmap.return_value = {"status": "error", "message": "ROADMAP.md not found and could not be seeded."}
+        tc = _tool_context("ProductOwner", ["Draft"])
+
+        result = advance_story_stage("US-0001", "Ready", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("still the template placeholder", result["message"])
+        self.assertIn("ROADMAP.md not found", result["message"])
+
     def test_tested_succeeds_when_tests_actually_pass(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         tc.state["pr_review_calls"] = {"QA": 1}

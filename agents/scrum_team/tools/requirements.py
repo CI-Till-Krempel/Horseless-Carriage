@@ -2029,14 +2029,40 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     # roadmap/story-file sync it promises didn't actually happen. Silently
     # reporting success while specs/ROADMAP.md stays stale is exactly the
     # failure mode this whole mechanism exists to close.
-    synced = story_md_result.get("status") == "ok" and roadmap_result.get("status") == "ok"
+    story_md_failed = story_md_result.get("status") != "ok"
+    roadmap_failed = roadmap_result.get("status") != "ok"
+    synced = not story_md_failed and not roadmap_failed
+    # SPEC-ISSUE-0071: this used to say "syncing specs/ROADMAP.md and/or the
+    # story file failed" regardless of which one actually failed - a real
+    # eval run (0.1.0-run73) showed this message fire repeatedly for a pure
+    # story-markdown/DoR-content rejection (roadmap_sync itself reporting
+    # "status": "ok" every single time) and read, to a human skimming the
+    # logs, as a roadmap-sync bug that was never actually happening. Name
+    # whichever one(s) genuinely failed instead of blaming both by default.
+    if synced:
+        message = None
+    elif story_md_failed and roadmap_failed:
+        message = (
+            f"'{story_id}' is recorded as {stage} in state, but both the story's own markdown "
+            f"file ({story_md_result.get('message') or 'see story_markdown for details'}) and "
+            f"syncing specs/ROADMAP.md ({roadmap_result.get('message') or 'see roadmap_sync for details'}) "
+            "failed. Retry so both actually reflect this."
+        )
+    elif story_md_failed:
+        message = (
+            f"'{story_id}' is recorded as {stage} in state, but writing the story's own markdown "
+            f"file failed - {story_md_result.get('message') or 'see story_markdown for details'} "
+            "specs/ROADMAP.md synced fine; fix the story content and retry."
+        )
+    else:
+        message = (
+            f"'{story_id}' is recorded as {stage} in state, but syncing specs/ROADMAP.md failed - "
+            f"{roadmap_result.get('message') or 'see roadmap_sync for details'} The story's own "
+            "markdown file wrote fine; retry so the roadmap actually reflects this."
+        )
     result = {
         "status": "ok" if synced else "error",
-        "message": None if synced else (
-            f"'{story_id}' is recorded as {stage} in state, but syncing specs/ROADMAP.md and/or "
-            "the story file failed - see story_markdown/roadmap_sync for details. Retry so the "
-            "roadmap actually reflects this."
-        ),
+        "message": message,
         "story_id": story_id,
         "stage": stage,
         "stages_completed": ordered_stages,
