@@ -2042,6 +2042,105 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             {"Architect": 1, "DevTeam": 1, "QA": 1},
         )
 
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
+    def test_prunes_a_prior_sprints_accepted_items_on_the_first_merge_this_sprint(
+        self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate
+    ):
+        """
+        SPEC-ISSUE-0072: a real eval run (0.1.0-run74) showed Sprint 2's
+        phase jump straight from "Plan & Start Sprint" to "Review, Retro &
+        Release", skipping "Development" entirely - sprint_backlog still
+        held the prior sprint's two already-Accepted stories (nothing ever
+        cleared them), so current_sprint_phase's all_accepted check read
+        "this sprint's own backlog, already all done" before anything new
+        had ever been queued into it. The first time a NEW sprint's own
+        Sprint Backlog PR merges, those stale Accepted items must be
+        dropped so the sprint can correctly reach Development first.
+        """
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY,
+            "sprint_backlog": [
+                {"id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+                {"id": "US-0002", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["sprint_backlog"], [])
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
+    def test_keeps_a_not_yet_accepted_item_that_legitimately_spans_the_sprint_boundary(
+        self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate
+    ):
+        """A story still in progress (not yet Accepted) at the moment a new
+        sprint's backlog PR merges is legitimate carry-over, not stale
+        leftovers - only an already-Accepted item should be pruned."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY,
+            "sprint_backlog": [
+                {"id": "US-0001", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+                {"id": "US-0002", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented"]},
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            [item["id"] for item in tool_context.state["sprint_backlog"]],
+            ["US-0002"],
+        )
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, {**_LOW_BACKLOG_TARGET_ENV, "INTERACTION_LEVEL": "EVAL"})
+    def test_does_not_reprune_on_a_second_merge_the_same_sprint(
+        self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate
+    ):
+        """Mirrors test_does_not_resnapshot_the_baseline_on_a_second_merge_the_same_sprint -
+        a second call within the SAME sprint (sprint_backlog_pr_sprint
+        already matches sprint_number) must not re-run the prune, so an
+        item legitimately Accepted earlier THIS sprint isn't discarded."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/3"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 3,
+            "sprint_backlog_pr_sprint": 3,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY,
+            "sprint_backlog": [
+                {"id": "US-0010", "type": "User Story", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            [item["id"] for item in tool_context.state["sprint_backlog"]],
+            ["US-0010"],
+        )
+
     @patch("agents.scrum_team.tools.requirements.update_roadmap")
     @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})

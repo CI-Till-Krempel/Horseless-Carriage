@@ -898,6 +898,30 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
         "pr": pr_res,
     }
 
+def _prune_accepted_items_from_sprint_backlog(state) -> None:
+    """
+    SPEC-ISSUE-0072: drops every sprint_backlog item that already reached
+    Accepted - called exactly once, the first time a NEW sprint's own
+    Sprint Backlog PR actually merges (see create_sprint_backlog_pr's two
+    success paths below). Nothing else ever clears sprint_backlog between
+    sprints: a real eval run (0.1.0-run74) showed Sprint 1's first-ever
+    publish correctly fall through to "Development" (sprint_backlog starts
+    genuinely empty), but Sprint 2's publish immediately read as "Review,
+    Retro & Release" instead - current_sprint_phase's all_accepted check
+    (helpers.py) was evaluating the SAME two already-Accepted stories left
+    over from Sprint 1, since nothing had pruned them and nothing new had
+    been queued into sprint_backlog yet. Items not yet Accepted are
+    deliberately kept - a story genuinely still in progress is allowed to
+    span a sprint boundary; only a prior sprint's fully-delivered business
+    is stale here.
+    """
+    sprint_backlog = state.get("sprint_backlog") or []
+    state["sprint_backlog"] = [
+        item for item in sprint_backlog
+        if "Accepted" not in (item.get("stages_completed") or [])
+    ]
+
+
 def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=None) -> Dict[str, Any]:
     """
     GitFlow: commits+pushes this sprint's planning output (roadmap, PRD,
@@ -1100,6 +1124,7 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 tool_context.state["sprint_backlog_engagement_baseline"] = dict(
                     tool_context.state.get("pr_review_calls", {}) or {}
                 )
+                _prune_accepted_items_from_sprint_backlog(tool_context.state)
             tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
             from .scrum import save_state_to_repo
             save_state_to_repo(tool_context)
@@ -1184,6 +1209,7 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
             tool_context.state["sprint_backlog_engagement_baseline"] = dict(
                 tool_context.state.get("pr_review_calls", {}) or {}
             )
+            _prune_accepted_items_from_sprint_backlog(tool_context.state)
         tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
         # GH issue #399: snapshot the same "has anything landed under specs/
         # since I last published" counter the early-return shortcut above
