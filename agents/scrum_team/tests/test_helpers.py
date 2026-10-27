@@ -355,6 +355,23 @@ class TestCurrentSprintPhase(unittest.TestCase):
         state = self._base_state(backlog_scope_complete=True, sprint_number=1, sprint_backlog_pr_sprint=0)
         self.assertEqual(current_sprint_phase(state), "Plan & Start Sprint")
 
+    def test_development_once_backlog_published_with_an_empty_sprint_backlog(self):
+        """
+        SPEC-ISSUE-0072: a genuinely empty sprint_backlog (nothing queued
+        yet this sprint - e.g. right after create_sprint_backlog_pr pruned
+        a prior sprint's stale Accepted items) must report "Development",
+        not "Review, Retro & Release" - all_accepted requires sprint_stories
+        to be non-empty (bool([]) is False), the same way Sprint 1's own
+        genuinely-first-ever publish already relied on.
+        """
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=2,
+            sprint_backlog_pr_sprint=2,
+            sprint_backlog=[],
+        )
+        self.assertEqual(current_sprint_phase(state), "Development")
+
     def test_development_once_backlog_published_and_stories_not_all_accepted(self):
         state = self._base_state(
             backlog_scope_complete=True,

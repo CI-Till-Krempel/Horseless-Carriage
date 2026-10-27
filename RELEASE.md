@@ -1799,6 +1799,29 @@ mechanism and fix. A related, lower-severity finding from the same run's log rev
 only a story-markdown DoR-content failure (roadmap sync itself reported `"status": "ok"` every time) -
 is filed separately as SPEC-ISSUE-0071.
 
+### `create_sprint_backlog_pr` let a sprint's phase skip straight from planning to Review/Retro/Release with no Development in between (0.1.0-run74, SPEC-ISSUE-0072)
+
+A real eval run (0.1.0-run74) - the very next run after SPEC-ISSUE-0070's fix landed, and a direct
+consequence of it finally letting Sprint 2 start at all - showed Sprint 2's phase jump straight from
+`"Plan & Start Sprint"` to `"Review, Retro & Release"`, skipping `"Development"` entirely.
+`manifest.json` confirms `sprint_backlog` for Sprint 2 is byte-identical to Sprint 1's (still only the
+two already-`Accepted` `US-0001`/`US-0002`) - `plan_sprint_backlog_item` was never called at all in
+Sprint 2. ProductOwner did the first half of `create_sprint_backlog_pr`'s own prior rejection
+instruction (advanced a retro-filed Issue to Ready) but skipped the second half
+("`plan_sprint_backlog_item` to actually queue it for this sprint") and retried directly -
+`create_sprint_backlog_pr` succeeded anyway, on a PR body that merely *claimed* to contain 5 new
+stories, never mechanically checked against `sprint_backlog`'s real contents. With
+`sprint_backlog_pr_sprint` now matching `sprint_number`, `current_sprint_phase`'s `all_accepted` check
+ran against the stale, 100%-already-Accepted `sprint_backlog` and trivially passed - there was no new,
+unfinished item for `"Development"` to ever apply to. Fixed by pruning every `sprint_backlog` item
+that already reached `Accepted` the first time a new sprint's own Sprint Backlog PR merges - items not
+yet `Accepted` (genuine in-progress carry-over) are kept. Deliberately not a new refusal gate (that
+would just point ProductOwner at `plan_sprint_backlog_item`, a tool it structurally cannot call - the
+same unreachable-tool shape SPEC-ISSUE-0068 already closed elsewhere); pruning instead lets the
+already-working Sprint 1 mechanism (DevTeam self-serves `plan_sprint_backlog_item` once it discovers
+"not planned yet") naturally kick in for every sprint. See SPEC-ISSUE-0072 for the full mechanism and
+fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
