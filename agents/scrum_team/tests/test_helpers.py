@@ -393,6 +393,30 @@ class TestCurrentSprintPhase(unittest.TestCase):
         )
         self.assertEqual(current_sprint_phase(state), "Review, Retro & Release")
 
+    def test_plan_and_start_sprint_once_this_sprints_release_has_actually_gone_out(self):
+        """
+        SPEC-ISSUE-0070: a real eval run (0.1.0-run73) showed current_sprint_phase
+        return "Review, Retro & Release" forever once a sprint's stories were
+        all Accepted, because sprint_backlog_pr_sprint kept matching
+        sprint_number even after that sprint's own release had already
+        merged - and sprint_number only ever advances inside start_sprint,
+        which is phase-gated to refuse running during "Review, Retro &
+        Release". create_release_pr now resets sprint_backlog_pr_sprint to 0
+        on success (tools/github.py) - once that's happened, the phase must
+        fall through to "Plan & Start Sprint" (ready backlog sufficient) so
+        the very next start_sprint succeeds on its first try, even though
+        sprint_backlog itself still lists the prior sprint's Accepted story
+        (nothing has cleared it yet - this field alone must be enough).
+        """
+        state = self._base_state(
+            backlog_scope_complete=True,
+            sprint_number=1,
+            sprint_backlog_pr_sprint=0,  # reset by create_release_pr on success
+            sprint_report_pending_release=False,  # cleared by create_release_pr on success
+            sprint_backlog=[{"id": "ST-1", "stages_completed": ["Ready", "Implemented", "Reviewed", "Tested", "Accepted"]}],
+        )
+        self.assertEqual(current_sprint_phase(state), "Plan & Start Sprint")
+
     def test_epics_are_never_counted_toward_all_accepted(self):
         """An Epic sitting in sprint_backlog alongside a not-yet-accepted
         story must not itself cause (or prevent) "every story accepted" -

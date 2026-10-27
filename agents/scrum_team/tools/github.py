@@ -1768,6 +1768,23 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         if required_approval and release_approvals is not None:
             state["release_approval_baseline"] = release_approvals
         state["sprint_report_pending_release"] = False
+        # SPEC-ISSUE-0070: once this sprint's release has actually gone out,
+        # its own Sprint Backlog PR record must stop satisfying
+        # sprint_backlog_pr_missing(state) for the current sprint_number -
+        # otherwise current_sprint_phase (helpers.py) has no path back to
+        # "Plan & Start Sprint" at all. sprint_number only ever advances
+        # inside start_sprint, and start_sprint is phase-gated to refuse
+        # running while the phase is still "Review, Retro & Release" - so a
+        # closed sprint whose backlog-PR record still reads as "current"
+        # pins that phase forever, with no natural way out except an agent
+        # proactively invoking the phase gate's own immediate-retry
+        # override (which a real eval run, 0.1.0-run73, showed happening
+        # inconsistently - 1 time in 4 opportunities, stalling sprint_number
+        # at 1-2 across what should have been 5 real sprints). Resetting
+        # this here, the same place sprint_report_pending_release already
+        # clears on release success, lets the very next start_sprint
+        # succeed on its first try instead.
+        state["sprint_backlog_pr_sprint"] = 0
         # GH issue #397: this (and create_sprint_report's own baseline
         # bumps) previously only ever landed in the live in-memory session
         # state - neither function persisted it, unlike nearly every other
