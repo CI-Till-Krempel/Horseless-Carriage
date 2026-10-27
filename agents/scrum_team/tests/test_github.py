@@ -1501,6 +1501,41 @@ class TestStartFeatureBranchTeamEngagementGate(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push", return_value={"status": "ok", "branch": "feature/US-1-add-login"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_allows_starting_with_no_engagement_when_no_sprint_backlog_pr_was_ever_opened(
+        self, mock_run, mock_git_push, mock_gh_pr_create
+    ):
+        """
+        SPEC-ISSUE-0073 (0.1.0-run75): create_sprint_backlog_pr's own "planning
+        output already landed directly on develop" success path never opens a
+        PR, so there is nothing for Architect/DevTeam/QA to gh_pr_comment/
+        gh_pr_review on - this gate must not demand the unsatisfiable.
+        """
+        tool_context = MagicMock()
+        tool_context.state = self._base_state(sprint_backlog_pr_opened=False)
+
+        result = start_feature_branch("US-1", "add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_still_refuses_when_this_sprints_pr_was_opened_but_engagement_baseline_cleared_a_prior_sprints_no_pr_flag(
+        self, mock_run
+    ):
+        """
+        sprint_backlog_pr_opened must be read for THIS sprint_number, not left
+        over from a prior sprint that happened to take the no-PR path - once a
+        real PR opens for the current sprint, the gate must bind again.
+        """
+        tool_context = MagicMock()
+        tool_context.state = self._base_state(sprint_backlog_pr_opened=True)
+
+        result = start_feature_branch("US-1", "add-login", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_not_called()
 
 class TestReleasePrStillOpen(unittest.TestCase):
     """
@@ -2012,6 +2047,9 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             tool_context.state["sprint_backlog_engagement_baseline"],
             {"Architect": 2, "QA": 1},
         )
+        # SPEC-ISSUE-0073: a real PR was opened+merged here, so
+        # start_feature_branch's engagement gate must still require it.
+        self.assertTrue(tool_context.state["sprint_backlog_pr_opened"])
 
     @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
@@ -2348,6 +2386,10 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
         self.assertIn("already committed directly to develop", result["warning"])
         self.assertEqual(tool_context.state["sprint_backlog_pr_sprint"], 1)
         self.assertEqual(tool_context.state["sprint_backlog_pr_content_baseline"], 3)
+        # SPEC-ISSUE-0073 (0.1.0-run75): no PR was ever opened here - this must
+        # be recorded so start_feature_branch's team-engagement gate doesn't
+        # later demand gh_pr_comment/gh_pr_review on a PR that can't exist.
+        self.assertFalse(tool_context.state["sprint_backlog_pr_opened"])
         mock_git_push.assert_not_called()
         mock_gh_pr_create.assert_not_called()
 

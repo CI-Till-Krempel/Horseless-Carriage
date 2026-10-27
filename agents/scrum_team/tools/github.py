@@ -822,10 +822,22 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
     # backlog PR first merged (see create_sprint_backlog_pr above).
     pr_calls = state.get("pr_review_calls", {}) or {}
     engagement_baseline = state.get("sprint_backlog_engagement_baseline", {}) or {}
+    # SPEC-ISSUE-0073: create_sprint_backlog_pr's own "planning output already
+    # landed directly on develop, no PR ever opened" success path (below) sets
+    # sprint_backlog_pr_opened=False for exactly this sprint_number - demanding
+    # gh_pr_comment/gh_pr_review on a PR that was never opened is unsatisfiable
+    # by any real tool call (a real run, 0.1.0-run75, deadlocked here for a
+    # third of the sprint before the team gave up and hand-rolled git/gh calls
+    # outside the tool entirely to escape it).
+    backlog_pr_opened = (
+        state.get("sprint_backlog_pr_opened", True)
+        if state.get("sprint_backlog_pr_sprint") == state.get("sprint_number", 0)
+        else True
+    )
     missing_roles = [
         role for role in ("Architect", "DevTeam", "QA")
         if pr_calls.get(role, 0) <= engagement_baseline.get(role, 0)
-    ]
+    ] if backlog_pr_opened else []
     if missing_roles:
         plural = len(missing_roles) > 1
         return {
@@ -1126,6 +1138,10 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 )
                 _prune_accepted_items_from_sprint_backlog(tool_context.state)
             tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
+            # SPEC-ISSUE-0073: no PR was opened for this sprint's backlog - tell
+            # start_feature_branch's team-engagement gate (below) not to demand
+            # gh_pr_comment/gh_pr_review on a PR that doesn't exist.
+            tool_context.state["sprint_backlog_pr_opened"] = False
             from .scrum import save_state_to_repo
             save_state_to_repo(tool_context)
             return {
@@ -1211,6 +1227,11 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
             )
             _prune_accepted_items_from_sprint_backlog(tool_context.state)
         tool_context.state["sprint_backlog_pr_sprint"] = sprint_number
+        # SPEC-ISSUE-0073: a real PR was opened (and merged) this time, unlike
+        # the "content already landed directly on develop" shortcut above -
+        # start_feature_branch's team-engagement gate should require real
+        # gh_pr_comment/gh_pr_review activity on it.
+        tool_context.state["sprint_backlog_pr_opened"] = True
         # GH issue #399: snapshot the same "has anything landed under specs/
         # since I last published" counter the early-return shortcut above
         # checks, so a later sprint's own content-already-landed detection

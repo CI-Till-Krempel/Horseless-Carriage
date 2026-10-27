@@ -1822,6 +1822,26 @@ already-working Sprint 1 mechanism (DevTeam self-serves `plan_sprint_backlog_ite
 "not planned yet") naturally kick in for every sprint. See SPEC-ISSUE-0072 for the full mechanism and
 fix.
 
+### `start_feature_branch`'s team-engagement gate deadlocked when no Sprint Backlog PR was ever opened (0.1.0-run75, SPEC-ISSUE-0073)
+
+A real eval run (0.1.0-run75) surfaced `gh_pr_comments failed: no pull requests found for branch
+"sprint-backlog/1"` and stalled almost the entire sprint on it. `create_sprint_backlog_pr`'s own
+"planning output already landed directly on develop" shortcut correctly recognizes a sprint as
+published without ever opening a PR - but `start_feature_branch`'s separate team-engagement gate
+(GH issue #357) didn't know about that shortcut, and unconditionally demanded Architect/DevTeam/QA
+each leave a real `gh_pr_comment`/`gh_pr_review` on "this sprint's Sprint Backlog PR" before any
+feature branch could start. With no PR to comment on, every attempt - `gh_pr_comments`, `gh_pr_comment`,
+`gh_pr_review`, even `gh pr list` - failed identically, so the engagement counter could never cross its
+baseline: a true deadlock, not a slow retry. The team burned roughly a third of the sprint's entire
+transcript on it before Architect told DevTeam to bypass the tool and hand-roll `git`/`gh` calls
+directly - exactly the kind of workaround the tooling layer exists to prevent. This was almost
+certainly the dominant contributor to Sprint 1 alone consuming 4.55M tokens (84% of the run's budget)
+for a single story, and to the run halting after 1 of 5 requested sprints
+(`stop_reason: budget_critical_halt`). Fixed by recording, in state, whether a sprint's own backlog PR
+was actually opened (`sprint_backlog_pr_opened`) - `start_feature_branch`'s gate now skips the
+engagement requirement entirely when it wasn't, instead of demanding comments on a PR that cannot
+exist. See SPEC-ISSUE-0073 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
