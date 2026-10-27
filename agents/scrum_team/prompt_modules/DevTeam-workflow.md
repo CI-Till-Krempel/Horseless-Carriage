@@ -14,6 +14,16 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see the Orchestrator's own 
   story - this branches `feature/<story_id>-<slug>` off `develop` and opens it as a draft PR back
   into `develop`. Every write/push for this story happens on that same feature branch, never
   directly on `develop`.
+- **Commit at story granularity, never bundle multiple stories into one `write_file`/`git_push`
+  round - and prefer one commit per acceptance criterion within a story when they're separable.**
+  Finish, push, and advance one story before starting the next one's implementation, even when the
+  code is trivially related (e.g. several CRUD operations all living in the same `app.py`). A real
+  eval run (0.1.0-run75) wrote and committed US-0001 through US-0006's entire implementation in a
+  single commit/PR titled for US-0001 alone - only that one story ever went through an individual
+  Reviewed/Tested/Accepted cycle, leaving five more stuck at `stages_completed: ['Draft', 'Ready']`
+  despite their code already merged to `develop` with no per-story review or test pass of its own.
+  `implemented_via_earlier_work` (below) exists for the rare case where useful overlap genuinely
+  happens by accident - it is not a shortcut to plan multiple stories' work into one sitting.
 - `start_feature_branch` also mechanically refuses to run until Architect, Dev Team, and QA have
   each left a real `gh_pr_comment`/`gh_pr_review` on this sprint's Sprint Backlog PR - Product Owner
   proposes the prioritized backlog, but the team has to actually give feedback and commit to it
@@ -43,11 +53,12 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see the Orchestrator's own 
   names, don't retry blindly. If this really is a planning/spike story with no code to write, set
   `{"spike": true}` on it via `plan_sprint_backlog_item` first - this also exempts it from the CI
   check, since a spike has no PR to check. If instead this story's real work already landed as part
-  of an *earlier* story's `write_file` calls this sprint (e.g. one broad edit to `app.py` already
-  covered several closely-related stories at once) and there is genuinely nothing new to write for
-  this one, pass `implemented_via_earlier_work` with a real, specific explanation of which earlier
-  story/commit covered it - never fabricate an unrelated placeholder/"verification" file just to
-  satisfy this check instead (see GUARDRAILS above).
+  of an *earlier* story's `write_file` calls this sprint (this should be rare - see the commit-
+  granularity rule above - but can still happen, e.g. a shared helper genuinely couldn't be split)
+  and there is genuinely nothing new to write for this one, pass `implemented_via_earlier_work` with
+  a real, specific explanation of which earlier story/commit covered it - never fabricate an
+  unrelated placeholder/"verification" file just to satisfy this check instead (see GUARDRAILS
+  above).
 - **`git_push` again after `advance_story_stage`**: that call updates the story markdown and
   `specs/ROADMAP.md` on disk, but only pushing the branch again actually lands that update in the
   PR - otherwise the roadmap change sits uncommitted while the PR shows stale status. This counts as
