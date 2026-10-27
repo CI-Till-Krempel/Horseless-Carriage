@@ -16,6 +16,7 @@ from unittest.mock import patch
 from agents.scrum_team.tools.test_runners import (
     _GradleRunner,
     _MavenRunner,
+    _PytestRunner,
     _detect_unsupported_ecosystem,
     new_issue_url,
     run_test_suite,
@@ -121,6 +122,52 @@ class TestGradleRunner(unittest.TestCase):
         self.assertFalse(result["tests_available"])
         self.assertIn("no JUnit XML", result["note"])
 
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_failure_note_surfaces_console_output_not_just_the_count(self, mock_run):
+        """
+        SPEC-ISSUE-0069: a real eval run showed DevTeam guess blindly at a
+        fix for a failing test suite because nothing ever surfaced *why* it
+        failed - only the pass/fail count. Gradle's console output already
+        contains a real failure summary (exception type/message) by
+        default; this must reach `note`, not get discarded.
+        """
+        mock_run.return_value = {
+            "status": "ok", "returncode": 1,
+            "stdout": (
+                "FooTest > testBar() FAILED\n"
+                "    java.lang.AssertionError: expected <1> but was <2>\n"
+                "        at FooTest.testBar(FooTest.java:12)\n"
+            ),
+            "stderr": "",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            repo_root = Path(d)
+            _write_junit_xml(repo_root / "build/test-results/test/TEST-Foo.xml", tests=3, failures=1)
+            result = _GradleRunner().run(repo_root)
+
+        self.assertEqual(result["tests_failed"], 1)
+        self.assertIsNotNone(result["note"])
+        self.assertIn("AssertionError", result["note"])
+        self.assertIn("testBar", result["note"])
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_failure_note_takes_priority_over_missing_jacoco_hint(self, mock_run):
+        """When both a failure AND missing coverage are true at once, the
+        failure diagnostic is the more urgent signal - it must win, not the
+        generic JaCoCo-not-configured hint."""
+        mock_run.return_value = {
+            "status": "ok", "returncode": 1,
+            "stdout": "FooTest > testBar() FAILED\n    java.lang.AssertionError\n",
+            "stderr": "",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            repo_root = Path(d)
+            _write_junit_xml(repo_root / "build/test-results/test/TEST-Foo.xml", tests=3, failures=1)
+            result = _GradleRunner().run(repo_root)
+
+        self.assertNotIn("jacoco", (result["note"] or "").lower())
+        self.assertIn("AssertionError", result["note"])
+
 
 class TestMavenRunner(unittest.TestCase):
     def test_detect_via_pom_xml(self):
@@ -140,6 +187,27 @@ class TestMavenRunner(unittest.TestCase):
         self.assertEqual(result["tests_run"], 10)
         self.assertEqual(result["tests_failed"], 2)
         self.assertFalse(result["coverage_available"])
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_failure_note_surfaces_surefire_console_output(self, mock_run):
+        """SPEC-ISSUE-0069: Maven Surefire prints a failure summary to
+        console by default - must reach `note`, not just the count."""
+        mock_run.return_value = {
+            "status": "ok", "returncode": 1,
+            "stdout": (
+                "FooTest.testBar:12 expected:<1> but was:<2>\n"
+                "Tests run: 10, Failures: 2, Errors: 0, Skipped: 0\n"
+            ),
+            "stderr": "",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            repo_root = Path(d)
+            _write_junit_xml(repo_root / "target/surefire-reports/TEST-A.xml", tests=10, failures=2)
+            result = _MavenRunner().run(repo_root)
+
+        self.assertEqual(result["tests_failed"], 2)
+        self.assertIsNotNone(result["note"])
+        self.assertIn("testBar", result["note"])
 
 
 class TestUnsupportedEcosystemDetection(unittest.TestCase):
@@ -186,3 +254,76 @@ class TestRegistryFallback(unittest.TestCase):
             result = run_test_suite(Path(d))
         self.assertEqual(result["tool"], "pytest")
         self.assertTrue(result["tests_available"])
+
+
+class TestPytestRunner(unittest.TestCase):
+    """
+    SPEC-ISSUE-0069: a real eval run (0.1.0-run72) showed a story cycle
+    through 6 real pytest runs - each one printing a real traceback to
+    stdout - while every caller only ever saw "N of M tests failed", with
+    the traceback computed and discarded every time. DevTeam guessed at a
+    fix three times, never touching the actually-broken file (a malformed
+    Jinja2 tag), because nothing surfaced *why* the tests failed.
+    """
+
+    _FAILURE_STDOUT = (
+        "FAILED test_app.py::TodoAppTestCase::test_index - jinja2.exceptions."
+        "TemplateSyntaxError: unexpected '}'\n"
+        "templates/index.html:34\n"
+        "6 failed in 1.28s\n"
+    )
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_failure_note_surfaces_the_real_traceback_not_just_the_count(self, mock_run):
+        mock_run.return_value = {
+            "status": "error", "returncode": 1,
+            "stdout": self._FAILURE_STDOUT, "stderr": "",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            result = _PytestRunner().run(Path(d))
+
+        self.assertEqual(result["tests_failed"], 6)
+        self.assertIsNotNone(result["note"])
+        self.assertIn("TemplateSyntaxError", result["note"])
+        self.assertIn("templates/index.html:34", result["note"])
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_failure_note_takes_priority_over_missing_coverage_note(self, mock_run):
+        """A failing run with no coverage summary (e.g. a crash before
+        coverage could be computed) must still report the failure
+        diagnostic, not the generic 'coverage summary not found' note."""
+        mock_run.return_value = {
+            "status": "error", "returncode": 1,
+            "stdout": self._FAILURE_STDOUT, "stderr": "",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            result = _PytestRunner().run(Path(d))
+
+        self.assertNotIn("coverage summary not found", result["note"])
+        self.assertIn("TemplateSyntaxError", result["note"])
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_passing_run_with_missing_coverage_keeps_the_old_note(self, mock_run):
+        """Regression guard: the pre-existing 'coverage summary not found'
+        note must still fire when nothing failed but coverage parsing did."""
+        mock_run.return_value = {
+            "status": "ok", "returncode": 0,
+            "stdout": "5 passed in 0.2s", "stderr": "",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            result = _PytestRunner().run(Path(d))
+
+        self.assertEqual(result["tests_failed"], 0)
+        self.assertIn("coverage summary not found", result["note"])
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_note_is_bounded_in_length(self, mock_run):
+        """Mustn't paste an unbounded log into agent context - bounded the
+        same way check_build's own stdout/stderr tail already is."""
+        from agents.scrum_team.tools.test_runners import _FAILURE_OUTPUT_TAIL_CHARS
+        huge_stdout = ("x" * 50_000) + "\n1 failed in 0.1s\n"
+        mock_run.return_value = {"status": "error", "returncode": 1, "stdout": huge_stdout, "stderr": ""}
+        with tempfile.TemporaryDirectory() as d:
+            result = _PytestRunner().run(Path(d))
+
+        self.assertLessEqual(len(result["note"]), _FAILURE_OUTPUT_TAIL_CHARS + 100)

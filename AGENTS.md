@@ -120,6 +120,30 @@ changed, update:
   `test_sprint_and_approval_gates.py` read `docs/DEVELOPMENT-WORKFLOW.md`'s diagrams as a literal
   state machine - if you change a gate's behavior, these are very likely the tests to extend.
 
+### Docker hygiene when running the containerized suite
+
+- **Always run the agent test suite through `python3 run_tests.py`**, not a bare
+  `docker compose run --rm agent ...`. `run_tests.py` already scopes itself to a distinct Compose
+  project name (`lib_docker.compose_project_args("test")` → `-p horseless-carriage-test`, GH issue
+  #169) and `--env-file .env.test` - with no explicit project name, Compose derives one from the
+  checkout directory alone, which collides with the real dev stack's project name and therefore its
+  container names (`horseless-carriage-db-1`, etc.) and **its persistent `postgres_data` volume**. A
+  bare `docker compose run` for "just running tests" can silently restart/attach to containers that
+  hold real project data, not a disposable test sandbox.
+- If you need to invoke `docker compose`/pytest manually inside the container for faster iteration
+  (not the full `run_tests.py`), pass the same project-scoping flag yourself
+  (`docker compose -p horseless-carriage-test ...`, or reuse `lib_docker.compose_project_args("test")`
+  from a script) - never the bare default project name.
+- **Clean up what you started, every time.** After a manual/ad-hoc test run, bring down only the
+  test-scoped project you created: `docker compose -p horseless-carriage-test down` (no `-v`). Don't
+  leave dangling test containers running past the task that needed them.
+- **Never remove another project's containers, volumes, or images without the user's explicit
+  approval** - the default/dev-stack project, the eval harness's project (`-eval`), or anything you
+  didn't start this session may hold real project data (a real dev Postgres volume, an in-progress
+  session). In particular: never pass `-v`/`--volumes` to `docker compose down` for any project
+  unless the user has explicitly asked for that data to be deleted - a volume predating your session
+  is a strong signal it isn't yours to remove.
+
 ## 8. Run the ADK eval regularly
 
 `run_adk_eval.py` runs a small, cheap set of scripted gate-enforcement conversations

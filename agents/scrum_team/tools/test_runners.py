@@ -33,6 +33,15 @@ informational only, like code_complexity/vulnerability_scan_results
 elsewhere in quality.py - some ecosystems need extra project-level
 configuration (e.g. JaCoCo for JVM) to measure it at all, and that's never
 treated as equivalent to "the test suite itself is broken".
+
+SPEC-ISSUE-0069: `note` is also the only place a real failure's actual
+diagnostic (pytest's traceback, Gradle/Maven's console failure summary)
+ever reaches an agent - whenever `tests_failed > 0`, every adapter below
+populates `note` with a bounded tail of the real tool output, not just a
+pass/fail count. A real eval run showed DevTeam guess blindly at a fix
+three times with nothing but "6 of 6 tests failed" to go on, while the
+actual traceback (that would have pointed straight at the real bug) was
+printed by the tool and discarded every single run.
 """
 import os
 import re
@@ -53,6 +62,19 @@ _NO_TESTS_RE = re.compile(r"no tests ran")
 # sized for pytest) isn't enough even on a fast connection. Subsequent runs
 # are cached (~/.gradle, ~/.m2) and finish in a fraction of this.
 _JVM_BUILD_TIMEOUT_SECONDS = 600
+
+# SPEC-ISSUE-0069: a real eval run (0.1.0-run72) showed a story cycle
+# QA/DevTeam/Architect through 6 real test runs - each one a genuine pytest
+# execution that printed the actual failing traceback to stdout - while
+# every tool in the chain (recheck_test_suite, advance_story_stage's Tested
+# gate, resolve_story_blocker) reported only "N of M tests failed" and
+# discarded the traceback. DevTeam guessed at a fix three times, rewriting
+# test fixtures, never touching the one file (a malformed Jinja2 tag in
+# templates/index.html) that was actually broken - a plausible guess given
+# zero diagnostic signal. Bounded the same way check_build's own stdout/
+# stderr tail already is (quality.py's `[-4000:]`) - a verbose test runner
+# dump still shouldn't be pasted into agent context in full.
+_FAILURE_OUTPUT_TAIL_CHARS = 2000
 
 # SPEC-ISSUE-0064: markers for ecosystems that have a real, recognizable project
 # manifest but no adapter below yet - surfaced as a specific, actionable
@@ -161,6 +183,19 @@ def _jvm_result(tool: str, run_result: Dict[str, Any], junit: Optional[Dict[str,
                 + (f" - last output:\n{tail}" if tail else "")
             ),
         }
+    note = None
+    if junit["failed"] > 0:
+        # SPEC-ISSUE-0069: Gradle/Maven already print a failure summary
+        # (exception type/message per failed test) to console by default -
+        # no extra flag/plugin needed, unlike JaCoCo for coverage below.
+        tail = ((run_result.get("stdout") or "") + (run_result.get("stderr") or ""))[-_FAILURE_OUTPUT_TAIL_CHARS:].strip()
+        note = (
+            f"{tool} output (tail, last {_FAILURE_OUTPUT_TAIL_CHARS} chars):\n{tail}"
+            if tail else f"{junit['failed']} test(s) failed, but no {tool} output was captured."
+        )
+    elif coverage is None:
+        note = coverage_hint
+
     return {
         "tool": tool,
         "tests_available": True,
@@ -168,7 +203,7 @@ def _jvm_result(tool: str, run_result: Dict[str, Any], junit: Optional[Dict[str,
         "tests_failed": junit["failed"],
         "coverage_available": coverage is not None,
         "test_coverage": coverage,
-        "note": None if coverage is not None else coverage_hint,
+        "note": note,
     }
 
 
@@ -264,7 +299,20 @@ class _PytestRunner:
         tests_run = passed + failed + errored
 
         note = None
-        if test_coverage is None:
+        if failed + errored > 0:
+            # SPEC-ISSUE-0069: pytest already prints the failing test's
+            # traceback/exception to stdout by default (no --tb=no set
+            # above) - this was being computed every run and discarded
+            # every run, leaving DevTeam/Architect to guess blindly at a
+            # fix from the bare failure count alone. Prioritized over the
+            # "coverage summary not found" note below - a real failure is
+            # the more urgent signal when both are true at once.
+            tail = (stdout or stderr)[-_FAILURE_OUTPUT_TAIL_CHARS:].strip()
+            note = (
+                f"pytest output (tail, last {_FAILURE_OUTPUT_TAIL_CHARS} chars):\n{tail}"
+                if tail else f"{failed + errored} test(s) failed, but no pytest output was captured."
+            )
+        elif test_coverage is None:
             tail = (stdout or stderr)[-800:].strip()
             note = (
                 f"coverage summary not found in pytest output (exit code {result.get('returncode')})"

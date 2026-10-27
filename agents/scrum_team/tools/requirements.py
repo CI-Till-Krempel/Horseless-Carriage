@@ -1922,12 +1922,19 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
         # the same way code_complexity/vulnerability_scan already degrade
         # gracefully instead of blocking when unavailable.
         if coverage_result.get("tests_failed", 0) > 0:
+            # SPEC-ISSUE-0069: this used to report only the failure count,
+            # with no way to see *why* - a real eval run showed DevTeam
+            # rewrite test fixtures three times guessing at a cause, never
+            # touching the actual broken file, because nothing surfaced the
+            # real traceback test_runners.py's adapters already capture.
+            diagnostic = coverage_result.get("note")
             return _reject_stage_transition(tool_context, story_id, stage, {
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - {coverage_result['tests_failed']} of "
                     f"{coverage_result['tests_run']} tests failed. Fix the failing tests before "
                     "retrying."
+                    + (f"\n\n{diagnostic}" if diagnostic else "")
                 ),
             })
         # GH issue #370: a non-blocking nudge, not a gate - a real eval run
@@ -2553,6 +2560,12 @@ def resolve_story_blocker(title_or_id: str, resolution: str, tool_context=None) 
                 ),
             }
         if not last_result.get("available") or last_result.get("tests_failed", 1) > 0:
+            # SPEC-ISSUE-0069: last_result (state's last_test_suite_result)
+            # now carries the same real failure diagnostic
+            # _execute_test_suite_coverage persists alongside the counts -
+            # surface it here too, not just the count, for the same reason
+            # the Tested-gate rejection above does.
+            diagnostic = last_result.get("note")
             return {
                 "status": "error",
                 "message": (
@@ -2560,6 +2573,7 @@ def resolve_story_blocker(title_or_id: str, resolution: str, tool_context=None) 
                     f"{last_result.get('tests_failed', 'an unknown number of')} failing test(s) "
                     f"(of {last_result.get('tests_run', 'an unknown number')} run), not zero. Fix "
                     "the actual failure, not just the claim, then retry."
+                    + (f"\n\n{diagnostic}" if diagnostic else "")
                 ),
             }
 

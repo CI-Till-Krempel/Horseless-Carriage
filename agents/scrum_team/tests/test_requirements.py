@@ -389,6 +389,28 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("2 of 10 tests failed", result["message"])
 
+    def test_tested_rejection_surfaces_the_real_failure_diagnostic(self, mock_save, mock_md, mock_roadmap):
+        """
+        SPEC-ISSUE-0069: a real eval run (0.1.0-run72) showed this exact
+        rejection give QA/DevTeam nothing but a bare failure count across 3
+        identical retries - no way to see *why* tests failed. When the
+        coverage result carries a `note` (test_runners.py now populates one
+        whenever tests_failed > 0), it must reach this message too.
+        """
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={
+                "tests_available": True, "tests_run": 6, "tests_failed": 6,
+                "note": "pytest output (tail):\njinja2.exceptions.TemplateSyntaxError: unexpected '}'",
+            },
+        ):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("TemplateSyntaxError", result["message"])
+
     def test_tested_succeeds_when_tests_actually_pass(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         tc.state["pr_review_calls"] = {"QA": 1}
@@ -1553,7 +1575,16 @@ class TestResolveStoryBlockerMechanicalRecheck(unittest.TestCase):
 
     _RESOLUTION = "Fixed the broken foreign key and the missing dependency; tests pass now."
 
-    _FAILING_RUN = {"tests_available": True, "tests_run": 4, "tests_failed": 2, "coverage_available": True, "test_coverage": 0.5, "note": None}
+    # SPEC-ISSUE-0069: a real eval run (0.1.0-run72) showed note come back
+    # null for every real failing run - this fixture now carries a
+    # realistic diagnostic the way test_runners.py's adapters actually
+    # produce one, so tests below can assert it survives into
+    # resolve_story_blocker's rejection message.
+    _FAILING_RUN = {
+        "tests_available": True, "tests_run": 4, "tests_failed": 2,
+        "coverage_available": True, "test_coverage": 0.5,
+        "note": "pytest output (tail):\njinja2.exceptions.TemplateSyntaxError: unexpected '}'",
+    }
     _PASSING_RUN = {"tests_available": True, "tests_run": 4, "tests_failed": 0, "coverage_available": True, "test_coverage": 1.0, "note": None}
 
     def _blocked_via_loop_breaker(self):
@@ -1653,6 +1684,10 @@ class TestResolveStoryBlockerMechanicalRecheck(unittest.TestCase):
         result = resolve_story_blocker("US-0001", self._RESOLUTION, tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("still shows", result["message"])
+        # SPEC-ISSUE-0069: the real failure diagnostic (persisted onto
+        # last_test_suite_result by _execute_test_suite_coverage) must
+        # reach this rejection, not just the bare failure count.
+        self.assertIn("TemplateSyntaxError", result["message"])
         self.assertIsNotNone(tc.state["product_backlog"][0]["blocked"])
 
     def test_refuses_a_claim_when_the_fresh_run_still_fails(self, mock_save, mock_md, mock_roadmap):

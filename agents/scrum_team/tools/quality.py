@@ -167,6 +167,12 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
     caller (advance_story_stage's Tested gate, calculate_kpis,
     recheck_test_suite - SPEC-ISSUE-0068) - whichever one runs it is equally
     real evidence.
+
+    SPEC-ISSUE-0069: `note` (the actual failure diagnostic, when
+    tests_failed > 0 - see test_runners.py) is persisted too, not just the
+    counts - resolve_story_blocker's rejection reads last_test_suite_result
+    from state in a later turn, not this call's own return value, so the
+    diagnostic has to live here to reach it at all.
     """
     result = _execute_test_suite_coverage_impl(tool_context)
     if tool_context and getattr(tool_context, "state", None):
@@ -176,6 +182,7 @@ def _execute_test_suite_coverage(tool_context=None) -> Dict[str, Any]:
             "available": result.get("tests_available", False),
             "tests_run": result.get("tests_run", 0),
             "tests_failed": result.get("tests_failed", 0),
+            "note": result.get("note"),
         }
     return result
 

@@ -109,6 +109,81 @@ class TestQualityTools(unittest.TestCase):
         self.assertEqual(result["tests_run"], 5)
         self.assertEqual(result["tests_failed"], 2)
 
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_execute_test_suite_coverage_surfaces_real_failure_diagnostic(self, mock_run):
+        """
+        SPEC-ISSUE-0069: a real eval run (0.1.0-run72) showed this result's
+        `note` come back null on every one of 6 real failing test runs,
+        leaving DevTeam to guess blindly at a fix three times. The actual
+        traceback pytest already prints to stdout must survive into `note`
+        whenever tests_failed > 0 - not just when the coverage summary is
+        missing.
+        """
+        mock_run.return_value = {
+            "status": "error",
+            "returncode": 1,
+            "stdout": (
+                "FAILED test_app.py::TodoAppTestCase::test_index - jinja2.exceptions."
+                "TemplateSyntaxError: unexpected '}'\n"
+                "templates/index.html:34\n"
+                "6 failed in 1.28s"
+            ),
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = _execute_test_suite_coverage(tool_context=tool_context)
+
+        self.assertEqual(result["tests_failed"], 6)
+        self.assertIsNotNone(result["note"])
+        self.assertIn("TemplateSyntaxError", result["note"])
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_execute_test_suite_coverage_persists_failure_note_to_state(self, mock_run):
+        """SPEC-ISSUE-0069: resolve_story_blocker reads last_test_suite_result
+        from state in a later turn, not this call's own return value - the
+        diagnostic must be persisted there too, not just returned once."""
+        mock_run.return_value = {
+            "status": "error",
+            "returncode": 1,
+            "stdout": "FAILED test_x.py::test_y - AssertionError: boom\n1 failed in 0.1s",
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        _execute_test_suite_coverage(tool_context=tool_context)
+
+        persisted = tool_context.state["last_test_suite_result"]
+        self.assertEqual(persisted["tests_failed"], 1)
+        self.assertIn("AssertionError", persisted["note"])
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_calculate_kpis_test_coverage_note_includes_the_failure_diagnostic(self, mock_run):
+        """calculate_kpis's test_coverage_note (quality.py:578-579) already
+        forwards coverage_result["note"] unconditionally - verify the new
+        diagnostic content actually reaches it, rather than assuming the
+        existing wiring picks it up."""
+        mock_run.return_value = {
+            "status": "error",
+            "returncode": 1,
+            "stdout": "FAILED test_x.py::test_y - AssertionError: boom\n1 failed in 0.1s",
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        with patch("agents.scrum_team.tools.quality._compute_code_complexity",
+                    return_value={"code_complexity": None, "available": False, "note": None}), \
+             patch("agents.scrum_team.tools.quality._scan_security_vulnerabilities",
+                   return_value={"available": False, "vulnerability_scan_results": None, "note": None}), \
+             patch("agents.scrum_team.tools.quality._compute_say_do_ratio",
+                   return_value={"say_do_ratio": None, "note": None}):
+            kpis = calculate_kpis(tool_context=tool_context)
+
+        self.assertIn("AssertionError", kpis["maintainability"]["test_coverage_note"])
+
     @patch("agents.scrum_team.tools.quality._configured_repo_root")
     @patch("agents.scrum_team.tools.test_runners._run")
     def test_execute_test_suite_coverage_puts_repo_root_on_pythonpath(self, mock_run, mock_repo_root):
@@ -235,6 +310,30 @@ class TestQualityTools(unittest.TestCase):
         self.assertEqual(result["tests_failed"], 0)
         self.assertEqual(tool_context.state["test_suite_run_count"], 3)
         self.assertEqual(tool_context.state["last_test_suite_result"]["tests_failed"], 0)
+
+    @patch("agents.scrum_team.tools.test_runners._run")
+    def test_recheck_test_suite_forwards_the_failure_diagnostic(self, mock_run):
+        """SPEC-ISSUE-0069: recheck_test_suite is the exact tool a real eval
+        run (0.1.0-run72) showed returning `"note": null` three times in a
+        row for a genuinely failing run - it must forward the real
+        diagnostic test_runners.py now captures, not just the counts."""
+        mock_run.return_value = {
+            "status": "error", "returncode": 1,
+            "stdout": (
+                "FAILED test_app.py::test_index - jinja2.exceptions."
+                "TemplateSyntaxError: unexpected '}'\n6 failed in 1.28s"
+            ),
+            "stderr": "",
+        }
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = recheck_test_suite(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["tests_failed"], 6)
+        self.assertIsNotNone(result["note"])
+        self.assertIn("TemplateSyntaxError", result["note"])
 
     @patch("agents.scrum_team.tools.quality._run")
     def test_compute_code_complexity_parses_real_output(self, mock_run):
