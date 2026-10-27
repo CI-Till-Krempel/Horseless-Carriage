@@ -1823,6 +1823,49 @@ already-working Sprint 1 mechanism (DevTeam self-serves `plan_sprint_backlog_ite
 "not planned yet") naturally kick in for every sprint. See SPEC-ISSUE-0072 for the full mechanism and
 fix.
 
+### `create_sprint_backlog_pr` let a sprint's phase skip straight from planning to Review/Retro/Release with no Development in between (0.1.0-run74, SPEC-ISSUE-0072)
+
+A real eval run (0.1.0-run74) - the very next run after SPEC-ISSUE-0070's fix landed, and a direct
+consequence of it finally letting Sprint 2 start at all - showed Sprint 2's phase jump straight from
+`"Plan & Start Sprint"` to `"Review, Retro & Release"`, skipping `"Development"` entirely.
+`manifest.json` confirms `sprint_backlog` for Sprint 2 is byte-identical to Sprint 1's (still only the
+two already-`Accepted` `US-0001`/`US-0002`) - `plan_sprint_backlog_item` was never called at all in
+Sprint 2. ProductOwner did the first half of `create_sprint_backlog_pr`'s own prior rejection
+instruction (advanced a retro-filed Issue to Ready) but skipped the second half
+("`plan_sprint_backlog_item` to actually queue it for this sprint") and retried directly -
+`create_sprint_backlog_pr` succeeded anyway, on a PR body that merely *claimed* to contain 5 new
+stories, never mechanically checked against `sprint_backlog`'s real contents. With
+`sprint_backlog_pr_sprint` now matching `sprint_number`, `current_sprint_phase`'s `all_accepted` check
+ran against the stale, 100%-already-Accepted `sprint_backlog` and trivially passed - there was no new,
+unfinished item for `"Development"` to ever apply to. Fixed by pruning every `sprint_backlog` item
+that already reached `Accepted` the first time a new sprint's own Sprint Backlog PR merges - items not
+yet `Accepted` (genuine in-progress carry-over) are kept. Deliberately not a new refusal gate (that
+would just point ProductOwner at `plan_sprint_backlog_item`, a tool it structurally cannot call - the
+same unreachable-tool shape SPEC-ISSUE-0068 already closed elsewhere); pruning instead lets the
+already-working Sprint 1 mechanism (DevTeam self-serves `plan_sprint_backlog_item` once it discovers
+"not planned yet") naturally kick in for every sprint. See SPEC-ISSUE-0072 for the full mechanism and
+fix.
+
+### `start_feature_branch`'s team-engagement gate deadlocked when no Sprint Backlog PR was ever opened (0.1.0-run75, SPEC-ISSUE-0073)
+
+A real eval run (0.1.0-run75) surfaced `gh_pr_comments failed: no pull requests found for branch
+"sprint-backlog/1"` and stalled almost the entire sprint on it. `create_sprint_backlog_pr`'s own
+"planning output already landed directly on develop" shortcut correctly recognizes a sprint as
+published without ever opening a PR - but `start_feature_branch`'s separate team-engagement gate
+(GH issue #357) didn't know about that shortcut, and unconditionally demanded Architect/DevTeam/QA
+each leave a real `gh_pr_comment`/`gh_pr_review` on "this sprint's Sprint Backlog PR" before any
+feature branch could start. With no PR to comment on, every attempt - `gh_pr_comments`, `gh_pr_comment`,
+`gh_pr_review`, even `gh pr list` - failed identically, so the engagement counter could never cross its
+baseline: a true deadlock, not a slow retry. The team burned roughly a third of the sprint's entire
+transcript on it before Architect told DevTeam to bypass the tool and hand-roll `git`/`gh` calls
+directly - exactly the kind of workaround the tooling layer exists to prevent. This was almost
+certainly the dominant contributor to Sprint 1 alone consuming 4.55M tokens (84% of the run's budget)
+for a single story, and to the run halting after 1 of 5 requested sprints
+(`stop_reason: budget_critical_halt`). Fixed by recording, in state, whether a sprint's own backlog PR
+was actually opened (`sprint_backlog_pr_opened`) - `start_feature_branch`'s gate now skips the
+engagement requirement entirely when it wasn't, instead of demanding comments on a PR that cannot
+exist. See SPEC-ISSUE-0073 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

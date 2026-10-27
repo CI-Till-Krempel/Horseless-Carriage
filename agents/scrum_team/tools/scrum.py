@@ -31,6 +31,7 @@ REPO_STATE_KEYS = [
     "sprint_goal",
     "sprint_number",
     "sprint_backlog_pr_sprint",
+    "sprint_backlog_pr_opened",
     "planning_output_commit_count",
     "sprint_backlog_pr_content_baseline",
     "sprint_backlog",
@@ -208,6 +209,7 @@ def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
     s.setdefault("sprint_goal", "")
     s.setdefault("sprint_number", 0)
     s.setdefault("sprint_backlog_pr_sprint", 0)
+    s.setdefault("sprint_backlog_pr_opened", True)
     s.setdefault("planning_output_commit_count", 0)
     s.setdefault("sprint_backlog_pr_content_baseline", 0)
     s.setdefault("sprint_backlog", [])
