@@ -1752,6 +1752,53 @@ while BLOCKED. `resolve_story_blocker`'s rejection message now names `recheck_te
 this gate anymore. SPEC-ISSUE-0060's confabulation check is unaffected either way. See SPEC-ISSUE-0068
 for the full mechanism and fix.
 
+### Test-failure tooling reported pass/fail counts but never the actual failure output (0.1.0-run72, SPEC-ISSUE-0069)
+
+A real eval run (0.1.0-run72) showed `recheck_test_suite` - SPEC-ISSUE-0068's own fix for a
+BLOCKED-story deadlock - return `"note": null` on all three of its calls while a story sat blocked on
+6 genuinely failing tests. DevTeam rewrote its test fixtures three separate times, guessing at "tests
+interfering with each other," never touching the actually-broken file. Reproducing the exact 6/6
+failure locally against the eval repo's own PR branch found the real cause in one try: a malformed
+Jinja2 tag in `templates/index.html` (`{{ list_id }/delete`, missing a closing `}}`) - every test
+rendered that template and failed identically on the same `TemplateSyntaxError`.
+
+The real bug: `test_runners.py`'s pytest/Gradle/Maven adapters already had that traceback sitting in
+the subprocess's own stdout and discarded it every time - `note` was only ever populated for "coverage
+summary not found" / "no JaCoCo report," never for "N tests genuinely failed, here's why." Every
+adapter now surfaces a bounded tail of the real failure output whenever `tests_failed > 0`,
+prioritized over those older notes, threaded through `_execute_test_suite_coverage`'s persisted
+`last_test_suite_result` and both `advance_story_stage`'s and `resolve_story_blocker`'s rejection
+messages - so a blocked role can see why its last fix didn't work, not just that it didn't.
+
+### Sprint phase never recovered once a sprint's backlog was fully accepted, locking `sprint_number` for most of the run (0.1.0-run73, SPEC-ISSUE-0070)
+
+A real eval run (0.1.0-run73) completed exactly 5 real sprint-loop iterations (5 sprint reports, 5
+merged release PRs) but `sprint_number` itself only ever reached `2` across the whole run -
+`start_sprint` was called just 3 times total (once at the very start, twice more back-to-back at the
+top of real-sprint-4), never even attempted at the top of real-sprints 2, 3, or 5. The root cause:
+`current_sprint_phase` only falls through to `"Plan & Start Sprint"` via `sprint_backlog_pr_missing`
+returning non-`None`, which requires `sprint_number` to have already moved past
+`sprint_backlog_pr_sprint` - but the only thing that moves `sprint_number` is `start_sprint`, and
+`start_sprint` is phase-gated to refuse running while the phase is still `"Review, Retro & Release"`.
+Once a sprint's own backlog is fully `Accepted` (and `sprint_backlog` is never cleared), that phase
+sticks forever - the only way out is an agent proactively invoking the phase gate's own documented
+immediate-retry override, which happened once in five real sprints. Directly visible consequence:
+`specs/reports/SPRINT-REPORT-NNN.md` collapsed to `001, 001, 001, 002, 002` across the 5 real sprints
+(each new real sprint's report overwrote the prior one, since its numbering floors at the stuck
+`sprint_number`) - matching the judge report's own flagged inconsistency of a file named "002"
+containing "Sprint 5" content. Also likely the dominant driver behind that run's Team Efficiency score
+of 1/5: 4 of 5 real sprints re-ran the same retro/KPI/report/release ceremony on the same single
+already-accepted story instead of returning to backlog planning. Fixed by resetting
+`sprint_backlog_pr_sprint` to `0` the instant a sprint's release PR actually merges - the same success
+branch where `create_release_pr` already clears `sprint_report_pending_release` - so
+`sprint_backlog_pr_missing` stops considering that now-finished sprint "current" and
+`current_sprint_phase` falls through to `"Plan & Start Sprint"` on its own, instead of depending on an
+agent proactively invoking the phase gate's immediate-retry override. See SPEC-ISSUE-0070 for the full
+mechanism and fix. A related, lower-severity finding from the same run's log review -
+`advance_story_stage`'s rejection message blaming "roadmap sync" for what was in every observed case
+only a story-markdown DoR-content failure (roadmap sync itself reported `"status": "ok"` every time) -
+is filed separately as SPEC-ISSUE-0071.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

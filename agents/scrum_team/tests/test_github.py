@@ -845,6 +845,38 @@ class TestGitHubTools(unittest.TestCase):
             head_is_resolved=True, tool_context=tool_context,
         )
 
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_create_release_pr_resets_sprint_backlog_pr_sprint_on_success(
+        self, mock_save, mock_run, mock_gh_pr_create
+    ):
+        """
+        SPEC-ISSUE-0070: a real eval run (0.1.0-run73) showed current_sprint_phase
+        stay stuck on "Review, Retro & Release" for 4 of 5 real sprints
+        because sprint_backlog_pr_sprint kept matching sprint_number even
+        after this sprint's own release had already merged - sprint_number
+        only ever advances inside start_sprint, which refuses to run during
+        that phase, so nothing ever broke the lock on its own. Resetting
+        sprint_backlog_pr_sprint here (the same success branch that already
+        clears sprint_report_pending_release) means sprint_backlog_pr_missing
+        stops considering this now-finished sprint "current" for the next
+        real sprint, so current_sprint_phase can fall through to "Plan &
+        Start Sprint" instead of staying pinned.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        tool_context.state["repo"] = {"default_branch": "main", "develop_branch": "develop"}
+        tool_context.state["sprint_number"] = 1
+        tool_context.state["sprint_backlog_pr_sprint"] = 1
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["sprint_backlog_pr_sprint"], 0)
+        self.assertFalse(tool_context.state["sprint_report_pending_release"])
+
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "error", "message": "boom"})
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
     def test_create_release_pr_surfaces_pr_create_failure(self, mock_run, mock_gh_pr_create):
