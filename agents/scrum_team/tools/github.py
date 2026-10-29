@@ -998,9 +998,12 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 f"Cannot create the Sprint Backlog PR yet - {len(unaddressed_must_issues)} Must-priority "
                 f"Issue(s) filed from a previous sprint's retrospective/impediment log are still sitting "
                 f"unaddressed at Draft, never planned into a sprint: {ids}. Call "
-                "advance_story_stage(id_or_title, 'Ready') for each one (then plan_sprint_backlog_item "
-                "to actually queue it for this sprint), or set_priority(id_or_title, ...) to something "
-                "other than 'Must' if it turns out not to actually warrant that, before retrying."
+                "advance_story_stage(id_or_title, 'Ready') for each one - a retro-filed Must-priority "
+                "Issue is already mechanically positioned at the front of the one-story-at-a-time "
+                "ordering queue (SPEC-ISSUE-0076), blocking Dev Team from starting any other work until "
+                "it's genuinely resolved, so there is nothing further for you to schedule yourself. Or "
+                "call set_priority(id_or_title, ...) to something other than 'Must' if it turns out not "
+                "to actually warrant that, before retrying."
             ),
         }
 

@@ -1866,6 +1866,23 @@ was actually opened (`sprint_backlog_pr_opened`) - `start_feature_branch`'s gate
 engagement requirement entirely when it wasn't, instead of demanding comments on a PR that cannot
 exist. See SPEC-ISSUE-0073 for the full mechanism and fix.
 
+### A retro-filed Must-priority Issue never actually blocked anything, so the same unresolved process finding got re-filed every sprint (0.1.0-run76, SPEC-ISSUE-0076)
+
+A real eval run (0.1.0-run76, completed all 5 sprints) filed four near-identical Must-priority process
+Issues across five sprints' retrospectives, all describing the same unresolved QA/test-integration
+problem - "Issues fixed" read `0, 0, 0, 0, 0` the whole run. GH #368's own ordering gate
+(`_preceding_story`) was specifically designed to force attention onto exactly this: a Ready
+Must-priority Issue should block every lower-priority story behind it in `product_backlog` until it
+reaches `Accepted`. That gate genuinely works once an Issue is positioned ahead of the team's remaining
+work - but a retro-filed Issue never actually got positioned there: `upsert_backlog_item` always
+appends new items, and `_resort_backlog_by_priority`'s own (deliberately) stable sort preserves relative
+order among same-priority items, so a brand-new Must Issue filed after the sprint's own already-queued
+Must-priority stories stayed stuck behind them forever - `Ready` was as far as `create_sprint_backlog_pr`'s
+own gate could mechanically push it. Fixed by repositioning a freshly auto-prioritized retro Issue to
+sit immediately ahead of the team's remaining (not-yet-Accepted) work, rather than relying on the
+general stable sort alone - the downstream ordering gate's own, already-correct behavior does the rest.
+See SPEC-ISSUE-0076 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
