@@ -1273,6 +1273,46 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         self.assertLess(result["message"].index("resolve it for real"), result["message"].index("set_priority"))
         mock_run.assert_not_called()
 
+    @patch("agents.scrum_team.tools.github._run")
+    def test_a_freshly_auto_filed_retro_issue_blocks_a_lower_priority_story(self, mock_run):
+        """
+        SPEC-ISSUE-0076 (0.1.0-run76) end-to-end: a real eval run's retro
+        auto-filed a Must-priority Issue (_file_retro_items_as_issues,
+        budget.py) that NEVER actually blocked anything - it got appended
+        after already-queued Must stories, and _resort_backlog_by_priority's
+        stable sort left it stuck behind them. Replays that exact shape:
+        file the Issue through the real function, then confirm
+        start_feature_branch on an already-queued, lower-array-position
+        story is genuinely blocked by it - the same ordering gate
+        test_a_preceding_issue_still_blocks_but_names_the_escape_hatch above
+        already proves works correctly once an Issue is positioned ahead;
+        this proves the auto-filing path now actually puts it there.
+        """
+        from agents.scrum_team.tools.budget import _file_retro_items_as_issues
+
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([
+            {"id": "US-0002", "title": "Add task", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0003", "title": "Delete task", "stages_completed": ["Draft", "Ready"]},
+        ])
+        tool_context.state["retro_actions"] = [
+            {"action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA", "status": "open"}
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+        issue_id = filed[0]
+        # file_retro_items_as_issues doesn't touch sprint_backlog - keep the
+        # fixture's own planning stand-in consistent with _base_state's.
+        tool_context.state["sprint_backlog"].insert(0, {"id": issue_id, "title": None})
+
+        result = start_feature_branch("US-0002", "add-task", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn(issue_id, result["message"])
+        mock_run.assert_not_called()
+
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
     @patch("agents.scrum_team.tools.github.git_push")
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})

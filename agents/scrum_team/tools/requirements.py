@@ -333,6 +333,47 @@ def _resort_backlog_by_priority(s: Dict[str, Any]) -> None:
     s["product_backlog"] = backlog
 
 
+def _move_item_to_front_of_remaining_work(s: Dict[str, Any], item_id: str) -> None:
+    """
+    SPEC-ISSUE-0076: a real eval run showed a retro-filed Must-priority
+    Issue (_file_retro_items_as_issues, tools/budget.py) never actually
+    block anything - upsert_backlog_item always *appends* a new item
+    (backlog.append), and _resort_backlog_by_priority's own stable sort
+    deliberately preserves relative order among SAME-priority items, so a
+    brand-new Must Issue appended after already-queued Must stories stayed
+    behind them forever. _preceding_story (the one-story-at-a-time ordering
+    gate start_feature_branch relies on - GH #368) was specifically
+    designed to force attention onto exactly this kind of Issue by blocking
+    whatever comes after it until it reaches Accepted, but that only works
+    if the Issue's array position actually precedes the team's current
+    frontier of unfinished work - not just "somewhere in the Must band."
+
+    Moves item_id to sit immediately before the first non-Epic,
+    not-yet-Accepted item in product_backlog (appending to the end if
+    every other item is already Accepted) - the actual front of remaining
+    work, as opposed to _resort_backlog_by_priority's "front of the whole
+    historical backlog" which can still sit behind long-since-Accepted
+    stories and never actually become anyone's "immediately preceding"
+    item. Call once, right after the item is first prioritized Must -
+    its position then stays put (nothing re-sorts within a priority band on
+    its own) for exactly the same reason the stable sort doesn't disturb it.
+    """
+    backlog = list(s.get("product_backlog", []))
+    idx = next((i for i, x in enumerate(backlog) if x.get("id") == item_id), None)
+    if idx is None:
+        return
+    item = backlog.pop(idx)
+    insert_at = len(backlog)
+    for i, x in enumerate(backlog):
+        if x.get("type") == "Epic":
+            continue
+        if "Accepted" not in (x.get("stages_completed") or []):
+            insert_at = i
+            break
+    backlog.insert(insert_at, item)
+    s["product_backlog"] = backlog
+
+
 def _normalize_title_for_dup_check(title: str) -> str:
     """Case/punctuation-insensitive key for near-exact title matches (see SPEC-ISSUE-0008)."""
     return _NON_ALNUM_RE.sub("", (title or "").lower())
