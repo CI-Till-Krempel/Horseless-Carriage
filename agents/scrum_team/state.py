@@ -49,6 +49,7 @@ class ScrumState(BaseModel):
     messages: List[Dict[str, Any]] = Field(default_factory=list)
     transcript: List[Dict[str, Any]] = Field(default_factory=list)
     sprint_files_touched: List[str] = Field(default_factory=list)
+    source_content_change_count: int = 0
     hc_version: str = "unknown"
     retro_baseline: int = 0
     human_approvals: List[Dict[str, Any]] = Field(default_factory=list)

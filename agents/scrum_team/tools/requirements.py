@@ -9,7 +9,6 @@ from ..helpers import (
     STORY_STAGES,
     STAGE_OWNERS,
     blocks_direct_status_set,
-    is_source_file,
     required_pre_implementation_approval,
     BLOCKER_CATEGORIES,
     BLOCKER_CATEGORY_OWNERS,
@@ -331,6 +330,47 @@ def _resort_backlog_by_priority(s: Dict[str, Any]) -> None:
     items sharing a priority keep their existing relative order."""
     backlog = list(s.get("product_backlog", []))
     backlog.sort(key=_priority_rank)
+    s["product_backlog"] = backlog
+
+
+def _move_item_to_front_of_remaining_work(s: Dict[str, Any], item_id: str) -> None:
+    """
+    SPEC-ISSUE-0076: a real eval run showed a retro-filed Must-priority
+    Issue (_file_retro_items_as_issues, tools/budget.py) never actually
+    block anything - upsert_backlog_item always *appends* a new item
+    (backlog.append), and _resort_backlog_by_priority's own stable sort
+    deliberately preserves relative order among SAME-priority items, so a
+    brand-new Must Issue appended after already-queued Must stories stayed
+    behind them forever. _preceding_story (the one-story-at-a-time ordering
+    gate start_feature_branch relies on - GH #368) was specifically
+    designed to force attention onto exactly this kind of Issue by blocking
+    whatever comes after it until it reaches Accepted, but that only works
+    if the Issue's array position actually precedes the team's current
+    frontier of unfinished work - not just "somewhere in the Must band."
+
+    Moves item_id to sit immediately before the first non-Epic,
+    not-yet-Accepted item in product_backlog (appending to the end if
+    every other item is already Accepted) - the actual front of remaining
+    work, as opposed to _resort_backlog_by_priority's "front of the whole
+    historical backlog" which can still sit behind long-since-Accepted
+    stories and never actually become anyone's "immediately preceding"
+    item. Call once, right after the item is first prioritized Must -
+    its position then stays put (nothing re-sorts within a priority band on
+    its own) for exactly the same reason the stable sort doesn't disturb it.
+    """
+    backlog = list(s.get("product_backlog", []))
+    idx = next((i for i, x in enumerate(backlog) if x.get("id") == item_id), None)
+    if idx is None:
+        return
+    item = backlog.pop(idx)
+    insert_at = len(backlog)
+    for i, x in enumerate(backlog):
+        if x.get("type") == "Epic":
+            continue
+        if "Accepted" not in (x.get("stages_completed") or []):
+            insert_at = i
+            break
+    backlog.insert(insert_at, item)
     s["product_backlog"] = backlog
 
 
@@ -1359,6 +1399,18 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     requirements.py) for the explicit nudge toward that escape hatch when
     the blocker is an Issue.
 
+    SPEC-ISSUE-0078: an Issue that has been superseded by a steering proposal
+    (`superseded_by_steering` set - see `propose_steering_change`'s own
+    `supersedes_issue_ids` parameter) is skipped too, same as a BLOCKED one -
+    its real resolution path is now that steering proposal (a human-reviewed
+    identity.md change), not a code implementation reaching Accepted through
+    this pipeline. Without this, a superseded Issue would still permanently
+    block every lower-priority story behind it even though the team has
+    already done the right thing about it (GH #342/#381's own backstop
+    correctly recognized it as a role-behavior finding and routed it to
+    propose_steering_change instead of Issue implementation) - orphaned,
+    duplicated work with no honest way to clear it otherwise.
+
     Returns NOT_IN_PRODUCT_BACKLOG (not None) if story_id/title isn't in
     product_backlog at all - callers must treat that as "ordering can't be
     verified", not as "no predecessor, safe to proceed".
@@ -1371,7 +1423,7 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     if idx is None:
         return NOT_IN_PRODUCT_BACKLOG
     for j in range(idx - 1, -1, -1):
-        if not stories_only[j].get("blocked"):
+        if not stories_only[j].get("blocked") and not stories_only[j].get("superseded_by_steering"):
             return stories_only[j]
     return None
 
@@ -1735,8 +1787,17 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                 ),
             }
         is_spike = bool(product_item.get("spike") or sprint_item.get("spike"))
-        touched = s.get("sprint_files_touched", []) or []
-        source_touch_count = sum(1 for f in touched if is_source_file(f))
+        # SPEC-ISSUE-0074: this used to be sum(1 for f in sprint_files_touched
+        # if is_source_file(f)) - a count of DISTINCT paths ever touched this
+        # whole run. That plateaus the moment a project's small, stable set
+        # of source paths (app.py, tests/test_app.py, ...) has each been
+        # touched once, permanently satisfying "no new touch since last
+        # Implemented" even when later stories genuinely rewrote those same
+        # files with new code - source_content_change_count
+        # (_record_source_content_change, tools/base.py) instead counts every
+        # write_file/delete_file call whose content actually changed, never
+        # deduped by path, so it keeps growing for as long as real work does.
+        source_touch_count = s.get("source_content_change_count", 0)
         if not is_spike and source_touch_count <= s.get("dev_touch_baseline", 0):
             # SPEC-ISSUE-0046: a real eval run's app.py already covered several
             # closely-related stories' logic in one broad write_file pass

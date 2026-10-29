@@ -246,7 +246,6 @@ from . import tui
 from .helpers import (
     get_process_overhead_percentage,
     is_story_done,
-    is_source_file,
     get_interaction_level,
     STORY_STAGES,
     get_env_with_deprecated_fallback,
@@ -557,7 +556,7 @@ def _sync_and_commit_roadmap_on_exhaustion(callback_context: CallbackContext) ->
         logging.getLogger(__name__).warning(f"Roadmap sync on budget exhaustion failed (non-fatal): {e}")
 
 
-def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> None:
+def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext, reason: str = "budget") -> None:
     """
     Mechanical, non-agent last-gasp action, sibling to
     _sync_and_commit_roadmap_on_exhaustion above - guarantees a sprint
@@ -607,6 +606,14 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
     updating it if Product Owner's own create_sprint_report succeeds
     moments later during grace.
 
+    `reason` (SPEC-ISSUE-0077): forwarded to render_fallback_sprint_report -
+    see that function's own docstring. Defaults to "budget" (this
+    function's original, and still only in-session, trigger) so every
+    existing caller here keeps its exact prior wording. run_eval.py's own
+    harness-level call to this same function (a second, independently-
+    confirmed dead end - the eval harness's own "continue" retry ceiling,
+    not a budget halt) passes "nudges" instead.
+
     Best-effort, same as its sibling: any failure here must not prevent
     the caller from still returning its own canned budget-exceeded
     response.
@@ -622,13 +629,20 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
             current_branch = (branch_result.get("stdout") or "").strip()
             branch = current_branch if current_branch and current_branch != "HEAD" else None
 
-        render_fallback_sprint_report(callback_context)
+        render_fallback_sprint_report(callback_context, reason=reason)
 
+        # SPEC-ISSUE-0077: commit/PR wording must match why this actually
+        # fired - "budget exhausted" is simply false for the "nudges" case
+        # (0.1.0-run76's Sprint 4 used 636K of its 5M token budget; the eval
+        # harness's own fixed retry ceiling, not the sprint's budget, ran out).
+        reason_label = {"budget": "sprint budget exhausted", "nudges": "harness retry ceiling reached"}.get(
+            reason, "sprint ended without a report"
+        )
         if branch:
             integrate_open_changes(tool_context=callback_context)
             _git_push_impl(
                 branch=branch,
-                commit_message="chore: ensure sprint artifacts are committed - sprint budget exhausted",
+                commit_message=f"chore: ensure sprint artifacts are committed - {reason_label}",
                 add_all=False,
                 allow_protected=True,
                 tool_context=callback_context,
@@ -645,11 +659,11 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext) -> No
         # create_release_pr just errors and sprint_report_pending_release
         # stays set for a future sprint to clear, exactly like today.
         create_release_pr(
-            title=f"Sprint {callback_context.state.get('sprint_number', '?')}: budget-exhaustion close-out",
+            title=f"Sprint {callback_context.state.get('sprint_number', '?')}: {reason_label} close-out",
             body=(
-                "Mechanically-triggered release PR - this sprint's token/USD budget (including its "
-                "grace allowance) ran out before Product Owner's own create_release_pr call could "
-                "run. See the sprint report for what was actually accomplished this sprint."
+                f"Mechanically-triggered release PR - this sprint ended ({reason_label}) before "
+                "Product Owner's own create_release_pr call could run. See the sprint report for what "
+                "was actually accomplished this sprint."
             ),
             tool_context=callback_context,
         )
@@ -2147,8 +2161,8 @@ def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str
     """
     GH issue #344: advance_story_stage already refuses to mark a story
     Implemented without a real write_file since the last successful
-    Implemented transition (dev_touch_baseline/sprint_files_touched, see
-    that function) - but nothing previously caught the opposite: DevTeam
+    Implemented transition (dev_touch_baseline/source_content_change_count,
+    see that function) - but nothing previously caught the opposite: DevTeam
     writing the real implementation, then transferring away (to Architect,
     QA, back to the Orchestrator, ...) without ever calling
     advance_story_stage("Implemented") for it. A story whose code is
@@ -2158,8 +2172,8 @@ def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str
     mechanical signal anything is wrong.
 
     Reuses the exact same source_touch_count/dev_touch_baseline signal
-    advance_story_stage's own gate already tracks - "more source files
-    touched than were touched as of the last successful Implemented" -
+    advance_story_stage's own gate already tracks - "more real source
+    content changes than there were as of the last successful Implemented" -
     rather than inventing a second, parallel notion of "real work
     happened". Fires only for DevTeam transferring to a genuinely
     different role (not a self-transfer, already handled separately).
@@ -2176,8 +2190,12 @@ def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str
         return None
 
     s = tool_context.state
-    touched = s.get("sprint_files_touched", []) or []
-    source_touch_count = sum(1 for f in touched if is_source_file(f))
+    # SPEC-ISSUE-0074: see requirements.py's Implemented gate for why this
+    # reads source_content_change_count (a never-deduped count of real
+    # content changes) instead of counting distinct sprint_files_touched
+    # paths, which plateaus once a project's small set of source files has
+    # each been touched once - permanently silencing this nudge too.
+    source_touch_count = s.get("source_content_change_count", 0)
     dev_touch_baseline = s.get("dev_touch_baseline", 0)
     nudge_baseline = s.get("unadvanced_write_nudge_baseline", 0)
     if source_touch_count <= dev_touch_baseline or source_touch_count <= nudge_baseline:

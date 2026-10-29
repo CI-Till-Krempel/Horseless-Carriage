@@ -10,7 +10,7 @@ from agents.scrum_team.tools.requirements import (
     set_priority, upsert_story, upsert_epic, upsert_issue, deny_review, _update_story_markdown,
     raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
     update_roadmap, _strip_story_block_from_other_versions,
-    sync_stories_from_markdown, _migrated_priority,
+    sync_stories_from_markdown, _migrated_priority, _move_item_to_front_of_remaining_work,
 )
 
 
@@ -129,7 +129,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
         # Only a story markdown file touched - not real source code.
-        tc.state["sprint_files_touched"] = ["specs/stories/US-0001-Add-real-feature.md"]
+        tc.state["source_content_change_count"] = 0  # only a spec file touched - not real source code
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("source file", result["message"])
@@ -143,7 +143,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         """
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["specs/stories/US-0001-Add-real-feature.md"]
+        tc.state["source_content_change_count"] = 0  # only a spec file touched - not real source code
         for bad_justification in (None, "", "  ", "done", "n/a"):
             with self.subTest(justification=bad_justification):
                 result = advance_story_stage(
@@ -166,7 +166,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         """
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["specs/stories/US-0001-Add-real-feature.md"]
+        tc.state["source_content_change_count"] = 0  # only a spec file touched - not real source code
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
         tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         justification = "Already implemented as part of US-0000's app.py edit in commit abc123."
@@ -182,7 +182,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
     def test_implemented_requires_actual_tokens_logged(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "error")
         self.assertIn("log_story_tokens", result["message"])
@@ -190,17 +190,46 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
     def test_implemented_succeeds_once_every_precondition_is_met(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
         tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["dev_touch_baseline"], 1)
 
+    def test_implemented_succeeds_when_a_later_story_rewrites_an_already_known_path(self, mock_save, mock_md, mock_roadmap):
+        """
+        SPEC-ISSUE-0074 (0.1.0-run76): a prior story's success already left
+        dev_touch_baseline at a non-zero value - the common case once a
+        project's small, stable set of source paths (app.py, tests/
+        test_app.py, ...) have all been touched at least once. A later
+        story's write_file calls to those SAME paths, with genuinely new
+        content, must still count as real progress -
+        source_content_change_count (unlike the old sprint_files_touched
+        distinct-path count, which plateaus here and can never exceed this
+        baseline again) keeps growing for as long as real writes keep
+        happening, regardless of whether the path itself is new.
+        """
+        tc = _tool_context("DevTeam", ["Ready"])
+        tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
+        # Baseline already plateaued at 4 (app.py, requirements.txt,
+        # templates/index.html, tests/test_app.py each touched once by an
+        # earlier story's successful Implemented transition).
+        tc.state["dev_touch_baseline"] = 4
+        # This story's own write_file calls rewrote app.py and
+        # tests/test_app.py again - two more genuine content changes to
+        # already-known paths.
+        tc.state["source_content_change_count"] = 6
+        tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
+        tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
+        result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["dev_touch_baseline"], 6)
+
     def test_implemented_requires_gh_pr_checks_to_have_been_called(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "error")
@@ -209,7 +238,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
     def test_implemented_rejects_a_failing_gh_pr_checks_result(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
         tc.state["last_pr_checks"] = {"passing": False, "git_push_count_at_check": 0}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
@@ -223,7 +252,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         latest push, not just passing at some point in the past."""
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
         tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         tc.state["git_push_count"] = 1
@@ -250,7 +279,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         """
         with patch.dict("os.environ", {"INTERACTION_LEVEL": "CEO"}, clear=True):
             tc = _tool_context("DevTeam", ["Ready"])
-            tc.state["sprint_files_touched"] = ["app/main.py"]
+            tc.state["source_content_change_count"] = 1
             tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
             tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
 
@@ -267,7 +296,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         """Acceptance Criteria: EVAL level requires no human approval at all."""
         with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
             tc = _tool_context("DevTeam", ["Ready"])
-            tc.state["sprint_files_touched"] = ["app/main.py"]
+            tc.state["source_content_change_count"] = 1
             tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
             tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
             result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
@@ -636,7 +665,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             "escalated_to_user": False,
         }
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
         self.assertEqual(result["status"], "error")
@@ -666,7 +695,7 @@ class TestStageAdvancePushesStateToTheCorrectBranch(unittest.TestCase):
     def test_implemented_pushes_to_the_active_feature_branch(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 100, "actual": 90}}
         tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         tc.state["active_feature_branches"] = {"US-0001": "feature/US-0001-add-login"}
@@ -872,7 +901,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "ok")  # Ready re-affirm is a no-op success; real check is below
         # US-0001 (first, not yet Accepted) must block US-0002 from a stage that actually requires ordering.
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0002": {"estimate": 10, "actual": 5}}
         tc.agent_name = "DevTeam"
         result = advance_story_stage("US-0002", "Implemented", tool_context=tc)
@@ -896,7 +925,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
             "escalated_to_user": False,
         }
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0002": {"estimate": 10, "actual": 5}}
         tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         tc.agent_name = "DevTeam"
@@ -906,7 +935,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
     def test_first_story_in_product_backlog_has_no_predecessor(self, mock_save, mock_md, mock_roadmap):
         tc = self._two_story_context("DevTeam", ["Ready"])
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
         tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
@@ -936,7 +965,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
             "priority": "Must", "stages_completed": ["Draft"],
         })
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
 
         result = advance_story_stage("US-0001", "Implemented", tool_context=tc)
@@ -999,7 +1028,7 @@ class TestDependsOnGate(unittest.TestCase):
         tc.state["sprint_number"] = 1
         tc.state["sprint_backlog_pr_sprint"] = 1
         tc.state["human_approvals"] = [{"type": "sprint", "note": "ok"}]
-        tc.state["sprint_files_touched"] = ["app/main.py"]
+        tc.state["source_content_change_count"] = 1
         tc.state["story_estimates"] = {"US-0001": {"estimate": 10, "actual": 5}}
         tc.state["last_pr_checks"] = {"passing": True, "git_push_count_at_check": 0}
         return tc
@@ -2103,6 +2132,65 @@ class TestPriorityAffectsBacklogOrdering(unittest.TestCase):
         ids = [x["id"] for x in tc.state["product_backlog"]]
         self.assertEqual(ids, ["US-0002", "US-0001"])
 
+
+class TestMoveItemToFrontOfRemainingWork(unittest.TestCase):
+    """
+    Acceptance Criteria (SPEC-ISSUE-0076): a retro-filed Must-priority Issue
+    appended after already-queued, same-priority stories must end up
+    genuinely ahead of the team's remaining (not-yet-Accepted) work, not
+    just "somewhere in the Must band" - _resort_backlog_by_priority's own
+    stable sort (by design, see test_same_priority_items_keep_relative_order
+    above) would otherwise leave it stuck behind them forever.
+    """
+
+    def _state(self, backlog):
+        return {"product_backlog": backlog}
+
+    def test_moves_ahead_of_same_priority_not_yet_accepted_items(self):
+        s = self._state([
+            {"id": "US-0002", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0003", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+        ])
+        _move_item_to_front_of_remaining_work(s, "SPEC-ISSUE-0001")
+        self.assertEqual([x["id"] for x in s["product_backlog"]], ["SPEC-ISSUE-0001", "US-0002", "US-0003"])
+
+    def test_does_not_move_ahead_of_already_accepted_items(self):
+        """The item belongs at the front of REMAINING work, not the front of
+        the whole historical backlog - already-Accepted stories are done and
+        shouldn't be reordered behind a new Issue."""
+        s = self._state([
+            {"id": "US-0001", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            {"id": "US-0002", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+        ])
+        _move_item_to_front_of_remaining_work(s, "SPEC-ISSUE-0001")
+        self.assertEqual([x["id"] for x in s["product_backlog"]], ["US-0001", "SPEC-ISSUE-0001", "US-0002"])
+
+    def test_skips_epics_when_finding_the_frontier(self):
+        s = self._state([
+            {"id": "EP-0001", "type": "Epic", "priority": "Must"},
+            {"id": "US-0002", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+        ])
+        _move_item_to_front_of_remaining_work(s, "SPEC-ISSUE-0001")
+        self.assertEqual([x["id"] for x in s["product_backlog"]], ["EP-0001", "SPEC-ISSUE-0001", "US-0002"])
+
+    def test_appends_at_the_end_when_everything_else_is_already_accepted(self):
+        s = self._state([
+            {"id": "US-0001", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready", "Implemented", "Reviewed", "Tested", "Accepted"]},
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+        ])
+        _move_item_to_front_of_remaining_work(s, "SPEC-ISSUE-0001")
+        self.assertEqual([x["id"] for x in s["product_backlog"]], ["US-0001", "SPEC-ISSUE-0001"])
+
+    def test_no_op_for_an_unknown_item_id(self):
+        s = self._state([{"id": "US-0001", "type": "User Story", "priority": "Must", "stages_completed": []}])
+        _move_item_to_front_of_remaining_work(s, "SPEC-ISSUE-9999")
+        self.assertEqual([x["id"] for x in s["product_backlog"]], ["US-0001"])
+
+
+class TestSetPriorityValidation(unittest.TestCase):
     @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
     @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
     def test_set_priority_rejects_a_non_moscow_value(self, mock_save, mock_md):

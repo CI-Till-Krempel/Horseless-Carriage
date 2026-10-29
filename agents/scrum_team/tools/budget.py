@@ -790,7 +790,7 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
     from before this triage existed) defaults to "technical", preserving
     the old behavior for pre-existing entries.
     """
-    from .requirements import upsert_issue, set_priority
+    from .requirements import upsert_issue, set_priority, _move_item_to_front_of_remaining_work
 
     filed_ids = []
     for collection_name, text_field in (("retro_actions", "action"), ("impediment_log", "description")):
@@ -814,11 +814,19 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
             filed_ids.append(issue_id)
             if get_interaction_level() != "Product":
                 set_priority(issue_id, "Must", tool_context=tool_context)
+                # SPEC-ISSUE-0076: set_priority's own resort is stable, so a
+                # brand-new Must Issue appended after already-queued Must
+                # stories would otherwise stay behind them forever - move it
+                # to the actual front of remaining (not-yet-Accepted) work so
+                # the one-story-at-a-time ordering gate (_preceding_story)
+                # genuinely blocks on it, the mechanism this auto-filing was
+                # always meant to rely on (see that function's own docstring).
+                _move_item_to_front_of_remaining_work(tool_context.state, issue_id)
         tool_context.state[collection_name] = collection
     return filed_ids
 
 
-def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
+def render_fallback_sprint_report(tool_context=None, reason: str = "budget") -> Dict[str, Any]:
     """
     Mechanically-rendered counterpart to create_sprint_report above - the
     other half of the "always a sprint report" guarantee, called only by
@@ -862,10 +870,28 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
     within the same sprint idempotent on the file path, not just the
     text.
 
-    Takes no arguments beyond tool_context: there is no free-form path or
-    content parameter anywhere in this function for a caller to redirect -
-    it can only ever render this one report from state and write it to
-    specs/reports/SPRINT-REPORT-*.md, the same fixed paths
+    `reason` (SPEC-ISSUE-0077): why this is firing - distinguishes the report's
+    own explanatory paragraph only, nothing about what gets committed.
+    "budget" (default, preserving every existing caller's wording unchanged)
+    is the original and most common case - the sprint's own token/USD budget,
+    including its SPRINT CLOSE SEQUENCE grace allowance, genuinely ran out.
+    "nudges" is a real, independently-confirmed second case (0.1.0-run76):
+    the eval harness's own fixed number of "continue" retries
+    (run_eval.py's max_nudges) ran out while the team was still actively
+    working, not budget-constrained at all - a lengthy mechanical gate
+    back-and-forth (e.g. repeatedly satisfying a phase-gate override, or
+    working through a blocked ordering dependency) consumed the harness's
+    retry ceiling before Scrum Master ever got a turn. Claiming "budget used
+    in full" for that case would be factually wrong (run76's Sprint 4 used
+    636K of its 5M token budget). Any other value, or the parameter omitted,
+    renders a reason-agnostic paragraph - safe for callers (e.g.
+    create_release_pr's own unconditional call to re-land the report) that
+    have no specific reason to report.
+
+    Takes no other arguments beyond tool_context/reason: there is no
+    free-form path or content parameter anywhere in this function for a
+    caller to redirect - it can only ever render this one report from state
+    and write it to specs/reports/SPRINT-REPORT-*.md, the same fixed paths
     create_sprint_report itself always uses.
     """
     from .docs import write_file
@@ -882,17 +908,38 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
         product_backlog = s.get("product_backlog", []) or []
         sprint_backlog = s.get("sprint_backlog", []) or []
 
+        if reason == "nudges":
+            situation_heading = "## Mechanically-Rendered Report (Harness Retry Ceiling Reached)"
+            situation_body = (
+                "This sprint's own token/USD budget was NOT exhausted - the team was still actively "
+                "working - but the eval harness's own fixed number of \"continue\" retries ran out "
+                "before Scrum Master's own `create_sprint_report` call could run. This usually means "
+                "the team spent an unusually long back-and-forth on a mechanical gate (e.g. repeatedly "
+                "satisfying a phase-gate override, or working through a blocked ordering dependency) "
+                "rather than running out of real budget."
+            )
+        elif reason == "budget" or reason is None:
+            situation_heading = "## Mechanically-Rendered Report (Budget Used in Full)"
+            situation_body = (
+                "This sprint's token/USD budget was used in full before Scrum Master's own "
+                "`create_sprint_report` call could run - the expected way a sprint ends when the team "
+                "spends its full budget on the sprint's actual work, not a failure."
+            )
+        else:
+            situation_heading = "## Mechanically-Rendered Report (Sprint Ended Without A Report)"
+            situation_body = (
+                "Scrum Master's own `create_sprint_report` call never ran this sprint, for a reason "
+                "this harness didn't specifically distinguish."
+            )
+
         report = (
             f"# Sprint Review Report\n\n**Generated by {hc_version_line}** "
             f"(Interaction Level: {get_interaction_level()})\n\n"
-            "## Mechanically-Rendered Report (Budget Used in Full)\n"
-            "This sprint's token/USD budget was used in full before Scrum Master's own "
-            "`create_sprint_report` call could run - the expected way a sprint ends when the team "
-            "spends its full budget on the sprint's actual work, not a failure. This report is "
-            "rendered mechanically from logged state rather than authored by an agent, so "
-            "`create_sprint_report`'s own content-completeness gates don't apply to it. Any feature "
-            "branches still open at this point were left untouched - "
-            "only this report and already-logged specs/ state were committed - and pick up again next "
+            f"{situation_heading}\n"
+            f"{situation_body} This report is rendered mechanically from logged state rather than "
+            "authored by an agent, so `create_sprint_report`'s own content-completeness gates don't "
+            "apply to it. Any feature branches still open at this point were left untouched - only "
+            "this report and already-logged specs/ state were committed - and pick up again next "
             "sprint.\n\n"
             "## Story Status\n"
         )
@@ -948,7 +995,7 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
                     f"Category: {action.get('category', 'unset')})\n"
                 )
         else:
-            report += "None logged before the budget ran out.\n"
+            report += "None logged yet this sprint.\n"
         report += "\n## Impediments Logged So Far\n"
         if impediments:
             for imp in impediments:
@@ -957,7 +1004,7 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
                     f"Category: {imp.get('category', 'unset')})\n"
                 )
         else:
-            report += "None logged before the budget ran out.\n"
+            report += "None logged yet this sprint.\n"
 
         s["sprint_report"] = report
         # Mirrors create_sprint_report's own SPEC-ISSUE-0010 bookkeeping below so
@@ -977,6 +1024,13 @@ def render_fallback_sprint_report(tool_context=None) -> Dict[str, Any]:
     write_file(latest_path, report, overwrite=True, tool_context=tool_context)
     s["sprint_report_path"] = numbered_path
     _write_retro_and_steering_docs(s, tool_context)
+    # SPEC-ISSUE-0077: create_sprint_report always renders a transcript
+    # alongside the report (_write_conversation_transcript) - this fallback
+    # path previously didn't, so a sprint that never reached
+    # create_sprint_report lost its transcript file entirely, not just its
+    # report (confirmed missing for 0.1.0-run76's Sprint 4:
+    # TRANSCRIPT-004.md never existed in the repo).
+    _write_conversation_transcript(tool_context)
     # GH issue #359: same snapshot create_sprint_report takes on a clean
     # close - a budget-exhausted sprint doesn't get a free pass from ever
     # needing to discuss a still-unresolved blocker, it just defers the

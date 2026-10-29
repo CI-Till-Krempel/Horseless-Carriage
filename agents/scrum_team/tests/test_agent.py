@@ -1236,7 +1236,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
     def test_blocks_devteam_transferring_away_with_unadvanced_source_writes(self):
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
 
         result = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
 
@@ -1250,7 +1250,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
         recently reached Implemented for real, nothing untracked since."""
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
         tool_context.state["dev_touch_baseline"] = 1
 
         result = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
@@ -1263,7 +1263,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
         tool_context.agent_name = "Architect"
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
 
         result = log_tool_invocation_callback(tool, {"agent_name": "ProductOwner"}, tool_context)
 
@@ -1275,7 +1275,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
         between must be let through."""
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
 
         first = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
         second = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
@@ -1286,7 +1286,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
     def test_nudge_fires_again_after_further_new_writes(self):
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
 
         first = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
         self.assertIsNotNone(first)
@@ -1294,7 +1294,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
         self.assertIsNone(second)
 
         # More real source work happens...
-        tool_context.state["sprint_files_touched"] = ["app.py", "templates/index.html"]
+        tool_context.state["source_content_change_count"] = 2
         third = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
 
         self.assertIsNotNone(third)
@@ -2891,7 +2891,7 @@ class TestEnsureSprintReportOnFinalHalt(unittest.TestCase):
              patch("agents.scrum_team.agent.create_release_pr") as mock_release_pr:
             _ensure_sprint_report_on_final_halt(mock_context)
 
-        mock_render.assert_called_once_with(mock_context)
+        mock_render.assert_called_once_with(mock_context, reason="budget")
         mock_integrate.assert_called_once_with(tool_context=mock_context)
         mock_push.assert_called_once_with(
             branch="develop",
@@ -2901,6 +2901,32 @@ class TestEnsureSprintReportOnFinalHalt(unittest.TestCase):
             tool_context=mock_context,
         )
         mock_release_pr.assert_called_once()
+
+    def test_passes_the_nudges_reason_through_to_the_report_and_commit_wording(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0077, 0.1.0-run76): run_eval.py's own
+        harness-level call to this function passes reason="nudges" for a
+        sprint that hit the eval harness's own retry ceiling, not a real
+        budget exhaustion (0.1.0-run76's Sprint 4 used 636K of its 5M token
+        budget) - the commit/PR wording must say so, not claim "budget
+        exhausted" for a case that demonstrably wasn't.
+        """
+        mock_context = self._context()
+        with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
+             patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
+             patch("agents.scrum_team.agent._run", return_value={"status": "ok", "stdout": "", "stderr": ""}), \
+             patch("agents.scrum_team.agent.render_fallback_sprint_report") as mock_render, \
+             patch("agents.scrum_team.agent.integrate_open_changes"), \
+             patch("agents.scrum_team.agent._git_push_impl") as mock_push, \
+             patch("agents.scrum_team.agent.create_release_pr") as mock_release_pr:
+            _ensure_sprint_report_on_final_halt(mock_context, reason="nudges")
+
+        mock_render.assert_called_once_with(mock_context, reason="nudges")
+        self.assertIn("harness retry ceiling reached", mock_push.call_args.kwargs["commit_message"])
+        self.assertNotIn("budget exhausted", mock_push.call_args.kwargs["commit_message"])
+        _, release_kwargs = mock_release_pr.call_args
+        self.assertIn("harness retry ceiling reached", release_kwargs["title"])
+        self.assertIn("harness retry ceiling reached", release_kwargs["body"])
 
     def test_falls_back_to_current_branch_if_develop_checkout_fails(self):
         mock_context = self._context()
