@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name, _run
+from .base import _configured_repo_root, _project_root, _record_touched_file, _record_source_content_change, _default_push_branch, _develop_branch_name, _run
+from ..helpers import is_source_file
 
 # GH #419: seeded into every project from its very first commit (see
 # seed_repository below) - common build/test/editor artifacts that real
@@ -110,8 +111,9 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
         # unrelated content with no signal to the caller - surface it
         # (without blocking; overwrite=True is an explicit, deliberate ask)
         # so an agent has a chance to notice an accidental overwrite.
+        existed_before = abs_path.exists()
         overwrote_existing_content = False
-        if abs_path.exists():
+        if existed_before:
             try:
                 previous = abs_path.read_text(encoding="utf-8", errors="replace")
                 overwrote_existing_content = previous != content
@@ -119,6 +121,13 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
                 pass
         abs_path.write_text(content, encoding="utf-8")
         _record_touched_file(path, tool_context)
+        # SPEC-ISSUE-0074: a brand-new file, or an existing one whose content
+        # actually changed, is real progress regardless of whether this exact
+        # path has ever been touched before in this run - see
+        # _record_source_content_change's own docstring for why that's a
+        # different question than _record_touched_file's path-dedup above.
+        if is_source_file(path) and (not existed_before or overwrote_existing_content):
+            _record_source_content_change(tool_context)
         # GH eval run39: check_build()'s pip/npm install result was still
         # being trusted by advance_story_stage's Tested gate even after a
         # LATER rewrite of requirements.txt/package.json - a real eval run
@@ -181,6 +190,11 @@ def delete_file(path: str, tool_context=None) -> Dict[str, Any]:
     try:
         abs_path.unlink()
         _record_touched_file(path, tool_context)
+        # SPEC-ISSUE-0074: removing a source file (already confirmed to
+        # exist above) is just as much real progress as writing new content -
+        # see _record_source_content_change's own docstring.
+        if is_source_file(path):
+            _record_source_content_change(tool_context)
         return {"status": "ok", "path": str(abs_path)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
