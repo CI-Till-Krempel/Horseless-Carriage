@@ -9,7 +9,6 @@ from ..helpers import (
     STORY_STAGES,
     STAGE_OWNERS,
     blocks_direct_status_set,
-    is_source_file,
     required_pre_implementation_approval,
     BLOCKER_CATEGORIES,
     BLOCKER_CATEGORY_OWNERS,
@@ -1739,8 +1738,17 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                 ),
             }
         is_spike = bool(product_item.get("spike") or sprint_item.get("spike"))
-        touched = s.get("sprint_files_touched", []) or []
-        source_touch_count = sum(1 for f in touched if is_source_file(f))
+        # SPEC-ISSUE-0074: this used to be sum(1 for f in sprint_files_touched
+        # if is_source_file(f)) - a count of DISTINCT paths ever touched this
+        # whole run. That plateaus the moment a project's small, stable set
+        # of source paths (app.py, tests/test_app.py, ...) has each been
+        # touched once, permanently satisfying "no new touch since last
+        # Implemented" even when later stories genuinely rewrote those same
+        # files with new code - source_content_change_count
+        # (_record_source_content_change, tools/base.py) instead counts every
+        # write_file/delete_file call whose content actually changed, never
+        # deduped by path, so it keeps growing for as long as real work does.
+        source_touch_count = s.get("source_content_change_count", 0)
         if not is_spike and source_touch_count <= s.get("dev_touch_baseline", 0):
             # SPEC-ISSUE-0046: a real eval run's app.py already covered several
             # closely-related stories' logic in one broad write_file pass

@@ -246,7 +246,6 @@ from . import tui
 from .helpers import (
     get_process_overhead_percentage,
     is_story_done,
-    is_source_file,
     get_interaction_level,
     STORY_STAGES,
     get_env_with_deprecated_fallback,
@@ -2147,8 +2146,8 @@ def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str
     """
     GH issue #344: advance_story_stage already refuses to mark a story
     Implemented without a real write_file since the last successful
-    Implemented transition (dev_touch_baseline/sprint_files_touched, see
-    that function) - but nothing previously caught the opposite: DevTeam
+    Implemented transition (dev_touch_baseline/source_content_change_count,
+    see that function) - but nothing previously caught the opposite: DevTeam
     writing the real implementation, then transferring away (to Architect,
     QA, back to the Orchestrator, ...) without ever calling
     advance_story_stage("Implemented") for it. A story whose code is
@@ -2158,8 +2157,8 @@ def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str
     mechanical signal anything is wrong.
 
     Reuses the exact same source_touch_count/dev_touch_baseline signal
-    advance_story_stage's own gate already tracks - "more source files
-    touched than were touched as of the last successful Implemented" -
+    advance_story_stage's own gate already tracks - "more real source
+    content changes than there were as of the last successful Implemented" -
     rather than inventing a second, parallel notion of "real work
     happened". Fires only for DevTeam transferring to a genuinely
     different role (not a self-transfer, already handled separately).
@@ -2176,8 +2175,12 @@ def _detect_unadvanced_implementation(tool_context: ToolContext, agent_name: str
         return None
 
     s = tool_context.state
-    touched = s.get("sprint_files_touched", []) or []
-    source_touch_count = sum(1 for f in touched if is_source_file(f))
+    # SPEC-ISSUE-0074: see requirements.py's Implemented gate for why this
+    # reads source_content_change_count (a never-deduped count of real
+    # content changes) instead of counting distinct sprint_files_touched
+    # paths, which plateaus once a project's small set of source files has
+    # each been touched once - permanently silencing this nudge too.
+    source_touch_count = s.get("source_content_change_count", 0)
     dev_touch_baseline = s.get("dev_touch_baseline", 0)
     nudge_baseline = s.get("unadvanced_write_nudge_baseline", 0)
     if source_touch_count <= dev_touch_baseline or source_touch_count <= nudge_baseline:

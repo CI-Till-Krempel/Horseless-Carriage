@@ -1879,6 +1879,24 @@ Fixed by letting `propose_steering_change` name which Issue(s) it resolves
 (`supersedes_issue_ids`) - a matched Issue is marked `superseded_by_steering` on a real, successful
 proposal only, and both gates now stand down for it the same way they already do for a `blocked` item.
 See SPEC-ISSUE-0078 for the full mechanism and fix.
+### `advance_story_stage`'s "real code written" gate permanently plateaued once a project's small set of source files had each been touched once (0.1.0-run76, SPEC-ISSUE-0074)
+
+A real eval run (0.1.0-run76, completed all 5 sprints) still flagged junk-file clutter
+(`app_us0006.py`, a one-line stub) nearly identical to what SPEC-ISSUE-0046 was supposed to have ended.
+Root cause: the Implemented gate's "has real source code been written since the last success" signal
+counted *distinct paths* in `sprint_files_touched` - a list deliberately deduplicated by path for the
+entire run (for a different consumer's needs: verifying every touched path lands in a release). For a
+small app with a stable handful of source files (`app.py`, `tests/test_app.py`, ...), that distinct-path
+count necessarily plateaus the moment they've all been touched once - permanently satisfying "nothing
+new since last Implemented" even when a later story genuinely rewrote those same files with new code.
+This hit 4 different stories 6 times in this run, and once forced DevTeam past the honest
+`implemented_via_earlier_work` escape hatch (unreachable because the story had already been marked
+BLOCKED by the 3-strikes loop breaker) straight back into fabricating a placeholder file - the exact
+anti-pattern SPEC-ISSUE-0046 was filed to eliminate. Fixed by introducing a separate,
+never-path-deduplicated counter (`source_content_change_count`) that increments on every genuine
+content change to a source file, however many times the same path is rewritten -
+`sprint_files_touched` itself is untouched, since its own consumer still needs the path-deduplicated
+list. See SPEC-ISSUE-0074 for the full mechanism and fix.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
