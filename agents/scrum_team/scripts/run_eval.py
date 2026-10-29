@@ -785,7 +785,21 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
             stop_reason = "max_duration_exceeded"
             break
 
-    if not sprint_report and session.state.get("critical_halt_notified"):
+    # SPEC-ISSUE-0077: this used to only fire on session.state.get(
+    # "critical_halt_notified") - a real run (0.1.0-run76) showed a second,
+    # independent dead end this missed entirely: Sprint 4 stopped with
+    # stop_reason == "max_nudges_exhausted" at only 636K of its 5M token
+    # budget (not remotely budget-constrained - DevTeam was still actively
+    # working through a lengthy mechanical gate back-and-forth when the
+    # harness's own fixed "continue" retry ceiling ran out first). With no
+    # critical_halt ever notified, the backstop below never ran, and that
+    # sprint got no report AND no transcript committed at all - confirmed
+    # missing from the real run (specs/reports/SPRINT-REPORT-004.md and
+    # TRANSCRIPT-004.md simply don't exist). Broadened to fire whenever a
+    # sprint that genuinely started (sprint_number set) ends with no report,
+    # for ANY stop_reason - "a sprint report always exists" shouldn't depend
+    # on which of several independent stopping mechanisms happened to fire.
+    if not sprint_report and session.state.get("sprint_number", 0) > 0:
         # GH issue (eval run41): a real run's SPRINT CLOSE SEQUENCE grace
         # was making genuine progress (retro logged, KPIs computed) but got
         # cut off by THIS HARNESS'S OWN max_events/max_duration cap one
@@ -806,8 +820,15 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
             def __init__(self, state):
                 self.state = state
 
+        # "budget" only when a real critical halt was actually notified -
+        # every other dead end (nudges exhausted, max events/duration
+        # reached, an ADK self-transfer error) is NOT a budget exhaustion,
+        # and claiming it was would be factually wrong (see SPEC-ISSUE-0077).
+        final_halt_reason = "budget" if session.state.get("critical_halt_notified") else (
+            "nudges" if stop_reason == "max_nudges_exhausted" else "other"
+        )
         try:
-            _ensure_sprint_report_on_final_halt(_HostToolContext(session.state))
+            _ensure_sprint_report_on_final_halt(_HostToolContext(session.state), reason=final_halt_reason)
             sprint_report = session.state.get("sprint_report")
         except Exception as e:
             print(f"WARNING: host-side sprint report backstop failed (non-fatal): {type(e).__name__}: {e}", file=sys.stderr)

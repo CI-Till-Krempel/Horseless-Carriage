@@ -602,10 +602,10 @@ class TestHostSideSprintReportBackstop:
     """
 
     def test_calls_the_backstop_when_critical_halt_left_no_report(self):
-        state = {"critical_halt_notified": True}
+        state = {"critical_halt_notified": True, "sprint_number": 1}
         session_service = _StatefulSessionService(state)
 
-        def _fake_ensure(tool_context):
+        def _fake_ensure(tool_context, reason=None):
             tool_context.state["sprint_report"] = "# Fallback Report"
 
         with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=_fake_ensure) as mock_ensure:
@@ -629,7 +629,7 @@ class TestHostSideSprintReportBackstop:
         the real case the backstop is meant to skip: THIS invocation's own
         activity (the event loop below) is what produced the report.
         """
-        state = {"critical_halt_notified": True}
+        state = {"critical_halt_notified": True, "sprint_number": 1}
         session_service = _StatefulSessionService(state)
 
         class _ProducesReportThenHaltsRunner:
@@ -654,10 +654,10 @@ class TestHostSideSprintReportBackstop:
         report is still there) must not suppress the backstop - this
         invocation's own activity produced nothing new.
         """
-        state = {"critical_halt_notified": True, "sprint_report": "# Stale Report From Last Sprint"}
+        state = {"critical_halt_notified": True, "sprint_number": 1, "sprint_report": "# Stale Report From Last Sprint"}
         session_service = _StatefulSessionService(state)
 
-        def _fake_ensure(tool_context):
+        def _fake_ensure(tool_context, reason=None):
             tool_context.state["sprint_report"] = "# Fallback Report"
 
         with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=_fake_ensure) as mock_ensure:
@@ -669,10 +669,10 @@ class TestHostSideSprintReportBackstop:
         mock_ensure.assert_called_once()
         assert result["sprint_report"] == "# Fallback Report"
 
-    def test_does_not_call_the_backstop_without_a_critical_halt(self):
-        """A sprint that just ran out of max_events without ever hitting a
-        budget halt has nothing for this backstop to fix - no report was
-        ever going to exist regardless of how the sequence played out."""
+    def test_does_not_call_the_backstop_when_no_sprint_has_actually_started(self):
+        """No sprint_number set at all means start_sprint was never even
+        called this invocation - there's no real sprint for the backstop to
+        close out, regardless of stop_reason."""
         state = {}
         session_service = _StatefulSessionService(state)
 
@@ -685,8 +685,54 @@ class TestHostSideSprintReportBackstop:
         mock_ensure.assert_not_called()
         assert result["sprint_report"] is None
 
+    def test_calls_the_backstop_when_the_nudge_ceiling_is_exhausted_even_without_a_critical_halt(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0077, 0.1.0-run76): Sprint 4 stopped
+        with stop_reason "max_nudges_exhausted" at only 636K of its 5M token
+        budget - genuinely not budget-constrained, so critical_halt_notified
+        was never set. The backstop used to only ever fire on that flag,
+        so this sprint got NO report and NO transcript committed at all
+        (confirmed missing: specs/reports/SPRINT-REPORT-004.md never
+        existed). It must now fire for any genuinely-started sprint
+        (sprint_number set) that ends with no report, whatever the reason.
+        """
+        state = {"sprint_number": 4}
+        session_service = _StatefulSessionService(state)
+
+        def _fake_ensure(tool_context, reason=None):
+            tool_context.state["sprint_report"] = f"# Fallback Report (reason={reason})"
+
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=_fake_ensure) as mock_ensure:
+            result = _run(_run_one_sprint(
+                _NoProgressRunner(), session_service, "app", "user", "session-1",
+                "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        mock_ensure.assert_called_once()
+        assert mock_ensure.call_args.kwargs.get("reason") == "nudges"
+        assert result["stop_reason"] == "max_nudges_exhausted"
+        assert result["sprint_report"] == "# Fallback Report (reason=nudges)"
+
+    def test_backstop_passes_the_budget_reason_when_a_critical_halt_was_notified(self):
+        """The original, still-most-common case must keep passing
+        reason="budget" explicitly - not just happen to default to it."""
+        state = {"sprint_number": 2, "critical_halt_notified": True}
+        session_service = _StatefulSessionService(state)
+
+        def _fake_ensure(tool_context, reason=None):
+            tool_context.state["sprint_report"] = f"# Fallback Report (reason={reason})"
+
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=_fake_ensure) as mock_ensure:
+            result = _run(_run_one_sprint(
+                _OneEventThenHaltRunner(), session_service, "app", "user", "session-1",
+                "hello", max_events=1, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        assert mock_ensure.call_args.kwargs.get("reason") == "budget"
+        assert result["sprint_report"] == "# Fallback Report (reason=budget)"
+
     def test_backstop_failure_is_non_fatal(self):
-        state = {"critical_halt_notified": True}
+        state = {"critical_halt_notified": True, "sprint_number": 1}
         session_service = _StatefulSessionService(state)
 
         with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=RuntimeError("git hiccup")):
