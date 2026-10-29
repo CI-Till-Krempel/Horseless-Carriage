@@ -1399,6 +1399,18 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     requirements.py) for the explicit nudge toward that escape hatch when
     the blocker is an Issue.
 
+    SPEC-ISSUE-0078: an Issue that has been superseded by a steering proposal
+    (`superseded_by_steering` set - see `propose_steering_change`'s own
+    `supersedes_issue_ids` parameter) is skipped too, same as a BLOCKED one -
+    its real resolution path is now that steering proposal (a human-reviewed
+    identity.md change), not a code implementation reaching Accepted through
+    this pipeline. Without this, a superseded Issue would still permanently
+    block every lower-priority story behind it even though the team has
+    already done the right thing about it (GH #342/#381's own backstop
+    correctly recognized it as a role-behavior finding and routed it to
+    propose_steering_change instead of Issue implementation) - orphaned,
+    duplicated work with no honest way to clear it otherwise.
+
     Returns NOT_IN_PRODUCT_BACKLOG (not None) if story_id/title isn't in
     product_backlog at all - callers must treat that as "ordering can't be
     verified", not as "no predecessor, safe to proceed".
@@ -1411,7 +1423,7 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     if idx is None:
         return NOT_IN_PRODUCT_BACKLOG
     for j in range(idx - 1, -1, -1):
-        if not stories_only[j].get("blocked"):
+        if not stories_only[j].get("blocked") and not stories_only[j].get("superseded_by_steering"):
             return stories_only[j]
     return None
 

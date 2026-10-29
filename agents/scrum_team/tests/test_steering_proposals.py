@@ -271,6 +271,126 @@ class TestProposeSteeringChange(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("push", result["message"].lower())
 
+    def test_supersedes_issue_ids_marks_the_matching_issue(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0078): a real eval run (0.1.0-run76)
+        showed a retro-filed Must Issue stay orphaned forever even after
+        GH #342/#381's own backstop correctly routed the same finding to
+        propose_steering_change three separate times - supersedes_issue_ids
+        is the mechanism that actually closes that loop.
+        """
+        tc = _make_tool_context(agent_name="ScrumMaster")
+        tc.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0002", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+        ]
+
+        result = self._run_with_patches(
+            lambda: propose_steering_change(
+                "QA", "# QA\n\nRun the full local test suite before marking Tested - closes SPEC-ISSUE-0001.\n",
+                "Closes SPEC-ISSUE-0001 - the team keeps re-filing this as a code Issue when it's really "
+                "a QA process habit.",
+                supersedes_issue_ids=["SPEC-ISSUE-0001"], tool_context=tc,
+            )
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["superseded_issue_ids"], ["SPEC-ISSUE-0001"])
+        issue = next(i for i in tc.state["product_backlog"] if i["id"] == "SPEC-ISSUE-0001")
+        self.assertIn("superseded_by_steering", issue)
+        self.assertEqual(issue["superseded_by_steering"]["role"], "QA")
+        # The unrelated story must be untouched.
+        story = next(i for i in tc.state["product_backlog"] if i["id"] == "US-0002")
+        self.assertNotIn("superseded_by_steering", story)
+
+    def test_supersedes_issue_ids_ignores_an_unknown_id(self):
+        tc = _make_tool_context(agent_name="ScrumMaster")
+        tc.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+        ]
+
+        result = self._run_with_patches(
+            lambda: propose_steering_change(
+                "QA", "# QA\n\nVerify database migrations ran before marking Tested.\n",
+                "A real rationale for this change.",
+                supersedes_issue_ids=["SPEC-ISSUE-9999"], tool_context=tc,
+            )
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["superseded_issue_ids"], [])
+        issue = tc.state["product_backlog"][0]
+        self.assertNotIn("superseded_by_steering", issue)
+
+    def test_supersedes_issue_ids_does_not_mark_anything_on_a_no_op_proposal(self):
+        """GH issue #342's own no-op rule extends here too - a proposal that
+        doesn't actually change anything must not silently resolve an Issue
+        either."""
+        from agents.scrum_team.tools import base
+
+        tc = _make_tool_context()
+        repo_root = base._configured_repo_root(tc)
+        existing = "# QA\n\nAlready here.\n"
+        (repo_root / "QA-identity.md").write_text(existing, encoding="utf-8")
+        tc.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+        ]
+
+        result = self._run_with_patches(
+            lambda: propose_steering_change(
+                "QA", existing, "A real rationale explaining the need.",
+                supersedes_issue_ids=["SPEC-ISSUE-0001"], tool_context=tc,
+            )
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["proposed"])
+        issue = tc.state["product_backlog"][0]
+        self.assertNotIn("superseded_by_steering", issue)
+
+    def test_supersedes_issue_ids_does_not_mark_anything_if_the_pr_fails(self):
+        tc = _make_tool_context(agent_name="ScrumMaster")
+        tc.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+        ]
+
+        def failing_pr_create(title, body="", base=None, head=None, draft=False, head_is_resolved=False, tool_context=None):
+            return {"status": "error", "message": "PR creation failed"}
+
+        result = self._run_with_patches(
+            lambda: propose_steering_change(
+                "QA", "# QA\n\nCheck API contract compatibility before marking Tested.\n",
+                "A real rationale for this change.",
+                supersedes_issue_ids=["SPEC-ISSUE-0001"], tool_context=tc,
+            ),
+            gh_pr_create=failing_pr_create,
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["superseded_issue_ids"], [])
+        issue = tc.state["product_backlog"][0]
+        self.assertNotIn("superseded_by_steering", issue)
+
+    def test_omitting_supersedes_issue_ids_leaves_the_backlog_untouched(self):
+        """Every existing caller that doesn't pass this parameter at all
+        must see no change in behavior."""
+        tc = _make_tool_context(agent_name="ScrumMaster")
+        tc.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"]},
+        ]
+
+        result = self._run_with_patches(
+            lambda: propose_steering_change(
+                "QA", "# QA\n\nConfirm test fixtures match the current schema before marking Tested.\n",
+                "A real rationale for this change.", tool_context=tc,
+            )
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["superseded_issue_ids"], [])
+        issue = tc.state["product_backlog"][0]
+        self.assertNotIn("superseded_by_steering", issue)
+
 
 if __name__ == "__main__":
     unittest.main()
