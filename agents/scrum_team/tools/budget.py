@@ -790,7 +790,7 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
     from before this triage existed) defaults to "technical", preserving
     the old behavior for pre-existing entries.
     """
-    from .requirements import upsert_issue, set_priority
+    from .requirements import upsert_issue, set_priority, _move_item_to_front_of_remaining_work
 
     filed_ids = []
     for collection_name, text_field in (("retro_actions", "action"), ("impediment_log", "description")):
@@ -814,6 +814,14 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
             filed_ids.append(issue_id)
             if get_interaction_level() != "Product":
                 set_priority(issue_id, "Must", tool_context=tool_context)
+                # SPEC-ISSUE-0076: set_priority's own resort is stable, so a
+                # brand-new Must Issue appended after already-queued Must
+                # stories would otherwise stay behind them forever - move it
+                # to the actual front of remaining (not-yet-Accepted) work so
+                # the one-story-at-a-time ordering gate (_preceding_story)
+                # genuinely blocks on it, the mechanism this auto-filing was
+                # always meant to rely on (see that function's own docstring).
+                _move_item_to_front_of_remaining_work(tool_context.state, issue_id)
         tool_context.state[collection_name] = collection
     return filed_ids
 

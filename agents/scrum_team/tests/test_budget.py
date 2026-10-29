@@ -2005,6 +2005,38 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
         item = tool_context.state["product_backlog"][0]
         self.assertEqual(item.get("priority"), "Must")
 
+    def test_auto_prioritized_must_issue_jumps_ahead_of_already_queued_same_priority_work(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0076): a real eval run showed a
+        retro-filed Must Issue, auto-prioritized here, stay stuck BEHIND
+        already-queued Must-priority stories forever -
+        _resort_backlog_by_priority's own stable sort (by design) preserves
+        relative order among same-priority items, so appending the new Issue
+        after them never actually moved it ahead. The one-story-at-a-time
+        ordering gate (_preceding_story) only blocks whatever comes
+        immediately after an unresolved item - this Issue must land ahead of
+        the team's remaining (not-yet-Accepted) work for that gate to ever
+        force attention onto it, matching GH #368's original design intent.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "type": "User Story", "title": "Add task", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0003", "type": "User Story", "title": "Delete task", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+        ]
+        tool_context.state["retro_actions"] = [
+            {"action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA", "status": "open"}
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(filed), 1)
+        issue_id = filed[0]
+        ids = [x["id"] for x in tool_context.state["product_backlog"]]
+        self.assertEqual(ids, [issue_id, "US-0002", "US-0003"])
+
     def test_ignores_blank_entries(self):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
