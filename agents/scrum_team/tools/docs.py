@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name, _run
+from .base import _configured_repo_root, _project_root, _record_touched_file, _default_push_branch, _develop_branch_name, _run, _count_structural_definitions, _record_content_loss_warning
 
 # GH #419: seeded into every project from its very first commit (see
 # seed_repository below) - common build/test/editor artifacts that real
@@ -111,6 +111,7 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
         # (without blocking; overwrite=True is an explicit, deliberate ask)
         # so an agent has a chance to notice an accidental overwrite.
         overwrote_existing_content = False
+        previous = None
         if abs_path.exists():
             try:
                 previous = abs_path.read_text(encoding="utf-8", errors="replace")
@@ -119,6 +120,23 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
                 pass
         abs_path.write_text(content, encoding="utf-8")
         _record_touched_file(path, tool_context)
+        # SPEC-ISSUE-0075: an overwrite whose new content defines structurally
+        # FEWER functions/classes/routes than what it replaced is exactly the
+        # shape a real eval run's destructive full-file rewrite took (five
+        # already-Accepted stories' routes silently gone) - flag it so
+        # advance_story_stage's Tested gate can require an explicit
+        # acknowledgment instead of letting it merge unnoticed.
+        content_loss_warning = None
+        if overwrote_existing_content and previous is not None:
+            previous_count = _count_structural_definitions(previous)
+            new_count = _count_structural_definitions(content)
+            if new_count < previous_count:
+                _record_content_loss_warning(path, previous_count, new_count, tool_context)
+                content_loss_warning = (
+                    f"'{path}' previously defined {previous_count} function(s)/class(es)/route(s); "
+                    f"this overwrite leaves {new_count}. If real functionality was removed, "
+                    "advance_story_stage(..., \"Tested\") will require an explicit acknowledgment."
+                )
         # GH eval run39: check_build()'s pip/npm install result was still
         # being trusted by advance_story_stage's Tested gate even after a
         # LATER rewrite of requirements.txt/package.json - a real eval run
@@ -135,7 +153,10 @@ def write_file(path: str, content: str, overwrite: bool = False, tool_context=No
             tool_context.state["dependency_manifest_write_count"] = (
                 tool_context.state.get("dependency_manifest_write_count", 0) + 1
             )
-        return {"status": "ok", "path": str(abs_path), "overwrote_existing_content": overwrote_existing_content}
+        result = {"status": "ok", "path": str(abs_path), "overwrote_existing_content": overwrote_existing_content}
+        if content_loss_warning:
+            result["content_loss_warning"] = content_loss_warning
+        return result
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

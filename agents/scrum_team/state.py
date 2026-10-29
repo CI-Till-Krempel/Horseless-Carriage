@@ -89,6 +89,19 @@ class ScrumState(BaseModel):
     # before implementation starts.
     sprint_backlog_engagement_baseline: Dict[str, int] = Field(default_factory=dict)
     qa_tested_baseline: int = 0
+    # SPEC-ISSUE-0075: every write_file overwrite whose new content defines
+    # structurally fewer functions/classes/routes than what it replaced
+    # (_count_structural_definitions, tools/base.py) - advance_story_stage's
+    # Tested gate refuses to let one of these pass silently without an
+    # explicit content_loss_acknowledgment, the same honest-escape-hatch
+    # pattern implemented_via_earlier_work already uses (SPEC-ISSUE-0046).
+    content_loss_warnings: List[Dict[str, Any]] = Field(default_factory=list)
+    # Snapshot of len(content_loss_warnings) the last time a role
+    # successfully acknowledged every warning seen so far - mirrors
+    # dev_touch_baseline's own "only the INCREMENT since last ack matters"
+    # pattern, so a future story doesn't get blocked by an already-
+    # acknowledged warning from an earlier one.
+    content_loss_acknowledged_baseline: int = 0
     sprint_report_pending_release: bool = False
     blocking_interactions: List[Dict[str, Any]] = Field(default_factory=list)
     orchestrator_stall_count: int = 0

@@ -1866,6 +1866,26 @@ was actually opened (`sprint_backlog_pr_opened`) - `start_feature_branch`'s gate
 engagement requirement entirely when it wasn't, instead of demanding comments on a PR that cannot
 exist. See SPEC-ISSUE-0073 for the full mechanism and fix.
 
+### A destructive full-file rewrite silently deleted five already-Accepted stories' functionality, and the test that caught it got gutted instead of the code getting fixed (0.1.0-run76, SPEC-ISSUE-0075)
+
+A real eval run (0.1.0-run76, completed all 5 sprints) shipped a broken product: implementing US-0006,
+DevTeam overwrote `app.py` wholesale without ever reading its existing content, deleting every route
+US-0001 through US-0005 (all already `Accepted`) had shipped - list/task creation, toggling, deletion -
+replacing them with a narrower, read-only view. A leftover test from an earlier sprint correctly caught
+the regression and QA denied the review - but DevTeam's "fix" was to rewrite that test to stop
+exercising the lost routes entirely, rather than restore them. The gutted test passed, and the
+regression shipped to `develop`/`main`. Nothing in the pipeline - `write_file`, `check_build`,
+Architect's review, QA's gate - could tell "a real bug got fixed" apart from "the failing assertion got
+deleted," because there was no CI on the eval repo at all and `check_build` only ever reports pass/fail
+against whatever test file currently exists. Fixed by having `write_file` detect when an overwrite's
+new content structurally defines fewer functions/classes/routes than what it replaced
+(`content_loss_warnings` in state) and requiring `advance_story_stage`'s Tested gate to refuse the
+transition until a role explicitly acknowledges what changed and why (`content_loss_acknowledgment`) -
+the same honest-escape-hatch pattern `implemented_via_earlier_work` already uses, rather than a silent
+pass-through. Architect's and QA's guardrails now also explicitly call out checking whether a PR
+removes functionality a prior Accepted story depended on. See SPEC-ISSUE-0075 for the full mechanism
+and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

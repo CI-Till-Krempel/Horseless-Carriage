@@ -1503,7 +1503,7 @@ def sync_all_active_stories_to_roadmap(tool_context) -> Dict[str, Any]:
     return {"status": "ok" if overall_ok else "error", "versions_synced": list(versions.keys()), "results": results}
 
 
-def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_work: str = None, tool_context=None) -> Dict[str, Any]:
+def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_work: str = None, content_loss_acknowledgment: str = None, tool_context=None) -> Dict[str, Any]:
     """
     The single, mandatory mechanism for moving a story through the fixed
     Draft -> Ready -> Implemented -> Reviewed -> Tested -> Accepted pipeline
@@ -1517,6 +1517,14 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     several closely-related stories in one pass) - state the earlier
     story/commit here instead of fabricating a throwaway file just to
     satisfy the "wrote real code" check.
+
+    `content_loss_acknowledgment`: only meaningful for the Tested transition -
+    see its check below (SPEC-ISSUE-0075). Required whenever a write_file
+    overwrite since the last acknowledgment left a file defining structurally
+    fewer functions/classes/routes than before - state plainly whether real
+    functionality was genuinely removed (and why that's fine, e.g. a feature
+    was deliberately retired) or restored before retrying. Do not supply a
+    placeholder value just to satisfy this check.
 
     Enforces, in code rather than by asking nicely in a prompt (which
     repeatedly wasn't enough on its own in real eval runs):
@@ -1954,6 +1962,44 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                 "pass total above without actually verifying anything - if a real test is flaky, fix "
                 "it rather than hedging with a stub alongside it."
             )
+        # SPEC-ISSUE-0075: a real eval run overwrote app.py wholesale for one
+        # story, silently deleting every route five prior, already-Accepted
+        # stories' acceptance criteria depended on - the one test that caught
+        # it (a regression, correctly denied by QA) was then "fixed" by
+        # gutting the test itself rather than restoring the functionality.
+        # Nothing previously distinguished that from a genuine, intentional
+        # fix. A write_file overwrite whose new content structurally defines
+        # fewer functions/classes/routes than what it replaced
+        # (content_loss_warnings, tools/base.py) must not reach Tested
+        # silently - require a real, specific acknowledgment of what
+        # changed and why, logged for audit, same honest-escape-hatch
+        # pattern implemented_via_earlier_work already uses for Implemented.
+        content_loss_warnings = s.get("content_loss_warnings", []) or []
+        unacknowledged = content_loss_warnings[s.get("content_loss_acknowledged_baseline", 0):]
+        if unacknowledged:
+            justification = (content_loss_acknowledgment or "").strip()
+            if not justification or is_low_quality_retro_text(justification):
+                content_loss_named = ", ".join(
+                    f"'{w['path']}' ({w['previous_definition_count']} -> {w['new_definition_count']})"
+                    for w in unacknowledged[:5]
+                )
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Tested - {len(unacknowledged)} write_file overwrite(s) "
+                        f"since the last acknowledgment left structurally less content than before: "
+                        f"{content_loss_named}. Pass content_loss_acknowledgment with a real, specific "
+                        "explanation of what changed and why (a genuine fix, a deliberate removal, or "
+                        "restore the missing functionality instead) before retrying."
+                    ),
+                })
+            s["decision_log"] = list(s.get("decision_log", [])) + [{
+                "title": f"{story_id}: content-loss warning(s) acknowledged at Tested",
+                "decision": "Accepted via content_loss_acknowledgment instead of restoring the prior content",
+                "rationale": justification,
+                "owner": agent_name or "QA",
+            }]
+            s["content_loss_acknowledged_baseline"] = len(content_loss_warnings)
     elif stage == "Accepted":
         # SPEC-ISSUE-0043: Accepted previously had no evidence gate at all - any
         # role could call advance_story_stage(id, "Accepted") on assertion

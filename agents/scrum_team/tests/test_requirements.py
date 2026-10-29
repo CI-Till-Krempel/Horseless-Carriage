@@ -517,6 +517,95 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
 
+    def test_tested_blocked_by_an_unacknowledged_content_loss_warning(self, mock_save, mock_md, mock_roadmap):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0075): a real eval run overwrote
+        app.py wholesale for one story, silently deleting every route five
+        prior, already-Accepted stories' acceptance criteria depended on -
+        write_file's content-loss detection (test_docs.py) must actually
+        block Tested here, not just get recorded and ignored.
+        """
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        tc.state["content_loss_warnings"] = [
+            {"path": "app.py", "previous_definition_count": 5, "new_definition_count": 1}
+        ]
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"tests_available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("app.py", result["message"])
+        self.assertIn("content_loss_acknowledgment", result["message"])
+
+    def test_tested_rejects_a_blank_or_placeholder_content_loss_acknowledgment(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        tc.state["content_loss_warnings"] = [
+            {"path": "app.py", "previous_definition_count": 5, "new_definition_count": 1}
+        ]
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"tests_available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
+            for bad in (None, "", "  ", "done", "n/a"):
+                with self.subTest(acknowledgment=bad):
+                    result = advance_story_stage(
+                        "US-0001", "Tested", content_loss_acknowledgment=bad, tool_context=tc,
+                    )
+                    self.assertEqual(result["status"], "error")
+                    self.assertIn("content_loss_acknowledgment", result["message"])
+
+    def test_tested_succeeds_with_a_real_content_loss_acknowledgment(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        tc.state["content_loss_warnings"] = [
+            {"path": "app.py", "previous_definition_count": 5, "new_definition_count": 1}
+        ]
+        justification = "Removed the deprecated /legacy-export route - product decided to retire it this sprint."
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"tests_available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
+            result = advance_story_stage(
+                "US-0001", "Tested", content_loss_acknowledgment=justification, tool_context=tc,
+            )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["content_loss_acknowledged_baseline"], 1)
+        self.assertEqual(tc.state["decision_log"][-1]["rationale"], justification)
+
+    def test_tested_does_not_require_acknowledgment_when_already_acknowledged(self, mock_save, mock_md, mock_roadmap):
+        """A warning already covered by content_loss_acknowledged_baseline
+        (acknowledged for an earlier story) must not re-block a later one."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        tc.state["content_loss_warnings"] = [
+            {"path": "app.py", "previous_definition_count": 5, "new_definition_count": 1}
+        ]
+        tc.state["content_loss_acknowledged_baseline"] = 1
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"tests_available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_tested_succeeds_with_no_content_loss_warnings_at_all(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        with patch(
+            "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+            return_value={"tests_available": True, "tests_run": 12, "tests_failed": 0},
+        ), patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=[]):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
     def test_accepted_requires_a_recorded_acceptance_check(self, mock_save, mock_md, mock_roadmap):
         """Acceptance Criteria (SPEC-ISSUE-0043): Accepted previously had no
         evidence gate at all - any role could call advance_story_stage
