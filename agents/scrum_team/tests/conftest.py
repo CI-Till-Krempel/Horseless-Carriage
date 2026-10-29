@@ -61,6 +61,29 @@ from agents.scrum_team.tools.base import _configured_repo_root as _real_configur
 from agents.scrum_team.tools.base import _project_root
 
 _REAL_PROJECT_ROOT = _project_root()
+# SPEC-ISSUE-0074: this module's own docstring above claims
+# "INTERNAL_STATE_REPO_PATH is always set there [under run_tests.py's Docker
+# harness], so even an unpatched call resolves to an ephemeral container
+# path" - that stopped being true the moment docker-compose.yaml started
+# bind-mounting STATE_REPO_PATH (.env.test: a real, persistent sibling
+# directory on the HOST, not an ephemeral container-only volume) to
+# INTERNAL_STATE_REPO_PATH=/app/state_repo. A test that never customizes its
+# own repo path (the common case - test_story_pipeline_state_machine.py,
+# among others) resolves through step 1 of _configured_repo_root, which
+# _REAL_PROJECT_ROOT alone never catches - so real writes landed in that
+# persistent host directory on every real test run, invisible as long as
+# nothing checked real on-disk content (the exact gap SPEC-ISSUE-0074's own
+# fix, source_content_change_count, newly made visible: a leftover file from
+# a PRIOR run with byte-identical content to what this run's test tried to
+# write made `overwrote_existing_content` read False, same as a true no-op).
+# Captured once, at collection time, reflecting whatever INTERNAL_STATE_REPO_
+# PATH/STATE_REPO_PATH the test session actually starts with (ambient, not
+# per-test) - a test that deliberately substitutes its OWN real path
+# (test_state_persistence.py, test_id_generation.py: they explicitly delete/
+# override these env vars to their own tmp dir before resolving) still
+# resolves to something different from this ambient value, so this redirect
+# correctly leaves their own real-path-resolution testing untouched.
+_AMBIENT_CONFIGURED_ROOT = _real_configured_repo_root()
 
 _MODULES_WITH_REPO_ROOT = [
     "agents.scrum_team.tools.base",
@@ -82,7 +105,9 @@ def _isolated_repo_root(tmp_path):
 
     def _redirect_unconfigured_fallback(tool_context=None):
         resolved = _real_configured_repo_root(tool_context)
-        return fake_root if resolved == _REAL_PROJECT_ROOT else resolved
+        if resolved in (_REAL_PROJECT_ROOT, _AMBIENT_CONFIGURED_ROOT):
+            return fake_root
+        return resolved
 
     patchers = [
         patch(f"{module}._configured_repo_root", side_effect=_redirect_unconfigured_fallback)
