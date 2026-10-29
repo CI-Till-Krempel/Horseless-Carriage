@@ -71,6 +71,55 @@ def _record_source_content_change(tool_context=None) -> None:
         tool_context.state.get("source_content_change_count", 0) + 1
     )
 
+# SPEC-ISSUE-0075: a cheap, language-agnostic proxy for "how much real
+# structure (functions/classes/routes) does this file define" - not a real
+# parser, just enough to tell "this overwrite plausibly removed things" apart
+# from "this overwrite only added/changed things", across the handful of
+# shapes this project's own eval scenarios actually produce (Python
+# functions/classes, Flask route decorators/method calls, JS/TS functions).
+_DEFINITION_LINE_RE = re.compile(
+    r"^\s*("
+    r"def\s+\w+"
+    r"|class\s+\w+"
+    r"|async\s+def\s+\w+"
+    r"|function\s+\w*\s*\("
+    r"|@\w+\.route\("
+    r"|\w+\.(get|post|put|delete|patch)\("
+    r")",
+    re.MULTILINE,
+)
+
+def _count_structural_definitions(content: str) -> int:
+    if not isinstance(content, str):
+        return 0
+    return len(_DEFINITION_LINE_RE.findall(content))
+
+def _record_content_loss_warning(rel_path: str, previous_count: int, new_count: int, tool_context=None) -> None:
+    """
+    SPEC-ISSUE-0075 (0.1.0-run76): a real eval run overwrote app.py wholesale
+    for one story, silently deleting every route five prior, already-
+    Accepted stories' acceptance criteria depended on - nothing in the
+    pipeline (write_file, check_build, Architect's review, QA's Tested gate)
+    could tell "a real bug got fixed" apart from "the failing assertion got
+    deleted" when the one test that caught the regression was itself then
+    rewritten to stop covering the lost behavior. Appends to
+    ScrumState.content_loss_warnings whenever write_file detects an overwrite
+    whose structural definition count (_count_structural_definitions) dropped
+    - advance_story_stage's Tested gate refuses to let that pass silently
+    (see requirements.py) until a role explicitly acknowledges it via
+    content_loss_acknowledgment, the same "honest escape hatch, not a silent
+    bypass" pattern implemented_via_earlier_work already uses (SPEC-ISSUE-0046).
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return
+    warnings = list(tool_context.state.get("content_loss_warnings", []))
+    warnings.append({
+        "path": rel_path,
+        "previous_definition_count": previous_count,
+        "new_definition_count": new_count,
+    })
+    tool_context.state["content_loss_warnings"] = warnings
+
 def _eval_run_id() -> str | None:
     """
     Set only by the eval harness (run_eval.py) via EVAL_RUN_ID - never by

@@ -7,15 +7,84 @@ from unittest.mock import MagicMock, patch
 import agents.scrum_team.tools.base as base_module
 from agents.scrum_team.tools.base import (
     _configured_repo_root,
+    _count_structural_definitions,
     _default_push_branch,
     _develop_branch_name,
     _ensure_git_safe_directory,
     _hc_version,
+    _record_content_loss_warning,
     _redact_cmd,
     _redact_secrets,
     _run,
 )
 from agents.scrum_team.state import ScrumState
+
+
+class TestCountStructuralDefinitions(unittest.TestCase):
+    """
+    Acceptance Criteria (SPEC-ISSUE-0075): a cheap, language-agnostic proxy
+    for "how much structure does this file define" - functions, classes,
+    Flask-style route decorators/method calls - good enough to tell a
+    destructive rewrite (fewer definitions than before) apart from a normal
+    extend/fix (same or more).
+    """
+
+    def test_counts_python_functions_and_classes(self):
+        content = "def foo():\n    pass\n\nclass Bar:\n    def baz(self):\n        pass\n"
+        self.assertEqual(_count_structural_definitions(content), 3)
+
+    def test_counts_flask_route_decorators(self):
+        content = (
+            "@app.route('/lists', methods=['POST'])\n"
+            "def create_list():\n"
+            "    pass\n"
+            "\n"
+            "@app.route('/lists/<id>/tasks', methods=['POST'])\n"
+            "def add_task(id):\n"
+            "    pass\n"
+        )
+        self.assertEqual(_count_structural_definitions(content), 4)
+
+    def test_counts_method_call_style_routes(self):
+        content = "app.get('/')\ndef index():\n    pass\n"
+        self.assertEqual(_count_structural_definitions(content), 2)
+
+    def test_empty_content_counts_zero(self):
+        self.assertEqual(_count_structural_definitions(""), 0)
+
+    def test_non_string_content_counts_zero(self):
+        self.assertEqual(_count_structural_definitions(None), 0)
+
+    def test_prose_with_no_definitions_counts_zero(self):
+        self.assertEqual(_count_structural_definitions("Just some notes.\nNo code here.\n"), 0)
+
+
+class TestRecordContentLossWarning(unittest.TestCase):
+    """
+    Acceptance Criteria (SPEC-ISSUE-0075): every detected content-loss
+    overwrite is appended to ScrumState.content_loss_warnings for
+    advance_story_stage's Tested gate to require an acknowledgment of.
+    """
+
+    def test_appends_a_warning_entry(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        _record_content_loss_warning("app.py", 5, 1, tool_context=tool_context)
+        self.assertEqual(
+            tool_context.state["content_loss_warnings"],
+            [{"path": "app.py", "previous_definition_count": 5, "new_definition_count": 1}],
+        )
+
+    def test_appends_multiple_warnings_across_calls(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        _record_content_loss_warning("app.py", 5, 1, tool_context=tool_context)
+        _record_content_loss_warning("tests/test_app.py", 3, 0, tool_context=tool_context)
+        self.assertEqual(len(tool_context.state["content_loss_warnings"]), 2)
+
+    def test_no_op_without_a_tool_context(self):
+        # Must not raise.
+        _record_content_loss_warning("app.py", 5, 1, tool_context=None)
 
 
 class TestHcVersion(unittest.TestCase):

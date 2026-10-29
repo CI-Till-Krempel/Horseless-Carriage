@@ -102,6 +102,57 @@ class TestSprintFilesTouched(unittest.TestCase):
         result = write_file("notes/new.md", "content", tool_context=self.tool_context)
         self.assertFalse(result["overwrote_existing_content"])
 
+    def test_write_file_flags_content_loss_when_overwrite_removes_definitions(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0075): a real eval run overwrote
+        app.py wholesale for one story, silently deleting every route five
+        prior, already-Accepted stories' acceptance criteria depended on -
+        write_file must surface this, not just that content changed at all.
+        """
+        write_file(
+            "app.py",
+            "@app.route('/lists', methods=['POST'])\ndef create_list():\n    pass\n"
+            "\n@app.route('/lists/<id>/tasks', methods=['POST'])\ndef add_task(id):\n    pass\n",
+            tool_context=self.tool_context,
+        )
+        result = write_file(
+            "app.py",
+            "@app.route('/')\ndef index():\n    pass\n",
+            overwrite=True,
+            tool_context=self.tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("content_loss_warning", result)
+        self.assertEqual(
+            self.tool_context.state["content_loss_warnings"],
+            [{"path": "app.py", "previous_definition_count": 4, "new_definition_count": 2}],
+        )
+
+    def test_write_file_does_not_flag_content_loss_when_overwrite_adds_definitions(self):
+        write_file("app.py", "def index():\n    pass\n", tool_context=self.tool_context)
+        result = write_file(
+            "app.py",
+            "def index():\n    pass\n\ndef create_list():\n    pass\n",
+            overwrite=True,
+            tool_context=self.tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("content_loss_warning", result)
+        self.assertEqual(self.tool_context.state.get("content_loss_warnings", []), [])
+
+    def test_write_file_does_not_flag_content_loss_for_a_brand_new_file(self):
+        result = write_file("notes/new.md", "just some prose, no code", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("content_loss_warning", result)
+        self.assertEqual(self.tool_context.state.get("content_loss_warnings", []), [])
+
+    def test_write_file_does_not_flag_content_loss_for_an_identical_overwrite(self):
+        write_file("app.py", "def index():\n    pass\n", tool_context=self.tool_context)
+        result = write_file("app.py", "def index():\n    pass\n", overwrite=True, tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("content_loss_warning", result)
+        self.assertEqual(self.tool_context.state.get("content_loss_warnings", []), [])
+
     def test_write_file_increments_dependency_manifest_write_count_for_requirements_txt(self):
         write_file("requirements.txt", "flask\n", tool_context=self.tool_context)
         self.assertEqual(self.tool_context.state["dependency_manifest_write_count"], 1)

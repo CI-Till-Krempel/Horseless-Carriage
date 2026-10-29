@@ -1866,51 +1866,6 @@ was actually opened (`sprint_backlog_pr_opened`) - `start_feature_branch`'s gate
 engagement requirement entirely when it wasn't, instead of demanding comments on a PR that cannot
 exist. See SPEC-ISSUE-0073 for the full mechanism and fix.
 
-### A sprint that exhausted the harness's own nudge ceiling (not its budget) got no report or transcript at all (0.1.0-run76, SPEC-ISSUE-0077)
-
-A real eval run's Sprint 4 (0.1.0-run76) has no sprint report or transcript committed anywhere -
-`specs/reports/SPRINT-REPORT-004.md`/`TRANSCRIPT-004.md` simply don't exist, jumping straight from 003
-to 005. The sprint stopped with `stop_reason: "max_nudges_exhausted"` at only 636K of its 5M token
-budget - DevTeam was stuck in a lengthy, legitimate mechanical-gate dance (a phase-gate override retry,
-then the ordering gate, then a second phase-gate override retry for a different Issue) when the eval
-harness's own fixed "continue" retry ceiling ran out, well before any real budget constraint.
-`_run_one_sprint`'s sprint-report safety net only ever fired on a real budget-critical-halt flag - this
-dead end, genuinely independent of budget, fell through it entirely, and even the one case the net *did*
-cover never wrote a transcript file, only the report. Fixed by broadening the safety net to fire for
-any genuinely-started sprint that ends with no report, for any stop reason, with wording that
-accurately distinguishes a real budget exhaustion from the harness's own retry ceiling (no longer
-claiming "budget used in full" when it demonstrably wasn't), and by always rendering a transcript
-alongside the fallback report, matching `create_sprint_report`'s own behavior. See SPEC-ISSUE-0077 for
-the full mechanism and fix.
-### A retro-filed Issue already resolved via a steering proposal was never reconciled with it, staying orphaned and still blocking (0.1.0-run76, SPEC-ISSUE-0078)
-
-A real eval run (0.1.0-run76) correctly recognized a retro finding ("Ensure QA checks test suite run
-locally before marking Tested") as a role-behavior concern, not a code task - GH #381's own backstop
-forced ScrumMaster to propose a steering change for QA's identity, which it did, three separate times.
-But the Issue the same finding had already been auto-filed as (GH #342's "technical" category routing)
-was never told its own concern had been resolved a different way - it stayed `Ready`, Must-priority,
-permanently blocking the one-story-at-a-time ordering gate and `create_sprint_backlog_pr`'s own
-unaddressed-Must-Issue check, duplicated, orphaned work the team had already done the right thing about.
-Fixed by letting `propose_steering_change` name which Issue(s) it resolves
-(`supersedes_issue_ids`) - a matched Issue is marked `superseded_by_steering` on a real, successful
-proposal only, and both gates now stand down for it the same way they already do for a `blocked` item.
-See SPEC-ISSUE-0078 for the full mechanism and fix.
-### A retro-filed Must-priority Issue never actually blocked anything, so the same unresolved process finding got re-filed every sprint (0.1.0-run76, SPEC-ISSUE-0076)
-
-A real eval run (0.1.0-run76, completed all 5 sprints) filed four near-identical Must-priority process
-Issues across five sprints' retrospectives, all describing the same unresolved QA/test-integration
-problem - "Issues fixed" read `0, 0, 0, 0, 0` the whole run. GH #368's own ordering gate
-(`_preceding_story`) was specifically designed to force attention onto exactly this: a Ready
-Must-priority Issue should block every lower-priority story behind it in `product_backlog` until it
-reaches `Accepted`. That gate genuinely works once an Issue is positioned ahead of the team's remaining
-work - but a retro-filed Issue never actually got positioned there: `upsert_backlog_item` always
-appends new items, and `_resort_backlog_by_priority`'s own (deliberately) stable sort preserves relative
-order among same-priority items, so a brand-new Must Issue filed after the sprint's own already-queued
-Must-priority stories stayed stuck behind them forever - `Ready` was as far as `create_sprint_backlog_pr`'s
-own gate could mechanically push it. Fixed by repositioning a freshly auto-prioritized retro Issue to
-sit immediately ahead of the team's remaining (not-yet-Accepted) work, rather than relying on the
-general stable sort alone - the downstream ordering gate's own, already-correct behavior does the rest.
-See SPEC-ISSUE-0076 for the full mechanism and fix.
 ### `advance_story_stage`'s "real code written" gate permanently plateaued once a project's small set of source files had each been touched once (0.1.0-run76, SPEC-ISSUE-0074)
 
 A real eval run (0.1.0-run76, completed all 5 sprints) still flagged junk-file clutter
@@ -1929,6 +1884,74 @@ never-path-deduplicated counter (`source_content_change_count`) that increments 
 content change to a source file, however many times the same path is rewritten -
 `sprint_files_touched` itself is untouched, since its own consumer still needs the path-deduplicated
 list. See SPEC-ISSUE-0074 for the full mechanism and fix.
+
+### A destructive full-file rewrite silently deleted five already-Accepted stories' functionality, and the test that caught it got gutted instead of the code getting fixed (0.1.0-run76, SPEC-ISSUE-0075)
+
+A real eval run (0.1.0-run76, completed all 5 sprints) shipped a broken product: implementing US-0006,
+DevTeam overwrote `app.py` wholesale without ever reading its existing content, deleting every route
+US-0001 through US-0005 (all already `Accepted`) had shipped - list/task creation, toggling, deletion -
+replacing them with a narrower, read-only view. A leftover test from an earlier sprint correctly caught
+the regression and QA denied the review - but DevTeam's "fix" was to rewrite that test to stop
+exercising the lost routes entirely, rather than restore them. The gutted test passed, and the
+regression shipped to `develop`/`main`. Nothing in the pipeline - `write_file`, `check_build`,
+Architect's review, QA's gate - could tell "a real bug got fixed" apart from "the failing assertion got
+deleted," because there was no CI on the eval repo at all and `check_build` only ever reports pass/fail
+against whatever test file currently exists. Fixed by having `write_file` detect when an overwrite's
+new content structurally defines fewer functions/classes/routes than what it replaced
+(`content_loss_warnings` in state) and requiring `advance_story_stage`'s Tested gate to refuse the
+transition until a role explicitly acknowledges what changed and why (`content_loss_acknowledgment`) -
+the same honest-escape-hatch pattern `implemented_via_earlier_work` already uses, rather than a silent
+pass-through. Architect's and QA's guardrails now also explicitly call out checking whether a PR
+removes functionality a prior Accepted story depended on. See SPEC-ISSUE-0075 for the full mechanism
+and fix.
+
+### A retro-filed Must-priority Issue never actually blocked anything, so the same unresolved process finding got re-filed every sprint (0.1.0-run76, SPEC-ISSUE-0076)
+
+A real eval run (0.1.0-run76, completed all 5 sprints) filed four near-identical Must-priority process
+Issues across five sprints' retrospectives, all describing the same unresolved QA/test-integration
+problem - "Issues fixed" read `0, 0, 0, 0, 0` the whole run. GH #368's own ordering gate
+(`_preceding_story`) was specifically designed to force attention onto exactly this: a Ready
+Must-priority Issue should block every lower-priority story behind it in `product_backlog` until it
+reaches `Accepted`. That gate genuinely works once an Issue is positioned ahead of the team's remaining
+work - but a retro-filed Issue never actually got positioned there: `upsert_backlog_item` always
+appends new items, and `_resort_backlog_by_priority`'s own (deliberately) stable sort preserves relative
+order among same-priority items, so a brand-new Must Issue filed after the sprint's own already-queued
+Must-priority stories stayed stuck behind them forever - `Ready` was as far as `create_sprint_backlog_pr`'s
+own gate could mechanically push it. Fixed by repositioning a freshly auto-prioritized retro Issue to
+sit immediately ahead of the team's remaining (not-yet-Accepted) work, rather than relying on the
+general stable sort alone - the downstream ordering gate's own, already-correct behavior does the rest.
+See SPEC-ISSUE-0076 for the full mechanism and fix.
+
+### A sprint that exhausted the harness's own nudge ceiling (not its budget) got no report or transcript at all (0.1.0-run76, SPEC-ISSUE-0077)
+
+A real eval run's Sprint 4 (0.1.0-run76) has no sprint report or transcript committed anywhere -
+`specs/reports/SPRINT-REPORT-004.md`/`TRANSCRIPT-004.md` simply don't exist, jumping straight from 003
+to 005. The sprint stopped with `stop_reason: "max_nudges_exhausted"` at only 636K of its 5M token
+budget - DevTeam was stuck in a lengthy, legitimate mechanical-gate dance (a phase-gate override retry,
+then the ordering gate, then a second phase-gate override retry for a different Issue) when the eval
+harness's own fixed "continue" retry ceiling ran out, well before any real budget constraint.
+`_run_one_sprint`'s sprint-report safety net only ever fired on a real budget-critical-halt flag - this
+dead end, genuinely independent of budget, fell through it entirely, and even the one case the net *did*
+cover never wrote a transcript file, only the report. Fixed by broadening the safety net to fire for
+any genuinely-started sprint that ends with no report, for any stop reason, with wording that
+accurately distinguishes a real budget exhaustion from the harness's own retry ceiling (no longer
+claiming "budget used in full" when it demonstrably wasn't), and by always rendering a transcript
+alongside the fallback report, matching `create_sprint_report`'s own behavior. See SPEC-ISSUE-0077 for
+the full mechanism and fix.
+
+### A retro-filed Issue already resolved via a steering proposal was never reconciled with it, staying orphaned and still blocking (0.1.0-run76, SPEC-ISSUE-0078)
+
+A real eval run (0.1.0-run76) correctly recognized a retro finding ("Ensure QA checks test suite run
+locally before marking Tested") as a role-behavior concern, not a code task - GH #381's own backstop
+forced ScrumMaster to propose a steering change for QA's identity, which it did, three separate times.
+But the Issue the same finding had already been auto-filed as (GH #342's "technical" category routing)
+was never told its own concern had been resolved a different way - it stayed `Ready`, Must-priority,
+permanently blocking the one-story-at-a-time ordering gate and `create_sprint_backlog_pr`'s own
+unaddressed-Must-Issue check, duplicated, orphaned work the team had already done the right thing about.
+Fixed by letting `propose_steering_change` name which Issue(s) it resolves
+(`supersedes_issue_ids`) - a matched Issue is marked `superseded_by_steering` on a real, successful
+proposal only, and both gates now stand down for it the same way they already do for a `blocked` item.
+See SPEC-ISSUE-0078 for the full mechanism and fix.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
