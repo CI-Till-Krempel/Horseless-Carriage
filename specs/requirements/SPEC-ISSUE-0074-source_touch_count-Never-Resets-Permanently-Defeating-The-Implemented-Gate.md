@@ -144,7 +144,34 @@ Tests added:
   source work happened" via `sprint_files_touched` to use `source_content_change_count` instead (the
   three tests checking "only a spec file touched" were left at the default 0, correctly still rejecting).
 
-`agents/scrum_team/tests/{test_docs,test_requirements,test_agent,test_scrum,test_state_persistence}.py`
-(via `docker compose run`, project-scoped per `lib_docker.compose_project_args("test")`): all pass
-except the one pre-existing, unrelated failure already tracked (`test_agent.py`'s identity-fallback
-test).
+**Companion fix found while verifying this one.** `source_content_change_count`'s real-content-diffing
+is sensitive to actual on-disk file state in a way the old state-only `sprint_files_touched` signal
+never was - this surfaced a pre-existing, independent test-isolation gap:
+`agents/scrum_team/tests/conftest.py`'s `_isolated_repo_root` autouse fixture only ever redirected a
+test's repo-path resolution when it fell through all the way to `_project_root()` (this actual
+checkout) - its own docstring's stated assumption was "INTERNAL_STATE_REPO_PATH is always set [under
+Docker], so even an unpatched call resolves to an ephemeral container path." That stopped being true:
+`docker-compose.yaml` bind-mounts `.env.test`'s `STATE_REPO_PATH` (a real, persistent *sibling*
+directory on the host, `../Horseless-Carriage-State-Test`, not an ephemeral volume) to
+`INTERNAL_STATE_REPO_PATH=/app/state_repo`. Any test that never customizes its own repo path (the
+common case - `test_story_pipeline_state_machine.py` among others) resolves through step 1 of
+`_configured_repo_root` and was writing real files into that persistent host directory on every test
+run, invisible as long as nothing checked real on-disk content. This fix's own
+`overwrote_existing_content`-based diffing made it visible for the first time: a leftover file from a
+PRIOR run, byte-identical to what a LATER run's test tried to write, read as "no change" -
+`test_golden_path_reaches_accepted`/`test_qa_review_fix_loop` (`test_story_pipeline_state_machine.py`)
+failed non-deterministically depending on host-directory state left over from earlier runs. Fixed by
+also redirecting whenever the resolved path matches the *ambient* `INTERNAL_STATE_REPO_PATH`/
+`STATE_REPO_PATH` value captured once at conftest.py's own import time - a test that deliberately
+substitutes its own real path (`test_state_persistence.py`, `test_id_generation.py`: both explicitly
+delete/override these env vars to their own tmp dir first) still resolves to something different from
+that ambient value, so their own real-path-resolution testing is untouched.
+
+This incidentally fixed several previously-misattributed "pre-existing, unrelated" test failures too
+(`test_agent.py`'s identity-fallback test, all 4 in `test_steering_proposals.py`) - they were never
+actually pre-existing/unrelated; they were the same host-directory pollution, intermittently tripping
+whichever tests happened to read real on-disk content left dirty by an earlier run.
+
+Full suite (`agents/scrum_team/tests`, via `docker compose run`, project-scoped per
+`lib_docker.compose_project_args("test")`) now passes 1117/1117, confirmed deterministic across two
+consecutive runs - zero pre-existing failures remain.
