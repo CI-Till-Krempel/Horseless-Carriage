@@ -126,6 +126,36 @@ class TestSprintFilesTouched(unittest.TestCase):
         write_file("notes/foo.md", "content", tool_context=self.tool_context)
         self.assertEqual(self.tool_context.state.get("dependency_manifest_write_count", 0), 0)
 
+    def test_write_file_increments_source_content_change_count_for_a_new_source_file(self):
+        write_file("app.py", "print('hi')", tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state["source_content_change_count"], 1)
+
+    def test_write_file_increments_source_content_change_count_on_each_genuine_rewrite_of_the_same_path(self):
+        """
+        SPEC-ISSUE-0074 (0.1.0-run76): unlike sprint_files_touched (which
+        dedupes by path for the whole run, so a second write to the SAME
+        path never grows it), source_content_change_count must keep growing
+        for as long as a path's content keeps genuinely changing - the
+        overwhelmingly common case for a small, stable set of source files
+        reused across many stories.
+        """
+        write_file("app.py", "v1", tool_context=self.tool_context)
+        write_file("app.py", "v2", overwrite=True, tool_context=self.tool_context)
+        write_file("app.py", "v3", overwrite=True, tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state["source_content_change_count"], 3)
+        # sprint_files_touched itself is untouched by this fix - still
+        # deduped by path, for its own different consumer.
+        self.assertEqual(self.tool_context.state["sprint_files_touched"], ["app.py"])
+
+    def test_write_file_does_not_increment_source_content_change_count_for_identical_overwrite(self):
+        write_file("app.py", "same", tool_context=self.tool_context)
+        write_file("app.py", "same", overwrite=True, tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state["source_content_change_count"], 1)
+
+    def test_write_file_does_not_increment_source_content_change_count_for_a_spec_path(self):
+        write_file("specs/stories/US-0001.md", "content", tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state.get("source_content_change_count", 0), 0)
+
     def test_delete_file_removes_it_from_disk(self):
         write_file("tests/test_todo_unit.py", "broken import", tool_context=self.tool_context)
         result = delete_file("tests/test_todo_unit.py", tool_context=self.tool_context)
@@ -136,6 +166,17 @@ class TestSprintFilesTouched(unittest.TestCase):
         write_file("tests/test_todo_unit.py", "broken import", tool_context=self.tool_context)
         delete_file("tests/test_todo_unit.py", tool_context=self.tool_context)
         self.assertIn("tests/test_todo_unit.py", self.tool_context.state["sprint_files_touched"])
+
+    def test_delete_file_increments_source_content_change_count(self):
+        write_file("tests/test_todo_unit.py", "broken import", tool_context=self.tool_context)
+        delete_file("tests/test_todo_unit.py", tool_context=self.tool_context)
+        # One from the write_file above, one from this delete.
+        self.assertEqual(self.tool_context.state["source_content_change_count"], 2)
+
+    def test_delete_file_does_not_increment_source_content_change_count_for_a_spec_path(self):
+        write_file("specs/stories/US-0001.md", "content", tool_context=self.tool_context)
+        delete_file("specs/stories/US-0001.md", tool_context=self.tool_context)
+        self.assertEqual(self.tool_context.state.get("source_content_change_count", 0), 0)
 
     def test_delete_file_errors_on_a_path_that_does_not_exist(self):
         result = delete_file("tests/nope.py", tool_context=self.tool_context)

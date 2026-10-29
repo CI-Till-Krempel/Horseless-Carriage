@@ -28,7 +28,11 @@ def _record_touched_file(rel_path: str, tool_context=None) -> None:
     """
     Records a repo-relative path in ScrumState.sprint_files_touched, so a
     later release-PR check can verify every sprint write actually landed in
-    the release. De-duplicates repeated writes to the same path.
+    the release. De-duplicates repeated writes to the same path - this is
+    intentional for that consumer (it only needs the *set* of distinct
+    paths ever touched) and must not change; see
+    _record_source_content_change below for the "has real code genuinely
+    changed since X" signal, which has different, incompatible needs.
     """
     if not tool_context or not getattr(tool_context, "state", None):
         return
@@ -36,6 +40,36 @@ def _record_touched_file(rel_path: str, tool_context=None) -> None:
     if rel_path not in touched:
         touched.append(rel_path)
         tool_context.state["sprint_files_touched"] = touched
+
+def _record_source_content_change(tool_context=None) -> None:
+    """
+    Bumps ScrumState.source_content_change_count - a monotonically
+    increasing, never-deduplicated counter of real write_file/delete_file
+    calls to an application-source (non-spec) path whose content actually
+    changed. Call only when that's true (see write_file/delete_file).
+
+    SPEC-ISSUE-0074: advance_story_stage's Implemented gate and
+    _detect_unadvanced_implementation (agent.py) both used to derive "has
+    new code been written since X" from counting *distinct paths* in
+    sprint_files_touched - but that list is deliberately deduplicated by
+    path for the entire run (see _record_touched_file above, kept as-is
+    for its own different consumer). For any project whose set of source
+    paths plateaus early - the common case, a handful of files reused
+    across every story - that distinct-path count stops growing after the
+    first few stories, so "no new source touch since the last Implemented
+    transition" became permanently, trivially true even when every later
+    story's write_file calls were genuinely new, different code. A real
+    eval run (0.1.0-run76) hit this for 4 different stories 6 times,
+    forcing DevTeam into exactly the fabricated-placeholder-file anti-
+    pattern SPEC-ISSUE-0046 was filed to eliminate. This counter never
+    dedupes by path, so it keeps growing for as long as source content
+    keeps genuinely changing, however many times the same file is touched.
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return
+    tool_context.state["source_content_change_count"] = (
+        tool_context.state.get("source_content_change_count", 0) + 1
+    )
 
 def _eval_run_id() -> str | None:
     """
