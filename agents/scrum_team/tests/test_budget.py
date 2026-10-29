@@ -1760,6 +1760,80 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
         self.assertFalse(any(p.startswith("specs/reports/STEERING-") for p in written_paths))
         self.assertEqual(tool_context.state["retro_doc_path"], "specs/reports/RETRO-001.md")
 
+    @patch("agents.scrum_team.tools.budget._next_transcript_path", return_value="specs/reports/TRANSCRIPT-001.md")
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_writes_a_transcript_alongside_the_report(self, mock_write_file, mock_next_report_path, mock_next_transcript_path):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0077): create_sprint_report always
+        renders a transcript alongside the report - this fallback path
+        previously didn't, so a sprint that never reached create_sprint_
+        report lost its transcript entirely, not just its report (confirmed
+        missing for 0.1.0-run76's Sprint 4: TRANSCRIPT-004.md never existed).
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["transcript"] = [{"agent_name": "DevTeam", "role": "tool_call", "content": "write_file(...)"}]
+
+        render_fallback_sprint_report(tool_context=tool_context)
+
+        written_paths = [c.args[0] for c in mock_write_file.call_args_list]
+        self.assertIn("specs/reports/TRANSCRIPT-001.md", written_paths)
+        self.assertIn("specs/reports/TRANSCRIPT-LATEST.md", written_paths)
+        self.assertEqual(tool_context.state["transcript_path"], "specs/reports/TRANSCRIPT-001.md")
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reason_nudges_does_not_claim_the_budget_was_used_in_full(self, mock_write_file, mock_next_path):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0077, 0.1.0-run76): Sprint 4 used
+        636K of its 5M token budget when it stopped - "Budget Used in Full"
+        would be factually wrong for this case.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = render_fallback_sprint_report(tool_context=tool_context, reason="nudges")
+
+        self.assertIn("Harness Retry Ceiling Reached", result["report"])
+        self.assertNotIn("Budget Used in Full", result["report"])
+        self.assertIn("NOT exhausted", result["report"])
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reason_budget_keeps_the_original_wording(self, mock_write_file, mock_next_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = render_fallback_sprint_report(tool_context=tool_context, reason="budget")
+
+        self.assertIn("Budget Used in Full", result["report"])
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_unrecognized_reason_renders_a_generic_reason_agnostic_paragraph(self, mock_write_file, mock_next_path):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = render_fallback_sprint_report(tool_context=tool_context, reason="other")
+
+        self.assertIn("Sprint Ended Without A Report", result["report"])
+        self.assertNotIn("Budget Used in Full", result["report"])
+        self.assertNotIn("NOT exhausted", result["report"])
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_default_reason_is_budget_for_backward_compatibility(self, mock_write_file, mock_next_path):
+        """Every existing caller that doesn't pass `reason` explicitly must
+        keep rendering the exact same wording as before this parameter
+        existed."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = render_fallback_sprint_report(tool_context=tool_context)
+
+        self.assertIn("Budget Used in Full", result["report"])
+
     @patch("agents.scrum_team.tools.budget._next_steering_doc_path", return_value="specs/reports/STEERING-001.md")
     @patch("agents.scrum_team.tools.budget._next_retro_doc_path", return_value="specs/reports/RETRO-001.md")
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")

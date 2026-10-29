@@ -1866,6 +1866,22 @@ was actually opened (`sprint_backlog_pr_opened`) - `start_feature_branch`'s gate
 engagement requirement entirely when it wasn't, instead of demanding comments on a PR that cannot
 exist. See SPEC-ISSUE-0073 for the full mechanism and fix.
 
+### A sprint that exhausted the harness's own nudge ceiling (not its budget) got no report or transcript at all (0.1.0-run76, SPEC-ISSUE-0077)
+
+A real eval run's Sprint 4 (0.1.0-run76) has no sprint report or transcript committed anywhere -
+`specs/reports/SPRINT-REPORT-004.md`/`TRANSCRIPT-004.md` simply don't exist, jumping straight from 003
+to 005. The sprint stopped with `stop_reason: "max_nudges_exhausted"` at only 636K of its 5M token
+budget - DevTeam was stuck in a lengthy, legitimate mechanical-gate dance (a phase-gate override retry,
+then the ordering gate, then a second phase-gate override retry for a different Issue) when the eval
+harness's own fixed "continue" retry ceiling ran out, well before any real budget constraint.
+`_run_one_sprint`'s sprint-report safety net only ever fired on a real budget-critical-halt flag - this
+dead end, genuinely independent of budget, fell through it entirely, and even the one case the net *did*
+cover never wrote a transcript file, only the report. Fixed by broadening the safety net to fire for
+any genuinely-started sprint that ends with no report, for any stop reason, with wording that
+accurately distinguishes a real budget exhaustion from the harness's own retry ceiling (no longer
+claiming "budget used in full" when it demonstrably wasn't), and by always rendering a transcript
+alongside the fallback report, matching `create_sprint_report`'s own behavior. See SPEC-ISSUE-0077 for
+the full mechanism and fix.
 ### A retro-filed Issue already resolved via a steering proposal was never reconciled with it, staying orphaned and still blocking (0.1.0-run76, SPEC-ISSUE-0078)
 
 A real eval run (0.1.0-run76) correctly recognized a retro finding ("Ensure QA checks test suite run
