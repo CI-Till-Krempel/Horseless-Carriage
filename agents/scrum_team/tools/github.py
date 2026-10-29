@@ -982,11 +982,21 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
     # backlog shortfall check right below (Dev Team can't start until this
     # PR merges), extended so a filed Must Issue can't be silently ignored
     # forever the way a merely-thin backlog already couldn't be.
+    # SPEC-ISSUE-0078: an Issue superseded by a steering proposal
+    # (propose_steering_change's own supersedes_issue_ids) is excluded here
+    # too - its real resolution path is now that human-reviewed identity.md
+    # change, not reaching Ready/Accepted through this pipeline. Without
+    # this, a correctly-recognized role-behavior finding (GH #342/#381's own
+    # backstop routed it to a steering proposal instead of Issue
+    # implementation) would still permanently block every future sprint's
+    # backlog publish on something the team already did the right thing
+    # about.
     unaddressed_must_issues = [
         item for item in (state.get("product_backlog", []) or [])
         if item.get("type") == "Issue"
         and item.get("priority") == "Must"
         and not item.get("blocked")
+        and not item.get("superseded_by_steering")
         and "Ready" not in (item.get("stages_completed") or [])
         and "Accepted" not in (item.get("stages_completed") or [])
     ]

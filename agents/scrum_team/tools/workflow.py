@@ -111,7 +111,9 @@ def gather_workflow_improvement_proposals(tool_context=None) -> List[str]:
     return proposals
 
 
-def propose_steering_change(role: str, new_content: str, rationale: str, tool_context=None) -> Dict[str, Any]:
+def propose_steering_change(
+    role: str, new_content: str, rationale: str, supersedes_issue_ids: List[str] = None, tool_context=None,
+) -> Dict[str, Any]:
     """
     Propose a change to one role's own CUSTOMIZATION - `<role>-identity.md`
     in the PRODUCT/STATE repository - as a Pull Request, for human review.
@@ -146,6 +148,22 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
     - rationale: why this change is needed - tie it to a real retrospective
       finding (add_retro_action/add_impediment/upsert_issue,
       gather_workflow_improvement_proposals), not a placeholder.
+    - supersedes_issue_ids (SPEC-ISSUE-0078): optional list of product_backlog
+      Issue IDs (upsert_issue/_file_retro_items_as_issues) this proposal
+      actually resolves - pass this whenever a retro/impediment finding was
+      ALSO auto-filed as a Must-priority Issue (the common case for a
+      "technical"-categorized role-behavior finding, GH #342/#381) before
+      being recognized as really needing a steering change instead. Without
+      it, that original Issue sits orphaned forever: create_sprint_backlog_
+      pr's unaddressed_must_issues gate and the one-story-at-a-time ordering
+      gate (_preceding_story) both only ever check stage/blocked status, with
+      no way to know a DIFFERENT mechanism already resolved the underlying
+      concern - a real eval run (0.1.0-run76) showed exactly this, four
+      near-identical Issues filed across five sprints for a finding three
+      separate steering proposals had already addressed. Marks each matched
+      item `superseded_by_steering` (this proposal's PR URL/branch) on
+      success only - never on a failed/no-op proposal - which both of those
+      gates now skip past, the same way they already skip a BLOCKED item.
 
     Refuses an unknown role, a missing/too-short rationale, or a no-op
     (new_content already matches what's there). Always opens a draft PR
@@ -228,6 +246,7 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
         tool_context=tool_context,
     )
     ok = pr_res.get("status") == "ok"
+    superseded_ids = []
     if ok and tool_context and getattr(tool_context, "state", None):
         # GH issue #342: create_sprint_report's own gate demands a *fresh*
         # proposal (steering_proposal_count past steering_baseline) since
@@ -248,6 +267,20 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
             "pr_url": (pr_res.get("stdout") or "").strip(),
             "branch": actual_branch,
         }]
+        # SPEC-ISSUE-0078: only on a successful, real proposal (never on a
+        # no-op/failed one) - see this function's own docstring for why.
+        if supersedes_issue_ids:
+            product_backlog = list(tool_context.state.get("product_backlog", []))
+            superseded_record = {
+                "pr_url": (pr_res.get("stdout") or "").strip(),
+                "branch": actual_branch,
+                "role": role,
+            }
+            for i, item in enumerate(product_backlog):
+                if item.get("type") == "Issue" and item.get("id") in supersedes_issue_ids:
+                    product_backlog[i] = {**item, "superseded_by_steering": superseded_record}
+                    superseded_ids.append(item.get("id"))
+            tool_context.state["product_backlog"] = product_backlog
     return {
         "status": "ok" if ok else "error",
         "proposed": True,
@@ -255,6 +288,7 @@ def propose_steering_change(role: str, new_content: str, rationale: str, tool_co
         "branch": actual_branch,
         "push": push_res,
         "pr": pr_res,
+        "superseded_issue_ids": superseded_ids,
     }
 
 

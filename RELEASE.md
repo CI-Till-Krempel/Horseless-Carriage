@@ -1866,6 +1866,20 @@ was actually opened (`sprint_backlog_pr_opened`) - `start_feature_branch`'s gate
 engagement requirement entirely when it wasn't, instead of demanding comments on a PR that cannot
 exist. See SPEC-ISSUE-0073 for the full mechanism and fix.
 
+### A retro-filed Issue already resolved via a steering proposal was never reconciled with it, staying orphaned and still blocking (0.1.0-run76, SPEC-ISSUE-0078)
+
+A real eval run (0.1.0-run76) correctly recognized a retro finding ("Ensure QA checks test suite run
+locally before marking Tested") as a role-behavior concern, not a code task - GH #381's own backstop
+forced ScrumMaster to propose a steering change for QA's identity, which it did, three separate times.
+But the Issue the same finding had already been auto-filed as (GH #342's "technical" category routing)
+was never told its own concern had been resolved a different way - it stayed `Ready`, Must-priority,
+permanently blocking the one-story-at-a-time ordering gate and `create_sprint_backlog_pr`'s own
+unaddressed-Must-Issue check, duplicated, orphaned work the team had already done the right thing about.
+Fixed by letting `propose_steering_change` name which Issue(s) it resolves
+(`supersedes_issue_ids`) - a matched Issue is marked `superseded_by_steering` on a real, successful
+proposal only, and both gates now stand down for it the same way they already do for a `blocked` item.
+See SPEC-ISSUE-0078 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

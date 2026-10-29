@@ -1207,6 +1207,33 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_skips_an_issue_superseded_by_a_steering_proposal(self, mock_run, mock_git_push, mock_gh_pr_create):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0078): an Issue superseded by a
+        steering proposal (propose_steering_change's own
+        supersedes_issue_ids) must no longer block a lower-priority story,
+        same as a BLOCKED one - its real resolution path is now that
+        human-reviewed identity.md change, not reaching Accepted through
+        this pipeline.
+        """
+        mock_git_push.return_value = {"status": "ok", "branch": "feature/US-0002-second-story"}
+        tool_context = MagicMock()
+        tool_context.state = self._base_state([
+            {
+                "id": "SPEC-ISSUE-0001", "title": "Ensure QA runs tests locally", "type": "Issue",
+                "priority": "Must", "stages_completed": ["Draft", "Ready"],
+                "superseded_by_steering": {"pr_url": "https://github.com/owner/repo/pull/50", "role": "QA"},
+            },
+            {"id": "US-0002", "title": "Second", "stages_completed": ["Draft", "Ready"]},
+        ])
+
+        result = start_feature_branch("US-0002", "second-story", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
     @patch("agents.scrum_team.tools.github._run")
     def test_refuses_when_story_is_not_in_product_backlog(self, mock_run):
         tool_context = MagicMock()
@@ -2535,6 +2562,38 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
             "repo": {"default_branch": "main", "develop_branch": "develop"},
             "product_backlog": _ONE_READY_STORY + [
                 {"id": "SPEC-ISSUE-0002", "type": "Issue", "priority": "Should", "stages_completed": ["Draft"]},
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_does_not_block_on_an_issue_superseded_by_a_steering_proposal(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0078): a real eval run (0.1.0-run76)
+        showed a retro-filed Must Issue stay orphaned at Draft/Ready forever
+        even after GH #342/#381's own backstop correctly routed the same
+        finding to propose_steering_change three separate times - this
+        guardrail must stand down once propose_steering_change's own
+        supersedes_issue_ids has marked it resolved, same as the
+        reprioritized-away-from-Must escape hatch above.
+        """
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"],
+                    "superseded_by_steering": {"pr_url": "https://github.com/owner/repo/pull/50", "role": "QA"},
+                },
             ],
         }
 
