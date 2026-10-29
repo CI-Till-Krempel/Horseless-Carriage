@@ -56,6 +56,7 @@ REPO_STATE_KEYS = [
     "dev_touch_baseline",
     "unadvanced_write_nudge_baseline",
     "sprint_files_touched",
+    "source_content_change_count",
     "last_check_build",
     "last_pr_checks",
     "git_push_count",
@@ -249,6 +250,7 @@ def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
     # even for a story whose files were already written earlier in the
     # sprint.
     s.setdefault("sprint_files_touched", [])
+    s.setdefault("source_content_change_count", 0)
     s.setdefault("last_check_build", None)
     s.setdefault("last_pr_checks", None)
     s.setdefault("git_push_count", 0)

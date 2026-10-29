@@ -1236,7 +1236,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
     def test_blocks_devteam_transferring_away_with_unadvanced_source_writes(self):
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
 
         result = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
 
@@ -1250,7 +1250,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
         recently reached Implemented for real, nothing untracked since."""
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
         tool_context.state["dev_touch_baseline"] = 1
 
         result = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
@@ -1263,7 +1263,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
         tool_context.agent_name = "Architect"
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
 
         result = log_tool_invocation_callback(tool, {"agent_name": "ProductOwner"}, tool_context)
 
@@ -1275,7 +1275,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
         between must be let through."""
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
 
         first = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
         second = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
@@ -1286,7 +1286,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
     def test_nudge_fires_again_after_further_new_writes(self):
         tool = BaseTool(name="transfer_to_agent", description="Transfer to another agent.")
         tool_context = self._tool_context_with_story()
-        tool_context.state["sprint_files_touched"] = ["app.py"]
+        tool_context.state["source_content_change_count"] = 1
 
         first = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
         self.assertIsNotNone(first)
@@ -1294,7 +1294,7 @@ class TestLogToolInvocationCallbackBlocksUnadvancedImplementation(unittest.TestC
         self.assertIsNone(second)
 
         # More real source work happens...
-        tool_context.state["sprint_files_touched"] = ["app.py", "templates/index.html"]
+        tool_context.state["source_content_change_count"] = 2
         third = log_tool_invocation_callback(tool, {"agent_name": "Architect"}, tool_context)
 
         self.assertIsNotNone(third)
