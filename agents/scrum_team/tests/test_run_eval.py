@@ -731,6 +731,32 @@ class TestHostSideSprintReportBackstop:
         assert mock_ensure.call_args.kwargs.get("reason") == "budget"
         assert result["sprint_report"] == "# Fallback Report (reason=budget)"
 
+    def test_backstop_passes_the_host_cap_reason_when_the_event_cap_was_hit_without_a_critical_halt(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0080, 0.1.0-run78): Sprint 1 hit
+        max_events_reached right after accepting its last planned story -
+        critical_halt_notified was never set (the team's own token/USD
+        budget was never touched), and stop_reason is "max_events_reached",
+        not "max_nudges_exhausted" - this must route to "host_cap", not the
+        generic "other" bucket whose wording reads like an undiagnosed
+        failure for what was actually a fully-successful sprint.
+        """
+        state = {"sprint_number": 1}
+        session_service = _StatefulSessionService(state)
+
+        def _fake_ensure(tool_context, reason=None):
+            tool_context.state["sprint_report"] = f"# Fallback Report (reason={reason})"
+
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt", side_effect=_fake_ensure) as mock_ensure:
+            result = _run(_run_one_sprint(
+                _OneEventThenHaltRunner(), session_service, "app", "user", "session-1",
+                "hello", max_events=1, deadline=time.monotonic() + 60, max_nudges=0,
+            ))
+
+        assert mock_ensure.call_args.kwargs.get("reason") == "host_cap"
+        assert result["stop_reason"] == "max_events_reached"
+        assert result["sprint_report"] == "# Fallback Report (reason=host_cap)"
+
     def test_backstop_failure_is_non_fatal(self):
         state = {"critical_halt_notified": True, "sprint_number": 1}
         session_service = _StatefulSessionService(state)
@@ -743,6 +769,72 @@ class TestHostSideSprintReportBackstop:
 
         assert result["stop_reason"] == "max_events_reached"
         assert result["sprint_report"] is None
+
+
+class _BumpsSprintNumberRunner:
+    """Simulates start_sprint actually running mid-turn (mutates the shared
+    state dict the same way the real tool call would)."""
+
+    def __init__(self, state):
+        self._state = state
+
+    async def run_async(self, user_id, session_id, new_message, state_delta=None):
+        self._state["sprint_number"] = self._state.get("sprint_number", 0) + 1
+        yield _FakeEvent()
+
+
+class TestRunOneSprintTeamSprintNumberTracking:
+    """
+    Acceptance Criteria (SPEC-ISSUE-0080, 0.1.0-run78): the team's own
+    sprint_number (bumped only by start_sprint) is a different counter from
+    this harness's own per-loop-iteration sprint_number argument. A harness
+    iteration that never calls start_sprint (team_sprint_number unchanged
+    from the baseline captured at the start of this call) is only finishing
+    the PREVIOUS iteration's close-out, not running a genuinely new sprint -
+    run_eval_analysis.py needs this distinction surfaced in the manifest to
+    stop presenting every harness iteration as an independent sprint.
+    """
+
+    def test_reports_continuation_when_start_sprint_was_never_called(self):
+        state = {"sprint_number": 1}
+        session_service = _StatefulSessionService(state)
+
+        result = _run(_run_one_sprint(
+            _NoProgressRunner(), session_service, "app", "user", "session-1",
+            "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+        ))
+
+        assert result["team_sprint_number"] == 1
+        assert result["team_sprint_is_continuation"] is True
+
+    def test_reports_a_genuinely_new_sprint_when_start_sprint_ran_this_iteration(self):
+        state = {"sprint_number": 1}
+        session_service = _StatefulSessionService(state)
+
+        result = _run(_run_one_sprint(
+            _BumpsSprintNumberRunner(state), session_service, "app", "user", "session-1",
+            "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+        ))
+
+        assert result["team_sprint_number"] == 2
+        assert result["team_sprint_is_continuation"] is False
+
+    def test_the_very_first_sprint_is_not_a_continuation(self):
+        """No previous sprint exists for sprint_number=0 (unset) -> 1 to be
+        a continuation of. Uses {"sprint_number": 0} rather than {} as the
+        "unset" baseline - _FakeSession.__init__'s `state or {}` would
+        silently replace a genuinely empty dict with a brand new one,
+        detaching it from the reference _BumpsSprintNumberRunner mutates."""
+        state = {"sprint_number": 0}
+        session_service = _StatefulSessionService(state)
+
+        result = _run(_run_one_sprint(
+            _BumpsSprintNumberRunner(state), session_service, "app", "user", "session-1",
+            "hello", max_events=300, deadline=time.monotonic() + 60, max_nudges=0,
+        ))
+
+        assert result["team_sprint_number"] == 1
+        assert result["team_sprint_is_continuation"] is False
 
 
 class _FakePart:

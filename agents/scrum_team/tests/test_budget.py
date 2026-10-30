@@ -1801,6 +1801,31 @@ class TestRenderFallbackSprintReport(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_reason_host_cap_does_not_read_as_a_failure(self, mock_write_file, mock_next_path):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0080, 0.1.0-run78): Sprint 1 finished
+        all three of its planned stories to Accepted on the very last of its
+        300 allotted events, with none left for create_sprint_report. The
+        generic "other" branch's wording ("for a reason this harness didn't
+        specifically distinguish") read like an undiagnosed failure for a
+        sprint that actually completed 100% of its planned work - "host_cap"
+        must not use that wording, and must not falsely claim this sprint's
+        own token/USD budget (as opposed to the harness's fixed turn/time
+        allowance) was what ran out.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = render_fallback_sprint_report(tool_context=tool_context, reason="host_cap")
+
+        self.assertIn("Turn Allowance Used in Full", result["report"])
+        self.assertIn("not a failure", result["report"])
+        self.assertNotIn("Sprint Ended Without A Report", result["report"])
+        self.assertNotIn("didn't specifically distinguish", result["report"])
+        self.assertNotIn("Budget Used in Full", result["report"])
+
+    @patch("agents.scrum_team.tools.budget._next_sprint_report_path", return_value="specs/reports/SPRINT-REPORT-001.md")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_reason_budget_keeps_the_original_wording(self, mock_write_file, mock_next_path):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()

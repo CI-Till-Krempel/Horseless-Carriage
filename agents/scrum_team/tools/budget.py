@@ -883,10 +883,24 @@ def render_fallback_sprint_report(tool_context=None, reason: str = "budget") -> 
     working through a blocked ordering dependency) consumed the harness's
     retry ceiling before Scrum Master ever got a turn. Claiming "budget used
     in full" for that case would be factually wrong (run76's Sprint 4 used
-    636K of its 5M token budget). Any other value, or the parameter omitted,
-    renders a reason-agnostic paragraph - safe for callers (e.g.
-    create_release_pr's own unconditional call to re-land the report) that
-    have no specific reason to report.
+    636K of its 5M token budget).
+
+    "host_cap" (SPEC-ISSUE-0080) is a third, independently-confirmed case
+    (0.1.0-run78): the eval harness's own fixed per-sprint event/duration
+    cap (run_eval.py's max_events/max_duration, not this sprint's token/USD
+    budget) was reached while the team was still actively working - often
+    having just finished every one of its planned stories on the very last
+    available turn, as run78's Sprint 1 did (all three stories reached
+    `Accepted` on event 300 of 300, with none left for `create_sprint_report`).
+    Before this case existed, that fell into the generic "other" branch
+    below, whose own wording ("for a reason this harness didn't specifically
+    distinguish") reads like an undiagnosed failure - wrong for a sprint that
+    completed 100% of its planned work and simply ran out of this harness's
+    own fixed allowance of turns to also narrate it.
+
+    Any other value, or the parameter omitted, renders a reason-agnostic
+    paragraph - safe for callers (e.g. create_release_pr's own unconditional
+    call to re-land the report) that have no specific reason to report.
 
     Takes no other arguments beyond tool_context/reason: there is no
     free-form path or content parameter anywhere in this function for a
@@ -924,6 +938,15 @@ def render_fallback_sprint_report(tool_context=None, reason: str = "budget") -> 
                 "This sprint's token/USD budget was used in full before Scrum Master's own "
                 "`create_sprint_report` call could run - the expected way a sprint ends when the team "
                 "spends its full budget on the sprint's actual work, not a failure."
+            )
+        elif reason == "host_cap":
+            situation_heading = "## Mechanically-Rendered Report (Sprint's Turn Allowance Used in Full)"
+            situation_body = (
+                "This sprint reached the eval harness's own fixed per-sprint turn/time allowance "
+                "before Scrum Master's own `create_sprint_report` call could run - not this sprint's "
+                "token/USD budget. This is an expected way for a sprint to end when the team spends "
+                "its full allowance of turns on real work (see Story Status below for what was "
+                "actually completed), not a failure."
             )
         else:
             situation_heading = "## Mechanically-Rendered Report (Sprint Ended Without A Report)"

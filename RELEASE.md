@@ -1970,6 +1970,28 @@ retry finally got through. Fixed by adding `plan_sprint_backlog_item` to `PHASE_
 `"Development"` bucket - it now works normally throughout the sprint, not just before the backlog PR
 publishes. See SPEC-ISSUE-0079 for the full mechanism and fix.
 
+### A sprint that exhausted the harness's own per-sprint event cap right after finishing all its work got a failure-shaped stub, while the real success narrative was mislabeled onto the next sprint (0.1.0-run78, SPEC-ISSUE-0080)
+
+A real eval run (0.1.0-run78) delivered 7 stories/issues across 5 "sprints" yet scored Team Efficiency
+2/5, with the judge's #1 Top Problem naming "token budget exhaustion across multiple consecutive
+sprints." `manifest.json` showed Sprint 1 finished all three of its planned stories to `Accepted` on
+the very last of its 300 allotted events, with none left for `create_sprint_report` - the harness's own
+fallback then stamped it "Sprint Ended Without A Report," reading like a stall even though the sprint
+fully delivered. The next harness iteration ("Sprint 2," 18 events, no `start_sprint` call) then wrote
+up that same already-completed work under its own number - its own report cited `advance_story_stage(
+stage="Accepted", title_or_id="US-0003")`, Sprint 1's exact last action, as "Sprint 2's" own accomplishment,
+and its per-agent token totals for every agent that did nothing that iteration were carried over
+byte-identical from Sprint 1. The identical pattern repeated for Sprints 3/4. Net effect: the sprint that
+did the work got a dead-end-shaped stub, the sprint that did nothing got the glowing success report and
+credit for the (merely carried-over) token spend, and summing every row's cumulative total inflated the
+run's reported token usage by nearly 1.5x. Fixed by surfacing the team's own `sprint_number` (bumped
+only by `start_sprint`) as each manifest entry's `team_sprint_number`/`team_sprint_is_continuation`;
+giving the harness's own per-sprint event/duration cap its own non-failure-sounding fallback wording
+("host_cap"), distinct from a genuine budget halt or an undiagnosed dead end; widening the fallback-
+report detection to catch every reason heading, not just "Budget Used in Full"; and correcting the
+Token & Cost Summary to count each distinct real sprint once rather than double-counting a continuation
+entry's carried-over total. See SPEC-ISSUE-0080 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

@@ -49,13 +49,31 @@ MODEL_PRICING_LOOKUP = {
 
 def _total_tokens_used(manifest: dict) -> int:
     """
-    token_usage.total now resets at the start of every sprint (start_sprint's
-    own mechanical reset, GH #413) - each sprint row reflects only that
-    sprint's own consumption, so the run's total is the SUM of every sprint
-    row, not the last (biggest) one.
+    token_usage.total resets only when start_sprint actually runs (GH #413) -
+    true for every manifest entry that starts a genuinely new real sprint,
+    but SPEC-ISSUE-0080 confirmed a manifest entry that only finishes
+    closing out the PREVIOUS entry's sprint (team_sprint_is_continuation,
+    see run_eval.py's team_sprint_number_baseline) never resets, so its
+    token_usage.total is that whole real sprint's cumulative figure, not
+    just its own small slice. Summing every row unconditionally (this
+    function's old behavior) double-counts the carried-over total once per
+    continuation - a real run (0.1.0-run78) reported 22.1M total tokens
+    this way, when the true distinct-real-sprint figure was ~16.8M (the
+    continuation rows' own totals already fully include what their
+    preceding row already counted). Grouping by team_sprint_number and
+    keeping only the LAST entry per real sprint (its total already is that
+    sprint's full cumulative figure) fixes this. Falls back to the old
+    sum-every-row behavior for older manifests with no team_sprint_number
+    data at all, rather than silently reporting zero.
     """
-    totals = [(s.get("token_usage") or {}).get("total", 0) for s in manifest.get("sprints", [])]
-    return sum(totals)
+    sprints = manifest.get("sprints", [])
+    if not sprints or any(s.get("team_sprint_number") is None for s in sprints):
+        totals = [(s.get("token_usage") or {}).get("total", 0) for s in sprints]
+        return sum(totals)
+    last_per_real_sprint = {}
+    for s in sprints:
+        last_per_real_sprint[s["team_sprint_number"]] = s
+    return sum((s.get("token_usage") or {}).get("total", 0) for s in last_per_real_sprint.values())
 
 
 def _estimate_cost_range(total_tokens: int, model_alias: str):
@@ -109,14 +127,22 @@ def _collect_repo_snapshot(repo_path: Path) -> dict:
 
 
 # GH issue #379: render_fallback_sprint_report (tools/budget.py) stamps
-# every mechanically-rendered report with this exact heading - the one
+# every mechanically-rendered report with one of several "## Mechanically-
+# Rendered Report (...)" headings (reason-specific: budget used in full,
+# harness retry ceiling reached, this harness's own per-sprint turn/time
+# allowance used in full, or a generic "ended without a report") - the one
 # reliable way to tell "Product Owner's own create_sprint_report actually
-# ran" apart from "the budget ran out and the safety net rendered a stub
-# from whatever was logged so far". A real run (0.1.0-run47) had the
-# report table claim "Sprint Report? yes" for all 5 sprints even though 4
-# of them were this fallback stub, hiding exactly the distinction a reader
-# of this table would want.
-_FALLBACK_REPORT_MARKER = "## Mechanically-Rendered Report (Budget Used in Full)"
+# ran" apart from "a dead end fired and the safety net rendered a stub from
+# whatever was logged so far". A real run (0.1.0-run47) had the report
+# table claim "Sprint Report? yes" for all 5 sprints even though 4 of them
+# were this fallback stub, hiding exactly the distinction a reader of this
+# table would want. SPEC-ISSUE-0080: matching only the "Budget Used in
+# Full" heading (this constant's original, narrower value) missed every
+# other reason variant - 0.1.0-run78's Sprint 1/Sprint 3 both rendered
+# under the "Sprint Ended Without A Report" heading and still showed
+# "Sprint Report? yes" here. Matching the shared prefix instead of one
+# exact reason's heading catches all of them.
+_FALLBACK_REPORT_MARKER = "## Mechanically-Rendered Report ("
 
 
 def _sprint_metrics_table(manifest: dict) -> str:
@@ -128,8 +154,8 @@ def _sprint_metrics_table(manifest: dict) -> str:
     scope so far, flat and identical, on every single row once initial
     planning committed it all - exactly what a real run (0.1.0-run42)
     showed: "6" on every one of its 5 sprint rows."""
-    rows = ["| Sprint | Tokens Used | Stories Planned | Sprint Report? | PR Merges (after) |",
-            "|---|---|---|---|---|"]
+    rows = ["| Sprint | Real Sprint # | Tokens Used | Stories Planned | Sprint Report? | PR Merges (after) |",
+            "|---|---|---|---|---|---|"]
     prev_backlog_keys = set()
     for sprint in manifest.get("sprints", []):
         n = sprint.get("sprint_number")
@@ -147,8 +173,47 @@ def _sprint_metrics_table(manifest: dict) -> str:
             has_report = "yes"
         merges = [m for m in manifest.get("pr_merges", []) if m.get("after_sprint") == n]
         merged_count = sum(1 for m in merges if m.get("merged"))
-        rows.append(f"| {n} | {tokens} | {planned} | {has_report} | {merged_count}/{len(merges)} |")
+        real_sprint = _real_sprint_label(sprint)
+        rows.append(f"| {n} | {real_sprint} | {tokens} | {planned} | {has_report} | {merged_count}/{len(merges)} |")
     return "\n".join(rows)
+
+
+def _real_sprint_label(sprint: dict) -> str:
+    """SPEC-ISSUE-0080: this harness's own `sprint_number` (the loop
+    iteration this manifest entry came from) always advances by exactly one
+    per entry, regardless of whether that iteration started a genuinely new
+    sprint or just finished closing out the previous one - a sprint that
+    hits max_events_reached right after finishing its last story has no
+    turns left to call create_sprint_report, so the harness's next loop
+    iteration (a new, distinct harness sprint_number) ends up only
+    finishing that SAME real sprint's close-out. `team_sprint_number` (the
+    team's own counter, bumped only by start_sprint - see run_eval.py's
+    team_sprint_number_baseline) is the honest "which real sprint is this"
+    answer. Falls back to the harness's own number for older manifests that
+    predate this field, same as today's one-entry-per-sprint assumption."""
+    team_n = sprint.get("team_sprint_number")
+    if team_n is None:
+        return str(sprint.get("sprint_number"))
+    suffix = " (continued)" if sprint.get("team_sprint_is_continuation") else ""
+    return f"{team_n}{suffix}"
+
+
+def _distinct_real_sprints_suffix(manifest: dict) -> str:
+    """SPEC-ISSUE-0080: "completed: N" alone (N harness loop iterations)
+    implies N independent planning cycles happened - not true whenever one
+    of them only finished closing out the previous iteration's sprint (see
+    _real_sprint_label). Appends how many of those N entries were genuinely
+    distinct real sprints, so that framing is visible without reading
+    transcript.md. Omitted entirely for older manifests with no
+    team_sprint_number data, rather than claiming a false "every entry is
+    distinct" count."""
+    sprints = manifest.get("sprints", [])
+    if not sprints or any(s.get("team_sprint_number") is None for s in sprints):
+        return ""
+    distinct = len({s["team_sprint_number"] for s in sprints})
+    if distinct == len(sprints):
+        return ""
+    return f" ({distinct} of which were genuinely distinct real sprints - see 'Real Sprint #' below)"
 
 
 # GH issue #124: which KPI each series is sourced from. The first four are
@@ -360,7 +425,8 @@ def _render_kpi_graphs(manifest: dict) -> str:
 
 def _build_judge_prompt(manifest: dict, snapshot: dict) -> str:
     sprint_reports = "\n\n".join(
-        f"### Sprint {s['sprint_number']} report\n{s.get('sprint_report') or '(none produced)'}"
+        f"### Sprint {s['sprint_number']} report (real sprint #{_real_sprint_label(s)})\n"
+        f"{s.get('sprint_report') or '(none produced)'}"
         for s in manifest.get("sprints", [])
     )
     code_section = "\n\n".join(
@@ -384,6 +450,15 @@ concrete reviewer - cite actual file paths and actual text, don't generalize.
 {code_section}
 
 ## Sprint reports (team's own account of what happened)
+Note: "Sprint N" below is this harness's own loop iteration, not necessarily a
+distinct planning cycle - "real sprint #" marks which genuinely new sprint
+(started via the team's own start_sprint call) each iteration belongs to. A
+"real sprint #" repeated across two consecutive entries, one marked
+"(continued)", means the second entry only finished writing up the first
+entry's already-completed work (common when a sprint's own event/time
+allowance runs out right after its last story is accepted, before there's a
+turn left to author the report) - that is expected, not a sign the team did
+nothing that iteration.
 {sprint_reports}
 
 ## Per-sprint metrics
@@ -570,7 +645,8 @@ def _render_report(manifest: dict, judgment: dict) -> str:
         f"- Horseless Carriage commit: {manifest.get('hc_commit', 'unknown')}",
         f"- Branch: {manifest.get('branch')}",
         f"- Model: {manifest.get('model')}",
-        f"- Sprints requested: {manifest.get('sprints_requested')}, completed: {len(manifest.get('sprints', []))}",
+        f"- Sprints requested: {manifest.get('sprints_requested')}, completed: {len(manifest.get('sprints', []))}"
+        f"{_distinct_real_sprints_suffix(manifest)}",
         f"- Started: {manifest.get('started_at')}",
         f"- Finished: {manifest.get('finished_at')}",
         "",
