@@ -3520,6 +3520,39 @@ class TestDetectPhaseViolation(unittest.TestCase):
 
         self.assertIsNone(result)
 
+    def test_allows_plan_sprint_backlog_item_during_development(self):
+        """SPEC-ISSUE-0079: Product Owner's create_sprint_backlog_pr already
+        locks the phase into Development before Dev Team ever gets a turn to
+        plan this sprint's first item - this tool must work normally there,
+        not just in Plan & Start Sprint, or every real sprint pays for the
+        override escape hatch just to commit its one and only item."""
+        result, _ = self._call(
+            "plan_sprint_backlog_item",
+            {"title_or_id": "US-0002", "plan": {"estimate": 1000}},
+            "Development",
+        )
+
+        self.assertIsNone(result)
+
+    def test_allows_plan_sprint_backlog_item_during_plan_and_start_sprint(self):
+        result, _ = self._call(
+            "plan_sprint_backlog_item",
+            {"title_or_id": "US-0001", "plan": {"estimate": 1000}},
+            "Plan & Start Sprint",
+        )
+
+        self.assertIsNone(result)
+
+    def test_blocks_plan_sprint_backlog_item_during_conceptual_work(self):
+        result, _ = self._call(
+            "plan_sprint_backlog_item",
+            {"title_or_id": "US-0001", "plan": {"estimate": 1000}},
+            "Conceptual Work",
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["status"], "error")
+
     def test_never_blocks_a_closing_ritual_tool_regardless_of_phase(self):
         """
         Deliberately never phase-gated: ScrumMaster's closing ritual
