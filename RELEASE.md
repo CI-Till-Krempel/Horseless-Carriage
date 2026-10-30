@@ -1953,6 +1953,23 @@ Fixed by letting `propose_steering_change` name which Issue(s) it resolves
 proposal only, and both gates now stand down for it the same way they already do for a `blocked` item.
 See SPEC-ISSUE-0078 for the full mechanism and fix.
 
+### Every sprint had to fight a fragile override just to plan its first backlog item, capping real delivery at one item per sprint (0.1.0-run77, SPEC-ISSUE-0079)
+
+A real eval run (0.1.0-run77) delivered 2 of 6 stories across all 5 sprints, leaving 4 Must-priority
+stories untouched the entire run despite 1.3-3.1M of each sprint's ~5M token budget going unused.
+`manifest.json` showed every single sprint's `sprint_backlog` held exactly one item, and a search for the
+one-story-at-a-time ordering gate's own rejection text in `transcript.md` found zero hits - the real
+stories weren't mechanically blocked, Dev Team simply never got a second item planned within any sprint.
+Root cause: `plan_sprint_backlog_item` (the only tool that commits an item into `sprint_backlog`) was
+phase-gated to `"Plan & Start Sprint"` only - but Product Owner's own prompt always publishes the Sprint
+Backlog PR, locking the phase into `"Development"`, before Dev Team ever gets a turn to call it. Every
+sprint then had to fight through the tool's own "retry with byte-identical arguments" override just to
+plan its first item - `transcript.md` showed ~30 wasted tool calls doing exactly that in one sprint alone
+(a typo'd JSON key, a missing field, a transfer-loop trip, a blocked-story dead end) before an identical
+retry finally got through. Fixed by adding `plan_sprint_backlog_item` to `PHASE_TOOL_POLICY`'s
+`"Development"` bucket - it now works normally throughout the sprint, not just before the backlog PR
+publishes. See SPEC-ISSUE-0079 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

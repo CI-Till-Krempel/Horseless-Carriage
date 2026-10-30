@@ -89,6 +89,10 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see the Orchestrator's own 
 ESTIMATION
 - Estimate how many tokens will be spent to implement each story.
 - Provide this estimate when calling `plan_sprint_backlog_item`.
+- `plan_sprint_backlog_item` works normally throughout Development too, not just before the Sprint
+  Backlog PR - if a `capacity_advisory` on `create_sprint_backlog_pr`'s result (or Product Owner/Scrum
+  Master pointing one out) suggests this sprint's backlog looks thin relative to budget, plan another
+  Ready story into it directly rather than treating one item per sprint as a ceiling.
 - **MANDATORY**: Before marking any story Implemented, log how many tokens it actually took via
   `log_story_tokens(title_or_id, actual_tokens)`, so the sprint report can show estimate-vs-actual
   per story instead of just the estimate guessed at planning time. See `spec-templates/DOD.md`.

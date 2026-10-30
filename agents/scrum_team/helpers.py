@@ -784,8 +784,10 @@ SPRINT_PHASE_GUIDANCE = {
         "More backlog grooming belongs here only for a specific, stated reason, not as a default."
     ),
     "Development": (
-        "This sprint's Sprint Backlog is published - implement/review/test/accept its stories. New "
-        "backlog grooming or re-planning belongs in Conceptual Work/Plan & Start Sprint, not here."
+        "This sprint's Sprint Backlog is published - implement/review/test/accept its stories. "
+        "Committing an additional Ready story into this sprint (plan_sprint_backlog_item) is fine "
+        "here too if there's budget left; drafting brand-new backlog content (upsert_story/upsert_epic/"
+        "etc.) still belongs in Conceptual Work/Plan & Start Sprint, not here."
     ),
     "Review, Retro & Release": (
         "This sprint's planned work is done (or its budget is spent) - run the retrospective, KPIs, "
@@ -834,6 +836,15 @@ PHASE_TOOL_POLICY = {
         "write_file", "delete_file", "start_feature_branch",
         "mark_pr_ready_for_review", "merge_story_pr", "gh_pr_create",
         "resolve_feature_branch_conflicts", "git_push", "check_build",
+        # SPEC-ISSUE-0079: committing an ADDITIONAL Ready story into this
+        # sprint's backlog (sprint_capacity_advisory's own "pull more Ready
+        # stories into this sprint" suggestion) is routine, recurring
+        # Development-phase work, not backlog grooming from an earlier
+        # phase - it was missing here entirely, so every real eval run had
+        # to fight the override below just to plan its sprint's first item
+        # (Product Owner's create_sprint_backlog_pr already locks the phase
+        # into Development before Dev Team ever gets a turn to plan one).
+        "plan_sprint_backlog_item",
     },
 }
 
