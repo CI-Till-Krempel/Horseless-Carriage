@@ -789,6 +789,12 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
     prevent, just for the wrong kind of finding. A missing category (data
     from before this triage existed) defaults to "technical", preserving
     the old behavior for pre-existing entries.
+
+    SPEC-ISSUE-0081: an entry flagged `recurs_since_sprint` (a confirmed
+    restatement of an earlier sprint's still-unresolved "technical" finding
+    - see _technical_category_nudge) still gets filed and Must-prioritized
+    below, but does NOT get moved to the front of the queue - see the inline
+    comment at that call for why always doing so turned into a livelock.
     """
     from .requirements import upsert_issue, set_priority, _move_item_to_front_of_remaining_work
 
@@ -821,7 +827,27 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
                 # the one-story-at-a-time ordering gate (_preceding_story)
                 # genuinely blocks on it, the mechanism this auto-filing was
                 # always meant to rely on (see that function's own docstring).
-                _move_item_to_front_of_remaining_work(tool_context.state, issue_id)
+                #
+                # SPEC-ISSUE-0081: NOT when `entry` is itself a confirmed
+                # recurrence of an earlier sprint's still-unresolved
+                # "technical" finding (recurs_since_sprint set by
+                # add_retro_action/add_impediment's own _technical_category_
+                # nudge call) - 0.1.0-run79 showed this exact front-queue
+                # jump, applied every sprint to a fresh restatement of "we
+                # didn't finish our planned stories," mechanically displacing
+                # those same Must-priority stories from the front of the
+                # queue indefinitely: each sprint's whole capacity went to
+                # "resolving" the new Issue (DevTeam's own plan: "No code
+                # changes required for this administrative/process issue"),
+                # which guaranteed the real stories stayed unfinished, which
+                # guaranteed the next sprint's retro re-filed the identical
+                # complaint and jumped the queue again. A recurring finding
+                # still gets filed and Must-prioritized (visible, trackable),
+                # it just no longer gets to cut in front of the real backlog
+                # work it keeps recurring about - stable-sort ordering alone
+                # (set_priority above) is enough for that.
+                if entry.get("recurs_since_sprint") is None:
+                    _move_item_to_front_of_remaining_work(tool_context.state, issue_id)
         tool_context.state[collection_name] = collection
     return filed_ids
 
@@ -1164,25 +1190,45 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
     # "technical" findings that still read this way, with no steering
     # proposal since the last report, is no longer "maybe a false positive",
     # it's a pattern nobody has acted on.
-    unresolved_role_behavior_findings = [
+    #
+    # SPEC-ISSUE-0081: also counts a "technical" finding flagged
+    # `recurs_since_sprint` (a confirmed, keyword-overlap restatement of an
+    # earlier sprint's still-unresolved finding - _technical_category_nudge),
+    # not just `looks_like_role_behavior_finding`'s narrower phrase-list
+    # match. `0.1.0-run79` showed this gap directly: ScrumMaster was warned,
+    # verbatim, "A similar finding was already logged as 'technical' back in
+    # sprint 1 with no resolution since" on 4 separate occasions, but none of
+    # that run's wording ("Ensure all planned stories are fully developed
+    # and accepted within sprint timebox...") matched any role-behavior
+    # phrase, so this backstop never fired and the team kept filing fresh
+    # one-off "technical" Issues (resolved with "No code changes required
+    # for this administrative/process issue") instead of ever escalating to
+    # a real propose_steering_change. Either signal alone already means the
+    # same underlying problem keeps getting "resolved" without actually
+    # being fixed - exactly what this backstop exists to stop.
+    unresolved_findings_needing_escalation = [
         e for e in list(retro) + list(impediments)
         if e.get("category") == "technical" and e.get("status", "open") == "open"
-        and looks_like_role_behavior_finding(e.get("action") or e.get("description") or "")
+        and (
+            looks_like_role_behavior_finding(e.get("action") or e.get("description") or "")
+            or e.get("recurs_since_sprint") is not None
+        )
     ]
-    if len(unresolved_role_behavior_findings) >= 2 and s.get("steering_proposal_count", 0) <= s.get("steering_baseline", 0):
+    if len(unresolved_findings_needing_escalation) >= 2 and s.get("steering_proposal_count", 0) <= s.get("steering_baseline", 0):
         examples = "; ".join(
             (e.get("action") or e.get("description") or "")[:80]
-            for e in unresolved_role_behavior_findings[:2]
+            for e in unresolved_findings_needing_escalation[:2]
         )
         return {
             "status": "error",
             "message": (
-                f"Cannot close the sprint report: {len(unresolved_role_behavior_findings)} retro/"
-                f"impediment findings read like role-behavior/process-discipline gaps (e.g. "
-                f"{examples}) but are filed as category='technical', with no propose_steering_change "
-                "call since the last sprint report. Call propose_steering_change(role, new_content, "
-                "rationale) for the recurring behavior these point at, then retry "
-                "create_sprint_report. This is mandatory, not optional."
+                f"Cannot close the sprint report: {len(unresolved_findings_needing_escalation)} retro/"
+                f"impediment findings read like role-behavior/process-discipline gaps, or are the same "
+                f"finding recurring sprint after sprint with no resolution (e.g. {examples}), but are "
+                "filed as category='technical', with no propose_steering_change call since the last "
+                "sprint report. Call propose_steering_change(role, new_content, rationale) for the "
+                "recurring behavior these point at, then retry create_sprint_report. This is "
+                "mandatory, not optional."
             ),
         }
 
