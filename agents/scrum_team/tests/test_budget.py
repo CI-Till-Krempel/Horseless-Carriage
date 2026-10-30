@@ -799,6 +799,44 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_rejects_two_confirmed_recurring_findings_even_without_role_behavior_wording(self, mock_write_file, mock_getenv):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0081, 0.1.0-run79): the backstop
+        above only fired on looks_like_role_behavior_finding's narrow
+        phrase-list match - none of that run's actual wording ("Ensure all
+        planned stories are fully developed and accepted within sprint
+        timebox...") matched any listed phrase, so ScrumMaster kept filing
+        fresh one-off "technical" Issues sprint after sprint despite being
+        warned, verbatim, that the same finding had already been logged
+        before. A finding flagged `recurs_since_sprint` (set by
+        add_retro_action/add_impediment's own recurrence detection) must
+        trip this same backstop on its own, independent of the phrase-list
+        heuristic.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure stories and issues are planned accurately with realistic estimates and tracked cleanly through the workflow stages.",
+                "owner": "DevTeam", "status": "open", "category": "technical", "recurs_since_sprint": 1,
+            },
+            {
+                "action": "Ensure backlog issues are proactively reviewed and scheduled prior to sprint planning.",
+                "owner": "DevTeam", "status": "open", "category": "technical", "recurs_since_sprint": 2,
+            },
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        result = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_steering_change", result["message"])
+        self.assertIn("category='technical'", result["message"])
+        mock_write_file.assert_not_called()
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_one_unresolved_role_behavior_finding_does_not_trip_the_gate(self, mock_write_file, mock_getenv):
         """A single occurrence could still be a false positive (the
         heuristic's own design tolerates those) - only 2+ escalates."""
@@ -2061,6 +2099,64 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
         issue_id = filed[0]
         ids = [x["id"] for x in tool_context.state["product_backlog"]]
         self.assertEqual(ids, [issue_id, "US-0002", "US-0003"])
+
+    def test_a_confirmed_recurring_finding_does_not_jump_ahead_of_the_real_backlog(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0081, 0.1.0-run79): a retro finding
+        flagged `recurs_since_sprint` (add_retro_action/add_impediment's own
+        _technical_category_nudge already confirmed it's a restatement of an
+        earlier sprint's unresolved finding) must still be filed and Must-
+        prioritized, but must NOT be moved to the front of the queue - doing
+        so every sprint let a chain of paperwork-only Issues ("No code
+        changes required for this administrative/process issue") perpetually
+        displace the real Must-priority stories (US-0003/US-0004/US-0005)
+        they were nominally about, which stayed frozen at ['Draft', 'Ready']
+        for all 5 sprints of that run.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0003", "type": "User Story", "title": "Toggle Task Completion", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0004", "type": "User Story", "title": "Delete Task", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+        ]
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure stories and issues are planned accurately with realistic estimates and tracked cleanly through the workflow stages.",
+                "owner": "DevTeam", "status": "open", "category": "technical", "recurs_since_sprint": 1,
+            }
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(filed), 1)
+        issue_id = filed[0]
+        item = next(x for x in tool_context.state["product_backlog"] if x["id"] == issue_id)
+        self.assertEqual(item.get("priority"), "Must")
+        ids = [x["id"] for x in tool_context.state["product_backlog"]]
+        self.assertEqual(ids, ["US-0003", "US-0004", issue_id])
+
+    def test_a_non_recurring_finding_still_jumps_ahead_as_before(self):
+        """Sibling/contrast to the test above: with no `recurs_since_sprint`
+        flag at all (the common case - a genuinely new finding), SPEC-
+        ISSUE-0076's original front-queue behavior is unchanged."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0003", "type": "User Story", "title": "Toggle Task Completion", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+        ]
+        tool_context.state["retro_actions"] = [
+            {"action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA", "status": "open", "category": "technical"}
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        issue_id = filed[0]
+        ids = [x["id"] for x in tool_context.state["product_backlog"]]
+        self.assertEqual(ids, [issue_id, "US-0003"])
 
     def test_ignores_blank_entries(self):
         tool_context = MagicMock()
