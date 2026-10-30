@@ -19,6 +19,7 @@ from agents.scrum_team.scripts.run_eval_analysis import (
     _render_blockers_section,
     _render_stopped_early_callout,
     _sprint_metrics_table,
+    _total_tokens_used,
 )
 
 _BASE_MANIFEST = {
@@ -151,7 +152,7 @@ class TestSprintMetricsTable:
     def test_no_report_reads_no(self):
         manifest = {"sprints": [{"sprint_number": 1, "sprint_backlog": []}]}
         table = _sprint_metrics_table(manifest)
-        assert "| 1 | n/a | 0 | no | 0/0 |" in table
+        assert "| 1 | 1 | n/a | 0 | no | 0/0 |" in table
 
     def test_real_report_reads_yes(self):
         manifest = {"sprints": [{
@@ -159,7 +160,7 @@ class TestSprintMetricsTable:
             "sprint_report": "# Sprint Review Report\n\nShipped the login flow.",
         }]}
         table = _sprint_metrics_table(manifest)
-        assert "| 1 | n/a | 0 | yes | 0/0 |" in table
+        assert "| 1 | 1 | n/a | 0 | yes | 0/0 |" in table
 
     def test_fallback_report_reads_fallback_not_yes(self):
         manifest = {"sprints": [{
@@ -171,7 +172,143 @@ class TestSprintMetricsTable:
             ),
         }]}
         table = _sprint_metrics_table(manifest)
-        assert "| 1 | n/a | 0 | fallback | 0/0 |" in table
+        assert "| 1 | 1 | n/a | 0 | fallback | 0/0 |" in table
+
+    def test_fallback_marker_catches_every_reason_heading_not_just_budget(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0080, 0.1.0-run78): the marker used
+        to only match the "Budget Used in Full" heading - run78's Sprint 1
+        and Sprint 3 both rendered under the "Sprint Ended Without A Report"
+        heading (render_fallback_sprint_report's reason-agnostic branch) and
+        still showed "yes" here, hiding that these were fallback stubs, not
+        a real Product Owner report.
+        """
+        manifest = {"sprints": [{
+            "sprint_number": 1, "sprint_backlog": [],
+            "sprint_report": (
+                "# Sprint Review Report\n\n"
+                "## Mechanically-Rendered Report (Sprint Ended Without A Report)\n"
+                "Scrum Master's own create_sprint_report call never ran this sprint..."
+            ),
+        }, {
+            "sprint_number": 2, "sprint_backlog": [],
+            "sprint_report": (
+                "# Sprint Review Report\n\n"
+                "## Mechanically-Rendered Report (Sprint's Turn Allowance Used in Full)\n"
+                "This sprint reached the eval harness's own fixed per-sprint turn/time allowance..."
+            ),
+        }]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | 1 | n/a | 0 | fallback | 0/0 |" in table
+        assert "| 2 | 2 | n/a | 0 | fallback | 0/0 |" in table
+
+    def test_real_sprint_column_marks_a_continuation_of_the_previous_sprint(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0080, 0.1.0-run78): a harness
+        iteration that never called start_sprint (team_sprint_number
+        unchanged from the previous entry) is only finishing the previous
+        entry's close-out, not an independent sprint - the "Real Sprint #"
+        column must say so instead of implying 2 distinct planning cycles.
+        """
+        manifest = {"sprints": [
+            {"sprint_number": 1, "sprint_backlog": [], "team_sprint_number": 1, "team_sprint_is_continuation": False},
+            {"sprint_number": 2, "sprint_backlog": [], "team_sprint_number": 1, "team_sprint_is_continuation": True},
+            {"sprint_number": 3, "sprint_backlog": [], "team_sprint_number": 2, "team_sprint_is_continuation": False},
+        ]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | 1 | " in table
+        assert "| 2 | 1 (continued) | " in table
+        assert "| 3 | 2 | " in table
+
+    def test_real_sprint_column_falls_back_to_harness_number_for_older_manifests(self):
+        """Manifests from before team_sprint_number existed must not crash
+        or claim a false continuation - fall back to today's one-entry-per-
+        sprint assumption."""
+        manifest = {"sprints": [{"sprint_number": 1, "sprint_backlog": []}]}
+        table = _sprint_metrics_table(manifest)
+        assert "| 1 | 1 | " in table
+
+
+class TestTotalTokensUsed:
+    """
+    Acceptance Criteria (SPEC-ISSUE-0080, 0.1.0-run78): token_usage.total
+    only resets when start_sprint actually runs - a manifest entry that
+    only finishes closing out the PREVIOUS entry's sprint never resets, so
+    its total is that whole real sprint's cumulative figure, not just its
+    own slice. Summing every row unconditionally double-counts the
+    carried-over total once per continuation.
+    """
+
+    def test_sums_every_row_when_no_team_sprint_number_data_exists(self):
+        """Older manifests (pre this fix) have no team_sprint_number at
+        all - must fall back to the old sum-every-row behavior rather than
+        reporting zero."""
+        manifest = {"sprints": [
+            {"sprint_number": 1, "token_usage": {"total": 100}},
+            {"sprint_number": 2, "token_usage": {"total": 200}},
+        ]}
+        assert _total_tokens_used(manifest) == 300
+
+    def test_does_not_double_count_a_continuation_entrys_carried_over_total(self):
+        """0.1.0-run78 shape: Sprint 1 (real sprint 1) ends at 4,888,656;
+        Sprint 2 (continuation, no start_sprint call) ends at 5,046,845 -
+        that 5,046,845 already fully includes Sprint 1's own consumption,
+        so the real total for that one real sprint is 5,046,845, not the
+        sum of both rows (9,935,501)."""
+        manifest = {"sprints": [
+            {"sprint_number": 1, "team_sprint_number": 1, "team_sprint_is_continuation": False,
+             "token_usage": {"total": 4_888_656}},
+            {"sprint_number": 2, "team_sprint_number": 1, "team_sprint_is_continuation": True,
+             "token_usage": {"total": 5_046_845}},
+        ]}
+        assert _total_tokens_used(manifest) == 5_046_845
+
+    def test_sums_across_distinct_real_sprints_only(self):
+        """Mirrors 0.1.0-run78's full shape: 2 real sprints, each split
+        across a real-work entry and a continuation entry."""
+        manifest = {"sprints": [
+            {"sprint_number": 1, "team_sprint_number": 1, "team_sprint_is_continuation": False,
+             "token_usage": {"total": 4_888_656}},
+            {"sprint_number": 2, "team_sprint_number": 1, "team_sprint_is_continuation": True,
+             "token_usage": {"total": 5_046_845}},
+            {"sprint_number": 3, "team_sprint_number": 2, "team_sprint_is_continuation": False,
+             "token_usage": {"total": 5_166_226}},
+            {"sprint_number": 4, "team_sprint_number": 2, "team_sprint_is_continuation": True,
+             "token_usage": {"total": 5_357_127}},
+        ]}
+        assert _total_tokens_used(manifest) == 5_046_845 + 5_357_127
+
+
+class TestRenderReportSprintCountFraming:
+    def test_header_is_unchanged_when_every_entry_is_a_distinct_real_sprint(self):
+        manifest = {**_BASE_MANIFEST, "sprints": [
+            {"sprint_number": 1, "sprint_backlog": [], "product_backlog": [],
+             "team_sprint_number": 1, "team_sprint_is_continuation": False, "token_usage": {"total": 100}},
+        ]}
+        rendered = _render_report(manifest, _JUDGMENT)
+        assert "Sprints requested: 5, completed: 1\n" in rendered
+
+    def test_header_calls_out_continuations_as_not_genuinely_distinct(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0080): "completed: N" alone implies
+        N independent planning cycles - must be visible when some of those
+        N entries were only closing out a previous one.
+        """
+        manifest = {**_BASE_MANIFEST, "sprints": [
+            {"sprint_number": 1, "sprint_backlog": [], "product_backlog": [],
+             "team_sprint_number": 1, "team_sprint_is_continuation": False, "token_usage": {"total": 100}},
+            {"sprint_number": 2, "sprint_backlog": [], "product_backlog": [],
+             "team_sprint_number": 1, "team_sprint_is_continuation": True, "token_usage": {"total": 150}},
+        ]}
+        rendered = _render_report(manifest, _JUDGMENT)
+        assert "Sprints requested: 5, completed: 2 (1 of which were genuinely distinct real sprints" in rendered
+
+    def test_header_omits_the_caveat_for_older_manifests_with_no_team_sprint_number(self):
+        manifest = {**_BASE_MANIFEST, "sprints": [
+            {"sprint_number": 1, "sprint_backlog": [], "product_backlog": [], "token_usage": {"total": 100}},
+        ]}
+        rendered = _render_report(manifest, _JUDGMENT)
+        assert "Sprints requested: 5, completed: 1\n" in rendered
 
 
 class TestRenderKpiGraphs:

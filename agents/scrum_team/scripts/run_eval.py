@@ -703,6 +703,19 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
     # baseline, never a bare truthiness check.
     report_baseline = session.state.get("sprint_report")
     kpi_update_count_baseline = session.state.get("kpi_update_count", 0)
+    # SPEC-ISSUE-0080: the team's own notion of "which sprint this is"
+    # (bumped only by start_sprint, tools/scrum.py) is a completely separate
+    # counter from this harness's own per-loop-iteration `sprint_number` arg
+    # below - a sprint that hits max_events_reached right after finishing
+    # its last story has no turns left to call create_sprint_report, so the
+    # harness's NEXT loop iteration (a new, distinct harness `sprint_number`)
+    # ends up just finishing that same real sprint's close-out instead of
+    # starting a new one. Snapshotting this here - and reporting whatever
+    # it is at return time below - lets the manifest/report tell "this
+    # iteration started a genuinely new sprint" apart from "this iteration
+    # only finished closing out the previous one", instead of presenting
+    # every harness iteration as an independent sprint.
+    team_sprint_number_baseline = session.state.get("sprint_number", 0)
 
     for attempt in range(max_nudges + 1):
         if time.monotonic() >= deadline:
@@ -824,8 +837,21 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # every other dead end (nudges exhausted, max events/duration
         # reached, an ADK self-transfer error) is NOT a budget exhaustion,
         # and claiming it was would be factually wrong (see SPEC-ISSUE-0077).
+        # SPEC-ISSUE-0080: max_events_reached/max_duration_exceeded get their
+        # own "host_cap" reason, distinct from "other" - these mean the team
+        # was still actively working (often having just finished every
+        # planned story, as 0.1.0-run78's Sprint 1 did on its very last
+        # event) and simply ran out of this harness's own fixed per-sprint
+        # turn/time allowance before it could author a report. That is an
+        # expected, designed way for a sprint to end, not an undiagnosed
+        # dead end - rendering it under the generic "other" bucket (whose
+        # own wording says "for a reason this harness didn't specifically
+        # distinguish") wrongly made a fully-successful sprint read like a
+        # failure.
         final_halt_reason = "budget" if session.state.get("critical_halt_notified") else (
-            "nudges" if stop_reason == "max_nudges_exhausted" else "other"
+            "nudges" if stop_reason == "max_nudges_exhausted" else (
+                "host_cap" if stop_reason in ("max_events_reached", "max_duration_exceeded") else "other"
+            )
         )
         try:
             _ensure_sprint_report_on_final_halt(_HostToolContext(session.state), reason=final_halt_reason)
@@ -845,6 +871,15 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         "sprint_report": sprint_report,
         "sprint_backlog": session.state.get("sprint_backlog"),
         "product_backlog": session.state.get("product_backlog"),
+        # SPEC-ISSUE-0080: the team's own sprint counter (see
+        # team_sprint_number_baseline's docstring above) at the moment this
+        # harness iteration ended. Equal to the baseline means start_sprint
+        # was never called this iteration - i.e. this manifest entry is only
+        # finishing the previous entry's close-out, not planning/running a
+        # genuinely new sprint - which run_eval_analysis.py uses to stop
+        # presenting every harness iteration as an independent sprint.
+        "team_sprint_number": session.state.get("sprint_number", 0),
+        "team_sprint_is_continuation": session.state.get("sprint_number", 0) == team_sprint_number_baseline,
         # GH issue #124: Scrum Master's calculate_kpis/update_sprint_report
         # (formerly QualityGuardian's - see GH #395; see its prompt's "YOU DO")
         # stores its findings here - captured so run_eval_analysis.py can plot
