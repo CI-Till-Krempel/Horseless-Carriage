@@ -1171,6 +1171,10 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         # Issue (a process finding) - US-0001 here is a real Story.
         self.assertNotIn("set_priority", result["message"])
         mock_git_push.assert_not_called()
+        # SPEC-ISSUE-0082: this rejection must record US-0001 as this
+        # sprint's blocking precedent, so set_priority can refuse a
+        # same-sprint attempt to reprioritize it away instead of finishing it.
+        self.assertEqual(tool_context.state["priority_block_precedents"], {"US-0001": 1})
 
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/9"})
     @patch("agents.scrum_team.tools.github.git_push")

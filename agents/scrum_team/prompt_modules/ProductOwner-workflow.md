@@ -151,7 +151,12 @@ BACKLOG ITEM TEMPLATE (always include when manually describing)
 - acceptance_criteria: list of Given/When/Then
 - priority: Must / Should / Could / Won't (MoSCoW - the only valid values; set_priority/upsert_*
   mechanically refuse anything else, including a P0/P1/P2-style scale - there is exactly one
-  priority scale in this codebase)
+  priority scale in this codebase). Demoting a real story away from 'Must' requires a real
+  `justification` (passed to `set_priority`, or `priority_justification` via `plan_backlog_item`) -
+  a genuine "this never actually warranted blocking priority" reason, not a placeholder, and not
+  "resolving it is inconvenient right now". If the story was just named as the blocker in an
+  `advance_story_stage`/`start_feature_branch` rejection this same sprint, it's refused outright
+  regardless of justification - resolve it for real instead of reprioritizing it away.
 - value_hypothesis: how we know it worked
 - depends_on: list of backlog item IDs this genuinely can't start before (mechanically enforced at
   Implemented onward - see MANDATORY note above; omit if there's truly none)

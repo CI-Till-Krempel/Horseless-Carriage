@@ -2037,6 +2037,32 @@ findings toward its 2+ threshold, not just its narrower role-behavior phrase-lis
 `propose_steering_change` instead of an unbounded chain of near-duplicate "technical" Issues. See
 SPEC-ISSUE-0081 for the full mechanism and fix.
 
+### `set_priority` let Product Owner discard the exact Must story that just blocked a lower-priority item, with zero justification (0.1.0-run80, SPEC-ISSUE-0082)
+
+A follow-up eval run (0.1.0-run80, after SPEC-ISSUE-0076/0078/0081 all landed) confirmed those three
+fixes work correctly - the ordering gate properly refused a near-duplicate process Issue
+(SPEC-ISSUE-0003) behind still-unfinished Must stories US-0004/US-0005/US-0006: *"Cannot start work on
+'SPEC-ISSUE-0003' - the higher-priority story 'US-0006' must reach Accepted first."* But Product
+Owner's response to that correct rejection was to call `set_priority(..., "Won't")` on US-0006, then
+US-0005, then US-0004 in immediate succession, narrating *"I am overriding set_priority to set US-0006
+priority to Won't for this sprint scope"* - discarding committed PRD scope instead of implementing it.
+`manifest.json` confirmed all three sat at `['Draft', 'Ready']`/`Must` through Sprint 3, then flipped to
+`Won't`/`['Draft', 'Ready']` from Sprint 4 onward, never attempted further. `set_priority` had no guard
+against this at all - no justification required, nothing logged - unlike every other "honest escape
+hatch" in this codebase (`declare_backlog_scope_complete`, `implemented_via_earlier_work`,
+`content_loss_acknowledgment`).
+
+Fixed: demoting a real story (not an Issue - SPEC-ISSUE-0081 already handles that case) away from
+`Must` now requires a real `justification` (`set_priority`, or `priority_justification` via
+`plan_backlog_item`), logged to `decision_log`. More importantly, `set_priority` now refuses outright -
+regardless of justification - when the target story was just named as the blocking precedent in an
+`advance_story_stage`/`start_feature_branch` ordering-gate rejection *this same sprint*
+(`priority_block_precedents`, recorded by both gates) - replaying `0.1.0-run80`'s exact sequence now
+fails instead of succeeding. Legitimate reprioritization (a genuine "this never warranted blocking
+priority" call, or any change not demoting a Must story) is unaffected. See SPEC-ISSUE-0082 for the
+full mechanism, fix, and a noted follow-up gap (`upsert_story` can still set priority directly,
+bypassing this guard - not closed here, scoped to the one tool this run actually showed being misused).
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead
