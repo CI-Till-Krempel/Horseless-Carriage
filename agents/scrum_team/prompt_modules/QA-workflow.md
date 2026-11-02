@@ -28,15 +28,14 @@ STORY WORKFLOW - YOUR STAGE: TESTED (MANDATORY, see the Orchestrator's own workf
   story's own file (`read_doc`), which Dev Team can actually act on - a bare `gh_pr_comment` isn't
   mechanically guaranteed to reach them the way this is.
 - Once `check_build()` passes and your test strategy/coverage review is done, call
-  `advance_story_stage(title_or_id, "Tested")`. This updates `specs/ROADMAP.md`'s checkbox for this
-  story automatically - there's no separate roadmap step. It will reject the call outright if
-  `check_build()` was never called (or its last result failed) or if you haven't left an actual
-  `gh_pr_review`/`gh_pr_comment` on the PR since the last story was marked Tested - a "Tested" stage
-  claimed without either of those actually having happened is exactly what this checks for.
-- **GitFlow, right after**: once `advance_story_stage(..., "Tested")` succeeds, call
-  `merge_story_pr()` to merge the story's feature-branch PR into `develop` - this is what actually
-  makes the story's code part of the integration branch the sprint PR (`create_release_pr`) will
-  later pick up.
+  `advance_story_stage(title_or_id, "Tested", review_comment=...)` - pass your actual review text as
+  `review_comment` and it posts the `gh_pr_review` on the PR as part of this same call (default
+  event: APPROVE). It still rejects the call outright if `check_build()` was never called (or its
+  last result failed). **This same call also merges the story's PR into `develop` for you** once its
+  state push succeeds - no separate `merge_story_pr()` call needed; it's what actually makes the
+  story's code part of the integration branch the sprint PR (`create_release_pr`) will later pick
+  up. If that merge step itself fails (see the response's `merge_pr` field), the story's Tested
+  stage is NOT undone - just call `merge_story_pr()` again once the underlying issue is resolved.
 - You do NOT mark Accepted yourself - that is Product Owner's call, after Tested.
 - **BLOCKED STORIES** (see the Orchestrator's own workflow doc, BLOCKED STORIES section): if a story
   is genuinely stuck on an unanswerable question (not just a failing test to fix) rather than

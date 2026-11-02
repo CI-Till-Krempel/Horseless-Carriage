@@ -65,6 +65,40 @@ class TestProjectSnapshot:
 
         assert snap["state"] == "waiting for confirmation"
 
+    def test_blocking_summary_surfaces_the_most_recent_unresolved_interaction(self, tmp_path):
+        """GH issue #454: the dashboard gave no clue what a 'waiting for
+        confirmation' project was actually waiting on."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "blocking_interactions": [
+                {"summary": "Older, already resolved", "resolved": True},
+                {"summary": "Approve release PR #42"},
+            ],
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["state"] == "waiting for confirmation"
+        assert snap["blocking_summary"] == "Approve release PR #42"
+        assert snap["blocking_count"] == 1
+
+    def test_resolved_interactions_dont_count_as_blocking(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "blocking_interactions": [{"summary": "Done already", "resolved": True}],
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["state"] == "working"
+        assert snap["blocking_count"] == 0
+
     def test_missing_state_json_does_not_raise(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)
         entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
@@ -170,6 +204,28 @@ class TestRenderPage:
 
         assert "4001" in page
         assert "8001" in page
+        assert "http://localhost:4001/ui" in page
+        assert "http://localhost:8001" in page
+
+    def test_renders_blocking_summary_and_web_ui_link_when_waiting(self, tmp_path):
+        """GH issue #454: starting a project that comes up already blocked
+        on a human must point at where to go resolve it, not just say
+        'waiting for confirmation' with no next step."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("AGENT_WEB_HOST_PORT='8001'\n")
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "blocking_interactions": [{"summary": "Approve release PR #42"}],
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]):
+            page = dashboard._render_page()
+
+        assert "Approve release PR #42" in page
+        assert "http://localhost:8001" in page
+        assert "Respond in web UI" in page
 
 
 class TestStartStack:
