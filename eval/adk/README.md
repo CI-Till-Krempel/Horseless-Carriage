@@ -26,7 +26,7 @@ commands and output.
 `docs/EVALUATION.md` / `eval/scenario/PRODUCT-VISION.md` / `agents/
 scrum_team/scripts/run_eval.py` already evaluate Horseless Carriage
 end-to-end: 5 real sprints against a fixed to-do-app product vision, judged
-by an LLM (`EVAL-REPORT.md`, 1-5 scores on code quality/requirements
+by an LLM (`report.md`, 1-5 scores on code quality/requirements
 quality/team efficiency) - a holistic, multi-sprint, real-Docker/real-LLM/
 real-GitHub-push judgment of overall product/team quality.
 

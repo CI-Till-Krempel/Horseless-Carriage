@@ -16,8 +16,12 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   `.env.local.example` for a fully local/Ollama setup), or just run `python3 setup_project.py` /
   `python3 setup_llm.py`, which create and populate it for you. See
   [Setup](docs/SETUP.md#1-guided-llmproject-setup-setup_llmpy).
-- **`ERROR: LITELLM_MASTER_KEY is not set in .env.`** — set any string value for
-  `LITELLM_MASTER_KEY`; it's the proxy's own admin key, not a provider credential.
+- **`ERROR: LITELLM_MASTER_KEY is not set in .env.`** / **`ERROR: LITELLM_MASTER_KEY is still the
+  '.env.example' placeholder text.`** — `setup_project.py`/`setup_llm.py` now generate a real,
+  valid key for you automatically; just run either one. If setting it by hand, it must start with
+  `sk-` - LiteLLM's proxy rejects any other bearer key as an invalid "virtual key" ("LiteLLM Virtual
+  Key expected ... expected to start with 'sk-'"), including ADK's own calls through it. It's the
+  proxy's own admin key, not a provider credential.
 - **`ERROR: STATE_REPO_PATH is not set in .env.`** / **`ERROR: The directory specified by
   STATE_REPO_PATH does not exist: ...`** — `run.py` and `doctor.py` hard-fail without a state repo.
   Set `STATE_REPO_PATH` and create the directory (`mkdir -p <path>`), or let `setup_llm.py` do both

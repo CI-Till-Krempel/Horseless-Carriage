@@ -37,8 +37,8 @@ they're known without a separate `read_doc` call:
 - **DoR** goes to the roles responsible for specifying and documenting requirements and technical
   concepts: **Product Owner** and **Architect** - DOR.md itself calls READY "Product Owner's stage
   gate, supported by Architect for technical feasibility."
-- Scrum Master, Quality Guardian, and the Orchestrator don't get either - they facilitate/report/
-  route rather than implement, review, test, specify, or accept a story themselves.
+- Scrum Master and the Orchestrator don't get either - they facilitate/report/route rather than
+  implement, review, test, specify, or accept a story themselves.
 
 Because this is the literal file content (read from the same `spec-templates/DOD.md`/`DOR.md` a
 role's own `read_doc("spec-templates/DOD.md")` call would return), it can never silently drift from

@@ -120,6 +120,9 @@ project:
 
 - `.github/workflows/ci.yml` — runs the test suite on every push/PR.
 - `.github/workflows/release.yml` — publishes a GitHub Release on `v*.*.*` tag push; see [RELEASE.md](../RELEASE.md).
+- `.github/workflows/eval.yml`/`adk-eval.yml` — the team-performance/gate-enforcement evaluation
+  harnesses (real LLM spend, maintainer-approval-gated) - deliberately not repo-hygiene-only like the
+  rest of this list; see [Evaluation](EVALUATION.md) instead.
 - `.github/ISSUE_TEMPLATE/` — bug report and feature request templates.
 - `.github/PULL_REQUEST_TEMPLATE.md` — PR checklist emphasizing documentation updates.
 - `.github/CODEOWNERS` — edit to your team.

@@ -201,12 +201,12 @@ evaluates *itself*: how well the agent team performs against a fixed, known
 scenario (a small to-do-list web app), so regressions or improvements in team
 behavior surface release over release instead of only being noticed
 anecdotally when something feels off. Full mechanics are in
-[RELEASE.md "Team performance evaluation"](RELEASE.md#team-performance-evaluation)
-— this section is the practical "how do I actually use this" version.
+[`.github/workflows/eval.yml`](.github/workflows/eval.yml) — this section is the practical "how do
+I actually use this" version.
 
 ### Reading a result
 
-Each run produces a report (`EVAL-REPORT.md`, committed to a branch on the
+Each run produces a report (`report.md`, committed to a branch on the
 [eval repo](https://github.com/CI-Till-Krempel/horseless-carriage-eval-todo-app)
 and uploaded as a CI artifact) with three scored dimensions (code quality,
 requirements quality, team efficiency, each 1–5) and a ranked list of top

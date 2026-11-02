@@ -225,3 +225,5 @@ guaranteed to have real, new content - never both saying "none" at once.
 
 ### Admin UI
 Log in to `http://localhost:4000/ui/` to see real-time cost tracking and budget status for the `scrum-sprint-budget`.
+The multi-project dashboard (`dashboard.py`, GH issue #310) also shows each project's cumulative
+actual spend alongside its budget ceiling, without needing to open LiteLLM's UI per project.

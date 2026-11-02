@@ -121,8 +121,9 @@ mechanically refuses Product Owner's own resolution at this level until the link
 *whether an approval call is mechanically required* before certain tools proceed, and *how much
 detail `create_sprint_report` renders* (both described above). Getting a PO agent to actually ask
 task-level questions at the Product level, or to keep a CEO-level response to one or two sentences
-instead of a full backlog rundown, is conversational judgment (see ORCHESTRATOR_PROMPT's
-INTERACTION-LEVEL DETAIL, PO_PROMPT), not something a mechanical gate can verify the way
+instead of a full backlog rundown, is conversational judgment (see `ScrumOrchestrator-workflow.md`'s
+INTERACTION-LEVEL DETAIL section and `ProductOwner-workflow.md`'s own interaction-level guidance),
+not something a mechanical gate can verify the way
 `check_build()` can check "did the build pass". If a real run surfaces the team ignoring this
 distinction as a repeatable problem, file it as an Issue (`upsert_issue`, `specs/requirements/`) the
 same way every other prompt-only gap in this project has been - see
@@ -134,6 +135,6 @@ where the human actually needs to be involved (approving the sprint goal/backlog
 review at the end), rather than stopping for a user-facing reply after every internal hand-off (see
 `specs/requirements/SPEC-ISSUE-0016-Sprint-Stays-Interactive-Instead-Of-Autonomous-At-Stakeholder-And-CEO-
 Levels.md`). This - *how often* the orchestrator stops to address the human, as opposed to *what it
-says* when it does (covered above) - is its own named section in `ORCHESTRATOR_PROMPT` (AUTONOMY BY
-INTERACTION LEVEL), deliberately prompt-only: "did the team stop and chat unnecessarily" isn't
+says* when it does (covered above) - is its own named section in `ScrumOrchestrator-workflow.md`
+(AUTONOMY BY INTERACTION LEVEL), deliberately prompt-only: "did the team stop and chat unnecessarily" isn't
 something a mechanical gate can check.
