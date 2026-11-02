@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List
 from pathlib import Path
-from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file, _coerce_dict_arg
+from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file, _coerce_dict_arg, _record_priority_block_precedent
 from ..helpers import (
     is_story_done,
     STORY_STAGES,
@@ -737,9 +737,12 @@ def update_roadmap(version: str, goals: List[str] = None, stories: List[str] = N
     save_state_to_repo(tool_context)
     return {"status": "ok", "message": f"Roadmap updated for {version}"}
 
-def plan_backlog_item(title_or_id: str, priority: str = None, version: str = None, tool_context=None) -> Dict[str, Any]:
+def plan_backlog_item(title_or_id: str, priority: str = None, version: str = None, priority_justification: str = None, tool_context=None) -> Dict[str, Any]:
     """
     Requirements Management: Plan a backlog item.
+
+    `priority_justification`: forwarded to set_priority - SPEC-ISSUE-0082
+    requires this when demoting a real story away from "Must" priority.
     """
     from .scrum import save_state_to_repo
     # GH issue #120: res["status"] used to be hardcoded "ok" and never
@@ -751,7 +754,7 @@ def plan_backlog_item(title_or_id: str, priority: str = None, version: str = Non
     # into the overall status/message instead.
     res = {"status": "ok", "updates": []}
     if priority:
-        p_res = set_priority(title_or_id, priority, tool_context=tool_context)
+        p_res = set_priority(title_or_id, priority, justification=priority_justification, tool_context=tool_context)
         res["updates"].append({"type": "priority", "result": p_res})
         if p_res.get("status") == "error" and res["status"] == "ok":
             res["status"] = "error"
@@ -940,7 +943,7 @@ def _generate_next_id(prefix: str, tool_context=None) -> str:
     
     return f"{prefix}-{max_num + 1:04d}"
 
-def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str, Any]:
+def set_priority(title_or_id: str, priority: str, justification: str = None, tool_context=None) -> Dict[str, Any]:
     """
     Update priority for a backlog item, then re-sort product_backlog by
     MoSCoW rank (GH issue #121) so the one-story-at-a-time ordering gate
@@ -955,6 +958,20 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
     priority) regardless of what was actually intended. There is exactly
     one priority scale in this codebase (MoSCoW); this refuses anything
     else outright rather than silently misranking it.
+
+    `justification`: SPEC-ISSUE-0082 - required when demoting a real story
+    (not an auto-filed Issue - see SPEC-ISSUE-0081's own recurrence
+    handling for that case) away from "Must" priority, logged to
+    decision_log (same honest-escape-hatch pattern as
+    implemented_via_earlier_work/content_loss_acknowledgment). A real eval
+    run (0.1.0-run80) showed Product Owner respond to a correct
+    one-story-at-a-time ordering rejection by reprioritizing the named
+    blocking stories to "Won't" instead of implementing them, discarding
+    committed PRD scope with no justification or audit trail at all. If
+    this exact story was named as the blocking precedent in an
+    advance_story_stage/start_feature_branch rejection this same sprint,
+    the call is refused outright regardless of justification - resolve it
+    for real instead.
     """
     error = _validate_priority(priority)
     if error:
@@ -965,6 +982,38 @@ def set_priority(title_or_id: str, priority: str, tool_context=None) -> Dict[str
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))
     for x in backlog:
         if x.get("id") == title_or_id or x.get("title") == title_or_id:
+            item_id = x.get("id") or x.get("title")
+            is_story = x.get("type", "User Story") != "Issue"
+            demoting_from_must = x.get("priority") == "Must" and priority != "Must"
+            if is_story and demoting_from_must:
+                precedents = s.get("priority_block_precedents", {}) or {}
+                if precedents.get(item_id) == s.get("sprint_number"):
+                    return {
+                        "status": "error",
+                        "message": (
+                            f"Cannot reprioritize '{item_id}' away from 'Must' - it was just named as "
+                            "the blocking precedent in an ordering-gate rejection this sprint. Resolve "
+                            "it for real (advance it through Implemented -> Reviewed -> Tested -> "
+                            "Accepted) instead of reprioritizing it away now that it's inconvenient."
+                        ),
+                    }
+                cleaned = (justification or "").strip()
+                if not cleaned or is_low_quality_retro_text(cleaned):
+                    return {
+                        "status": "error",
+                        "message": (
+                            f"Cannot reprioritize '{item_id}' away from 'Must' - pass a real, specific "
+                            "justification explaining why this genuinely never warranted blocking "
+                            "priority, not a placeholder, and not because resolving it is inconvenient "
+                            "right now."
+                        ),
+                    }
+                s["decision_log"] = list(s.get("decision_log", [])) + [{
+                    "title": f"{item_id} reprioritized away from Must",
+                    "decision": f"priority changed from 'Must' to '{priority}'",
+                    "rationale": cleaned,
+                    "owner": getattr(tool_context, "agent_name", None) or "ProductOwner",
+                }]
             x["priority"] = priority
             s["product_backlog"] = backlog
             _resort_backlog_by_priority(s)
@@ -1690,6 +1739,7 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     if target_idx >= STORY_STAGES.index("Implemented"):
         if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
             preceding_ref = preceding.get('id') or preceding.get('title')
+            _record_priority_block_precedent(preceding_ref, tool_context=tool_context)
             # GH issue #368: when the blocker is an Issue (an auto-filed
             # retro/impediment finding, not a feature story), name BOTH
             # paths explicitly - but resolving it for real is the lead

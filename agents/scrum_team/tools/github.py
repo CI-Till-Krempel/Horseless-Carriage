@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Dict
-from .base import _configured_repo_root, _run, _default_push_branch, _develop_branch_name, _with_eval_branch_prefix, _with_eval_title_prefix, _state_file_path
+from .base import _configured_repo_root, _run, _default_push_branch, _develop_branch_name, _with_eval_branch_prefix, _with_eval_title_prefix, _state_file_path, _record_priority_block_precedent
 from ..helpers import (
     required_pre_release_approval,
     required_pre_implementation_approval,
@@ -772,6 +772,7 @@ def start_feature_branch(story_id: str, slug: str, tool_context=None) -> Dict[st
 
     if preceding is not None and "Accepted" not in _story_stages_completed(preceding, {}):
         preceding_ref = preceding.get('id') or preceding.get('title')
+        _record_priority_block_precedent(preceding_ref, tool_context=tool_context)
         # GH issue #368: when the blocker is an Issue (an auto-filed retro/
         # impediment finding, not a feature story), resolving it for real is
         # the lead instruction, not reprioritizing it away - see

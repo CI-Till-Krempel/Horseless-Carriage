@@ -41,6 +41,23 @@ def _record_touched_file(rel_path: str, tool_context=None) -> None:
         touched.append(rel_path)
         tool_context.state["sprint_files_touched"] = touched
 
+def _record_priority_block_precedent(story_id: str, tool_context=None) -> None:
+    """
+    SPEC-ISSUE-0082: records that `story_id` was just named as the blocking
+    precedent in an advance_story_stage/start_feature_branch ordering-gate
+    rejection, keyed to the current sprint number. set_priority consults
+    this to refuse demoting a story away from 'Must' the moment it's the
+    exact thing a role was just correctly told to finish instead of dodge -
+    a real eval run (0.1.0-run80) showed Product Owner respond to exactly
+    this rejection by reprioritizing the blocking stories to "Won't" rather
+    than implementing them.
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return
+    precedents = dict(tool_context.state.get("priority_block_precedents", {}))
+    precedents[story_id] = tool_context.state.get("sprint_number")
+    tool_context.state["priority_block_precedents"] = precedents
+
 def _record_source_content_change(tool_context=None) -> None:
     """
     Bumps ScrumState.source_content_change_count - a monotonically

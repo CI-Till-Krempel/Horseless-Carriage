@@ -1008,6 +1008,10 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("US-0001", result["message"])
         self.assertIn("must reach Accepted first", result["message"])
+        # SPEC-ISSUE-0082: the rejection must record US-0001 as this
+        # sprint's blocking precedent, so set_priority can refuse a
+        # same-sprint attempt to reprioritize it away instead of finishing it.
+        self.assertEqual(tc.state["priority_block_precedents"], {"US-0001": 1})
 
     def test_blocked_preceding_story_does_not_block_advancement(self, mock_save, mock_md, mock_roadmap):
         """
@@ -2320,6 +2324,11 @@ class TestSetPriorityValidation(unittest.TestCase):
 
         for real in ("Must", "Should", "Could", "Won't"):
             with self.subTest(priority=real):
+                # SPEC-ISSUE-0082: reset to a non-Must starting priority each
+                # iteration - demoting FROM Must now requires justification
+                # (see TestSetPriorityGuardsAgainstDiscardingABlocker below),
+                # which isn't what this test is about.
+                tc.state["product_backlog"][0]["priority"] = "Should"
                 result = set_priority("US-0001", real, tool_context=tc)
                 self.assertEqual(result["status"], "ok")
                 self.assertEqual(tc.state["product_backlog"][0]["priority"], real)
@@ -2347,6 +2356,110 @@ class TestSetPriorityValidation(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
+
+
+@patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+@patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+class TestSetPriorityGuardsAgainstDiscardingABlocker(unittest.TestCase):
+    """
+    Acceptance Criteria (SPEC-ISSUE-0082): a real eval run (0.1.0-run80)
+    showed Product Owner respond to a correct one-story-at-a-time ordering
+    rejection (naming US-0006 as the blocker) by calling
+    set_priority('US-0006', "Won't") instead of implementing it - with zero
+    justification or audit trail. set_priority must require a real
+    justification to demote a real story away from Must, and must refuse
+    outright when the target was just named as a same-sprint blocker.
+    """
+
+    def _tc(self, priority="Must", item_type="User Story", sprint_number=3):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["sprint_number"] = sprint_number
+        tc.state["product_backlog"] = [
+            {"id": "US-0006", "title": "Sixth", "type": item_type, "priority": priority},
+        ]
+        tc.agent_name = "ProductOwner"
+        return tc
+
+    def test_demoting_a_must_story_with_no_justification_is_rejected(self, mock_save, mock_md):
+        tc = self._tc()
+        result = set_priority("US-0006", "Won't", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("justification", result["message"])
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
+
+    def test_demoting_a_must_story_with_a_placeholder_justification_is_rejected(self, mock_save, mock_md):
+        tc = self._tc()
+        result = set_priority("US-0006", "Won't", justification="n/a", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
+
+    def test_demoting_a_must_story_with_a_real_justification_succeeds_and_is_logged(self, mock_save, mock_md):
+        tc = self._tc()
+        result = set_priority(
+            "US-0006", "Won't",
+            justification="Scope cut: the MVP vision doc was revised to drop multi-list support entirely.",
+            tool_context=tc,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Won't")
+        self.assertEqual(len(tc.state["decision_log"]), 1)
+        self.assertIn("US-0006", tc.state["decision_log"][0]["title"])
+        self.assertIn("Scope cut", tc.state["decision_log"][0]["rationale"])
+
+    def test_demoting_the_exact_story_just_named_as_a_blocker_this_sprint_is_refused_outright(self, mock_save, mock_md):
+        """Replays 0.1.0-run80's exact sequence: an ordering-gate rejection
+        names US-0006 as the blocker, then Product Owner immediately tries
+        to reprioritize it away - even with a real justification, this must
+        be refused."""
+        tc = self._tc()
+        tc.state["priority_block_precedents"] = {"US-0006": 3}
+        result = set_priority(
+            "US-0006", "Won't",
+            justification="Scope cut: the MVP vision doc was revised to drop multi-list support entirely.",
+            tool_context=tc,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("blocking precedent", result["message"])
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
+
+    def test_a_stale_precedent_from_a_different_sprint_does_not_block(self, mock_save, mock_md):
+        tc = self._tc(sprint_number=4)
+        tc.state["priority_block_precedents"] = {"US-0006": 3}  # recorded during sprint 3, now sprint 4
+        result = set_priority(
+            "US-0006", "Won't",
+            justification="Scope cut: the MVP vision doc was revised to drop multi-list support entirely.",
+            tool_context=tc,
+        )
+        self.assertEqual(result["status"], "ok")
+
+    def test_demoting_an_issue_is_unaffected(self, mock_save, mock_md):
+        """SPEC-ISSUE-0081 already handles Issue-specific recurrence - this
+        guard is scoped to real stories only."""
+        tc = self._tc(item_type="Issue")
+        result = set_priority("US-0006", "Won't", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Won't")
+
+    def test_promoting_priority_is_unaffected(self, mock_save, mock_md):
+        tc = self._tc(priority="Should")
+        result = set_priority("US-0006", "Must", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_demoting_between_non_must_priorities_is_unaffected(self, mock_save, mock_md):
+        tc = self._tc(priority="Should")
+        result = set_priority("US-0006", "Could", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_plan_backlog_item_forwards_the_priority_justification(self, mock_save, mock_md):
+        tc = self._tc()
+        result = plan_backlog_item(
+            "US-0006", priority="Won't",
+            priority_justification="Scope cut: the MVP vision doc was revised to drop multi-list support.",
+            tool_context=tc,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Won't")
 
 
 class TestMigratedPriority(unittest.TestCase):

@@ -2,7 +2,7 @@
 
 - Issue ID: SPEC-ISSUE-0082
 - Title: `set_priority` Lets Product Owner Discard The Exact Must-Priority Story That Just Blocked A Lower-Priority Item, With Zero Justification Or Audit Trail
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-11-02
@@ -87,6 +87,13 @@ codebase requires a real, specific, logged reason), and no check for whether the
   referenced here only as the data this investigation is based on.
 - Two open "Steering proposal: DevTeam-identity.md" PRs (#704, #709) in the eval repo were noticed but not
   investigated further - out of scope for this issue, worth a separate look if they recur.
+- **Known gap, deliberately not closed here**: `upsert_backlog_item`/`upsert_story` (and the other
+  `upsert_*` wrappers) merge a `{"priority": ...}` field directly into the backlog item dict, bypassing
+  `set_priority` (and therefore this fix) entirely - `requirements.py`'s own "SPEC-ISSUE-0007" comment right
+  above that merge explicitly notes "Priority needs no equivalent sync" for the roadmap-sync concern it was
+  written for, but that reasoning doesn't extend to this new guard. Not fixed here to keep this change
+  scoped to the one tool `0.1.0-run80` actually showed being used this way - worth a follow-up issue if a
+  future run shows a role route around `set_priority` via `upsert_story` instead.
 
 ## Test Approach
 - `agents/scrum_team/tests/test_requirements.py` (new `TestSetPriorityGuardsAgainstDiscardingABlocker` or
@@ -98,3 +105,29 @@ codebase requires a real, specific, logged reason), and no check for whether the
   `set_priority('US-0006', "Won't")`) must now fail.
 - Full `agents/scrum_team/tests` suite must still pass with no regressions to legitimate reprioritization
   (e.g. existing `TestSetPriorityValidation`, `TestPriorityAffectsBacklogOrdering`).
+
+## Resolution
+- `agents/scrum_team/tools/base.py` (`_record_priority_block_precedent`): new helper, mirroring
+  `_record_touched_file`/`_record_source_content_change`'s existing pattern - records `{story_id:
+  sprint_number}` into `ScrumState.priority_block_precedents` whenever a story is named as the blocker in
+  an ordering-gate rejection.
+- `agents/scrum_team/tools/requirements.py` (`advance_story_stage`'s one-story-at-a-time gate) and
+  `agents/scrum_team/tools/github.py` (`start_feature_branch`'s equivalent gate): both now call
+  `_record_priority_block_precedent(preceding_ref, ...)` right when they name a story as the blocker -
+  the exact two call sites `0.1.0-run80`'s transcript shows firing this rejection.
+- `agents/scrum_team/tools/requirements.py` (`set_priority`): new `justification` parameter. Demoting a
+  real story (`type != "Issue"`) away from `Must` now requires a real, non-placeholder `justification`
+  (`is_low_quality_retro_text`), logged to `decision_log` - same pattern as
+  `implemented_via_earlier_work`/`content_loss_acknowledgment`. If the target story's id is recorded in
+  `priority_block_precedents` for the *current* sprint, the call is refused outright regardless of
+  justification - replays as a hard stop, not a warning, exactly where `0.1.0-run80` showed it actually
+  happen. Promoting priority, demoting a non-`Must` priority, and demoting an `Issue` (SPEC-ISSUE-0081's
+  own territory) are all unaffected.
+- `agents/scrum_team/tools/requirements.py` (`plan_backlog_item`): new `priority_justification` parameter,
+  forwarded to `set_priority`, so the legitimate "this genuinely never warranted Must" case Product Owner
+  needs remains reachable through this tool too.
+- New tests: `test_requirements.py`'s `TestSetPriorityGuardsAgainstDiscardingABlocker` (justification
+  required/rejected-if-low-quality/logged-to-decision_log; outright refusal when the story is a recorded
+  same-sprint blocking precedent; unaffected: promotions, non-Must demotions, Issue demotions, a different
+  sprint's stale precedent) and a `plan_backlog_item` passthrough test. Full `agents/scrum_team/tests`
+  suite passes with no regressions.
