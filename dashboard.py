@@ -97,7 +97,7 @@ def project_snapshot(entry: dict) -> dict:
     is_running = bool(running_services)
 
     state_data = _read_state_json(target_repo) if target_repo.is_dir() else {}
-    blocking = state_data.get("blocking_interactions") or []
+    blocking = [b for b in (state_data.get("blocking_interactions") or []) if not b.get("resolved")]
     sprint_goal = state_data.get("sprint_goal") or "(not set)"
     budgets = state_data.get("budgets") or {}
     token_usage = state_data.get("token_usage") or {}
@@ -108,6 +108,11 @@ def project_snapshot(entry: dict) -> dict:
         state = "waiting for confirmation"
     else:
         state = "working"
+
+    # GH issue #454: the state badge alone gave no way to tell *what* is
+    # being waited on or *where* to go answer it - surface the most recent
+    # unresolved interaction's own summary instead of leaving it a dead end.
+    blocking_summary = blocking[-1].get("summary", "") if blocking else ""
 
     product_version = _product_version(target_repo) if target_repo.is_dir() else "unknown"
 
@@ -125,6 +130,8 @@ def project_snapshot(entry: dict) -> dict:
         "product_version": product_version,
         "litellm_port": litellm_port,
         "agent_web_port": agent_web_port,
+        "blocking_summary": blocking_summary,
+        "blocking_count": len(blocking),
         "error": None,
     }
 
@@ -189,17 +196,31 @@ def _render_page(message: str = "") -> str:
             if snap["state"] != "resting"
             else f"<a href='/start?hc_path={e(hc_path)}'>Start</a>"
         )
+        web_url = f"http://localhost:{snap['agent_web_port']}"
+        state_html = f"<span style='color:{color};font-weight:bold'>{e(snap['state'])}</span>"
+        if snap["state"] == "waiting for confirmation":
+            # GH issue #454: starting a project whose stack comes up already
+            # blocked on a human looked like an endless hang - there was no
+            # indication of what it was waiting on or how to reach the chat
+            # UI that can actually answer it. Say what's blocking, and link
+            # straight to the web UI that can resolve it.
+            count_suffix = f" (+{snap['blocking_count'] - 1} more)" if snap["blocking_count"] > 1 else ""
+            state_html += (
+                f"<br><small>{e(snap['blocking_summary'])}{count_suffix}<br>"
+                f"<a href='{e(web_url)}' target='_blank'>Respond in web UI &rarr;</a></small>"
+            )
         usd = f"${snap['usd_budget']:.2f}" if isinstance(snap.get("usd_budget"), (int, float)) and snap["usd_budget"] else "unset"
         rows.append(
             "<tr>"
             f"<td>{e(snap['name'])}</td>"
-            f"<td><span style='color:{color};font-weight:bold'>{e(snap['state'])}</span></td>"
+            f"<td>{state_html}</td>"
             f"<td>{e(snap['config_mode'])}</td>"
             f"<td>{e(snap['interaction_level'])}</td>"
             f"<td>{e(snap['sprint_goal'])}</td>"
             f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {usd}</td>"
             f"<td>{e(snap['product_version'])}</td>"
-            f"<td>LiteLLM: {e(snap['litellm_port'])} / Web: {e(snap['agent_web_port'])}</td>"
+            f"<td>LiteLLM: <a href='http://localhost:{e(snap['litellm_port'])}/ui' target='_blank'>{e(snap['litellm_port'])}</a> / "
+            f"Web: <a href='{e(web_url)}' target='_blank'>{e(snap['agent_web_port'])}</a></td>"
             f"<td>{action}</td>"
             "</tr>"
         )
