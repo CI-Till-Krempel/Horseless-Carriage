@@ -701,15 +701,31 @@ _RETRO_CATEGORIES = ("technical", "steering", "human")
 _RETRO_PRIORITIES = ("normal", "high")
 
 
-def _technical_category_nudge(text: str, existing_entries, sprint_number, text_field: str) -> str | None:
+def _technical_category_nudge(text: str, existing_entries, sprint_number, text_field: str) -> tuple:
     """
     GH issue #354: a "technical" finding whose text reads like a role-
     behavior/process-discipline gap, or that recurs (shares significant
     keywords with) an earlier sprint's unresolved "technical" finding of
     the same kind - either is a signal prompt-only guidance alone wasn't
     enough to get the model to act on (see this module's own docstring
-    link). Returns a non-blocking warning string to surface on the ADD
-    call's own response, or None if neither signal fires.
+    link). Returns `(warning, recurs_since_sprint)`: `warning` is a non-
+    blocking string to surface on the ADD call's own response (None if
+    neither signal fires); `recurs_since_sprint` is the raw sprint number
+    `recurring_technical_finding_sprint` returned (or None), surfaced
+    separately so the caller can persist it on the entry itself.
+
+    SPEC-ISSUE-0081: `0.1.0-run79` showed the warning text alone changes
+    nothing - ScrumMaster was told, verbatim, "A similar finding was
+    already logged as 'technical' back in sprint 1 with no resolution
+    since", filed the Issue as 'technical' anyway, and (via
+    _file_retro_items_as_issues' existing SPEC-ISSUE-0076 front-queue
+    promotion) it mechanically displaced the real Must-priority stories it
+    was complaining about, sprint after sprint, while being "resolved" with
+    "No code changes required for this administrative/process issue" each
+    time. Persisting `recurs_since_sprint` on the entry lets
+    _file_retro_items_as_issues turn this from an ignorable warning into an
+    actual mechanical consequence - a confirmed-recurring finding no longer
+    gets to cut the queue again.
     """
     recurs_since_sprint = recurring_technical_finding_sprint(existing_entries, text, sprint_number, text_field)
     behavior_signal = looks_like_role_behavior_finding(text)
@@ -719,23 +735,26 @@ def _technical_category_nudge(text: str, existing_entries, sprint_number, text_f
             f"already logged as 'technical' back in sprint {recurs_since_sprint} with no resolution "
             "since - if a specific role should act differently going forward, this is exactly what "
             "category='steering' plus a propose_steering_change call is for, not another one-off "
-            "'technical' Issue nobody will ever close."
+            "'technical' Issue nobody will ever close.",
+            recurs_since_sprint,
         )
     if recurs_since_sprint is not None:
         return (
             f"A similar finding was already logged as 'technical' back in sprint {recurs_since_sprint} "
             "with no resolution since - if this keeps recurring because of how a role behaves rather "
             "than a one-time code task, consider category='steering' and a propose_steering_change "
-            "call instead."
+            "call instead.",
+            recurs_since_sprint,
         )
     if behavior_signal:
         return (
             "This reads like a role-behavior finding, not a one-time code task - if a specific role "
             "should act differently going forward, consider category='steering' and a "
             "propose_steering_change call instead, or category='human' if this is genuinely outside "
-            "the team's own authority to fix."
+            "the team's own authority to fix.",
+            None,
         )
-    return None
+    return (None, None)
 
 
 def _file_general_blocker_if_human(category: str, priority: str, text: str, owner: str, tool_context) -> None:
@@ -813,7 +832,11 @@ def add_impediment(description: str, owner: str, category: str, priority: str = 
     }
     warning = None
     if category == "technical":
-        warning = _technical_category_nudge(description, s.get("impediment_log", []), sprint_number, "description")
+        warning, recurs_since_sprint = _technical_category_nudge(description, s.get("impediment_log", []), sprint_number, "description")
+        # SPEC-ISSUE-0081: persisted on the entry itself (not just the
+        # warning text) so _file_retro_items_as_issues can mechanically act
+        # on it later - see _technical_category_nudge's own docstring.
+        imp["recurs_since_sprint"] = recurs_since_sprint
     s["impediment_log"] = list(s.get("impediment_log", [])) + [imp]
     _file_general_blocker_if_human(category, priority, description, owner, tool_context)
     _ = save_state_to_repo(tool_context)
@@ -865,7 +888,9 @@ def add_retro_action(action: str, owner: str, success_metric: str, category: str
     }
     warning = None
     if category == "technical":
-        warning = _technical_category_nudge(action, s.get("retro_actions", []), sprint_number, "action")
+        warning, recurs_since_sprint = _technical_category_nudge(action, s.get("retro_actions", []), sprint_number, "action")
+        # SPEC-ISSUE-0081: see _technical_category_nudge's own docstring.
+        entry["recurs_since_sprint"] = recurs_since_sprint
     s["retro_actions"] = list(s.get("retro_actions", [])) + [entry]
     _file_general_blocker_if_human(category, priority, action, owner, tool_context)
     _ = save_state_to_repo(tool_context)

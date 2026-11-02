@@ -1992,6 +1992,31 @@ report detection to catch every reason heading, not just "Budget Used in Full"; 
 Token & Cost Summary to count each distinct real sprint once rather than double-counting a continuation
 entry's carried-over total. See SPEC-ISSUE-0080 for the full mechanism and fix.
 
+### Auto-filed retro Issues restating the team's own unfinished Must stories livelocked the real backlog for 4 of 5 sprints (0.1.0-run79, SPEC-ISSUE-0081)
+
+A real eval run (0.1.0-run79) delivered 2 of 5 stories in Sprint 1, then produced zero further product
+code for the remaining four sprints (confirmed: zero `app.py`/`test_app.py` writes in any of Sprints
+2-5) - Team Efficiency scored 1/5. Sprint 1's retro correctly noted 3 Must stories still unfinished and
+logged it as a retro action and impediment; both got auto-filed as Must Issues and, per SPEC-ISSUE-0076's
+own fix, mechanically jumped to the front of the ordering queue - working exactly as designed. DevTeam
+then "resolved" both with zero code (`"No code changes required for this administrative/process issue"`),
+satisfying the gate without touching the real stories. Because those stories still weren't finished,
+Sprint 2's own retro rediscovered the identical shortfall and filed another near-duplicate Issue, which
+again jumped the queue - the exact same `add_retro_action` call's response even carried the system's own
+warning, verbatim, *"A similar finding was already logged as 'technical' back in sprint 1 with no
+resolution since"* (GH #354's existing recurrence detection correctly fired every time) - but that warning
+was advisory-only prose a cheap model simply proceeded past. This repeated for Sprints 3, 4, and 5
+(SPEC-ISSUE-0001 through SPEC-ISSUE-0006), leaving the 3 real Must stories frozen at `['Draft', 'Ready']`
+for the entire run while 5 paperwork-only Issues each reached `Accepted` within the sprint they were
+filed. Fixed by giving the already-correct recurrence signal real teeth instead of leaving it purely
+advisory: `add_retro_action`/`add_impediment` now persist `recurs_since_sprint` on the logged entry
+itself, `_file_retro_items_as_issues` no longer lets a confirmed-recurring finding jump the ordering
+queue (it still gets filed and Must-prioritized, just can't displace the real work it's restating), and
+`create_sprint_report`'s existing steering-escalation backstop (GH #381) now also counts recurring
+findings toward its 2+ threshold, not just its narrower role-behavior phrase-list match - forcing a real
+`propose_steering_change` instead of an unbounded chain of near-duplicate "technical" Issues. See
+SPEC-ISSUE-0081 for the full mechanism and fix.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

@@ -318,6 +318,36 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertIn("sprint 1", result["warning"])
 
+    def test_recurring_impediment_persists_recurs_since_sprint_on_the_entry(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0081, 0.1.0-run79): the warning text
+        alone changed nothing - ScrumMaster was told this exact thing and
+        filed the resulting Issue anyway, which then mechanically jumped
+        ahead of the real backlog (_file_retro_items_as_issues' SPEC-ISSUE-
+        0076 front-queue promotion). The raw recurrence signal must be
+        persisted on the entry itself, not just rendered into prose, so
+        _file_retro_items_as_issues can act on it mechanically.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["impediment_log"] = [
+            {"description": "Dependency pinning keeps lagging behind upstream security releases",
+             "owner": "Architect", "status": "open", "category": "technical", "sprint_number": 1},
+        ]
+        tool_context.state["sprint_number"] = 3
+        result = add_impediment(
+            "Dependency pinning still lags behind upstream security releases again this sprint",
+            "Architect", category="technical", tool_context=tool_context,
+        )
+        self.assertEqual(result["impediment"]["recurs_since_sprint"], 1)
+        self.assertEqual(tool_context.state["impediment_log"][-1]["recurs_since_sprint"], 1)
+
+    def test_a_genuinely_new_technical_finding_has_no_recurs_since_sprint(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action("Improve testing", "ScrumMaster", "CI passes", category="technical", tool_context=tool_context)
+        self.assertIsNone(result["retro_action"]["recurs_since_sprint"])
+
     def test_record_human_approval(self):
         """
         Acceptance Criteria (SPEC-ISSUE-0001): a human approval event is recorded
