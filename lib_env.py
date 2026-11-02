@@ -93,10 +93,18 @@ def gen_secret() -> str:
 
 def ensure_master_key(path: Path) -> None:
     """Generates a real LITELLM_MASTER_KEY (and matching LITELLM_PROXY_API_KEY)
-    if the current value is missing or still a placeholder."""
+    if the current value is missing or still a placeholder.
+
+    GH issue #482: LiteLLM's proxy validates any bearer key presented to it
+    (including the master key, when - as here - LITELLM_PROXY_API_KEY is set
+    to match it) as a "virtual key" and rejects anything not prefixed
+    "sk-" ("AuthenticationError: LiteLLM Virtual Key expected ... expected
+    to start with 'sk-'") - a real install generated/used a bare hex secret
+    with no prefix and ADK failed to start. Prefixed here so a freshly
+    generated key actually works instead of failing this same way."""
     current = read_env_var(path, "LITELLM_MASTER_KEY")
     if is_placeholder(current):
-        new_key = gen_secret()
+        new_key = f"sk-{gen_secret()}"
         update_env_var(path, "LITELLM_MASTER_KEY", new_key)
         update_env_var(path, "LITELLM_PROXY_API_KEY", new_key)
         print(">> Generated a new LITELLM_MASTER_KEY (and set LITELLM_PROXY_API_KEY to match).")

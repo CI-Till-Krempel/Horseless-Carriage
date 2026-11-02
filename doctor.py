@@ -202,8 +202,19 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
 
     env = lib_env.load_env_file(env_path)
 
-    if not env.get("LITELLM_MASTER_KEY"):
+    litellm_master_key = env.get("LITELLM_MASTER_KEY", "")
+    if not litellm_master_key:
         error("LITELLM_MASTER_KEY is not set in .env. Please set it.")
+    elif lib_env.is_placeholder(litellm_master_key):
+        # GH issue #482: a real install left this as the literal
+        # ".env.example" placeholder text and ADK failed to start with
+        # "LiteLLM Virtual Key expected ... expected to start with 'sk-'" -
+        # name the actual fix instead of leaving it to a generic connectivity
+        # failure later in this same run.
+        error(
+            "LITELLM_MASTER_KEY is still the '.env.example' placeholder text. Run "
+            "'python3 setup_project.py' (or setup_llm.py) to generate a real one, or set it manually."
+        )
 
     if not env.get("STATE_REPO_PATH"):
         error("STATE_REPO_PATH is not set in .env. Please set it.")

@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import lib_docker
+import lib_env
 
 
 def main() -> None:
@@ -64,6 +65,16 @@ def main() -> None:
         print("IMPORTANT: Please edit the .env file to add your API keys and configuration.")
     else:
         print(".env file already exists.")
+
+    # GH issue #482: running this script directly (skipping setup_llm.py's
+    # interactive flow) used to leave LITELLM_MASTER_KEY/LITELLM_PROXY_API_KEY
+    # as the literal ".env.example" placeholder text, which ADK then rejected
+    # with "LiteLLM Virtual Key expected ... expected to start with 'sk-'".
+    # Idempotent (no-op once a real value is already set) so this is safe to
+    # run regardless of which setup script path a user takes, or how many
+    # times.
+    lib_env.ensure_master_key(env_path)
+    lib_env.ensure_postgres_password(env_path)
 
     # 4. Start the database and LiteLLM containers
     # Use the same compose file(s) setup_llm.py's own live test already

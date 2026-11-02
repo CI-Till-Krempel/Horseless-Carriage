@@ -104,6 +104,24 @@ class TestComposeFileSelection:
         assert exc_info.value.code == 1
 
 
+class TestEnvSecretGeneration:
+    """GH issue #482: running this script directly (skipping setup_llm.py's
+    interactive flow) used to leave LITELLM_MASTER_KEY/LITELLM_PROXY_API_KEY
+    as the literal ".env.example" placeholder text, which ADK then rejected
+    with "LiteLLM Virtual Key expected ... expected to start with 'sk-'"."""
+
+    def test_calls_ensure_master_key_and_postgres_password(self, happy_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(setup_project.lib_env, "ensure_master_key", lambda p: calls.append(("master_key", p)))
+        monkeypatch.setattr(setup_project.lib_env, "ensure_postgres_password", lambda p: calls.append(("postgres_password", p)))
+
+        setup_project.main()
+
+        kinds = [c[0] for c in calls]
+        assert "master_key" in kinds
+        assert "postgres_password" in kinds
+
+
 class TestGuardClauses:
     def test_docker_missing_exits(self, monkeypatch):
         monkeypatch.setattr(setup_project.os, "chdir", lambda _path: None)

@@ -162,6 +162,18 @@ class TestEnsureMasterKey:
         lib_env.ensure_master_key(env_file)
         assert lib_env.read_env_var(env_file, "LITELLM_MASTER_KEY") == "already-real-value"
 
+    def test_generated_key_starts_with_sk_prefix(self, tmp_path):
+        """GH issue #482: LiteLLM's proxy rejects any bearer key not
+        prefixed "sk-" as "LiteLLM Virtual Key expected ... expected to
+        start with 'sk-'" - a generated key must actually satisfy this."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("")
+        lib_env.ensure_master_key(env_file)
+        master = lib_env.read_env_var(env_file, "LITELLM_MASTER_KEY")
+        proxy = lib_env.read_env_var(env_file, "LITELLM_PROXY_API_KEY")
+        assert master.startswith("sk-")
+        assert proxy.startswith("sk-")
+
 
 class TestEnsurePostgresPassword:
     """GH issue #240: every install previously shared the identical
