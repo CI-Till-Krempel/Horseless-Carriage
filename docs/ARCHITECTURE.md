@@ -141,8 +141,8 @@ Every story passes through exactly these 6 stages, in this exact order, no skipp
 | DRAFT | Product Owner (Architect supports on technical feasibility) | Story concept/mockup being shaped into a real backlog item - not yet fully specified (GH issue #94) |
 | READY | Product Owner (Architect supports on technical feasibility) | Real title/user story/acceptance criteria, Dev Team estimate - see `spec-templates/DOR.md` |
 | IMPLEMENTED | Dev Team | Real, working code committed and pushed |
-| REVIEWED | Architect | Architectural/technical review complete |
-| TESTED | QA | `check_build()` passes; test strategy verified |
+| REVIEWED | Architect | Architectural/technical review complete - `advance_story_stage(..., review_comment=...)` posts the real `gh_pr_review` as part of the same call |
+| TESTED | QA | `check_build()` passes, the real test suite actually ran with nothing failing (GH #114), and any content-loss overwrite since the last Tested is acknowledged (SPEC-ISSUE-0075) - this same call also merges the story's feature branch into `develop` once its state push succeeds (GH #391) |
 | ACCEPTED | Product Owner | Acceptance criteria genuinely verified met - requires `record_acceptance_check` (see below) |
 
 A stage is only ever completed via `advance_story_stage(title_or_id, stage)`

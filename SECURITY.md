@@ -91,8 +91,8 @@ those it genuinely needs to do its job:
   for. That's a substantially larger architecture change, out of scope here —
   tracked as a possible follow-up alongside #286 if pursued.
 - Network exfiltration of whatever a secret an agent *can* read is a separate
-  concern from being able to read it at all — see #287 (network restriction,
-  not yet implemented) for that angle.
+  concern from being able to read it at all — see "Outbound network restriction
+  for the `agent` container" below for that angle.
 
 ## Financial guardrails (not a secret, but a real spend-control review)
 

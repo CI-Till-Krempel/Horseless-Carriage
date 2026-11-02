@@ -119,10 +119,8 @@ python3 rebuild_images.py --no-cache  # same, ignoring Docker's build cache enti
 `python3 run.py dev` does this automatically before every start, alongside verbose logging - see
 above.
 
-## Using the Scrum team agent
+## The agent implementation
 
-This repository provides the agent implementation under `agents/scrum_team/`. The package exports:
-
-- `agents.scrum_team.root_agent`
-
-Exactly how you *run* the agent depends on the host app / runner you plug it into (for example, an ADK-based runner). The key point is that `root_agent` is the entrypoint and it orchestrates the rest.
+The agent itself lives under `agents/scrum_team/`, exporting `agents.scrum_team.root_agent` as its
+ADK entrypoint - `run.py` above is the supported way to actually run it; you shouldn't need to touch
+this directly unless you're embedding it in a different ADK-based runner.

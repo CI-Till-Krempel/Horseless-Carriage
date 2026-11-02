@@ -15,10 +15,11 @@ what you need:
   — the practical "how do I actually use this" guide: reading a result,
   triggering a run (CI or manual), and running it locally to sanity-check a
   change before pushing it.
-- **["Team performance evaluation" in RELEASE.md](../RELEASE.md#team-performance-evaluation)**
-  — the full technical mechanics: the isolated eval repo, the `run_eval.py`
-  driver, budget/timeout guardrails, auto-merge behavior, transcript capture,
-  and the judge-LLM analysis/report step.
+- **[`.github/workflows/eval.yml`](../.github/workflows/eval.yml)** — the full technical
+  mechanics: the isolated eval repo, the `run_eval.py` driver, budget/timeout guardrails,
+  auto-merge behavior, transcript capture, and the judge-LLM analysis/report step. Individual
+  fixes to this harness are documented as they land in RELEASE.md (search it for "eval run" or a
+  specific `0.1.0-runNN`/`SPEC-ISSUE-NNNN` reference).
 
 ## The short version
 
@@ -33,7 +34,7 @@ what you need:
 - **Local (non-CI) runs** check the LiteLLM proxy is actually reachable before
   spending anything, and refuse to proceed without an explicit `--dev-mode`
   flag if it isn't (since the USD guardrail lives entirely in the proxy).
-- **Output**: a scored report (`EVAL-REPORT.md`, 1-5 on code quality,
+- **Output**: a scored report (`report.md`, 1-5 on code quality,
   requirements quality, and team efficiency) plus a ranked list of top
   problems with suggested fixes, committed to the eval repo and uploaded as a
   CI artifact.

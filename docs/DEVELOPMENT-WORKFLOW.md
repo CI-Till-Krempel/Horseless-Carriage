@@ -112,16 +112,14 @@ flowchart TD
     Branch --> Code["🧑‍💻 DevTeam\n🔧 write_file + git_push\n❌ refuses direct push to protected branches"]:::dev
     Code --> PRReady["🧑‍💻 DevTeam\n🔧 mark_pr_ready_for_review"]:::dev
     PRReady --> Impl["🧑‍💻 DevTeam\n🔄 IMPLEMENTED\n🔧 advance_story_stage"]:::dev
-    Impl --> ArchReview["👷 Architect\n🔧 gh_pr_review / gh_pr_comment"]:::arch
-    ArchReview --> ArchGate{{"Changes requested?"}}:::loop
+    Impl --> ArchGate{{"Architect: changes requested?"}}:::loop
     ArchGate -- "❌ yes — 🔧 deny_review(reason)\nback to development" --> Code
-    ArchGate -- "✅ approved" --> Reviewed["👷 Architect\n🔄 REVIEWED\n🔧 advance_story_stage"]:::arch
+    ArchGate -- "✅ approved" --> Reviewed["👷 Architect\n🔄 REVIEWED\n🔧 advance_story_stage(review_comment=...)\nposts gh_pr_review as part of this same call"]:::arch
     Reviewed --> Build["🕵️ QA\n🔧 check_build\nreal dependency install + test run"]:::qa
     Build --> BuildGate{{"Build/tests pass,\nno QA findings?"}}:::loop
     BuildGate -- "❌ no — 🔧 deny_review(reason)\nback to development" --> Code
-    BuildGate -- "✅ yes" --> Tested["🕵️ QA\n🔄 TESTED\n🔧 advance_story_stage"]:::qa
-    Tested --> Merge["🕵️ QA\n🔧 merge_story_pr\nfeature branch → develop"]:::qa
-    Merge --> Verify["🧑‍💼 ProductOwner\n🔧 record_acceptance_check\nverifies acceptance criteria"]:::po
+    BuildGate -- "✅ yes" --> Tested["🕵️ QA\n🔄 TESTED\n🔧 advance_story_stage(review_comment=...)\nposts gh_pr_review + merges feature branch → develop, same call"]:::qa
+    Tested --> Verify["🧑‍💼 ProductOwner\n🔧 record_acceptance_check\nverifies acceptance criteria"]:::po
     Verify --> AcceptGate{{"Acceptance criteria\nactually met?"}}:::loop
     AcceptGate -- "❌ no — 🔧 deny_review(reason)\nback to development" --> Code
     AcceptGate -- "✅ yes" --> Accepted["🧑‍💼 ProductOwner\n🔄 ACCEPTED\n🔧 advance_story_stage"]:::po
@@ -185,7 +183,12 @@ comment or a conversation turn. Cleared automatically once the story advances pa
 denied at.
 
 Reviewed/Tested each require a fresh `gh_pr_review`/`gh_pr_comment` call from the deciding role since
-the story's own denial (not just since the sprint-wide baseline) before they can complete again.
+the story's own denial (not just since the sprint-wide baseline) before they can complete again -
+`advance_story_stage(..., review_comment=...)` posts it as part of the same call, so this is
+satisfied automatically as long as a real review is actually given; a separate prior `gh_pr_review`
+call still works too (the freshness gate doesn't care which). QA's Tested transition additionally
+merges the story's feature branch into `develop` itself once its state push succeeds - no separate
+`merge_story_pr()` call needed, though it remains available to retry a failed merge.
 Accepted has its own evidence gate the same way: `record_acceptance_check(title_or_id, note)` must be
 called - and, after a denial, called again - before `advance_story_stage(id, "Accepted")` succeeds;
 this is a per-story counter, not a one-time flag, precisely so a denial can require a genuinely new

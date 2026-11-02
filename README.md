@@ -134,6 +134,7 @@ the background beyond the dashboard's own lightweight polling (GH issue #310).
 | Topic | What's there |
 |---|---|
 | [Setup](docs/SETUP.md) | Guided LLM/project setup, Windows-specific instructions, running fully local (no commercial LLM, ⚠️ experimental), human interaction levels (non-`Product` levels ⚠️ experimental) |
+| [Human Interaction Levels](docs/INTERACTION-LEVELS.md) | The three levels (`Product`/`CEO`/`EVAL`), what each gates, and which `record_human_approval` call applies |
 | [Configuration Reference](docs/CONFIGURATION.md) | Every `.env` config item, and how they combine (provider × GPU/host-mode × interaction level × budget) |
 | [State Repository](docs/STATE-REPOSITORY.md) | What the "source of truth" directory is, its structure, and the health-check script |
 | [Running the Agent](docs/RUNNING.md) | `run.py` modes (Terminal UI and daemon mode ⚠️ experimental), logging & session management, diagnostics (`doctor.py`) |

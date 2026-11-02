@@ -171,7 +171,9 @@ This will:
 1. Check for Docker and Docker Compose.
 2. Guide you through GitHub CLI setup.
 3. Create a `.env` file from the template (if it doesn't exist - `setup_llm.py`
-   above will already have created and populated it in most cases).
+   above will already have created and populated it in most cases), and generate a real
+   `LITELLM_MASTER_KEY`/`LITELLM_PROXY_API_KEY`/`POSTGRES_PASSWORD` if they're still the template's
+   placeholder text - safe to run either way, this step is a no-op once real values are already set.
 4. Start the database and LiteLLM containers.
 
 After running setup, please edit the `.env` file to add your specific API keys and configuration.
@@ -398,7 +400,7 @@ inside a generated test, whatever - fails outright, not silently through to some
 
 How much of a human is actually in the loop is configurable via `INTERACTION_LEVEL` (`.env`, set
 interactively by `setup_llm.py`) - see [docs/INTERACTION-LEVELS.md](INTERACTION-LEVELS.md) for the
-full breakdown. Four levels:
+full breakdown. Three levels:
 
 | Level | The human's role |
 |---|---|

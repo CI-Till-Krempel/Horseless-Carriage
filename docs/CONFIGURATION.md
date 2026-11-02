@@ -106,7 +106,8 @@ removes every human approval gate for that `.env`.
 never be enforced — it still writes a harmless default so `.env` stays
 consistent if the same file is later reconfigured for a cloud provider.
 
-`PROCESS_OVERHEAD_PERCENTAGE` (default `10.0`, i.e. 10%) sizes ScrumMaster's
+`PROCESS_OVERHEAD_PERCENTAGE` (code fallback `10.0` if unset; `.env.example` ships `20`, so every
+install following the standard setup flow actually gets 20%) sizes ScrumMaster's
 own separate ritual budget (GH #395) — facilitating events, the
 retrospective, KPI calculation, and authoring the sprint report are checked
 against Scrum Master's own token usage against a ceiling of this percentage
