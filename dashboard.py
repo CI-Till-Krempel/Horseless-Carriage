@@ -127,6 +127,10 @@ def project_snapshot(entry: dict) -> dict:
         "token_usage": token_usage.get("total", 0),
         "token_budget": budgets.get("total", "unset"),
         "usd_budget": budgets.get("total_usd"),
+        # GH issue #481: already computed and persisted by the live agent
+        # session's own cost-budget callback (agent.py, check_cost_budget_
+        # callback) - the dashboard previously just never read this field.
+        "current_usd_spend": budgets.get("current_usd_spend"),
         "product_version": product_version,
         "litellm_port": litellm_port,
         "agent_web_port": agent_web_port,
@@ -210,6 +214,8 @@ def _render_page(message: str = "") -> str:
                 f"<a href='{e(web_url)}' target='_blank'>Respond in web UI &rarr;</a></small>"
             )
         usd = f"${snap['usd_budget']:.2f}" if isinstance(snap.get("usd_budget"), (int, float)) and snap["usd_budget"] else "unset"
+        spend = snap.get("current_usd_spend")
+        spend_str = f"${spend:.2f} spent" if isinstance(spend, (int, float)) else "spend not yet available"
         rows.append(
             "<tr>"
             f"<td>{e(snap['name'])}</td>"
@@ -217,7 +223,7 @@ def _render_page(message: str = "") -> str:
             f"<td>{e(snap['config_mode'])}</td>"
             f"<td>{e(snap['interaction_level'])}</td>"
             f"<td>{e(snap['sprint_goal'])}</td>"
-            f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {usd}</td>"
+            f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {e(spend_str)} / {usd} budget</td>"
             f"<td>{e(snap['product_version'])}</td>"
             f"<td>LiteLLM: <a href='http://localhost:{e(snap['litellm_port'])}/ui' target='_blank'>{e(snap['litellm_port'])}</a> / "
             f"Web: <a href='{e(web_url)}' target='_blank'>{e(snap['agent_web_port'])}</a></td>"

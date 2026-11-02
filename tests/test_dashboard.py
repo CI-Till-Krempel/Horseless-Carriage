@@ -52,6 +52,35 @@ class TestProjectSnapshot:
         assert snap["token_budget"] == 1000000
         assert snap["usd_budget"] == 5.0
 
+    def test_reads_current_usd_spend_when_present(self, tmp_path):
+        """GH issue #481: already computed/persisted by the live agent
+        session's own cost-budget callback - the dashboard previously never
+        surfaced it, only the budget ceiling."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "budgets": {"total_usd": 5.0, "current_usd_spend": 1.23},
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["current_usd_spend"] == 1.23
+
+    def test_current_usd_spend_is_none_when_not_yet_computed(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "budgets": {"total_usd": 5.0},
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["current_usd_spend"] is None
+
     def test_waiting_when_running_with_blocking_interactions(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)
         (target_repo / ".hc").mkdir()
@@ -175,6 +204,38 @@ class TestRenderPage:
 
         assert "my-project" in page
         assert "resting" in page
+
+    def test_renders_current_usd_spend_alongside_the_budget(self, tmp_path):
+        """GH issue #481: only the budget ceiling was ever shown - the
+        actual cumulative spend (already computed by the live agent
+        session) must be visible too."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "budgets": {"total_usd": 5.0, "current_usd_spend": 1.23},
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "$1.23 spent" in page
+        assert "$5.00" in page
+
+    def test_renders_spend_not_yet_available_when_absent(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "budgets": {"total_usd": 5.0},
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "spend not yet available" in page
 
     def test_escapes_html_in_sprint_goal(self, tmp_path):
         """A sprint_goal is LLM-authored, agent-controlled text - must not
