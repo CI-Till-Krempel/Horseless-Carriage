@@ -30,20 +30,38 @@ gh auth login
 ```
 
 ## Option 2: GitHub App (Recommended for Agents)
-To have the agents act as a distinct entity in your **Workspace Repo** (e.g., Kronograf), follow this simplified setup:
+To have the agents act as a distinct entity in your **Workspace Repo**, with `GITHUB_REPO_URL` already
+set in `.env` (see [Setup](SETUP.md)):
+
+```bash
+python3 setup_github_app.py
+```
+
+This registers a new GitHub App via GitHub's own App Manifest flow and installs it on that repo,
+writing `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY`/`GITHUB_APP_INSTALLATION_ID` into `.env` for you -
+two browser confirmations are unavoidable (GitHub requires a human click for both creating an App and
+installing one; there's no API around either), but nothing needs to be copy-pasted by hand. Pass
+`--owner-repo owner/repo` to target a different repo than `GITHUB_REPO_URL`, or `--timeout SECONDS`
+if your connection to GitHub is slow enough that the default 10-minute wait per step isn't enough.
+
+Prefer doing this by hand, or the script's two local browser round-trips don't work in your
+environment (e.g. a headless remote box with no SSH port-forwarding set up)? The manual steps it
+automates:
 
 1.  **Create**: Go to **Settings** → **Developer settings** → **GitHub Apps** → **New GitHub App**.
-    *   **Name**: `Horseless-Carriage-Agent`
+    *   **Name**: anything unique (App names are unique across all of GitHub, not just your account).
     *   **Webhook**: Uncheck "Active".
 2.  **Permissions**: Under **Permissions & events** → **Repository permissions**:
     *   `Contents` & `Pull requests`: **Read & write**.
     *   `Metadata`: **Read-only**.
 3.  **Install**: Go to **Install App** in the sidebar and install it **ONLY** on your **Target Workspace Repository**.
-4.  **Credentials**: 
+4.  **Credentials**:
     *   Copy the **App ID** from the General page.
     *   Copy the **Installation ID** from the URL after installing (e.g., `.../installations/12345678`).
     *   Click **Generate a private key**, and keep the `.pem` file content ready.
-5.  **Configure**: Provide these 3 items to the `ScrumOrchestrator` Setup Wizard (or to `setup_llm.py`'s Git identity / state repository prompts - see [Setup](SETUP.md)). It will handle the rest!
+5.  **Configure**: Paste these 3 values into `.env`'s `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY`/
+    `GITHUB_APP_INSTALLATION_ID` yourself (see `.env.example` for the exact format the private key
+    needs - a single line with real newlines escaped as `\n`).
 
 ## Verifying access actually works
 
