@@ -313,6 +313,33 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["architect_review_baseline"], 1)
 
+    def test_reviewed_review_comment_posts_the_review_and_satisfies_the_gate(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #391: review_comment folds the required gh_pr_review
+        call into this same transition - no separate prior call needed."""
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+
+        def fake_gh_pr_review(body, event="COMMENT", pr_id=None, tool_context=None):
+            calls = dict(tool_context.state.get("pr_review_calls", {}))
+            calls["Architect"] = calls.get("Architect", 0) + 1
+            tool_context.state["pr_review_calls"] = calls
+            return {"status": "ok", "body": body, "event": event, "pr_id": pr_id}
+
+        with patch("agents.scrum_team.tools.github.gh_pr_review", side_effect=fake_gh_pr_review) as mock_review:
+            result = advance_story_stage("US-0001", "Reviewed", review_comment="LGTM", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_review.assert_called_once_with("LGTM", event="APPROVE", pr_id=None, tool_context=tc)
+        self.assertEqual(tc.state["architect_review_baseline"], 1)
+
+    def test_reviewed_review_comment_post_failure_blocks_the_transition(self, mock_save, mock_md, mock_roadmap):
+        tc = _tool_context("Architect", ["Ready", "Implemented"])
+        with patch("agents.scrum_team.tools.github.gh_pr_review", return_value={"status": "error", "message": "no PR found"}):
+            result = advance_story_stage("US-0001", "Reviewed", review_comment="LGTM", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("gh_pr_review", result["message"])
+        self.assertNotIn("Reviewed", tc.state["product_backlog"][0]["stages_completed"])
+
     def test_tested_requires_qa_review_call_and_passing_build(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
         result = advance_story_stage("US-0001", "Tested", tool_context=tc)
@@ -331,6 +358,28 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
         ):
             result = advance_story_stage("US-0001", "Tested", tool_context=tc)
         self.assertEqual(result["status"], "ok")
+
+    def test_tested_review_comment_posts_the_review_and_satisfies_the_gate(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #391: same fold as the Reviewed transition."""
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+
+        def fake_gh_pr_review(body, event="COMMENT", pr_id=None, tool_context=None):
+            calls = dict(tool_context.state.get("pr_review_calls", {}))
+            calls["QA"] = calls.get("QA", 0) + 1
+            tool_context.state["pr_review_calls"] = calls
+            return {"status": "ok", "body": body, "event": event, "pr_id": pr_id}
+
+        with patch("agents.scrum_team.tools.github.gh_pr_review", side_effect=fake_gh_pr_review) as mock_review, \
+             patch(
+                "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+                return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0},
+             ):
+            result = advance_story_stage("US-0001", "Tested", review_comment="Looks good", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_review.assert_called_once_with("Looks good", event="APPROVE", pr_id=None, tool_context=tc)
+        self.assertEqual(tc.state["qa_review_baseline"], 1)
 
     def test_tested_blocked_when_last_check_build_failed(self, mock_save, mock_md, mock_roadmap):
         tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
@@ -763,6 +812,57 @@ class TestStageAdvancePushesStateToTheCorrectBranch(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         self.assertIn("pushing", result["message"])
+
+    def _tested_ready_context(self):
+        tc = _tool_context("QA", ["Ready", "Implemented", "Reviewed"])
+        tc.state["pr_review_calls"] = {"QA": 1}
+        tc.state["last_check_build"] = {"checked": "requirements.txt", "passing": True}
+        tc.state["active_feature_branches"] = {"US-0001": "feature/US-0001-add-login"}
+        return tc
+
+    def test_tested_automatically_merges_the_pr_once_the_push_succeeds(self, mock_save, mock_md, mock_roadmap):
+        """GH issue #391: QA no longer has to remember a separate
+        merge_story_pr() call after advance_story_stage(..., "Tested")."""
+        tc = self._tested_ready_context()
+        with patch("agents.scrum_team.tools.quality._execute_test_suite_coverage",
+                    return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0}), \
+             patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "feature/US-0001-add-login"}), \
+             patch("agents.scrum_team.tools.github.merge_story_pr", return_value={"status": "ok", "merged": True}) as mock_merge:
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+
+        self.assertEqual(result["status"], "ok")
+        mock_merge.assert_called_once_with(pr_id="feature/US-0001-add-login", tool_context=tc)
+        self.assertEqual(result["merge_pr"], {"status": "ok", "merged": True})
+
+    def test_tested_merge_failure_is_reported_but_the_stage_is_not_undone(self, mock_save, mock_md, mock_roadmap):
+        tc = self._tested_ready_context()
+        with patch("agents.scrum_team.tools.quality._execute_test_suite_coverage",
+                    return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0}), \
+             patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok", "branch": "feature/US-0001-add-login"}), \
+             patch("agents.scrum_team.tools.github.merge_story_pr", return_value={"status": "error", "message": "not mergeable"}):
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("merge_story_pr", result["message"])
+        self.assertIn("Tested", result["stages_completed"])
+
+    def test_tested_skips_the_merge_attempt_when_the_push_itself_fails(self, mock_save, mock_md, mock_roadmap):
+        tc = self._tested_ready_context()
+        with patch("agents.scrum_team.tools.quality._execute_test_suite_coverage",
+                    return_value={"tests_available": True, "tests_run": 5, "tests_failed": 0}), \
+             patch("agents.scrum_team.tools.github._checkout_with_auto_integrate", return_value=({"status": "ok"}, None)), \
+             patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True}), \
+             patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "error", "message": "network error"}), \
+             patch("agents.scrum_team.tools.github.merge_story_pr") as mock_merge:
+            result = advance_story_stage("US-0001", "Tested", tool_context=tc)
+
+        self.assertEqual(result["status"], "error")
+        self.assertNotIn("merge_pr", result)
+        mock_merge.assert_not_called()
 
     def test_draft_and_ready_never_attempt_a_push(self, mock_save, mock_md, mock_roadmap):
         """Draft/Ready are Product Owner's own planning-doc edits, already

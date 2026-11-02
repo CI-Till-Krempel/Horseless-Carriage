@@ -79,15 +79,19 @@ Every story is implemented on its own branch, never directly on `develop`:
    **draft** PR back into `develop`.
 2. Dev Team implements the story on that branch (`write_file` + `git_push`), and once CI is
    green calls `mark_pr_ready_for_review()` to drop the draft status.
-3. **Architect** reviews it (`advance_story_stage(..., "Reviewed")`), then **QA** verifies it
-   (`check_build()`, `advance_story_stage(..., "Tested")`).
-4. Once a story is marked Tested, **QA** calls `merge_story_pr()` to merge that story's feature
-   branch into `develop` - this is what actually makes the story part of the integration branch
-   the next sprint PR will pick up. See [Architecture](ARCHITECTURE.md) for the full 6-stage
-   story pipeline this attaches to.
+3. **Architect** reviews it and calls `advance_story_stage(..., "Reviewed", review_comment=...)` -
+   the review text is posted as a real `gh_pr_review` on the PR as part of this same call. **QA**
+   then verifies it (`check_build()`) and calls
+   `advance_story_stage(..., "Tested", review_comment=...)` the same way.
+4. That same Tested call also merges the story's feature branch into `develop` once its state push
+   succeeds (GH issue #391) - no separate `merge_story_pr()` call needed - this is what actually
+   makes the story part of the integration branch the next sprint PR will pick up. See
+   [Architecture](ARCHITECTURE.md) for the full 6-stage story pipeline this attaches to.
 
-`merge_story_pr()` respects real branch-protection/required-checks by default (no forced
-`--admin` merge) - a story-level merge is expected to behave like any other reviewed PR merge.
+The underlying `merge_story_pr()` respects real branch-protection/required-checks by default (no
+forced `--admin` merge) - a story-level merge is expected to behave like any other reviewed PR
+merge. It remains available to call directly to retry a merge that failed as part of the Tested
+transition.
 
 ## Sprint-level: the "sprint PR" (`develop` -> `main`)
 

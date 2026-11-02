@@ -1555,7 +1555,7 @@ def sync_all_active_stories_to_roadmap(tool_context) -> Dict[str, Any]:
     return {"status": "ok" if overall_ok else "error", "versions_synced": list(versions.keys()), "results": results}
 
 
-def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_work: str = None, content_loss_acknowledgment: str = None, tool_context=None) -> Dict[str, Any]:
+def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_work: str = None, content_loss_acknowledgment: str = None, review_comment: str = None, review_event: str = "APPROVE", tool_context=None) -> Dict[str, Any]:
     """
     The single, mandatory mechanism for moving a story through the fixed
     Draft -> Ready -> Implemented -> Reviewed -> Tested -> Accepted pipeline
@@ -1578,6 +1578,15 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     was deliberately retired) or restored before retrying. Do not supply a
     placeholder value just to satisfy this check.
 
+    `review_comment`/`review_event`: GH issue #391 - only meaningful for the
+    Reviewed (Architect) and Tested (QA) transitions. When supplied, this
+    call posts it as a real `gh_pr_review` on the story's own feature-branch
+    PR itself (review_event: APPROVE/REQUEST_CHANGES/COMMENT, default
+    APPROVE) before checking the stage's review-freshness gate below - the
+    calling role no longer has to remember a separate `gh_pr_review`/
+    `gh_pr_comment` call beforehand. Omitting it falls back to the old
+    behavior (a fresh review call must already be on record).
+
     Enforces, in code rather than by asking nicely in a prompt (which
     repeatedly wasn't enough on its own in real eval runs):
     - Stages complete strictly in order - no skipping.
@@ -1589,7 +1598,10 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
 
     Updates the story's own state AND specs/ROADMAP.md's per-stage
     checkboxes atomically in one call, instead of relying on the agent to
-    remember a separate "now go update the roadmap" step.
+    remember a separate "now go update the roadmap" step. The Tested
+    transition additionally merges the story's PR into develop itself (GH
+    issue #391) once its state push succeeds - no separate merge_story_pr
+    call is required (though it remains available to retry a failed merge).
     """
     from .scrum import save_state_to_repo
 
@@ -1880,6 +1892,21 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     ),
                 })
     elif stage == "Reviewed":
+        if review_comment:
+            # GH issue #391: post the required review as part of this same
+            # call instead of making the caller remember a separate
+            # gh_pr_review/gh_pr_comment beforehand.
+            from .github import gh_pr_review
+            pr_branch = (s.get("active_feature_branches") or {}).get(story_id)
+            post_result = gh_pr_review(review_comment, event=review_event, pr_id=pr_branch, tool_context=tool_context)
+            if post_result.get("status") != "ok":
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Reviewed - posting the review via gh_pr_review "
+                        f"failed: {post_result.get('message') or post_result.get('stderr') or post_result}"
+                    ),
+                })
         pr_calls = s.get("pr_review_calls", {}) or {}
         architect_review_count = pr_calls.get("Architect", 0)
         if architect_review_count <= s.get("architect_review_baseline", 0):
@@ -1887,8 +1914,9 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Reviewed - no gh_pr_review/gh_pr_comment call from "
-                    "Architect has been recorded since the last story was Reviewed. Leave an actual "
-                    "review comment on the PR first."
+                    "Architect has been recorded since the last story was Reviewed. Pass "
+                    "review_comment to post one as part of this call, or leave an actual review "
+                    "comment on the PR first."
                 ),
             })
         # SPEC-ISSUE-0044: the check above is sprint-wide, not per-story - without
@@ -1907,6 +1935,19 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                 ),
             })
     elif stage == "Tested":
+        if review_comment:
+            # GH issue #391: same fold as the Reviewed transition above.
+            from .github import gh_pr_review
+            pr_branch = (s.get("active_feature_branches") or {}).get(story_id)
+            post_result = gh_pr_review(review_comment, event=review_event, pr_id=pr_branch, tool_context=tool_context)
+            if post_result.get("status") != "ok":
+                return _reject_stage_transition(tool_context, story_id, stage, {
+                    "status": "error",
+                    "message": (
+                        f"Cannot mark '{story_id}' Tested - posting the review via gh_pr_review "
+                        f"failed: {post_result.get('message') or post_result.get('stderr') or post_result}"
+                    ),
+                })
         pr_calls = s.get("pr_review_calls", {}) or {}
         qa_review_count = pr_calls.get("QA", 0)
         if qa_review_count <= s.get("qa_review_baseline", 0):
@@ -1914,8 +1955,8 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                 "status": "error",
                 "message": (
                     f"Cannot mark '{story_id}' Tested - no gh_pr_review/gh_pr_comment call from QA "
-                    "has been recorded since the last story was Tested. Leave an actual review "
-                    "comment on the PR first."
+                    "has been recorded since the last story was Tested. Pass review_comment to post "
+                    "one as part of this call, or leave an actual review comment on the PR first."
                 ),
             })
         # SPEC-ISSUE-0044: same per-story freshness requirement as Reviewed above.
@@ -2238,6 +2279,21 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
                     "time something switches branches - this exact gap is what caused a real run to "
                     "permanently lose a story's Tested/Accepted stage between sprints."
                 )
+            elif stage == "Tested":
+                # GH issue #391: fold QA's required follow-up merge_story_pr()
+                # call into this same atomic transition instead of leaving it
+                # a separate step nothing stops a role from forgetting.
+                from .github import merge_story_pr
+                merge_res = merge_story_pr(pr_id=push_target, tool_context=tool_context)
+                result["merge_pr"] = merge_res
+                if merge_res.get("status") != "ok":
+                    result["status"] = "error"
+                    result["message"] = (
+                        f"'{story_id}' is marked Tested and its state pushed, but merging its PR "
+                        f"('{push_target}') into develop failed - see merge_pr for details. The "
+                        "Tested stage itself does not need to be redone; call merge_story_pr("
+                        f"'{push_target}') again once that's resolved."
+                    )
 
     if stub_test_warning:
         result["warning"] = stub_test_warning

@@ -936,9 +936,29 @@ Owner's own planning-doc edits, already covered by `create_sprint_backlog_pr`'s 
 If the push itself fails, the call now reports `"status": "error"` instead of silently succeeding -
 that silent-drift is exactly the failure mode this closes.
 
-A larger follow-up (GH issue #391, not implemented here) would fold the required PR review/comment and
-QA's `merge_story_pr` into the stage-advancement call itself too, so each role's gate decision is a
-single atomic tool call start to finish.
+A larger follow-up (GH issue #391) folds the required PR review/comment and QA's `merge_story_pr` into
+the stage-advancement call itself too - see below.
+
+### advance_story_stage folds the required PR review and QA's merge into the stage-advancement call itself (GH issue #391)
+
+Follow-up to #388 above. Even with that fix, a stage transition still required the calling role to
+separately remember, in the right order: leave a `gh_pr_review`/`gh_pr_comment` BEFORE calling
+`advance_story_stage` (a freshness-gated precondition, not something the gate call did itself), and -
+for QA's `Tested` stage specifically - remember to call `merge_story_pr()` right after. Nothing stopped
+a role from doing these out of order, forgetting the follow-up call entirely, or hitting the exact
+silent-drift gap #388 closed in between.
+
+`advance_story_stage` now takes optional `review_comment`/`review_event` arguments for the Reviewed
+(Architect) and Tested (QA) transitions: passing `review_comment` posts it as a real `gh_pr_review` on
+the story's own feature-branch PR as part of this same call (`review_event` defaults to `APPROVE`),
+immediately satisfying the review-freshness gate that used to require a separate prior call. Omitting
+it falls back to the old behavior (a fresh review call must already be on record), so this is additive,
+not a breaking signature change. The Tested transition additionally calls `merge_story_pr()` itself
+once its own state push succeeds, surfacing the result as `merge_pr` in the response - QA no longer has
+a separate follow-up call to remember. A merge failure is reported as an error without undoing the
+Tested stage itself (the story genuinely is Tested; only the merge is pending) - `merge_story_pr()`
+remains available to retry it. `Architect-workflow.md`/`QA-workflow.md` updated to the new one-call
+pattern.
 
 ### Customer Satisfaction and Commitment Reliability KPIs are no longer fabricated (GH issue #389)
 

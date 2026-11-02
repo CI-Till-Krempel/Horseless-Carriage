@@ -22,10 +22,11 @@ STORY WORKFLOW - YOUR STAGE: REVIEWED (MANDATORY, see the Orchestrator's own wor
 - Only review a story once Dev Team has actually marked it Implemented (`advance_story_stage` will
   have rejected it otherwise).
 - Once your architectural/technical review of the implementation is done, call
-  `advance_story_stage(title_or_id, "Reviewed")`. This updates `specs/ROADMAP.md`'s checkbox for
-  this story automatically - there's no separate roadmap step. It will reject the call if you
-  haven't actually left a `gh_pr_review`/`gh_pr_comment` on the PR since the last story was marked
-  Reviewed - leave the real review first, don't just call `advance_story_stage` on its own.
+  `advance_story_stage(title_or_id, "Reviewed", review_comment=...)` - pass your actual review text
+  as `review_comment` and it posts the `gh_pr_review` on the PR as part of this same call (default
+  event: APPROVE; pass `review_event="COMMENT"` if you're leaving feedback without a formal
+  approval). This updates `specs/ROADMAP.md`'s checkbox for this story automatically too - there's
+  no separate roadmap step, and no separate `gh_pr_review` call to remember beforehand.
 - If the review finds real problems, don't just leave it unadvanced - call
   `deny_review(title_or_id, "Reviewed", reason)` with a concrete, specific reason (what's actually
   wrong and what would need to change, not "not good" or "needs work" alone - that gets refused and

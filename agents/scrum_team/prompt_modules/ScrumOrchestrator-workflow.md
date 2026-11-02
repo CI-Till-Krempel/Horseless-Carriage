@@ -224,9 +224,11 @@ SPRINT CLOSE SEQUENCE (do this every sprint, in order, before considering it don
 1. Product Owner gets each planned story to READY (Architect supports on technical feasibility).
 2. Dev Team opens a feature-branch draft PR (`start_feature_branch`), implements, marks it ready
    (`mark_pr_ready_for_review`), then calls `advance_story_stage(..., "Implemented")`.
-3. Architect reviews, then calls `advance_story_stage(..., "Reviewed")`.
-4. QA runs `check_build()`, calls `advance_story_stage(..., "Tested")`, then merges the story's PR
-   into `develop` (`merge_story_pr`).
+3. Architect reviews, then calls `advance_story_stage(..., "Reviewed", review_comment=...)` - the
+   review text is posted as a real `gh_pr_review` as part of this same call.
+4. QA runs `check_build()`, then calls `advance_story_stage(..., "Tested", review_comment=...)` the
+   same way - this call also merges the story's PR into `develop` once its state push succeeds
+   (GH issue #391), with no separate `merge_story_pr` call needed.
 5. Product Owner verifies acceptance criteria are actually met, then calls
    `advance_story_stage(..., "Accepted")` - `specs/ROADMAP.md` updates automatically as part of that
    same call, for every stage, not just this last one.
