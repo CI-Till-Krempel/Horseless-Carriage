@@ -39,6 +39,7 @@ text or relying on an exit code alone.
 Stdlib-only, works identically on macOS/Linux/Windows.
 """
 
+import argparse
 import shutil
 import subprocess
 import sys
@@ -134,7 +135,12 @@ class DoctorResult:
             print(f"[{item.severity.upper()}] {item.message}")
 
 
-def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_llm_probe: bool = False) -> DoctorResult:
+def check(
+    repo_root: Path,
+    proxy_base_url: str = "http://localhost:4000",
+    skip_llm_probe: bool = False,
+    dry_run: bool = False,
+) -> DoctorResult:
     """Runs every check against repo_root (no chdir, so this is safe to call
     from tests against a tmp_path fixture, or from another script like
     run.py/setup_all.py). Never stops at the first problem found - every
@@ -148,7 +154,18 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
     configuration either way, which is cheap/local) - for a caller like
     run.py's pre-flight gate, called before the containers are even
     started, where that check could only ever report "not reachable" and
-    would otherwise cost several real seconds for no benefit."""
+    would otherwise cost several real seconds for no benefit.
+
+    dry_run=True skips every step that WRITES something (the state repo's
+    default workbench-setup.sh/<Role>-identity.md migration, and this repo's
+    own sessions/ directory auto-create) - every one of those is purely
+    additive/idempotent so running them is normally harmless, but a caller
+    that only wants the warning/error punch list itself (GH issue tracker:
+    dashboard.py polling this on every render to surface doctor's own
+    warnings) has no business writing to a project's checkout just to read
+    its diagnostics. Every check that only reads/reports (which is most of
+    them) still runs exactly the same either way - dry_run never hides a
+    problem, it only skips auto-fixing one."""
     repo_root = Path(repo_root)
     items = []
 
@@ -401,8 +418,9 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
             # `COPY --from=workbench ...`) never fails for a project that has
             # no workbench yet - purely additive, same idempotent shape as
             # ensure_role_identity_defaults below (never overwrites a real
-            # workbench-setup.sh).
-            check_state_repo.ensure_workbench_script_default(state_repo_path)
+            # workbench-setup.sh). Still a write though - skip it in dry_run.
+            if not dry_run:
+                check_state_repo.ensure_workbench_script_default(state_repo_path)
 
             specs_dir = state_repo_path / "specs"
             if not specs_dir.is_dir():
@@ -419,17 +437,19 @@ def check(repo_root: Path, proxy_base_url: str = "http://localhost:4000", skip_l
                 # identity.md convention - purely additive (never
                 # overwrites an existing file, see
                 # ensure_role_identity_defaults's docstring), so this runs
-                # unconditionally on every doctor.py invocation rather than
-                # only warning like the stray-template check above, the
-                # same way the sessions/ auto-create below does.
-                identity_results = check_state_repo.ensure_role_identity_defaults(state_repo_path)
-                created_roles = sorted(role for role, result in identity_results.items() if result == "created")
-                if created_roles:
-                    print(f"NOTE: Created default identity.md in the state repository for {len(created_roles)} "
-                          f"role(s) not yet customized: {', '.join(created_roles)}.")
+                # unconditionally on every doctor.py invocation (dry_run
+                # aside) rather than only warning like the stray-template
+                # check above, the same way the sessions/ auto-create below
+                # does.
+                if not dry_run:
+                    identity_results = check_state_repo.ensure_role_identity_defaults(state_repo_path)
+                    created_roles = sorted(role for role, result in identity_results.items() if result == "created")
+                    if created_roles:
+                        print(f"NOTE: Created default identity.md in the state repository for {len(created_roles)} "
+                              f"role(s) not yet customized: {', '.join(created_roles)}.")
 
     sessions_dir = repo_root / "sessions"
-    if not sessions_dir.is_dir():
+    if not sessions_dir.is_dir() and not dry_run:
         print("NOTE: 'sessions' directory not found. Creating it...")
         sessions_dir.mkdir(parents=True, exist_ok=True)
 
@@ -584,16 +604,28 @@ def print_ollama_gpu_confirmation(repo_root: Path) -> None:
     # else: not determinable yet (best-effort) - stay silent rather than guess.
 
 
-def run(repo_root: Path, proxy_base_url: str = "http://localhost:4000") -> int:
+def run(
+    repo_root: Path,
+    proxy_base_url: str = "http://localhost:4000",
+    skip_llm_probe: bool = False,
+    dry_run: bool = False,
+) -> int:
     """Thin int-returning wrapper around check(), kept for backward
     compatibility (main() below, and anything that only cares about the
     exit code) - see check() for the full structured result (the punch
     list of ActionableItems) that run.py/setup_all.py use directly."""
-    return 1 if check(repo_root, proxy_base_url).has_errors else 0
+    return 1 if check(repo_root, proxy_base_url, skip_llm_probe=skip_llm_probe, dry_run=dry_run).has_errors else 0
 
 
 def main() -> None:
-    sys.exit(run(Path(__file__).resolve().parent))
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Report warnings/errors only - skip every step that would write anything (state repo "
+             "identity.md/workbench-setup.sh migration, this repo's own sessions/ directory auto-create).",
+    )
+    args = parser.parse_args()
+    sys.exit(run(Path(__file__).resolve().parent, dry_run=args.dry_run))
 
 
 if __name__ == "__main__":

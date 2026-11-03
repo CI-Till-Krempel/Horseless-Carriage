@@ -3,8 +3,22 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import dashboard
+import doctor
 import project_registry
+
+
+@pytest.fixture(autouse=True)
+def _stub_doctor_check(monkeypatch):
+    """doctor.check() does real subprocess calls (docker, gh) and - without
+    dry_run - real filesystem writes; project_snapshot now calls it
+    unconditionally for every project on every render. Every test not
+    specifically about that integration gets a fast, deterministic "no
+    issues" stub instead - tests exercising the real wiring (TestDoctorItems
+    below) override this again within their own body."""
+    monkeypatch.setattr(dashboard.doctor, "check", lambda *a, **k: doctor.DoctorResult(items=[]))
 
 
 def _make_project(tmp_path, name="my-project"):
@@ -316,6 +330,58 @@ class TestProjectSnapshot:
 
         assert snap["hc_version"] == "unknown"
 
+    def test_builds_the_github_prs_url_from_the_hc_installations_own_env(self, tmp_path):
+        """GITHUB_REPO_URL lives in the HC installation's own .env (hc_path),
+        not the target repo's - setup_llm.py/new_project.py write it there,
+        and that's the repo the agent is actually configured to operate on."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("GITHUB_REPO_URL='git@github.com:example/example.git'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["github_prs_url"] == "https://github.com/example/example/pulls"
+
+    def test_github_prs_url_is_none_when_repo_url_unset(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["github_prs_url"] is None
+
+    def test_github_prs_url_is_none_for_an_unparseable_repo_url(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("GITHUB_REPO_URL='not-a-github-url'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["github_prs_url"] is None
+
+    def test_reads_sprint_number_from_state_json(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({"sprint_number": 3}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["sprint_number"] == 3
+
+    def test_sprint_number_is_none_when_absent(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["sprint_number"] is None
+
     def test_running_container_mount_drift_is_read_from_instead_of_configured_path(self, tmp_path):
         """GH issue tracker ("dashboard doesn't update" report): `docker
         compose up` only recreates a container when Compose notices the
@@ -384,6 +450,83 @@ class TestProjectSnapshot:
         assert snap["error"] is None
 
 
+class TestDoctorItems:
+    """GH issue tracker: the dashboard should surface doctor.py's own
+    warnings/errors right on a project's row - this is the glue connecting
+    project_snapshot to doctor.check(), called in dry-run (no writes) +
+    skip_llm_probe (no live network) mode since it now runs on every 10s
+    auto-refresh for every registered project."""
+
+    def test_calls_check_with_dry_run_and_skip_llm_probe(self, tmp_path):
+        calls = []
+
+        def fake_check(repo_root, **kwargs):
+            calls.append((repo_root, kwargs))
+            return doctor.DoctorResult(items=[])
+
+        with patch.object(dashboard.doctor, "check", side_effect=fake_check):
+            dashboard._doctor_items(tmp_path)
+
+        assert calls == [(tmp_path, {"skip_llm_probe": True, "dry_run": True})]
+
+    def test_converts_items_to_plain_dicts(self, tmp_path):
+        items = [doctor.ActionableItem("error", "bad"), doctor.ActionableItem("warning", "meh")]
+        with patch.object(dashboard.doctor, "check", return_value=doctor.DoctorResult(items=items)):
+            result = dashboard._doctor_items(tmp_path)
+
+        assert result == [{"severity": "error", "message": "bad"}, {"severity": "warning", "message": "meh"}]
+
+    def test_suppresses_doctor_checks_own_stdout_output(self, tmp_path, capsys):
+        def fake_check(repo_root, **kwargs):
+            print("this should not reach the dashboard server's own console")
+            return doctor.DoctorResult(items=[])
+
+        with patch.object(dashboard.doctor, "check", side_effect=fake_check):
+            dashboard._doctor_items(tmp_path)
+
+        assert capsys.readouterr().out == ""
+
+    def test_a_failing_check_degrades_to_no_items_rather_than_raising(self, tmp_path):
+        with patch.object(dashboard.doctor, "check", side_effect=Exception("boom")):
+            assert dashboard._doctor_items(tmp_path) == []
+
+    def test_project_snapshot_includes_doctor_items(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+        items = [doctor.ActionableItem("warning", "GIT_USER_NAME is not set")]
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]), \
+             patch.object(dashboard.doctor, "check", return_value=doctor.DoctorResult(items=items)):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["doctor_items"] == [{"severity": "warning", "message": "GIT_USER_NAME is not set"}]
+
+
+class TestDoctorBadge:
+    def test_ok_when_no_items(self):
+        assert "OK" in dashboard._doctor_badge([])
+        assert "warning" not in dashboard._doctor_badge([])
+
+    def test_shows_warning_count(self):
+        badge = dashboard._doctor_badge([{"severity": "warning", "message": "GIT_USER_NAME is not set"}])
+        assert "1 warning(s)" in badge
+        assert "GIT_USER_NAME is not set" in badge
+
+    def test_shows_error_count_and_uses_error_color_when_both_present(self):
+        badge = dashboard._doctor_badge([
+            {"severity": "error", "message": "boom"},
+            {"severity": "warning", "message": "meh"},
+        ])
+        assert "1 error(s)" in badge
+        assert "1 warning(s)" in badge
+        assert "#c62828" in badge
+
+    def test_escapes_html_in_messages(self):
+        badge = dashboard._doctor_badge([{"severity": "warning", "message": "<script>alert(1)</script>"}])
+        assert "<script>alert(1)</script>" not in badge
+        assert "&lt;script&gt;" in badge
+
+
 class TestProductVersion:
     def test_reads_version_file_if_present(self, tmp_path):
         (tmp_path / "VERSION").write_text("1.2.3\n")
@@ -425,6 +568,56 @@ class TestRenderPage:
             page = dashboard._render_page()
 
         assert "0.2.0" in page
+
+    def test_renders_a_github_prs_link_when_configured(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("GITHUB_REPO_URL='git@github.com:example/example.git'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "https://github.com/example/example/pulls" in page
+        assert "PRs" in page
+
+    def test_renders_not_configured_when_no_github_repo_url(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "not configured" in page
+
+    def test_renders_the_sprint_number_alongside_the_sprint_goal(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "sprint_goal": "Ship the thing", "sprint_number": 3,
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "Sprint 3:" in page
+        assert "Ship the thing" in page
+
+    def test_renders_the_doctor_badge_for_a_project_with_warnings(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+        items = [doctor.ActionableItem("warning", "GIT_USER_NAME is not set")]
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]), \
+             patch.object(dashboard.doctor, "check", return_value=doctor.DoctorResult(items=items)):
+            page = dashboard._render_page()
+
+        assert "1 warning(s)" in page
+        assert "GIT_USER_NAME is not set" in page
 
     def test_renders_a_warning_when_the_running_container_has_drifted_from_the_configured_state_repo(self, tmp_path):
         """The actual bug report: a project's sprint goal/latest message
