@@ -640,6 +640,76 @@ class TestStateRepoStructureChecks:
         assert "Created default identity.md" not in out
 
 
+class TestDryRun:
+    """GH issue tracker: dashboard.py polls check() on every render to
+    surface doctor's own warnings/errors - dry_run=True must skip every
+    step that writes anything (state repo migrations, this repo's own
+    sessions/ auto-create), while still reporting the exact same
+    warnings/errors as a normal run for everything that only reads."""
+
+    def test_does_not_migrate_identity_files(self, valid_repo, monkeypatch):
+        from agents.scrum_team.prompts import ROLE_NAMES
+
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+
+        doctor.check(valid_repo, dry_run=True)
+
+        for role in ROLE_NAMES:
+            assert not (state_repo / f"{role}-identity.md").exists()
+
+    def test_does_not_print_the_identity_migration_note(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        doctor.check(valid_repo, dry_run=True)
+        assert "Created default identity.md" not in capsys.readouterr().out
+
+    def test_does_not_create_the_default_workbench_script(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+
+        doctor.check(valid_repo, dry_run=True)
+
+        assert not (state_repo / ".hc" / "workbench-setup.sh").exists()
+
+    def test_does_not_create_the_sessions_directory(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        assert not (valid_repo / "sessions").exists()
+
+        doctor.check(valid_repo, dry_run=True)
+
+        assert not (valid_repo / "sessions").exists()
+
+    def test_still_reports_genuine_warnings(self, valid_repo, monkeypatch):
+        """dry_run must never hide a real problem - it only skips
+        auto-fixing one."""
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text().replace('GIT_USER_NAME="Test"\n', ""))
+
+        result = doctor.check(valid_repo, dry_run=True)
+
+        assert any("GIT_USER_NAME is not set" in w.message for w in result.warnings())
+
+    def test_run_passes_dry_run_through_to_check(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        state_repo = valid_repo / "state_repo"
+
+        doctor.run(valid_repo, dry_run=True)
+
+        assert not (state_repo / ".hc" / "workbench-setup.sh").exists()
+
+    def test_cli_dry_run_flag_is_threaded_through(self, valid_repo, monkeypatch):
+        monkeypatch.setattr(doctor, "__file__", str(valid_repo / "doctor.py"))
+        monkeypatch.setattr(doctor.sys, "argv", ["doctor.py", "--dry-run"])
+        calls = []
+        monkeypatch.setattr(doctor, "run", lambda *a, **k: calls.append(k) or 0)
+
+        with pytest.raises(SystemExit):
+            doctor.main()
+
+        assert calls == [{"dry_run": True}]
+
+
 class TestRunningStateRepoMountMismatch:
     """A real incident: a standalone checkout's STATE_REPO_PATH changed
     while a different project's agent was still running under the same

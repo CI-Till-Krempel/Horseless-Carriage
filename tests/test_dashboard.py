@@ -3,8 +3,22 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import dashboard
+import doctor
 import project_registry
+
+
+@pytest.fixture(autouse=True)
+def _stub_doctor_check(monkeypatch):
+    """doctor.check() does real subprocess calls (docker, gh) and - without
+    dry_run - real filesystem writes; project_snapshot now calls it
+    unconditionally for every project on every render. Every test not
+    specifically about that integration gets a fast, deterministic "no
+    issues" stub instead - tests exercising the real wiring (TestDoctorItems
+    below) override this again within their own body."""
+    monkeypatch.setattr(dashboard.doctor, "check", lambda *a, **k: doctor.DoctorResult(items=[]))
 
 
 def _make_project(tmp_path, name="my-project"):
@@ -43,7 +57,8 @@ class TestProjectSnapshot:
         }))
         entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
 
-        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]):
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None):
             snap = dashboard.project_snapshot(entry)
 
         assert snap["state"] == "working"
@@ -89,7 +104,8 @@ class TestProjectSnapshot:
         }))
         entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
 
-        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]):
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None):
             snap = dashboard.project_snapshot(entry)
 
         assert snap["state"] == "waiting for confirmation"
@@ -107,7 +123,8 @@ class TestProjectSnapshot:
         }))
         entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
 
-        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]):
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None):
             snap = dashboard.project_snapshot(entry)
 
         assert snap["state"] == "waiting for confirmation"
@@ -122,7 +139,8 @@ class TestProjectSnapshot:
         }))
         entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
 
-        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]):
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None):
             snap = dashboard.project_snapshot(entry)
 
         assert snap["state"] == "working"
@@ -281,11 +299,232 @@ class TestProjectSnapshot:
             return "4001" in url
 
         with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None), \
              patch.object(dashboard, "_url_reachable", side_effect=fake_reachable):
             snap = dashboard.project_snapshot(entry)
 
         assert snap["litellm_reachable"] is True
         assert snap["web_reachable"] is False
+
+    def test_reads_hc_version_from_state_json(self, tmp_path):
+        """RELEASE.md's "Tracking the HC version in the state repo":
+        agents/scrum_team/tools/scrum.py's init_scrum_state sets this on
+        every session to the Horseless Carriage checkout's own VERSION -
+        distinct from product_version (the TARGET repo's own version)."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({"hc_version": "0.2.0"}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["hc_version"] == "0.2.0"
+
+    def test_hc_version_defaults_to_unknown_when_absent(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["hc_version"] == "unknown"
+
+    def test_builds_the_github_prs_url_from_the_hc_installations_own_env(self, tmp_path):
+        """GITHUB_REPO_URL lives in the HC installation's own .env (hc_path),
+        not the target repo's - setup_llm.py/new_project.py write it there,
+        and that's the repo the agent is actually configured to operate on."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("GITHUB_REPO_URL='git@github.com:example/example.git'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["github_prs_url"] == "https://github.com/example/example/pulls"
+
+    def test_github_prs_url_is_none_when_repo_url_unset(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["github_prs_url"] is None
+
+    def test_github_prs_url_is_none_for_an_unparseable_repo_url(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("GITHUB_REPO_URL='not-a-github-url'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["github_prs_url"] is None
+
+    def test_reads_sprint_number_from_state_json(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({"sprint_number": 3}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["sprint_number"] == 3
+
+    def test_sprint_number_is_none_when_absent(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["sprint_number"] is None
+
+    def test_running_container_mount_drift_is_read_from_instead_of_configured_path(self, tmp_path):
+        """GH issue tracker ("dashboard doesn't update" report): `docker
+        compose up` only recreates a container when Compose notices the
+        resolved config changed - a container started BEFORE STATE_REPO_PATH
+        was repointed keeps running against its OLD bind mount. Trusting
+        the newly-configured .env path here would read a directory the live
+        agent never writes to at all - forever stale no matter how often
+        this re-renders - instead of the container's real, still-updating
+        mount."""
+        hc_path, configured_target_repo = _make_project(tmp_path)
+        actually_running_repo = tmp_path / "actually-running"
+        (actually_running_repo / ".hc").mkdir(parents=True)
+        (actually_running_repo / ".hc" / "state.json").write_text(json.dumps({
+            "sprint_goal": "The real, currently-updating sprint goal",
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(configured_target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount",
+                           return_value=str(actually_running_repo)):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["state_repo_mount_drifted"] is True
+        assert snap["target_repo"] == str(actually_running_repo)
+        assert snap["configured_target_repo"] == str(configured_target_repo)
+        assert snap["sprint_goal"] == "The real, currently-updating sprint goal"
+
+    def test_no_mount_drift_when_running_mount_matches_configured_path(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        target_repo.mkdir(exist_ok=True)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=str(target_repo)):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["state_repo_mount_drifted"] is False
+        assert snap["target_repo"] == str(target_repo)
+
+    def test_mount_drift_check_skipped_when_resting(self, tmp_path):
+        """A resting project has no running container to ask Docker about -
+        calling it anyway would just be a wasted subprocess."""
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount") as mock_mount:
+            snap = dashboard.project_snapshot(entry)
+
+        mock_mount.assert_not_called()
+        assert snap["state_repo_mount_drifted"] is False
+
+    def test_mount_drift_check_failing_does_not_raise(self, tmp_path):
+        """lib_docker.running_state_repo_mount is itself already
+        best-effort (returns None on any failure) - this guards the call
+        site too, consistent with every other docker/git call in this
+        function never taking the whole row down."""
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", side_effect=Exception("boom")):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["state_repo_mount_drifted"] is False
+        assert snap["error"] is None
+
+
+class TestDoctorItems:
+    """GH issue tracker: the dashboard should surface doctor.py's own
+    warnings/errors right on a project's row - this is the glue connecting
+    project_snapshot to doctor.check(), called in dry-run (no writes) +
+    skip_llm_probe (no live network) mode since it now runs on every 10s
+    auto-refresh for every registered project."""
+
+    def test_calls_check_with_dry_run_and_skip_llm_probe(self, tmp_path):
+        calls = []
+
+        def fake_check(repo_root, **kwargs):
+            calls.append((repo_root, kwargs))
+            return doctor.DoctorResult(items=[])
+
+        with patch.object(dashboard.doctor, "check", side_effect=fake_check):
+            dashboard._doctor_items(tmp_path)
+
+        assert calls == [(tmp_path, {"skip_llm_probe": True, "dry_run": True})]
+
+    def test_converts_items_to_plain_dicts(self, tmp_path):
+        items = [doctor.ActionableItem("error", "bad"), doctor.ActionableItem("warning", "meh")]
+        with patch.object(dashboard.doctor, "check", return_value=doctor.DoctorResult(items=items)):
+            result = dashboard._doctor_items(tmp_path)
+
+        assert result == [{"severity": "error", "message": "bad"}, {"severity": "warning", "message": "meh"}]
+
+    def test_suppresses_doctor_checks_own_stdout_output(self, tmp_path, capsys):
+        def fake_check(repo_root, **kwargs):
+            print("this should not reach the dashboard server's own console")
+            return doctor.DoctorResult(items=[])
+
+        with patch.object(dashboard.doctor, "check", side_effect=fake_check):
+            dashboard._doctor_items(tmp_path)
+
+        assert capsys.readouterr().out == ""
+
+    def test_a_failing_check_degrades_to_no_items_rather_than_raising(self, tmp_path):
+        with patch.object(dashboard.doctor, "check", side_effect=Exception("boom")):
+            assert dashboard._doctor_items(tmp_path) == []
+
+    def test_project_snapshot_includes_doctor_items(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+        items = [doctor.ActionableItem("warning", "GIT_USER_NAME is not set")]
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]), \
+             patch.object(dashboard.doctor, "check", return_value=doctor.DoctorResult(items=items)):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["doctor_items"] == [{"severity": "warning", "message": "GIT_USER_NAME is not set"}]
+
+
+class TestDoctorBadge:
+    def test_ok_when_no_items(self):
+        assert "OK" in dashboard._doctor_badge([])
+        assert "warning" not in dashboard._doctor_badge([])
+
+    def test_shows_warning_count(self):
+        badge = dashboard._doctor_badge([{"severity": "warning", "message": "GIT_USER_NAME is not set"}])
+        assert "1 warning(s)" in badge
+        assert "GIT_USER_NAME is not set" in badge
+
+    def test_shows_error_count_and_uses_error_color_when_both_present(self):
+        badge = dashboard._doctor_badge([
+            {"severity": "error", "message": "boom"},
+            {"severity": "warning", "message": "meh"},
+        ])
+        assert "1 error(s)" in badge
+        assert "1 warning(s)" in badge
+        assert "#c62828" in badge
+
+    def test_escapes_html_in_messages(self):
+        badge = dashboard._doctor_badge([{"severity": "warning", "message": "<script>alert(1)</script>"}])
+        assert "<script>alert(1)</script>" not in badge
+        assert "&lt;script&gt;" in badge
 
 
 class TestProductVersion:
@@ -313,6 +552,95 @@ class TestRenderPage:
 
         assert "my-project" in page
         assert "resting" in page
+
+    def test_renders_the_horseless_carriage_version_used(self, tmp_path):
+        """Distinct from the target repo's own Product Version column -
+        this is which version of the HC tooling itself produced this
+        project's data (RELEASE.md's "Tracking the HC version in the state
+        repo")."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({"hc_version": "0.2.0"}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "0.2.0" in page
+
+    def test_renders_a_github_prs_link_when_configured(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("GITHUB_REPO_URL='git@github.com:example/example.git'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "https://github.com/example/example/pulls" in page
+        assert "PRs" in page
+
+    def test_renders_not_configured_when_no_github_repo_url(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "not configured" in page
+
+    def test_renders_the_sprint_number_alongside_the_sprint_goal(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "sprint_goal": "Ship the thing", "sprint_number": 3,
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "Sprint 3:" in page
+        assert "Ship the thing" in page
+
+    def test_renders_the_doctor_badge_for_a_project_with_warnings(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+        items = [doctor.ActionableItem("warning", "GIT_USER_NAME is not set")]
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]), \
+             patch.object(dashboard.doctor, "check", return_value=doctor.DoctorResult(items=items)):
+            page = dashboard._render_page()
+
+        assert "1 warning(s)" in page
+        assert "GIT_USER_NAME is not set" in page
+
+    def test_renders_a_warning_when_the_running_container_has_drifted_from_the_configured_state_repo(self, tmp_path):
+        """The actual bug report: a project's sprint goal/latest message
+        looked permanently frozen no matter how many times the page
+        refreshed - because the running container was still bind-mounted to
+        an old STATE_REPO_PATH, not the one .env currently configures, and
+        nothing told the user why."""
+        hc_path, configured_target_repo = _make_project(tmp_path)
+        actually_running_repo = tmp_path / "actually-running"
+        (actually_running_repo / ".hc").mkdir(parents=True)
+        (actually_running_repo / ".hc" / "state.json").write_text(json.dumps({"sprint_goal": "Real goal"}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(configured_target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount",
+                           return_value=str(actually_running_repo)):
+            page = dashboard._render_page()
+
+        assert "Real goal" in page
+        assert "still serving" in page
+        assert str(actually_running_repo) in page
+        assert str(configured_target_repo) in page
 
     def test_renders_current_usd_spend_alongside_the_budget(self, tmp_path):
         """GH issue #481: only the budget ceiling was ever shown - the
@@ -411,6 +739,7 @@ class TestRenderPage:
 
         with patch.object(project_registry, "load", return_value=[entry]), \
              patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None), \
              patch.object(dashboard, "_url_reachable", return_value=True):
             page = dashboard._render_page()
 
@@ -426,6 +755,7 @@ class TestRenderPage:
 
         with patch.object(project_registry, "load", return_value=[entry]), \
              patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None), \
              patch.object(dashboard, "_url_reachable", return_value=False):
             page = dashboard._render_page()
 
@@ -455,7 +785,8 @@ class TestRenderPage:
         entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
 
         with patch.object(project_registry, "load", return_value=[entry]), \
-             patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]):
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None):
             page = dashboard._render_page()
 
         assert "Approve release PR #42" in page

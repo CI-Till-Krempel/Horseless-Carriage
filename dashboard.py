@@ -24,7 +24,9 @@ Usage:
   python3 dashboard.py [--port 8899] [--bind-host 127.0.0.1]
 """
 import argparse
+import contextlib
 import html
+import io
 import json
 import subprocess
 import urllib.request
@@ -32,8 +34,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import doctor
 import lib_docker
 import lib_env
+import lib_github
 import lib_llm_test
 import project_registry
 
@@ -56,6 +60,32 @@ def _url_reachable(url: str, timeout_secs: float = _REACHABILITY_CHECK_TIMEOUT_S
             return 200 <= resp.status < 300
     except Exception:
         return False
+
+
+def _doctor_items(hc_path: Path) -> list:
+    """doctor.py's own check(), in dry-run (writes nothing) + network-
+    skipping mode - this runs on every 10s auto-refresh for every
+    registered project, so it must never mutate the checkout (dry_run=True
+    - see check()'s own docstring for exactly which steps that skips) or
+    pay for live GitHub/LLM-proxy/Ollama network calls (skip_llm_probe=
+    True) just to paint a status badge. check() also prints a full
+    human-readable report to stdout on every call (meant for a one-off
+    `python3 doctor.py` run from a terminal) - redirected away here so it
+    doesn't spam this server's own console on every render for every
+    project."""
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = doctor.check(hc_path, skip_llm_probe=True, dry_run=True)
+    except Exception:
+        return []
+    return [{"severity": item.severity, "message": item.message} for item in result.items]
+
+
+def _norm_path(p: Path) -> str:
+    try:
+        return str(p.resolve())
+    except OSError:
+        return str(p)
 
 
 def _read_state_json(target_repo: Path) -> dict:
@@ -123,13 +153,7 @@ def project_snapshot(entry: dict) -> dict:
     else:
         target_repo = registry_target_repo
 
-    def _norm(p: Path) -> str:
-        try:
-            return str(p.resolve())
-        except OSError:
-            return str(p)
-
-    target_repo_drifted = bool(env_state_repo_path) and _norm(target_repo) != _norm(registry_target_repo)
+    target_repo_drifted = bool(env_state_repo_path) and _norm_path(target_repo) != _norm_path(registry_target_repo)
     if target_repo_drifted:
         # Self-heal, not just warn: .env is unconditionally the right answer
         # here (it's what the running agent actually uses), so there's no
@@ -148,6 +172,15 @@ def project_snapshot(entry: dict) -> dict:
     litellm_port = lib_env.read_env_var(hc_path / ".env", "LITELLM_HOST_PORT") or "4000"
     agent_web_port = lib_env.read_env_var(hc_path / ".env", "AGENT_WEB_HOST_PORT") or "8000"
 
+    # GITHUB_REPO_URL lives in this HC installation's own .env (same one
+    # new_project.py/setup_llm.py write it to) - not the target repo's, which
+    # is why this reads hc_path, not target_repo.
+    github_repo_url = lib_env.read_env_var(hc_path / ".env", "GITHUB_REPO_URL")
+    owner_repo = lib_github.parse_owner_repo(github_repo_url)
+    github_prs_url = f"https://github.com/{owner_repo[0]}/{owner_repo[1]}/pulls" if owner_repo else None
+
+    doctor_items = _doctor_items(hc_path)
+
     try:
         running_services = lib_docker.compose_running_services(_compose_args(hc_path), cwd=hc_path)
     except Exception:
@@ -160,9 +193,37 @@ def project_snapshot(entry: dict) -> dict:
     litellm_reachable = is_running and _url_reachable(f"http://localhost:{litellm_port}/health/liveliness")
     web_reachable = is_running and _url_reachable(f"http://localhost:{agent_web_port}")
 
+    # GH issue tracker ("dashboard doesn't update" report): `docker compose
+    # up` only recreates a container when Compose notices the resolved
+    # service config actually changed - a container already running from
+    # BEFORE STATE_REPO_PATH was repointed keeps the OLD bind mount it was
+    # created with. Trusting the .env value resolved above would then read
+    # a directory the live agent never writes to at all - forever stale, no
+    # matter how many times this re-renders, because the real data is
+    # landing somewhere else entirely. lib_docker.running_state_repo_mount
+    # asks Docker what /app/state_repo is actually bind-mounted to right
+    # now (doctor.py already uses this same call to warn about exactly this
+    # before a repoint-recreate would orphan a different project) - when it
+    # disagrees with the configured path, that live container is the one
+    # actually producing new sprint-goal/message updates, so read from
+    # there instead of the configured-but-currently-inactive path.
+    configured_target_repo = target_repo
+    state_repo_mount_drifted = False
+    if is_running:
+        try:
+            running_mount = lib_docker.running_state_repo_mount(_compose_args(hc_path), cwd=hc_path)
+        except Exception:
+            running_mount = None
+        if running_mount:
+            running_target_repo = Path(lib_docker.normalize_docker_mount_source(running_mount))
+            if _norm_path(running_target_repo) != _norm_path(configured_target_repo):
+                state_repo_mount_drifted = True
+                target_repo = running_target_repo
+
     state_data = _read_state_json(target_repo) if target_repo.is_dir() else {}
     blocking = [b for b in (state_data.get("blocking_interactions") or []) if not b.get("resolved")]
     sprint_goal = state_data.get("sprint_goal") or "(not set)"
+    sprint_number = state_data.get("sprint_number")
     budgets = state_data.get("budgets") or {}
     token_usage = state_data.get("token_usage") or {}
 
@@ -179,16 +240,29 @@ def project_snapshot(entry: dict) -> dict:
     blocking_summary = blocking[-1].get("summary", "") if blocking else ""
 
     product_version = _product_version(target_repo) if target_repo.is_dir() else "unknown"
+    # agents/scrum_team/tools/scrum.py's init_scrum_state sets this to
+    # _hc_version() (the Horseless Carriage checkout's own VERSION file) on
+    # every session, persisted into REPO_STATE_KEYS alongside everything
+    # else - see RELEASE.md's "Tracking the HC version in the state repo".
+    # Distinct from product_version above (the TARGET repo's own version) -
+    # this is which version of the tooling itself actually produced this
+    # sprint's data, independent of which product it's driving.
+    hc_version = state_data.get("hc_version") or "unknown"
 
     return {
         "name": name,
         "hc_path": str(hc_path),
         "target_repo": str(target_repo),
         "target_repo_drifted": target_repo_drifted,
+        "state_repo_mount_drifted": state_repo_mount_drifted,
+        "configured_target_repo": str(configured_target_repo),
         "config_mode": config_mode,
         "interaction_level": interaction_level,
         "state": state,
         "sprint_goal": sprint_goal,
+        "sprint_number": sprint_number,
+        "github_prs_url": github_prs_url,
+        "doctor_items": doctor_items,
         "token_usage": token_usage.get("total", 0),
         "token_budget": budgets.get("total", "unset"),
         "usd_budget": budgets.get("total_usd"),
@@ -197,6 +271,7 @@ def project_snapshot(entry: dict) -> dict:
         # callback) - the dashboard previously just never read this field.
         "current_usd_spend": budgets.get("current_usd_spend"),
         "product_version": product_version,
+        "hc_version": hc_version,
         "litellm_port": litellm_port,
         "agent_web_port": agent_web_port,
         "litellm_reachable": litellm_reachable,
@@ -277,6 +352,30 @@ def _reachability_dot(reachable: bool) -> str:
     return f"<span style='color:{color}' title='{title}'>&#9679;</span>"
 
 
+def _doctor_badge(doctor_items: list) -> str:
+    """A compact "is this project's setup healthy" summary - doctor.py was
+    previously something you had to remember to run by hand; this surfaces
+    the same punch list right on the row it's about. <details>/<summary>
+    rather than a tooltip: a tooltip can't hold a multi-item list legibly,
+    and this needs no JS to expand."""
+    e = html.escape
+    errors = [i for i in doctor_items if i["severity"] == "error"]
+    warnings = [i for i in doctor_items if i["severity"] == "warning"]
+    if not errors and not warnings:
+        return "<span style='color:#2e7d32'>&#10003; OK</span>"
+    parts = []
+    if errors:
+        parts.append(f"{len(errors)} error(s)")
+    if warnings:
+        parts.append(f"{len(warnings)} warning(s)")
+    color = "#c62828" if errors else "#e65100"
+    items_html = "".join(f"<li>[{i['severity'].upper()}] {e(i['message'])}</li>" for i in doctor_items)
+    return (
+        f"<details><summary style='color:{color};cursor:pointer'>&#9888; {', '.join(parts)}</summary>"
+        f"<ul style='margin:0.25rem 0 0 1rem;padding:0'>{items_html}</ul></details>"
+    )
+
+
 def _render_page(message: str = "") -> str:
     projects = project_registry.load()
     rows = []
@@ -286,7 +385,7 @@ def _render_page(message: str = "") -> str:
         hc_path = snap["hc_path"]
         if snap.get("error"):
             rows.append(
-                f"<tr><td>{e(snap['name'])}</td><td colspan='8'><em>{e(snap['error'])}</em></td></tr>"
+                f"<tr><td>{e(snap['name'])}</td><td colspan='11'><em>{e(snap['error'])}</em></td></tr>"
             )
             continue
         color = _STATE_BADGE_COLOR.get(snap["state"], "#616161")
@@ -312,6 +411,8 @@ def _render_page(message: str = "") -> str:
         spend = snap.get("current_usd_spend")
         spend_str = f"${spend:.2f} spent" if isinstance(spend, (int, float)) else "spend not yet available"
         sprint_goal_html = e(snap["sprint_goal"])
+        if snap.get("sprint_number") is not None:
+            sprint_goal_html = f"<strong>Sprint {e(str(snap['sprint_number']))}:</strong> {sprint_goal_html}"
         if snap.get("target_repo_drifted"):
             # A real incident: project_registry.json's target_repo (set once,
             # at new_project.py install time) and this project's own live
@@ -328,6 +429,22 @@ def _render_page(message: str = "") -> str:
                 f"and was just corrected to {e(snap['target_repo'])} (from this project's own .env) - "
                 "if that's not right, check STATE_REPO_PATH in this project's .env.</small>"
             )
+        if snap.get("state_repo_mount_drifted"):
+            # GH issue tracker ("dashboard doesn't update" report): `docker
+            # compose up` only recreates a container when Compose notices
+            # the resolved config changed - a container started BEFORE
+            # STATE_REPO_PATH was repointed keeps running against its OLD
+            # bind mount until it's explicitly recreated. The sprint
+            # goal/latest message above are being read from that container's
+            # actual mount (the only place still getting real updates), not
+            # from .env's current value - without this, the row just looked
+            # permanently frozen with no indication why.
+            sprint_goal_html += (
+                f"<br><small style='color:#c62828'>&#9888; this project's running container is still "
+                f"serving {e(snap['target_repo'])}, not {e(snap['configured_target_repo'])} (.env's current "
+                "STATE_REPO_PATH) - showing that container's real data above. Restart this project (Stop, "
+                "then Start) to pick up the configured change.</small>"
+            )
         ports_html = (
             f"LiteLLM: <a href='http://localhost:{e(snap['litellm_port'])}/ui' target='_blank'>"
             f"{e(snap['litellm_port'])}</a>"
@@ -338,6 +455,10 @@ def _render_page(message: str = "") -> str:
         if snap["state"] != "resting":
             ports_html += f" {_reachability_dot(snap['litellm_reachable'])}"
             web_html += f" {_reachability_dot(snap['web_reachable'])}"
+        github_html = (
+            f"<a href='{e(snap['github_prs_url'])}' target='_blank'>PRs &rarr;</a>"
+            if snap.get("github_prs_url") else "<em>not configured</em>"
+        )
         rows.append(
             "<tr>"
             f"<td>{e(snap['name'])}</td>"
@@ -347,13 +468,16 @@ def _render_page(message: str = "") -> str:
             f"<td>{sprint_goal_html}</td>"
             f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {e(spend_str)} / {usd} budget</td>"
             f"<td>{e(snap['product_version'])}</td>"
+            f"<td>{e(snap['hc_version'])}</td>"
+            f"<td>{github_html}</td>"
+            f"<td>{_doctor_badge(snap['doctor_items'])}</td>"
             f"<td>{ports_html} / {web_html}</td>"
             f"<td>{action}</td>"
             "</tr>"
         )
     if not rows:
         rows.append(
-            "<tr><td colspan='9'><em>No projects registered yet - run "
+            "<tr><td colspan='12'><em>No projects registered yet - run "
             "<code>python3 new_project.py --target-repo /path/to/your-project</code> to add one.</em></td></tr>"
         )
     message_html = f"<p style='color:#1565c0'>{html.escape(message)}</p>" if message else ""
@@ -371,7 +495,8 @@ th {{ background: #f0f0f0; }}
 {message_html}
 <table>
 <tr><th>Name</th><th>State</th><th>Config</th><th>Interaction Level</th>
-<th>Sprint Goal</th><th>Budget</th><th>Product Version</th><th>Ports</th><th>Action</th></tr>
+<th>Sprint Goal</th><th>Budget</th><th>Product Version</th><th>HC Version</th><th>GitHub</th>
+<th>Doctor</th><th>Ports</th><th>Action</th></tr>
 {"".join(rows)}
 </table>
 <p><small>Auto-refreshes every 10s. Registry: {html.escape(str(project_registry.REGISTRY_PATH))}</small></p>
