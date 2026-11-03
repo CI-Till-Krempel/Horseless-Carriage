@@ -75,11 +75,42 @@ def project_snapshot(entry: dict) -> dict:
     instead of taking the whole dashboard down."""
     name = entry.get("name", "(unnamed)")
     hc_path = Path(entry.get("hc_path", ""))
-    target_repo = Path(entry.get("target_repo", ""))
+    registry_target_repo = Path(entry.get("target_repo", ""))
 
     if not hc_path.is_dir():
-        return {"name": name, "hc_path": str(hc_path), "target_repo": str(target_repo),
+        return {"name": name, "hc_path": str(hc_path), "target_repo": str(registry_target_repo),
                 "state": "missing", "error": f"{hc_path} no longer exists"}
+
+    # project_registry.json's target_repo is a snapshot taken once, at
+    # new_project.py install time (GH issue #310/#288) - the project's own
+    # .env (STATE_REPO_PATH) is what the actual running agent container
+    # uses, and is the only copy that can ever change after that (e.g. a
+    # hand-edited .env, or an .env copied between two projects' submodule
+    # checkouts to reuse API keys). A real incident: two different projects'
+    # dashboard rows showed each other's sprint goal because one's STATE_
+    # REPO_PATH, carried over this way, still pointed at the other's
+    # directory - trusting the registry's cached value alone silently hid
+    # this instead of surfacing it. Prefer the live .env value (what's
+    # actually true right now) and flag the drift so it's visible, not
+    # trust the install-time snapshot unconditionally.
+    env_state_repo_path = lib_env.read_env_var(hc_path / ".env", "STATE_REPO_PATH")
+    if env_state_repo_path:
+        target_repo = Path(env_state_repo_path)
+        if not target_repo.is_absolute():
+            # Docker Compose resolves a relative STATE_REPO_PATH against the
+            # compose file's own directory - that's hc_path, not wherever
+            # dashboard.py itself happens to be running from.
+            target_repo = hc_path / target_repo
+    else:
+        target_repo = registry_target_repo
+
+    def _norm(p: Path) -> str:
+        try:
+            return str(p.resolve())
+        except OSError:
+            return str(p)
+
+    target_repo_drifted = bool(env_state_repo_path) and _norm(target_repo) != _norm(registry_target_repo)
 
     try:
         config_mode = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(hc_path))
@@ -120,6 +151,7 @@ def project_snapshot(entry: dict) -> dict:
         "name": name,
         "hc_path": str(hc_path),
         "target_repo": str(target_repo),
+        "target_repo_drifted": target_repo_drifted,
         "config_mode": config_mode,
         "interaction_level": interaction_level,
         "state": state,
@@ -159,10 +191,29 @@ def _start_stack(hc_path: Path) -> str:
         return f"Failed to start: {e}"
     if result.returncode != 0:
         return f"Start failed:\n{result.stdout}\n{result.stderr}"
+
+    # `docker compose up -d` only waits for the container to be *running*,
+    # not for LiteLLM's own process inside it to have finished booting
+    # (DB connection, config load, uvicorn startup) - a user clicking this
+    # dashboard's own LiteLLM link right after "Started" otherwise hits a
+    # proxy that isn't listening yet and looks like it's simply broken.
+    # run.py already waits the same way before opening its own dashboard
+    # link (wait_for_http against /health/readiness); reusing the shared
+    # liveness-poll helper here instead of duplicating that loop.
+    litellm_port = lib_env.read_env_var(hc_path / ".env", "LITELLM_HOST_PORT") or "4000"
+    litellm_ready = lib_llm_test.llm_wait_for_proxy(f"http://localhost:{litellm_port}", timeout_secs=30)
+
     if port_changes:
         summary = ", ".join(f"{var} {old} -> {new}" for var, old, new in port_changes)
-        return f"Started (port(s) reassigned - {summary})."
-    return "Started."
+        message = f"Started (port(s) reassigned - {summary})."
+    else:
+        message = "Started."
+    if not litellm_ready:
+        message += (
+            " LiteLLM didn't report ready within 30s - it may still be starting; wait a few more "
+            "seconds before using the LiteLLM/web UI links."
+        )
+    return message
 
 
 def _stop_stack(hc_path: Path) -> str:
@@ -216,13 +267,27 @@ def _render_page(message: str = "") -> str:
         usd = f"${snap['usd_budget']:.2f}" if isinstance(snap.get("usd_budget"), (int, float)) and snap["usd_budget"] else "unset"
         spend = snap.get("current_usd_spend")
         spend_str = f"${spend:.2f} spent" if isinstance(spend, (int, float)) else "spend not yet available"
+        sprint_goal_html = e(snap["sprint_goal"])
+        if snap.get("target_repo_drifted"):
+            # A real incident: project_registry.json's target_repo (set once,
+            # at new_project.py install time) and this project's own live
+            # .env STATE_REPO_PATH had diverged - e.g. an .env copied between
+            # two projects' submodule checkouts to reuse API keys, carrying
+            # over the OTHER project's STATE_REPO_PATH - so this row silently
+            # showed the other project's sprint goal/state instead of its
+            # own. Surface the drift loudly rather than hide it.
+            sprint_goal_html += (
+                f"<br><small style='color:#c62828'>&#9888; showing {e(snap['target_repo'])} - differs "
+                f"from this project's registered path. Check this project's own .env's "
+                "STATE_REPO_PATH.</small>"
+            )
         rows.append(
             "<tr>"
             f"<td>{e(snap['name'])}</td>"
             f"<td>{state_html}</td>"
             f"<td>{e(snap['config_mode'])}</td>"
             f"<td>{e(snap['interaction_level'])}</td>"
-            f"<td>{e(snap['sprint_goal'])}</td>"
+            f"<td>{sprint_goal_html}</td>"
             f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {e(spend_str)} / {usd} budget</td>"
             f"<td>{e(snap['product_version'])}</td>"
             f"<td>LiteLLM: <a href='http://localhost:{e(snap['litellm_port'])}/ui' target='_blank'>{e(snap['litellm_port'])}</a> / "

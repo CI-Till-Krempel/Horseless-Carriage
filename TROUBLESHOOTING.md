@@ -26,6 +26,13 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   STATE_REPO_PATH does not exist: ...`** — `run.py` and `doctor.py` hard-fail without a state repo.
   Set `STATE_REPO_PATH` and create the directory (`mkdir -p <path>`), or let `setup_llm.py` do both
   interactively. See [State Repository](docs/STATE-REPOSITORY.md).
+- **`python3 dashboard.py` shows one project's sprint goal/budget under a *different* project's name**
+  — a project's `.env` (specifically `STATE_REPO_PATH`) was likely copied from another project's
+  `horseless-carriage/` checkout (e.g. to reuse API keys) without updating it to point at this
+  project's own state repo. `dashboard.py` now detects this drift (the registered path from
+  `new_project.py` install time vs. this project's own live `.env`) and shows a loud warning under
+  the affected row's sprint goal naming the path actually in use - fix `STATE_REPO_PATH` in that
+  project's `.env` to point at its own directory.
 - **`WARNING: GIT_USER_NAME is not set...` / `GIT_USER_EMAIL is not set...`** — cosmetic fallback
   warnings only; real commits the agents make are still attributed per-role regardless (see
   [GitHub Integration](docs/GITHUB-INTEGRATION.md#agent-identity)). Set them in `.env` to silence
@@ -94,6 +101,13 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   (`python:3.11-slim`, `ollama/ollama:latest`) on its own. Run `python3 rebuild_images.py` (or
   `python3 run.py dev`, which does this automatically) to force a truly fresh rebuild. See
   [Running the Agent § Rebuilding Images](docs/RUNNING.md#rebuilding-images).
+- **LiteLLM dashboard link doesn't load right after starting from `dashboard.py`** — `docker compose
+  up -d` only waits for the container to be *running*, not for LiteLLM's own process inside it to
+  finish booting (DB connection, config load, uvicorn startup) - this can take 10-30+ seconds.
+  `dashboard.py`'s own "Start" action now waits for `/health/liveliness` before reporting "Started"
+  (appending a warning if it doesn't come up within 30s), so a row showing a plain "Started." means
+  it's actually ready; if you still can't connect, check `docker compose logs litellm` for a real
+  startup failure instead.
 
 ## 3. Budget / cost problems
 

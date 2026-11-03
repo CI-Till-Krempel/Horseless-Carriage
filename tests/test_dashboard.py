@@ -178,6 +178,57 @@ class TestProjectSnapshot:
         assert snap["litellm_port"] == "4001"
         assert snap["agent_web_port"] == "8001"
 
+    def test_uses_registry_target_repo_when_env_has_no_state_repo_path(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["target_repo"] == str(target_repo)
+        assert snap["target_repo_drifted"] is False
+
+    def test_prefers_the_live_env_state_repo_path_over_the_registry_snapshot(self, tmp_path):
+        """GH issue tracker: a real incident - two different projects'
+        dashboard rows showed each other's sprint goal because one's .env
+        STATE_REPO_PATH (carried over from copying an .env between two
+        projects' submodule checkouts) still pointed at the other's
+        directory, while project_registry.json's own target_repo (set once
+        at install time) correctly still said this project's own path.
+        Trusting the registry's install-time snapshot over the live .env
+        the actual running agent uses was the bug - the live value must win."""
+        hc_path, target_repo = _make_project(tmp_path)
+        other_project_repo = tmp_path / "other-project"
+        other_project_repo.mkdir()
+        (other_project_repo / ".hc").mkdir()
+        (other_project_repo / ".hc" / "state.json").write_text(json.dumps({"sprint_goal": "Other project's goal"}))
+        (hc_path / ".env").write_text(f"STATE_REPO_PATH='{other_project_repo}'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["target_repo"] == str(other_project_repo)
+        assert snap["sprint_goal"] == "Other project's goal"
+        assert snap["target_repo_drifted"] is True
+
+    def test_relative_state_repo_path_resolves_against_hc_path_not_cwd(self, tmp_path):
+        """STATE_REPO_PATH may be a relative path (.env.example's own
+        default is "../Horseless-Carriage-State") - Docker Compose resolves
+        it against the compose file's own directory (hc_path), and this
+        must match that exactly or every relative-path setup would falsely
+        flag as drifted."""
+        hc_path, target_repo = _make_project(tmp_path)
+        # hc_path is target_repo/horseless-carriage, so ".." from there is
+        # target_repo itself.
+        (hc_path / ".env").write_text("STATE_REPO_PATH='..'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["target_repo_drifted"] is False
+
 
 class TestProductVersion:
     def test_reads_version_file_if_present(self, tmp_path):
@@ -222,6 +273,34 @@ class TestRenderPage:
 
         assert "$1.23 spent" in page
         assert "$5.00" in page
+
+    def test_renders_a_warning_when_target_repo_has_drifted(self, tmp_path):
+        """A real incident: one project's dashboard row silently showed
+        another project's sprint goal because its .env STATE_REPO_PATH had
+        been carried over from the other project - this must be visible,
+        not silent."""
+        hc_path, target_repo = _make_project(tmp_path)
+        other_project_repo = tmp_path / "other-project"
+        other_project_repo.mkdir()
+        (hc_path / ".env").write_text(f"STATE_REPO_PATH='{other_project_repo}'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "differs from this project's registered path" in page
+        assert str(other_project_repo) in page
+
+    def test_no_drift_warning_when_env_matches_the_registry(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "differs from this project's registered path" not in page
 
     def test_renders_spend_not_yet_available_when_absent(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)
@@ -299,7 +378,8 @@ class TestStartStack:
             return dashboard.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         with patch.object(dashboard.lib_docker, "ensure_dev_ports_available", return_value=[]), \
-             patch.object(dashboard.subprocess, "run", side_effect=fake_run):
+             patch.object(dashboard.subprocess, "run", side_effect=fake_run), \
+             patch.object(dashboard.lib_llm_test, "llm_wait_for_proxy", return_value=True):
             message = dashboard._start_stack(hc_path)
 
         assert "--build" not in calls[0]
@@ -315,11 +395,48 @@ class TestStartStack:
 
         with patch.object(dashboard.lib_docker, "ensure_dev_ports_available",
                            return_value=[("LITELLM_HOST_PORT", 4000, 4001)]), \
-             patch.object(dashboard.subprocess, "run", side_effect=fake_run):
+             patch.object(dashboard.subprocess, "run", side_effect=fake_run), \
+             patch.object(dashboard.lib_llm_test, "llm_wait_for_proxy", return_value=True):
             message = dashboard._start_stack(hc_path)
 
         assert "--build" in calls[0]
         assert "LITELLM_HOST_PORT 4000 -> 4001" in message
+
+    def test_warns_when_litellm_does_not_become_ready(self, tmp_path):
+        """GH issue tracker: `docker compose up -d` only waits for the
+        container to be *running*, not for LiteLLM's own process inside it
+        to finish booting - a user clicking this dashboard's own LiteLLM
+        link right after "Started" previously had no way to know it might
+        still be starting."""
+        hc_path, _ = _make_project(tmp_path)
+
+        with patch.object(dashboard.lib_docker, "ensure_dev_ports_available", return_value=[]), \
+             patch.object(dashboard.subprocess, "run",
+                           return_value=dashboard.subprocess.CompletedProcess([], 0, stdout="", stderr="")), \
+             patch.object(dashboard.lib_llm_test, "llm_wait_for_proxy", return_value=False) as mock_wait:
+            message = dashboard._start_stack(hc_path)
+
+        assert "Started." in message
+        assert "didn't report ready" in message
+        mock_wait.assert_called_once_with("http://localhost:4000", timeout_secs=30)
+
+    def test_waits_for_the_reassigned_port_when_one_changed(self, tmp_path):
+        """Must wait on the port actually configured in .env at the time
+        `docker compose up -d` returns (i.e. after ensure_dev_ports_available's
+        own real .env write), not a stale default."""
+        hc_path, _ = _make_project(tmp_path)
+
+        def fake_reassign(hc_path_arg, compose_args):
+            dashboard.lib_env.update_env_var(hc_path_arg / ".env", "LITELLM_HOST_PORT", "4001")
+            return [("LITELLM_HOST_PORT", 4000, 4001)]
+
+        with patch.object(dashboard.lib_docker, "ensure_dev_ports_available", side_effect=fake_reassign), \
+             patch.object(dashboard.subprocess, "run",
+                           return_value=dashboard.subprocess.CompletedProcess([], 0, stdout="", stderr="")), \
+             patch.object(dashboard.lib_llm_test, "llm_wait_for_proxy", return_value=True) as mock_wait:
+            dashboard._start_stack(hc_path)
+
+        mock_wait.assert_called_once_with("http://localhost:4001", timeout_secs=30)
 
     def test_start_failure_is_reported_even_with_a_port_change(self, tmp_path):
         hc_path, _ = _make_project(tmp_path)
