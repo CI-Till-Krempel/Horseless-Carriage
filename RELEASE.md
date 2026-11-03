@@ -950,14 +950,15 @@ silent-drift gap #388 closed in between.
 
 `advance_story_stage` now takes optional `review_comment`/`review_event` arguments for the Reviewed
 (Architect) and Tested (QA) transitions: passing `review_comment` posts it as a real `gh_pr_review` on
-the story's own feature-branch PR as part of this same call (`review_event` defaults to `APPROVE`),
-immediately satisfying the review-freshness gate that used to require a separate prior call. Omitting
-it falls back to the old behavior (a fresh review call must already be on record), so this is additive,
-not a breaking signature change. The Tested transition additionally calls `merge_story_pr()` itself
-once its own state push succeeds, surfacing the result as `merge_pr` in the response - QA no longer has
-a separate follow-up call to remember. A merge failure is reported as an error without undoing the
-Tested stage itself (the story genuinely is Tested; only the merge is pending) - `merge_story_pr()`
-remains available to retry it. `Architect-workflow.md`/`QA-workflow.md` updated to the new one-call
+the story's own feature-branch PR as part of this same call (`review_event` originally defaulted to
+`APPROVE` - see SPEC-ISSUE-0083 below, now `COMMENT`), immediately satisfying the review-freshness gate
+that used to require a separate prior call. Omitting it falls back to the old behavior (a fresh review
+call must already be on record), so this is additive, not a breaking signature change. The Tested
+transition additionally calls `merge_story_pr()` itself once its own state push succeeds, surfacing the
+result as `merge_pr` in the response - QA no longer has a separate follow-up call to remember. A merge
+failure is reported as an error without undoing the Tested stage itself (the story genuinely is Tested;
+only the merge is pending) - `merge_story_pr()` remains available to retry it. `Architect-workflow.md`/
+`QA-workflow.md` updated to the new one-call
 pattern.
 
 ### Customer Satisfaction and Commitment Reliability KPIs are no longer fabricated (GH issue #389)
@@ -2062,6 +2063,38 @@ fails instead of succeeding. Legitimate reprioritization (a genuine "this never 
 priority" call, or any change not demoting a Must story) is unaffected. See SPEC-ISSUE-0082 for the
 full mechanism, fix, and a noted follow-up gap (`upsert_story` can still set priority directly,
 bypassing this guard - not closed here, scoped to the one tool this run actually showed being misused).
+
+### `advance_story_stage`'s `review_event="APPROVE"` default always failed as self-approval, stalling the very fold it was meant to simplify (0.1.0-run82, SPEC-ISSUE-0083)
+
+The first eval run after GH #391's fold (above) landed showed it hadn't just failed to help - it made
+things actively worse. `report.md` named Top Problem #1 (severity high): *"Pull request review workflows
+repeatedly failed due to GitHub GraphQL self-approval restrictions"*. Architect's `advance_story_stage`
+call, shaped exactly as the new feature's own docs recommended (`review_event="APPROVE"` was the
+documented default), got rejected every time: *"Cannot mark 'US-0001' Reviewed - posting the review via
+gh_pr_review failed: failed to create review: GraphQL: Review Can not approve your own pull request
+(addPullRequestReview)"* - and recurred identically across US-0001, US-0002, two retro Issues, and
+finally US-0003, the exact blocker still open when the run hit `budget_critical_halt`.
+
+**Confirmed mechanism: structural, not a flake.** Every role's identity is commit-metadata/comment-
+prefix only (`GIT_AUTHOR`/`GIT_COMMITTER`, a `**Role:**` text prefix) - the real GitHub API credential
+authenticating every call is the *same one* for every role. GitHub's own API correctly (and
+permanently) refuses an `APPROVE`/`REQUEST_CHANGES` review from the account that authored the PR,
+regardless of which role a tool call narrates itself as - no retry of the identical call could ever
+have succeeded. #391's own prompt-doc guidance (`Architect-workflow.md`, `QA-workflow.md`) and its
+RELEASE.md entry above all presented `APPROVE` as the safe default, so the team followed it faithfully
+into a wall GitHub's platform itself put there.
+
+Fixed two ways, matching this project's own "enforce in code, not just by prompting" principle (a cheap
+model can always pass `review_event="APPROVE"` explicitly regardless of doc wording): `gh_pr_review`
+(`agents/scrum_team/tools/github.py`) now detects GitHub's specific self-approval rejection and
+transparently retries once as a `COMMENT` review - the one type GitHub always allows, and the one type
+every freshness gate that consumes it (`advance_story_stage`, the sprint-backlog-PR team-engagement
+gate) already treats as a full, real review. The response's own `note` field says this happened, so
+it's a transparent substitution, not a silent one; a *different* failure on retry (e.g. the PR genuinely
+doesn't exist) surfaces as that real error, not a re-statement of the original self-approval message.
+`advance_story_stage`'s own `review_event` default also changed from `APPROVE` to `COMMENT` directly, so
+the common case no longer pays for a wasted retry round-trip. See SPEC-ISSUE-0083 for the full mechanism
+and fix.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so

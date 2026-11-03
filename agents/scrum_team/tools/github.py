@@ -1955,19 +1955,69 @@ def gh_pr_comment(body: str, pr_id: str | int | None = None, tool_context=None) 
         _record_pr_review_call(tool_context)
     return r
 
+_SELF_APPROVAL_REJECTION_MARKER = "can not approve your own pull request"
+
+
+def _looks_like_self_approval_rejection(result: Dict[str, Any]) -> bool:
+    """
+    SPEC-ISSUE-0083: every role shares ONE real GitHub identity - commits/
+    comments are attributed by metadata only (GIT_AUTHOR/GIT_COMMITTER, a
+    "**Role:**" text prefix - see docs/GITHUB-INTEGRATION.md "Role
+    Attribution"), never a separate account. GitHub's own API correctly (and
+    permanently) refuses an APPROVE/REQUEST_CHANGES review from the same
+    account that authored the PR ("GraphQL: Review Can not approve your own
+    pull request (addPullRequestReview)") - a real eval run (0.1.0-run82)
+    hit this on every single Reviewed/Tested transition that tried it,
+    eventually stalling the whole run. Detected here so gh_pr_review can
+    transparently fall back to a review type GitHub actually allows, instead
+    of surfacing an error no retry of the exact same call could ever fix.
+    """
+    haystack = f"{result.get('stderr', '')} {result.get('message', '')}".lower()
+    return _SELF_APPROVAL_REJECTION_MARKER in haystack
+
+
 def gh_pr_review(body: str, event: str = "COMMENT", pr_id: str | int | None = None, tool_context=None) -> Dict[str, Any]:
     """
     Submit a review for a Pull Request.
     - event: APPROVE, REQUEST_CHANGES, or COMMENT
+
+    SPEC-ISSUE-0083: an APPROVE/REQUEST_CHANGES review GitHub refuses as
+    "self-approval" (see _looks_like_self_approval_rejection) is
+    automatically retried once as a COMMENT review instead - that's the one
+    review type GitHub always allows regardless of author, and it still
+    satisfies every consumer that only checks "was a review call recorded"
+    (advance_story_stage's Reviewed/Tested freshness gates, the sprint-
+    backlog-PR team-engagement gate). The response's own `note` says this
+    happened, so it's a transparent substitution, not a silent one - this
+    is deliberately NOT conditioned on whether `event` was the default or
+    passed explicitly, since an explicit APPROVE/REQUEST_CHANGES request is
+    exactly as structurally impossible here as the default was.
     """
     repo_root = str(_configured_repo_root(tool_context))
     agent_name = getattr(tool_context, "agent_name", "Agent")
     prefixed_body = f"**{agent_name}:** {body}"
-    cmd = ["gh", "pr", "review"]
-    if pr_id:
-        cmd.append(str(pr_id))
-    cmd += ["--body", prefixed_body, f"--{event.lower()}"]
-    r = _run(cmd, cwd=repo_root, tool_context=tool_context)
+
+    def _submit(as_event: str) -> Dict[str, Any]:
+        cmd = ["gh", "pr", "review"]
+        if pr_id:
+            cmd.append(str(pr_id))
+        cmd += ["--body", prefixed_body, f"--{as_event.lower()}"]
+        return _run(cmd, cwd=repo_root, tool_context=tool_context)
+
+    r = _submit(event)
+    if r.get("status") != "ok" and event.upper() != "COMMENT" and _looks_like_self_approval_rejection(r):
+        retry = _submit("COMMENT")
+        if retry.get("status") == "ok":
+            retry["note"] = (
+                f"GitHub refused this as a '{event}' review (self-approval - every role shares one "
+                "GitHub identity here), so it was posted as a COMMENT review instead. The freshness "
+                "gate this satisfies (advance_story_stage, team-engagement) doesn't distinguish review "
+                "types, so this still counts as a real review."
+            )
+        # Surface the retry's own outcome either way - a *different* failure
+        # (e.g. the PR doesn't exist) is far more actionable than re-reporting
+        # the original self-approval message once a COMMENT was also tried.
+        r = retry
     if r.get("status") == "ok":
         _record_pr_review_call(tool_context)
     return r

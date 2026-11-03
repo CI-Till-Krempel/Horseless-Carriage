@@ -1604,7 +1604,7 @@ def sync_all_active_stories_to_roadmap(tool_context) -> Dict[str, Any]:
     return {"status": "ok" if overall_ok else "error", "versions_synced": list(versions.keys()), "results": results}
 
 
-def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_work: str = None, content_loss_acknowledgment: str = None, review_comment: str = None, review_event: str = "APPROVE", tool_context=None) -> Dict[str, Any]:
+def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_work: str = None, content_loss_acknowledgment: str = None, review_comment: str = None, review_event: str = "COMMENT", tool_context=None) -> Dict[str, Any]:
     """
     The single, mandatory mechanism for moving a story through the fixed
     Draft -> Ready -> Implemented -> Reviewed -> Tested -> Accepted pipeline
@@ -1631,10 +1631,20 @@ def advance_story_stage(title_or_id: str, stage: str, implemented_via_earlier_wo
     Reviewed (Architect) and Tested (QA) transitions. When supplied, this
     call posts it as a real `gh_pr_review` on the story's own feature-branch
     PR itself (review_event: APPROVE/REQUEST_CHANGES/COMMENT, default
-    APPROVE) before checking the stage's review-freshness gate below - the
+    COMMENT) before checking the stage's review-freshness gate below - the
     calling role no longer has to remember a separate `gh_pr_review`/
     `gh_pr_comment` call beforehand. Omitting it falls back to the old
     behavior (a fresh review call must already be on record).
+
+    SPEC-ISSUE-0083: every role shares one real GitHub identity (attribution
+    is commit-metadata/comment-prefix only, never a separate account), so
+    GitHub's API permanently refuses an APPROVE/REQUEST_CHANGES review on a
+    PR that identity also authored - COMMENT is the default because it's the
+    one review type that always works here, not because approval isn't
+    meaningful. Passing review_event="APPROVE" anyway still works: gh_pr_review
+    itself transparently falls back to COMMENT when GitHub rejects it as
+    self-approval, since the freshness gate below doesn't care which type was
+    actually posted.
 
     Enforces, in code rather than by asking nicely in a prompt (which
     repeatedly wasn't enough on its own in real eval runs):

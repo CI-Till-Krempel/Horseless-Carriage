@@ -328,7 +328,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             result = advance_story_stage("US-0001", "Reviewed", review_comment="LGTM", tool_context=tc)
 
         self.assertEqual(result["status"], "ok")
-        mock_review.assert_called_once_with("LGTM", event="APPROVE", pr_id=None, tool_context=tc)
+        mock_review.assert_called_once_with("LGTM", event="COMMENT", pr_id=None, tool_context=tc)
         self.assertEqual(tc.state["architect_review_baseline"], 1)
 
     def test_reviewed_review_comment_post_failure_blocks_the_transition(self, mock_save, mock_md, mock_roadmap):
@@ -378,7 +378,7 @@ class TestAdvanceStoryStageGates(unittest.TestCase):
             result = advance_story_stage("US-0001", "Tested", review_comment="Looks good", tool_context=tc)
 
         self.assertEqual(result["status"], "ok")
-        mock_review.assert_called_once_with("Looks good", event="APPROVE", pr_id=None, tool_context=tc)
+        mock_review.assert_called_once_with("Looks good", event="COMMENT", pr_id=None, tool_context=tc)
         self.assertEqual(tc.state["qa_review_baseline"], 1)
 
     def test_tested_blocked_when_last_check_build_failed(self, mock_save, mock_md, mock_roadmap):

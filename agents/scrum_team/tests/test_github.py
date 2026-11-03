@@ -217,6 +217,86 @@ class TestGitHubTools(unittest.TestCase):
         )
 
     @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_review_self_approval_rejection_retries_as_comment(self, mock_run):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0083): every role shares one real
+        GitHub identity, so GitHub permanently refuses an APPROVE/
+        REQUEST_CHANGES review on a PR that identity also authored (a real
+        eval run - 0.1.0-run82 - hit this on every Reviewed/Tested attempt).
+        That specific rejection must retry once as a COMMENT review - the
+        one type GitHub always allows - rather than surface an error no
+        retry of the identical call could ever fix.
+        """
+        approve_result = {
+            "status": "error",
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "failed to create review: GraphQL: Review Can not approve your own pull request (addPullRequestReview)",
+            "message": "failed to create review: GraphQL: Review Can not approve your own pull request (addPullRequestReview)",
+        }
+        comment_result = {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
+        mock_run.side_effect = [approve_result, comment_result]
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.agent_name = "Architect"
+
+        result = gh_pr_review(body="LGTM", event="APPROVE", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("note", result)
+        self.assertIn("self-approval", result["note"])
+        self.assertEqual(mock_run.call_count, 2)
+        first_cmd, second_cmd = mock_run.call_args_list[0].args[0], mock_run.call_args_list[1].args[0]
+        self.assertIn("--approve", first_cmd)
+        self.assertIn("--comment", second_cmd)
+        # The real review call still gets recorded, same as any other success.
+        self.assertEqual(tool_context.state["pr_review_calls"], {"Architect": 1})
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_review_self_approval_retry_also_failing_surfaces_the_retry_error(self, mock_run):
+        approve_result = {
+            "status": "error", "stderr": "Can not approve your own pull request", "message": "Can not approve your own pull request",
+        }
+        comment_result = {"status": "error", "stderr": "some other real failure", "message": "some other real failure"}
+        mock_run.side_effect = [approve_result, comment_result]
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.agent_name = "Architect"
+
+        result = gh_pr_review(body="LGTM", event="APPROVE", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(result["message"], "some other real failure")
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_review_other_approve_failures_do_not_retry(self, mock_run):
+        """A non-self-approval failure (e.g. the PR doesn't exist) must
+        surface as-is, with no wasted retry call."""
+        mock_run.return_value = {"status": "error", "stderr": "could not find pull request", "message": "could not find pull request"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.agent_name = "Architect"
+
+        result = gh_pr_review(body="LGTM", event="APPROVE", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_called_once()
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_pr_review_self_approval_rejection_on_a_comment_event_does_not_retry(self, mock_run):
+        """Already a COMMENT review - there's nothing to fall back to."""
+        mock_run.return_value = {"status": "error", "stderr": "Can not approve your own pull request", "message": "Can not approve your own pull request"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.agent_name = "Architect"
+
+        result = gh_pr_review(body="LGTM", event="COMMENT", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_called_once()
+
+    @patch("agents.scrum_team.tools.github._run")
     def test_gh_pr_comments_reads_back_comments_and_reviews(self, mock_run):
         """
         Acceptance Criteria (user observation): agents had no way to read

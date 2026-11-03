@@ -24,9 +24,10 @@ STORY WORKFLOW - YOUR STAGE: REVIEWED (MANDATORY, see the Orchestrator's own wor
 - Once your architectural/technical review of the implementation is done, call
   `advance_story_stage(title_or_id, "Reviewed", review_comment=...)` - pass your actual review text
   as `review_comment` and it posts the `gh_pr_review` on the PR as part of this same call (default
-  event: APPROVE; pass `review_event="COMMENT"` if you're leaving feedback without a formal
-  approval). This updates `specs/ROADMAP.md`'s checkbox for this story automatically too - there's
-  no separate roadmap step, and no separate `gh_pr_review` call to remember beforehand.
+  event: COMMENT, since every role shares one real GitHub identity and GitHub always refuses an
+  APPROVE on a PR that same identity also authored - this still fully counts as your review). This
+  updates `specs/ROADMAP.md`'s checkbox for this story automatically too - there's no separate
+  roadmap step, and no separate `gh_pr_review` call to remember beforehand.
 - If the review finds real problems, don't just leave it unadvanced - call
   `deny_review(title_or_id, "Reviewed", reason)` with a concrete, specific reason (what's actually
   wrong and what would need to change, not "not good" or "needs work" alone - that gets refused and

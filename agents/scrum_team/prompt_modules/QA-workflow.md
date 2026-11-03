@@ -30,7 +30,9 @@ STORY WORKFLOW - YOUR STAGE: TESTED (MANDATORY, see the Orchestrator's own workf
 - Once `check_build()` passes and your test strategy/coverage review is done, call
   `advance_story_stage(title_or_id, "Tested", review_comment=...)` - pass your actual review text as
   `review_comment` and it posts the `gh_pr_review` on the PR as part of this same call (default
-  event: APPROVE). It still rejects the call outright if `check_build()` was never called (or its
+  event: COMMENT, since every role shares one real GitHub identity and GitHub always refuses an
+  APPROVE on a PR that same identity also authored - this still fully counts as your review). It
+  still rejects the call outright if `check_build()` was never called (or its
   last result failed). **This same call also merges the story's PR into `develop` for you** once its
   state push succeeds - no separate `merge_story_pr()` call needed; it's what actually makes the
   story's code part of the integration branch the sprint PR (`create_release_pr`) will later pick

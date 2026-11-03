@@ -2,7 +2,7 @@
 
 - Issue ID: SPEC-ISSUE-0083
 - Title: `advance_story_stage`'s `review_event="APPROVE"` Default Can Never Succeed - Every Role Shares One GitHub Identity, And GitHub Refuses To Let An Account Approve Its Own Pull Request
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-11-03
@@ -119,3 +119,35 @@ approval requirement).
   covered by a test, not just the default path.
 - Full `agents/scrum_team/tests` suite must still pass with no regressions to GH #391's existing
   `review_comment`/auto-merge-on-Tested tests.
+
+## Resolution
+Fixed at the `gh_pr_review` level (`agents/scrum_team/tools/github.py`) rather than only in
+`advance_story_stage`, so every caller benefits - including the pre-existing direct-call path
+(`transcript.md:1585-1601` showed DevTeam hitting the identical rejection calling `gh_pr_review`
+directly, outside `advance_story_stage`'s control, even before #391):
+
+- `_looks_like_self_approval_rejection()`: detects GitHub's specific `"Can not approve your own pull
+  request"` rejection text in a failed `gh_pr_review` result.
+- `gh_pr_review`: an `APPROVE`/`REQUEST_CHANGES` call rejected this specific way is transparently
+  retried once as a `COMMENT` review (the one type GitHub always allows, regardless of author) -
+  deliberately *not* conditioned on whether `review_event` was the default or passed explicitly, since
+  an explicit request is exactly as structurally impossible here as the default was, and silently
+  honoring "the caller asked for APPROVE" for an operation that can never succeed would just
+  reintroduce this exact bug the moment a model picks `APPROVE` out of habit regardless of doc wording.
+  The successful retry's result carries a `note` field explaining the substitution - transparent, not
+  silent. If the retry *also* fails (a genuinely different problem, e.g. the PR doesn't exist), that
+  retry's own error is surfaced, not a re-statement of the original self-approval message. A rejection
+  on an already-`COMMENT` call, or any other (non-self-approval) failure, is surfaced as-is with no
+  extra round-trip.
+- `advance_story_stage`'s own `review_event` default changed from `APPROVE` to `COMMENT` directly, so
+  the common case (a role not specifying anything) never needs the retry at all.
+- Updated `Architect-workflow.md`/`QA-workflow.md` (no longer present `APPROVE` as the recommended
+  default) and `RELEASE.md`'s #391 entry (corrected the now-wrong "`review_event` defaults to `APPROVE`"
+  claim, pointing at this issue).
+- New tests (`agents/scrum_team/tests/test_github.py`): self-approval rejection on `APPROVE`/
+  `REQUEST_CHANGES` retries as `COMMENT` and succeeds with a `note`; a retry that also fails surfaces
+  its own (different) error, not the original; a non-self-approval failure never retries; a rejection
+  on an already-`COMMENT` call never retries. Updated two existing GH #391 tests
+  (`test_requirements.py`) that asserted the old `event="APPROVE"` default to assert `"COMMENT"`
+  instead. Full `agents/scrum_team/tests` suite: 1196 passed (2 pre-existing, unrelated failures
+  confirmed present on unmodified `main` too).
