@@ -27,9 +27,14 @@ class TestBuildManifest:
         manifest = setup_github_app._build_manifest("acme", "widgets", "http://localhost:1/callback", "http://localhost:1/installed")
         assert manifest["default_permissions"] == {"contents": "write", "pull_requests": "write", "metadata": "read"}
 
-    def test_webhook_is_inactive(self):
+    def test_has_no_hook_attributes(self):
+        """GitHub's manifest validator requires hook_attributes.url whenever
+        hook_attributes is present at all, even with active=False - omitting
+        the whole key (not setting active=False alone) is the actual way to
+        register a webhook-less App; the lone {"active": False} form
+        produces a confusing "'url' wasn't supplied" error from GitHub."""
         manifest = setup_github_app._build_manifest("acme", "widgets", "http://localhost:1/callback", "http://localhost:1/installed")
-        assert manifest["hook_attributes"] == {"active": False}
+        assert "hook_attributes" not in manifest
 
     def test_redirect_and_setup_urls_are_passed_through(self):
         manifest = setup_github_app._build_manifest("acme", "widgets", "http://localhost:1/callback", "http://localhost:1/installed")
