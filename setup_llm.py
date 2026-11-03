@@ -314,7 +314,14 @@ def _setup_state_repo(env_path: Path) -> None:
             lib_env.update_env_var(env_path, "GITHUB_REPO_URL", repo_url)
         lib_env.update_env_var(env_path, "GITHUB_REPO_BRANCH", branch)
         _sync_compose_project_prefix(env_path, state_repo_path, is_repoint)
-        project_registry.sync_from_env(env_path.parent)
+        # GH issue tracker: env_path is typically the bare relative
+        # Path(".env") (both call sites in this module construct it that
+        # way) - .parent on that is the unresolved "." string, which never
+        # string-equals the absolute hc_path new_project.py/setup_project.py
+        # register with, so register()'s match-by-hc_path silently created a
+        # second, bogus "." entry on every reconfiguration instead of
+        # updating the real one. Resolve before handing it to sync_from_env.
+        project_registry.sync_from_env(env_path.resolve().parent)
         return
 
     state_repo_path.mkdir(parents=True, exist_ok=True)
@@ -398,7 +405,10 @@ def _setup_state_repo(env_path: Path) -> None:
     # original install - see project_registry.sync_from_env's own docstring
     # for the drift incident this closes. A no-op for a standalone checkout
     # (not nested inside another repo) or one new_project.py never touched.
-    project_registry.sync_from_env(env_path.parent)
+    # Resolved (see the other call site above) so hc_path matches the
+    # absolute path new_project.py/setup_project.py register with, instead
+    # of the literal "." register() can never match against.
+    project_registry.sync_from_env(env_path.resolve().parent)
 
     if repo_usable:
         print(f"State repository ready at: {state_repo_path}")
