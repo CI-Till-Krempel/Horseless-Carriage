@@ -67,6 +67,7 @@ from pathlib import Path
 import lib_docker
 import lib_env
 import lib_llm_test
+import project_registry
 import rebuild_images
 
 ROLES = [
@@ -205,9 +206,31 @@ def _sync_compose_project_prefix(env_path: Path, state_repo_path: Path, is_repoi
     value yet (first-time setup) or STATE_REPO_PATH just changed
     (is_repoint) - an unrelated, already-customized prefix for an unchanged
     target is left alone, same spirit as every other value in this
-    function."""
-    if is_repoint or not lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX"):
+    function.
+
+    On a genuine repoint, changing the prefix means `docker compose up`
+    will look for containers under the NEW project name, find none, and
+    create fresh ones - the OLD-prefixed containers (this same checkout's
+    now-abandoned previous target) are left running, orphaned, with
+    nothing left to ever stop them. Stop that old stack here, before the
+    prefix changes out from under it."""
+    old_prefix = lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX")
+    if is_repoint or not old_prefix:
         prefix = lib_docker.derive_compose_project_prefix(state_repo_path)
+        if is_repoint and old_prefix and old_prefix != prefix:
+            repo_root = env_path.parent
+            old_project_args = ["-p", f"{old_prefix}-dev"]
+            info(f"STATE_REPO_PATH changed - stopping the old project's stack ('{old_prefix}-dev') "
+                 "before switching container/image names to the new one...")
+            try:
+                subprocess.run(
+                    ["docker", "compose", *lib_docker.compose_file_args(repo_root), *old_project_args,
+                     "--env-file", str(env_path), "down"],
+                    cwd=repo_root, capture_output=True, text=True, timeout=120,
+                )
+            except Exception as e:
+                warn(f"Could not stop the old '{old_prefix}-dev' stack automatically ({e}) - stop it "
+                     f"yourself if needed: docker compose -p {old_prefix}-dev down")
         lib_env.update_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX", prefix)
         info(f"COMPOSE_PROJECT_NAME_PREFIX set to '{prefix}' - keeps this project's containers/images "
              "from colliding with (or silently replacing) another Horseless Carriage installation's.")
@@ -266,7 +289,8 @@ def _setup_state_repo(env_path: Path) -> None:
         # re-running setup for what you thought was a brand-new project.
         warn(f"This checkout is currently configured to drive {old_resolved}.")
         print(f"Repointing STATE_REPO_PATH to {state_repo_path} stops it from driving that project - "
-              "its own containers (if running) are left alone, but this checkout no longer manages them.")
+              "its containers (if running) will be stopped automatically as part of this (data in named "
+              "volumes, e.g. the LiteLLM database, is preserved - only the containers themselves stop).")
         print("To run MULTIPLE projects at once, install a separate Horseless Carriage submodule per "
               "project instead: python3 new_project.py --target-repo <path> (see docs/SETUP.md) - "
               "rather than repointing one checkout back and forth.")
@@ -290,6 +314,7 @@ def _setup_state_repo(env_path: Path) -> None:
             lib_env.update_env_var(env_path, "GITHUB_REPO_URL", repo_url)
         lib_env.update_env_var(env_path, "GITHUB_REPO_BRANCH", branch)
         _sync_compose_project_prefix(env_path, state_repo_path, is_repoint)
+        project_registry.sync_from_env(env_path.parent)
         return
 
     state_repo_path.mkdir(parents=True, exist_ok=True)
@@ -368,6 +393,12 @@ def _setup_state_repo(env_path: Path) -> None:
         lib_env.update_env_var(env_path, "GITHUB_REPO_URL", repo_url)
     lib_env.update_env_var(env_path, "GITHUB_REPO_BRANCH", branch)
     _sync_compose_project_prefix(env_path, state_repo_path, is_repoint)
+    # GH issue tracker: keeps project_registry.json's name/target_repo in
+    # sync with .env on every reconfiguration, not just new_project.py's
+    # original install - see project_registry.sync_from_env's own docstring
+    # for the drift incident this closes. A no-op for a standalone checkout
+    # (not nested inside another repo) or one new_project.py never touched.
+    project_registry.sync_from_env(env_path.parent)
 
     if repo_usable:
         print(f"State repository ready at: {state_repo_path}")
@@ -822,7 +853,20 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
     lib_docker.maybe_stop_existing_stack([*compose_args, *project_args, "--env-file", str(env_path)])
 
     info(f"Starting {' + '.join(services)} (docker compose {' '.join(compose_args)} up -d)...")
-    cmd = ["docker", "compose", *compose_args, *project_args, "--env-file", str(env_path), "up", "-d", *services]
+    # --force-recreate: litellm.yaml is a read-only BIND MOUNT
+    # (docker-compose.yaml), loaded once at the litellm process's own
+    # startup - Compose's own "has this service's config changed" check
+    # hashes the resolved service definition (image, env vars, mount
+    # *paths*), not a bind-mounted file's *contents*, so write_litellm_yaml
+    # above rewriting this same path with new provider/model content is
+    # invisible to a plain `up -d` on an already-running stack: the
+    # container keeps serving the OLD config, and run_configuration_test's
+    # own live test below can pass against it, falsely confirming a
+    # reconfiguration that never actually took effect. --force-recreate
+    # guarantees the new content is actually picked up regardless. db's
+    # data lives in a named volume (postgres_data), so recreating it here
+    # too is a brief, harmless restart, not a reset.
+    cmd = ["docker", "compose", *compose_args, *project_args, "--env-file", str(env_path), "up", "-d", "--force-recreate", *services]
     try:
         # capture_output (not DEVNULL): "is the Docker daemon running?" was
         # a guess masking whatever `docker compose up` actually said - on

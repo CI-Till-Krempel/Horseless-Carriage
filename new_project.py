@@ -229,8 +229,12 @@ def _install_if_nested(repo_root: Path) -> None:
     # installed project - registering here (not a separate manual step) is
     # what connects the two issues, per #310's own decision comment ("#288
     # owning add a project, this issue owning list/observe registered
-    # projects").
-    project_registry.register(parent.name, repo_root, parent)
+    # projects"). sync_from_env (not a direct register() call) reads
+    # STATE_REPO_PATH back from the .env _configure_for_target_project just
+    # wrote, rather than assuming it always equals `parent` - the same
+    # function setup_llm.py calls on every later reconfiguration, so the
+    # registry can never drift from what's actually in this project's .env.
+    project_registry.sync_from_env(repo_root)
     info(f"Registered '{parent.name}' - see it with: python3 dashboard.py")
 
 

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import lib_docker
 import lib_env
+import project_registry
 
 
 def main() -> None:
@@ -76,6 +77,14 @@ def main() -> None:
     lib_env.ensure_master_key(env_path)
     lib_env.ensure_postgres_password(env_path)
 
+    # Keeps project_registry.json's name/target_repo in sync with .env -
+    # the same call new_project.py (initial install) and setup_llm.py
+    # (every later reconfiguration) make, so a project set up/reconfigured
+    # by running this script directly (skipping setup_llm.py) doesn't fall
+    # out of sync with what dashboard.py shows. A no-op for a standalone
+    # checkout or one with no STATE_REPO_PATH set yet.
+    project_registry.sync_from_env(Path(".").resolve())
+
     # 4. Start the database and LiteLLM containers
     # Use the same compose file(s) setup_llm.py's own live test already
     # verified working (docker-compose.local.yaml [+ the GPU override] for
@@ -93,10 +102,23 @@ def main() -> None:
     # starts db/litellm ahead of it), distinct from the ADK eval-set
     # runner's and the test suite's - see lib_docker.compose_project_args.
     full_compose_args = compose_args + lib_docker.compose_project_args("dev")
+    # GH issue #288's own port auto-assignment only ever ran once, at
+    # new_project.py install time (or dashboard.py's own Start action) -
+    # running this script directly could otherwise bring up a stack whose
+    # configured port another process has since taken, with no warning.
+    # --build mirrors dashboard.py's own _start_stack: the image itself
+    # doesn't embed a port, but a changed .env is exactly the kind of drift
+    # a plain `up -d` with no rebuild can silently serve stale against.
+    port_changes = lib_docker.ensure_dev_ports_available(Path("."), full_compose_args)
     print("Starting database and LiteLLM containers via Docker Compose...")
     if compose_args:
         print(f"(Local/Ollama setup detected - using {compose_args[1]})")
-    result = subprocess.run(["docker", "compose", *full_compose_args, "up", "-d", "db", "litellm"])
+    up_cmd = ["docker", "compose", *full_compose_args, "up", "-d"]
+    if port_changes:
+        up_cmd.append("--build")
+        summary = ", ".join(f"{var} {old} -> {new}" for var, old, new in port_changes)
+        print(f"Port(s) reassigned ({summary}) - rebuilding before starting.")
+    result = subprocess.run([*up_cmd, "db", "litellm"])
     if result.returncode != 0:
         sys.exit(result.returncode)
 

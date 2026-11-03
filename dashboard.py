@@ -111,6 +111,14 @@ def project_snapshot(entry: dict) -> dict:
             return str(p)
 
     target_repo_drifted = bool(env_state_repo_path) and _norm(target_repo) != _norm(registry_target_repo)
+    if target_repo_drifted:
+        # Self-heal, not just warn: .env is unconditionally the right answer
+        # here (it's what the running agent actually uses), so there's no
+        # legitimate case where the stale registry snapshot should win -
+        # project_registry.sync_from_env re-derives name/target_repo from
+        # this same .env, the same function setup_llm.py now also calls on
+        # every reconfiguration.
+        project_registry.sync_from_env(hc_path)
 
     try:
         config_mode = lib_llm_test.llm_active_provider(lib_llm_test.llm_active_config_path(hc_path))
@@ -275,11 +283,14 @@ def _render_page(message: str = "") -> str:
             # two projects' submodule checkouts to reuse API keys, carrying
             # over the OTHER project's STATE_REPO_PATH - so this row silently
             # showed the other project's sprint goal/state instead of its
-            # own. Surface the drift loudly rather than hide it.
+            # own. project_snapshot already self-corrected the registry
+            # entry to match .env by the time this renders - surface that
+            # it HAD drifted (so a confusing prior screenshot/memory makes
+            # sense) rather than leaving it silent now that it's fixed.
             sprint_goal_html += (
-                f"<br><small style='color:#c62828'>&#9888; showing {e(snap['target_repo'])} - differs "
-                f"from this project's registered path. Check this project's own .env's "
-                "STATE_REPO_PATH.</small>"
+                f"<br><small style='color:#c62828'>&#9888; this project's registry entry had drifted "
+                f"and was just corrected to {e(snap['target_repo'])} (from this project's own .env) - "
+                "if that's not right, check STATE_REPO_PATH in this project's .env.</small>"
             )
         rows.append(
             "<tr>"

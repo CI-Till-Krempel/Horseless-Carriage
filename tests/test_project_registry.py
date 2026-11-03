@@ -55,3 +55,87 @@ class TestRegister:
 
         assert len(projects) == 2
         assert {p["name"] for p in projects} == {"project-a", "project-b"}
+
+
+def _nested_hc_path(tmp_path, project_name="target"):
+    target_repo = tmp_path / project_name
+    (target_repo / ".git").mkdir(parents=True)
+    hc_path = target_repo / "horseless-carriage"
+    hc_path.mkdir()
+    return hc_path, target_repo
+
+
+class TestSyncFromEnv:
+    """GH issue tracker: a real incident - project_registry.json's
+    install-time snapshot and a project's own live .env STATE_REPO_PATH had
+    diverged (e.g. an .env copied between two projects' submodule checkouts
+    to reuse API keys), and nothing ever re-synced the registry afterward -
+    dashboard.py silently showed one project's sprint goal under another's
+    name. sync_from_env is the one place "what's actually true right now"
+    gets (re)written to the registry, called by new_project.py (install),
+    setup_llm.py/setup_project.py (every later reconfiguration), and
+    dashboard.py (self-heal on render)."""
+
+    def test_registers_using_the_live_env_value(self, tmp_path):
+        hc_path, target_repo = _nested_hc_path(tmp_path)
+        (hc_path / ".env").write_text(f"STATE_REPO_PATH='{target_repo}'\n")
+        registry_path = tmp_path / "projects.json"
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.sync_from_env(hc_path)
+            projects = project_registry.load()
+
+        assert len(projects) == 1
+        assert projects[0]["name"] == target_repo.name
+        assert projects[0]["hc_path"] == str(hc_path)
+        assert projects[0]["target_repo"] == str(target_repo)
+
+    def test_corrects_a_stale_existing_entry(self, tmp_path):
+        hc_path, target_repo = _nested_hc_path(tmp_path)
+        (hc_path / ".env").write_text(f"STATE_REPO_PATH='{target_repo}'\n")
+        registry_path = tmp_path / "projects.json"
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.register("stale-name", hc_path, tmp_path / "stale-other-project")
+            project_registry.sync_from_env(hc_path)
+            projects = project_registry.load()
+
+        assert len(projects) == 1
+        assert projects[0]["name"] == target_repo.name
+        assert projects[0]["target_repo"] == str(target_repo)
+
+    def test_relative_state_repo_path_resolves_against_hc_path(self, tmp_path):
+        hc_path, target_repo = _nested_hc_path(tmp_path)
+        # hc_path is target_repo/horseless-carriage, so ".." from there is
+        # target_repo itself - matches how Docker Compose resolves it too.
+        (hc_path / ".env").write_text("STATE_REPO_PATH='..'\n")
+        registry_path = tmp_path / "projects.json"
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.sync_from_env(hc_path)
+            projects = project_registry.load()
+
+        assert projects[0]["target_repo"] == str(target_repo.resolve())
+
+    def test_no_op_for_a_standalone_checkout(self, tmp_path):
+        """hc_path not nested inside another repo - project_registry only
+        tracks new_project.py-installed, multi-project setups."""
+        hc_path = tmp_path / "standalone" / "horseless-carriage"
+        hc_path.mkdir(parents=True)
+        (hc_path / ".env").write_text(f"STATE_REPO_PATH='{tmp_path}'\n")
+        registry_path = tmp_path / "projects.json"
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.sync_from_env(hc_path)
+
+        assert not registry_path.is_file()
+
+    def test_no_op_when_state_repo_path_is_unset(self, tmp_path):
+        hc_path, _ = _nested_hc_path(tmp_path)
+        (hc_path / ".env").write_text("")
+        registry_path = tmp_path / "projects.json"
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.sync_from_env(hc_path)
+
+        assert not registry_path.is_file()
