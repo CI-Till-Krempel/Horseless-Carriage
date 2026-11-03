@@ -1,4 +1,5 @@
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,13 @@ def happy_path(monkeypatch):
     monkeypatch.setattr(setup_project.shutil, "copy", lambda *a, **k: None)
     _patch_which(monkeypatch, docker=True, **{"docker-compose": True, "gh": True})
     monkeypatch.setattr(setup_project.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a[0] if a else [], 0))
+    # Real side effects neither os.chdir nor shutil.copy mocks out above
+    # protect against - a test running against this actual checkout must
+    # never touch the real ~/.horseless-carriage/projects.json, and
+    # ensure_dev_ports_available would otherwise shell out to real `docker
+    # compose ps` via the also-mocked-but-now-generic subprocess.run above.
+    monkeypatch.setattr(setup_project.project_registry, "sync_from_env", lambda *a, **k: None)
+    monkeypatch.setattr(setup_project.lib_docker, "ensure_dev_ports_available", lambda *a, **k: [])
 
 
 class TestComposeFileSelection:
@@ -120,6 +128,54 @@ class TestEnvSecretGeneration:
         kinds = [c[0] for c in calls]
         assert "master_key" in kinds
         assert "postgres_password" in kinds
+
+
+class TestConfigSync:
+    """GH issue tracker: running this script directly (skipping
+    setup_llm.py) must keep project_registry.json and port assignment in
+    sync too, not just the two secrets above - the same calls new_project.py
+    (install) and setup_llm.py (every later reconfiguration) make."""
+
+    def test_syncs_project_registry(self, happy_path, monkeypatch):
+        calls = []
+        monkeypatch.setattr(setup_project.project_registry, "sync_from_env", lambda hc_path: calls.append(hc_path))
+
+        setup_project.main()
+
+        assert calls == [Path(".").resolve()]
+
+    def test_checks_for_port_conflicts_and_rebuilds_if_one_was_reassigned(self, happy_path, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(setup_project.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            setup_project.lib_docker, "ensure_dev_ports_available",
+            lambda *a, **k: [("LITELLM_HOST_PORT", 4000, 4001)],
+        )
+
+        setup_project.main()
+
+        up_calls = [c for c in calls if c[:2] == ["docker", "compose"] and "up" in c]
+        assert up_calls, f"expected an 'up' call, got: {calls}"
+        assert "--build" in up_calls[0]
+
+    def test_no_rebuild_when_no_port_was_reassigned(self, happy_path, monkeypatch):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(setup_project.subprocess, "run", fake_run)
+        monkeypatch.setattr(setup_project.lib_docker, "ensure_dev_ports_available", lambda *a, **k: [])
+
+        setup_project.main()
+
+        up_calls = [c for c in calls if c[:2] == ["docker", "compose"] and "up" in c]
+        assert up_calls, f"expected an 'up' call, got: {calls}"
+        assert "--build" not in up_calls[0]
 
 
 class TestGuardClauses:

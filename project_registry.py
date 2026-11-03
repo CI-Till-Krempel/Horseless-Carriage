@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+import lib_env
+
 REGISTRY_PATH = Path.home() / ".horseless-carriage" / "projects.json"
 
 
@@ -59,3 +61,39 @@ def register(name: str, hc_path: Path, target_repo: Path) -> None:
             return
     projects.append({"name": name, "hc_path": hc_path_str, "target_repo": target_repo_str})
     save(projects)
+
+
+def sync_from_env(hc_path: Path) -> None:
+    """Re-registers hc_path using whatever its OWN .env currently says,
+    rather than whatever install-time snapshot a caller happens to have in
+    hand - the single place "is this nested, and what's its real name/
+    target_repo right now" gets decided, so new_project.py (first install)
+    and setup_llm.py (every later reconfiguration) can't drift apart on the
+    answer.
+
+    A no-op for a standalone checkout (hc_path not nested inside another
+    repo - project_registry only tracks new_project.py-installed,
+    multi-project setups, same gate new_project.py's own
+    _install_if_nested already used) or one with no STATE_REPO_PATH set
+    yet (nothing meaningful to register).
+
+    GH issue tracker: a real incident - a project's own .env STATE_REPO_PATH
+    had drifted from project_registry.json's install-time snapshot (e.g. an
+    .env copied between two projects' submodule checkouts to reuse API
+    keys), and nothing ever re-synced the registry afterward - dashboard.py
+    silently showed one project's sprint goal under another's name. Calling
+    this after every STATE_REPO_PATH write (not just the first one, at
+    install time) keeps the registry from ever drifting that far again."""
+    parent = hc_path.parent
+    if not (parent / ".git").exists():
+        return
+    state_repo_path = lib_env.read_env_var(hc_path / ".env", "STATE_REPO_PATH")
+    if not state_repo_path:
+        return
+    target_repo = Path(state_repo_path)
+    if not target_repo.is_absolute():
+        # Docker Compose (and dashboard.py) resolve a relative
+        # STATE_REPO_PATH against the compose file's own directory - hc_path
+        # - not wherever this function happens to be called from.
+        target_repo = (hc_path / target_repo).resolve()
+    register(target_repo.name, hc_path, target_repo)

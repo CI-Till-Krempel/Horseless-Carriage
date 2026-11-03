@@ -212,6 +212,30 @@ class TestProjectSnapshot:
         assert snap["sprint_goal"] == "Other project's goal"
         assert snap["target_repo_drifted"] is True
 
+    def test_drift_detection_self_heals_the_registry_file(self, tmp_path):
+        """Not just a rendered warning - project_registry.json itself must
+        actually get corrected, so the drift doesn't keep recurring on
+        every render and other tools reading the registry (not just this
+        dashboard) see the right value too."""
+        target_repo = tmp_path / "actual-target"
+        target_repo.mkdir()
+        git_parent = tmp_path / "registered-name"
+        git_parent.mkdir(exist_ok=True)
+        (git_parent / ".git").mkdir()
+        nested_hc_path = git_parent / "horseless-carriage"
+        nested_hc_path.mkdir()
+        (nested_hc_path / ".env").write_text(f"STATE_REPO_PATH='{target_repo}'\n")
+        entry = {"name": "registered-name", "hc_path": str(nested_hc_path), "target_repo": str(git_parent)}
+        registry_path = tmp_path / "registry.json"
+
+        with patch.object(dashboard.project_registry, "REGISTRY_PATH", registry_path), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            dashboard.project_snapshot(entry)
+            projects = dashboard.project_registry.load()
+
+        assert len(projects) == 1
+        assert projects[0]["target_repo"] == str(target_repo)
+
     def test_relative_state_repo_path_resolves_against_hc_path_not_cwd(self, tmp_path):
         """STATE_REPO_PATH may be a relative path (.env.example's own
         default is "../Horseless-Carriage-State") - Docker Compose resolves
@@ -289,7 +313,7 @@ class TestRenderPage:
              patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
             page = dashboard._render_page()
 
-        assert "differs from this project's registered path" in page
+        assert "had drifted and was just corrected" in page
         assert str(other_project_repo) in page
 
     def test_no_drift_warning_when_env_matches_the_registry(self, tmp_path):
@@ -300,7 +324,7 @@ class TestRenderPage:
              patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
             page = dashboard._render_page()
 
-        assert "differs from this project's registered path" not in page
+        assert "had drifted and was just corrected" not in page
 
     def test_renders_spend_not_yet_available_when_absent(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)

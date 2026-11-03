@@ -424,6 +424,35 @@ class TestRunConfigurationTest:
         assert "some specific real docker error" in out
         assert "is the Docker daemon running?" not in out
 
+    def test_up_command_force_recreates_the_containers(self, tmp_path, monkeypatch):
+        """GH issue tracker: litellm.yaml is a read-only bind mount loaded
+        once at the litellm process's own startup - Compose's own "has this
+        service's config changed" check hashes the resolved service
+        definition (image, env vars, mount *paths*), not a bind-mounted
+        file's *contents*, so a reconfiguration that rewrites litellm.yaml's
+        content was invisible to a plain `up -d` on an already-running
+        stack: the container kept serving the OLD provider/model, and this
+        same live test could pass against it, falsely confirming a
+        reconfiguration that never took effect."""
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+
+        setup_llm.run_configuration_test("gemini", "gemini-2.5-pro", env_path)
+
+        up_calls = [c for c in calls if "up" in c]
+        assert up_calls, f"expected an 'up' call, got: {calls}"
+        assert "--force-recreate" in up_calls[0]
+
     def test_offers_to_stop_an_existing_stack_before_starting(self, tmp_path, monkeypatch):
         """A leftover stack from an earlier run must get a chance to be
         stopped+recreated before this starts a new one on top of it (see
@@ -975,6 +1004,20 @@ class TestSetupStateRepo:
         assert lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX") == \
             lib_docker.derive_compose_project_prefix(target)
 
+    def test_syncs_project_registry_after_writing_state_repo_path(self, tmp_path, monkeypatch):
+        """GH issue tracker: project_registry.json's name/target_repo must
+        stay in sync on every reconfiguration, not just new_project.py's
+        original install - the same call dashboard.py's self-heal and
+        new_project.py's install both make."""
+        target = tmp_path / "first-project"
+        env_path = tmp_path / ".env"
+        calls = []
+        monkeypatch.setattr(setup_llm.project_registry, "sync_from_env", lambda hc_path: calls.append(hc_path))
+
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        assert calls == [env_path.parent]
+
 
 class TestSetupStateRepoRepointSafety:
     """A standalone checkout silently repointed from one product to another
@@ -1027,6 +1070,48 @@ class TestSetupStateRepoRepointSafety:
         new_prefix = lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX")
         assert new_prefix != old_prefix
         assert new_prefix == lib_docker.derive_compose_project_prefix(new_target)
+
+    def test_repointing_stops_the_old_project_name_prefixed_stack(self, tmp_path, monkeypatch):
+        """GH issue tracker: changing COMPOSE_PROJECT_NAME_PREFIX makes
+        Docker Compose look for containers under the NEW project name,
+        find none, and create fresh ones - the OLD-prefixed containers
+        (this same checkout's now-abandoned previous target) were
+        previously left running, orphaned, with nothing left to ever stop
+        them."""
+        old_target = tmp_path / "old-project"
+        new_target = tmp_path / "new-project"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(old_target), "", "main"])
+        old_prefix = lib_env.read_env_var(env_path, "COMPOSE_PROJECT_NAME_PREFIX")
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
+
+        _run_setup_state_repo(monkeypatch, env_path, [str(new_target), "y", "", "main"])
+
+        matching = [c for c in calls if "down" in c and f"{old_prefix}-dev" in c]
+        assert matching, f"expected a 'docker compose -p {old_prefix}-dev ... down' call, got: {calls}"
+
+    def test_no_stop_attempted_when_prefix_is_unchanged(self, tmp_path, monkeypatch):
+        target = tmp_path / "same-project"
+        env_path = tmp_path / ".env"
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
+
+        # Re-running with the identical path - not a repoint, nothing to stop.
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        assert not any("down" in c for c in calls)
 
 
 class TestHostGitIdentity:

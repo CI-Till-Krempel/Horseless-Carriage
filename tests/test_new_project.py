@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import lib_docker
+import lib_env
 import new_project
 import project_registry
 
@@ -164,7 +165,16 @@ class TestInstallIfNested:
         repo_root.mkdir()
 
         registry_path = tmp_path / "registry.json"
-        with patch.object(new_project, "_configure_for_target_project") as mock_configure, \
+
+        def fake_configure(repo_root_arg, target_repo_arg):
+            # project_registry.sync_from_env reads STATE_REPO_PATH back from
+            # .env rather than trusting the caller's own `target_repo`
+            # variable - _configure_for_target_project is what really writes
+            # it, so the fake must too for this test to exercise the same
+            # path real usage does.
+            lib_env.update_env_var(repo_root_arg / ".env", "STATE_REPO_PATH", str(target_repo_arg))
+
+        with patch.object(new_project, "_configure_for_target_project", side_effect=fake_configure) as mock_configure, \
              patch.object(project_registry, "REGISTRY_PATH", registry_path):
             new_project._install_if_nested(repo_root)
             projects = project_registry.load()

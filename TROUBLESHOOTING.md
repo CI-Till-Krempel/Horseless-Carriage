@@ -26,13 +26,15 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   STATE_REPO_PATH does not exist: ...`** — `run.py` and `doctor.py` hard-fail without a state repo.
   Set `STATE_REPO_PATH` and create the directory (`mkdir -p <path>`), or let `setup_llm.py` do both
   interactively. See [State Repository](docs/STATE-REPOSITORY.md).
-- **`python3 dashboard.py` shows one project's sprint goal/budget under a *different* project's name**
-  — a project's `.env` (specifically `STATE_REPO_PATH`) was likely copied from another project's
-  `horseless-carriage/` checkout (e.g. to reuse API keys) without updating it to point at this
-  project's own state repo. `dashboard.py` now detects this drift (the registered path from
-  `new_project.py` install time vs. this project's own live `.env`) and shows a loud warning under
-  the affected row's sprint goal naming the path actually in use - fix `STATE_REPO_PATH` in that
-  project's `.env` to point at its own directory.
+- **`python3 dashboard.py` shows (or showed) one project's sprint goal/budget under a *different*
+  project's name** — a project's `.env` (specifically `STATE_REPO_PATH`) was likely copied from
+  another project's `horseless-carriage/` checkout (e.g. to reuse API keys) without updating it to
+  point at this project's own state repo. `dashboard.py` now detects this drift (the registered path
+  from `new_project.py` install time vs. this project's own live `.env`) and **auto-corrects the
+  registry entry to match `.env`** the moment it's rendered, showing a one-time warning naming what
+  changed - `setup_llm.py` also re-syncs the registry on every reconfiguration now, so this shouldn't
+  recur. If the corrected path still isn't what you expect, fix `STATE_REPO_PATH` in that project's
+  own `.env`.
 - **`WARNING: GIT_USER_NAME is not set...` / `GIT_USER_EMAIL is not set...`** — cosmetic fallback
   warnings only; real commits the agents make are still attributed per-role regardless (see
   [GitHub Integration](docs/GITHUB-INTEGRATION.md#agent-identity)). Set them in `.env` to silence
