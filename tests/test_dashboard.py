@@ -253,6 +253,40 @@ class TestProjectSnapshot:
 
         assert snap["target_repo_drifted"] is False
 
+    def test_resting_project_is_not_probed_for_reachability(self, tmp_path):
+        """A stopped project is expected to be unreachable - probing it
+        would just add latency (and its own timeout) to every page load for
+        no useful signal."""
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]), \
+             patch.object(dashboard, "_url_reachable") as mock_reachable:
+            snap = dashboard.project_snapshot(entry)
+
+        mock_reachable.assert_not_called()
+        assert snap["litellm_reachable"] is False
+        assert snap["web_reachable"] is False
+
+    def test_running_project_reports_reachability_per_link(self, tmp_path):
+        """GH issue tracker: a project shown as 'working' (its containers are
+        up) could still have a LiteLLM/web UI link that 404s/refuses to
+        connect if the service inside hasn't finished booting (or crashed
+        after) - the container being 'running' says nothing about that."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text("LITELLM_HOST_PORT='4001'\nAGENT_WEB_HOST_PORT='8001'\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        def fake_reachable(url, timeout_secs=dashboard._REACHABILITY_CHECK_TIMEOUT_SECS):
+            return "4001" in url
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard, "_url_reachable", side_effect=fake_reachable):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["litellm_reachable"] is True
+        assert snap["web_reachable"] is False
+
 
 class TestProductVersion:
     def test_reads_version_file_if_present(self, tmp_path):
@@ -371,6 +405,43 @@ class TestRenderPage:
         assert "http://localhost:4001/ui" in page
         assert "http://localhost:8001" in page
 
+    def test_renders_green_dot_for_reachable_running_project(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard, "_url_reachable", return_value=True):
+            page = dashboard._render_page()
+
+        assert "#2e7d32" in page
+        assert "unreachable" not in page
+
+    def test_renders_red_dot_for_unreachable_running_project(self, tmp_path):
+        """The actual bug report: a project shown as 'working' whose
+        LiteLLM/web UI links 404/refuse to connect - this must be visible
+        right on the row, not only discoverable by clicking through."""
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard, "_url_reachable", return_value=False):
+            page = dashboard._render_page()
+
+        assert "unreachable" in page
+
+    def test_no_reachability_dot_for_resting_project(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "unreachable" not in page
+        assert "reachable" not in page
+
     def test_renders_blocking_summary_and_web_ui_link_when_waiting(self, tmp_path):
         """GH issue #454: starting a project that comes up already blocked
         on a human must point at where to go resolve it, not just say
@@ -390,6 +461,31 @@ class TestRenderPage:
         assert "Approve release PR #42" in page
         assert "http://localhost:8001" in page
         assert "Respond in web UI" in page
+
+
+class TestMain:
+    def test_syncs_the_registry_before_serving(self):
+        """GH issue tracker ("old state" report): a dashboard process
+        restarted while the registry held a stale/bogus entry (e.g. the
+        "." entry setup_llm.py used to create before 933ac89) kept showing
+        it until some other render happened to self-heal it - sync_all must
+        run eagerly, before the first page is ever served."""
+        calls = []
+
+        class _FakeServer:
+            def __init__(self, *a, **kw):
+                calls.append("server_created")
+
+            def serve_forever(self):
+                calls.append("serve_forever")
+
+        with patch.object(dashboard.project_registry, "sync_all", side_effect=lambda: calls.append("sync_all")), \
+             patch.object(dashboard, "HTTPServer", _FakeServer), \
+             patch.object(dashboard.argparse.ArgumentParser, "parse_args",
+                           return_value=dashboard.argparse.Namespace(port=8899, bind_host="127.0.0.1")):
+            dashboard.main()
+
+        assert calls == ["sync_all", "server_created", "serve_forever"]
 
 
 class TestStartStack:
