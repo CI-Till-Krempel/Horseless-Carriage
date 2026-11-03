@@ -97,3 +97,32 @@ def sync_from_env(hc_path: Path) -> None:
         # - not wherever this function happens to be called from.
         target_repo = (hc_path / target_repo).resolve()
     register(target_repo.name, hc_path, target_repo)
+
+
+def sync_all() -> None:
+    """Called once by dashboard.py at startup - re-syncs every registered
+    project from its own current .env, and drops any entry whose hc_path
+    isn't absolute.
+
+    GH issue tracker ("old state" report): every call site that legitimately
+    registers a project (new_project.py, setup_project.py, setup_llm.py)
+    always resolves hc_path to an absolute path first - the one bug that
+    ever produced a non-absolute entry was setup_llm.py calling
+    sync_from_env(Path(".").parent) (fixed in 933ac89), which wrote a literal
+    {"hc_path": "."} entry. That entry's hc_path trivially ".is_dir()"s true
+    no matter where dashboard.py happens to be launched from (it IS the
+    launch cwd), so project_snapshot's missing-hc_path check never caught
+    it - the dashboard read whatever unrelated repo happened to be running
+    dashboard.py's own .env/state.json and rendered it as a row with stale,
+    unrelated data. Entries created before that fix are still sitting in
+    ~/.horseless-carriage/projects.json on any machine that hit it; this is
+    what actually cleans them up, since the fix itself only stopped new ones
+    from being created."""
+    projects = load()
+    valid = [entry for entry in projects if Path(entry.get("hc_path", "")).is_absolute()]
+    if len(valid) != len(projects):
+        save(valid)
+    for entry in valid:
+        hc_path = Path(entry["hc_path"])
+        if hc_path.is_dir():
+            sync_from_env(hc_path)

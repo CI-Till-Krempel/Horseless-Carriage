@@ -27,6 +27,7 @@ import argparse
 import html
 import json
 import subprocess
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -37,6 +38,24 @@ import lib_llm_test
 import project_registry
 
 _STACK_ACTION_TIMEOUT_SECS = 300
+_REACHABILITY_CHECK_TIMEOUT_SECS = 2
+
+
+def _url_reachable(url: str, timeout_secs: float = _REACHABILITY_CHECK_TIMEOUT_SECS) -> bool:
+    """One-shot (no retries) check that url answers with 2xx - unlike
+    _start_stack's llm_wait_for_proxy wait-loop, this runs on every page
+    render to show a live reachability indicator next to each project's
+    LiteLLM/web UI links, not to gate starting the stack. A container
+    reporting "running" (compose_running_services) only means the process
+    inside it exists, not that the service it's supposed to serve has
+    finished booting (or hasn't since crashed internally while the
+    container stays up) - that gap is exactly why clicking a link next to
+    a "working" project could still 404/refuse to connect."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_secs) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
 
 
 def _read_state_json(target_repo: Path) -> dict:
@@ -135,6 +154,12 @@ def project_snapshot(entry: dict) -> dict:
         running_services = []
     is_running = bool(running_services)
 
+    # Only probe when the stack is at least reporting as running - a
+    # resting project is expected to be unreachable, not worth a network
+    # round-trip (with its own timeout) on every 10s auto-refresh.
+    litellm_reachable = is_running and _url_reachable(f"http://localhost:{litellm_port}/health/liveliness")
+    web_reachable = is_running and _url_reachable(f"http://localhost:{agent_web_port}")
+
     state_data = _read_state_json(target_repo) if target_repo.is_dir() else {}
     blocking = [b for b in (state_data.get("blocking_interactions") or []) if not b.get("resolved")]
     sprint_goal = state_data.get("sprint_goal") or "(not set)"
@@ -174,6 +199,8 @@ def project_snapshot(entry: dict) -> dict:
         "product_version": product_version,
         "litellm_port": litellm_port,
         "agent_web_port": agent_web_port,
+        "litellm_reachable": litellm_reachable,
+        "web_reachable": web_reachable,
         "blocking_summary": blocking_summary,
         "blocking_count": len(blocking),
         "error": None,
@@ -241,6 +268,15 @@ _STATE_BADGE_COLOR = {
 }
 
 
+def _reachability_dot(reachable: bool) -> str:
+    # GH issue tracker: a project shown as "working" gave no clue that its
+    # LiteLLM/web UI link would actually 404/refuse to connect until a user
+    # clicked it - surface reachability right next to the link instead.
+    color = "#2e7d32" if reachable else "#c62828"
+    title = "reachable" if reachable else "unreachable - link may not load"
+    return f"<span style='color:{color}' title='{title}'>&#9679;</span>"
+
+
 def _render_page(message: str = "") -> str:
     projects = project_registry.load()
     rows = []
@@ -292,6 +328,16 @@ def _render_page(message: str = "") -> str:
                 f"and was just corrected to {e(snap['target_repo'])} (from this project's own .env) - "
                 "if that's not right, check STATE_REPO_PATH in this project's .env.</small>"
             )
+        ports_html = (
+            f"LiteLLM: <a href='http://localhost:{e(snap['litellm_port'])}/ui' target='_blank'>"
+            f"{e(snap['litellm_port'])}</a>"
+        )
+        web_html = f"Web: <a href='{e(web_url)}' target='_blank'>{e(snap['agent_web_port'])}</a>"
+        # A resting project is expected to be unreachable - a red dot there
+        # would just be noise, not a signal of anything actually wrong.
+        if snap["state"] != "resting":
+            ports_html += f" {_reachability_dot(snap['litellm_reachable'])}"
+            web_html += f" {_reachability_dot(snap['web_reachable'])}"
         rows.append(
             "<tr>"
             f"<td>{e(snap['name'])}</td>"
@@ -301,8 +347,7 @@ def _render_page(message: str = "") -> str:
             f"<td>{sprint_goal_html}</td>"
             f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {e(spend_str)} / {usd} budget</td>"
             f"<td>{e(snap['product_version'])}</td>"
-            f"<td>LiteLLM: <a href='http://localhost:{e(snap['litellm_port'])}/ui' target='_blank'>{e(snap['litellm_port'])}</a> / "
-            f"Web: <a href='{e(web_url)}' target='_blank'>{e(snap['agent_web_port'])}</a></td>"
+            f"<td>{ports_html} / {web_html}</td>"
             f"<td>{action}</td>"
             "</tr>"
         )
@@ -383,6 +428,13 @@ def main() -> None:
              "the ADK web UI/LiteLLM proxy - GH issue #239). Only change this on a network you trust.",
     )
     args = parser.parse_args()
+
+    # GH issue tracker ("old state" report): re-sync every registered
+    # project from its own current .env, and drop any stale/bogus entry
+    # (project_registry.sync_all's own docstring) before the first page is
+    # ever rendered, rather than waiting for a row's lazy, per-render
+    # self-heal to happen to run into drift.
+    project_registry.sync_all()
 
     server = HTTPServer((args.bind_host, args.port), _DashboardHandler)
     print(f"Horseless Carriage dashboard: http://{args.bind_host}:{args.port}")

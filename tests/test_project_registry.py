@@ -139,3 +139,79 @@ class TestSyncFromEnv:
             project_registry.sync_from_env(hc_path)
 
         assert not registry_path.is_file()
+
+
+class TestSyncAll:
+    """GH issue tracker ("old state" report): called once by dashboard.py at
+    startup. setup_llm.py used to call sync_from_env(Path(".").parent) (fixed
+    in 933ac89) - .parent on the literal "." never string-equaled the real
+    (absolute) hc_path register() tracks, so every reconfiguration appended/
+    updated a bogus {"hc_path": "."} entry instead. That entry's hc_path
+    trivially ".is_dir()"s true no matter where dashboard.py is launched
+    from (it IS the launch cwd) - project_snapshot's missing-hc_path check
+    never caught it, and the dashboard read dashboard.py's own cwd's .env/
+    state.json as if it were a registered project's, rendering stale,
+    unrelated data under that row. Entries created before the fix are still
+    sitting in an existing user's projects.json; this cleans them up."""
+
+    def test_drops_entries_with_a_non_absolute_hc_path(self, tmp_path):
+        registry_path = tmp_path / "projects.json"
+        registry_path.write_text(
+            '{"projects": ['
+            '{"name": "bogus", "hc_path": ".", "target_repo": "/whatever"},'
+            '{"name": "legit", "hc_path": "' + str(tmp_path) + '", "target_repo": "/b"}'
+            ']}'
+        )
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.sync_all()
+            projects = project_registry.load()
+
+        assert len(projects) == 1
+        assert projects[0]["name"] == "legit"
+
+    def test_leaves_registry_untouched_when_all_entries_are_already_valid(self, tmp_path):
+        hc_path, target_repo = _nested_hc_path(tmp_path)
+        registry_path = tmp_path / "projects.json"
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.register("target", hc_path, target_repo)
+            before = registry_path.read_text()
+            project_registry.sync_all()
+            after = registry_path.read_text()
+
+        assert before == after
+
+    def test_resyncs_each_valid_entry_from_its_own_env(self, tmp_path):
+        """Catches drift (GH issue tracker's own target_repo-drift incident)
+        eagerly at startup instead of only lazily, per-row, on the first
+        render that happens to touch a drifted project."""
+        hc_path, target_repo = _nested_hc_path(tmp_path)
+        other_project_repo = tmp_path / "other-project"
+        other_project_repo.mkdir()
+        registry_path = tmp_path / "projects.json"
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.register("stale-name", hc_path, tmp_path / "stale-other-project")
+            (hc_path / ".env").write_text(f"STATE_REPO_PATH='{other_project_repo}'\n")
+            project_registry.sync_all()
+            projects = project_registry.load()
+
+        assert len(projects) == 1
+        assert projects[0]["target_repo"] == str(other_project_repo)
+
+    def test_skips_entries_whose_hc_path_no_longer_exists(self, tmp_path):
+        """A project whose installation directory has genuinely been
+        deleted is a legitimate, intentionally-visible 'missing' row (see
+        project_snapshot) - sync_all must not touch or drop it, only entries
+        that were never a real registration to begin with."""
+        registry_path = tmp_path / "projects.json"
+        gone_hc_path = tmp_path / "gone" / "horseless-carriage"
+
+        with patch.object(project_registry, "REGISTRY_PATH", registry_path):
+            project_registry.register("gone", gone_hc_path, tmp_path / "gone")
+            project_registry.sync_all()
+            projects = project_registry.load()
+
+        assert len(projects) == 1
+        assert projects[0]["hc_path"] == str(gone_hc_path)
