@@ -83,14 +83,19 @@ def _build_manifest(owner: str, repo: str, redirect_url: str, setup_url: str) ->
     return {
         "name": f"Horseless Carriage - {owner}-{repo} ({suffix})",
         "url": f"https://github.com/{owner}/{repo}",
-        "hook_attributes": {"active": False},
+        # No "hook_attributes" key at all - this App needs no webhook.
+        # GitHub's manifest validator requires hook_attributes.url whenever
+        # hook_attributes is present (even with active=false, which only
+        # means "don't overwrite the hook URL on conversion", not "no
+        # webhook") - omitting the whole key is the actual way to get a
+        # webhook-less App, and the real fix for the confusing "'url' wasn't
+        # supplied" error a lone {"active": False} produces instead.
         "redirect_url": redirect_url,
         "setup_url": setup_url,
         "public": False,
         # Exactly the permission set docs/GITHUB-INTEGRATION.md's manual
         # "Option 2" instructions already document - keep these two in sync.
         "default_permissions": dict(_PERMISSIONS),
-        "default_events": [],
     }
 
 
