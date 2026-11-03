@@ -1,6 +1,7 @@
 import json
 import subprocess
 import urllib.error
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -1017,6 +1018,23 @@ class TestSetupStateRepo:
         _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
 
         assert calls == [env_path.parent]
+
+    def test_resolves_a_relative_env_path_before_syncing(self, tmp_path, monkeypatch):
+        """GH issue tracker: real usage (run_cloud_provider/run_local_provider)
+        always calls this with the bare relative Path(".env") - .parent on
+        that is the unresolved "." string, which never string-equals the
+        absolute hc_path new_project.py/setup_project.py registered with, so
+        register()'s match-by-hc_path silently created a second, bogus "."
+        entry on every reconfiguration instead of updating the real one."""
+        target = tmp_path / "first-project"
+        env_path = Path(".env")
+        calls = []
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(setup_llm.project_registry, "sync_from_env", lambda hc_path: calls.append(hc_path))
+
+        _run_setup_state_repo(monkeypatch, env_path, [str(target), "", "main"])
+
+        assert calls == [tmp_path.resolve()]
 
 
 class TestSetupStateRepoRepointSafety:
