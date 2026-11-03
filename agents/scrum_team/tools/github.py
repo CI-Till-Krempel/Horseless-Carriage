@@ -1421,6 +1421,44 @@ def mark_pr_ready_for_review(pr_id: str | int | None = None, tool_context=None) 
         cmd.append(str(pr_id))
     return _run(cmd, cwd=repo_root, tool_context=tool_context)
 
+# Branches opened by propose_framework_change/propose_steering_change
+# (workflow.py) are deliberately left as unmerged drafts for human review -
+# SECURITY.md notes the product repo enforces no branch protection by
+# default, so until merge_story_pr checked this itself that guarantee was
+# purely conventional. See merge_story_pr's own docstring.
+_HUMAN_REVIEW_ONLY_BRANCH_PREFIXES = ("framework/", "steering/")
+
+
+def _resolve_merge_head_branch(pr_id, repo_root, tool_context):
+    """
+    Resolves the head branch merge_story_pr is about to merge, before it
+    actually runs `gh pr merge` - the only point at which its
+    human-review-only branch-prefix guard can still refuse. Returns
+    (branch_name, None) on success, or (None, error_result) if the branch
+    couldn't be determined; callers must treat that as fail-closed (refuse
+    to merge) rather than fall through to `gh pr merge` unchecked.
+    """
+    if not pr_id:
+        result = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_root, tool_context=tool_context)
+        if result.get("status") != "ok":
+            return None, result
+        return result.get("stdout", "").strip() or None, None
+
+    ref = str(pr_id)
+    if not ref.isdigit() and not ref.startswith("http"):
+        # Already a branch name - `gh pr merge` would resolve it the same way.
+        return ref, None
+
+    result = _run(["gh", "pr", "view", ref, "--json", "headRefName"], cwd=repo_root, tool_context=tool_context)
+    if result.get("status") != "ok":
+        return None, result
+    try:
+        head_branch = json.loads(result.get("stdout") or "{}").get("headRefName")
+    except ValueError:
+        return None, {"status": "error", "message": "Could not parse gh pr view output.", "details": result}
+    return head_branch, None
+
+
 def merge_story_pr(pr_id: str | int | None = None, admin: bool = False, tool_context=None) -> Dict[str, Any]:
     """
     GitFlow: merges a story's feature-branch PR into develop. Call this as
@@ -1439,8 +1477,24 @@ def merge_story_pr(pr_id: str | int | None = None, admin: bool = False, tool_con
     happens next (most often create_release_pr's own push, several turns
     later). Best-effort fast-forward here closes that gap at the source
     instead of relying solely on the next write's own divergence check.
+
+    Refuses outright to merge a framework/ or steering/ branch (see
+    _HUMAN_REVIEW_ONLY_BRANCH_PREFIXES) - resolving the actual head branch
+    first, rather than trusting pr_id's shape, so a PR number or URL can't
+    be used to route around the prefix check.
     """
     repo_root = str(_configured_repo_root(tool_context))
+    head_branch, resolve_error = _resolve_merge_head_branch(pr_id, repo_root, tool_context)
+    if resolve_error is not None:
+        return resolve_error
+    if head_branch and head_branch.startswith(_HUMAN_REVIEW_ONLY_BRANCH_PREFIXES):
+        return {
+            "status": "error",
+            "message": (
+                f"Refusing to merge '{head_branch}': framework/ and steering/ "
+                "proposals require human review and must not be merged by this tool."
+            ),
+        }
     cmd = ["gh", "pr", "merge"]
     if pr_id:
         cmd.append(str(pr_id))

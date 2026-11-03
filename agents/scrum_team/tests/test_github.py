@@ -2760,7 +2760,11 @@ class TestMergeStoryPr(unittest.TestCase):
         branch-protection/required-checks by default - --admin is opt-in
         only, unlike the eval harness's own forced-admin sprint-PR merges.
         """
-        mock_run.return_value = {"status": "ok"}
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": "feature/story-1"},  # branch resolution
+            {"status": "ok"},  # gh pr merge
+            {"status": "ok"}, {"status": "ok"}, {"status": "ok"},  # develop sync
+        ]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
@@ -2772,15 +2776,56 @@ class TestMergeStoryPr(unittest.TestCase):
 
     @patch("agents.scrum_team.tools.github._run")
     def test_merge_story_pr_with_pr_id_and_admin(self, mock_run):
-        mock_run.return_value = {"status": "ok"}
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": '{"headRefName": "feature/story-7"}'},  # branch resolution
+            {"status": "ok"},  # gh pr merge
+            {"status": "ok"}, {"status": "ok"}, {"status": "ok"},  # develop sync
+        ]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
         merge_story_pr(pr_id=7, admin=True, tool_context=tool_context)
 
         mock_run.assert_any_call(
+            ["gh", "pr", "view", "7", "--json", "headRefName"], cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
+        mock_run.assert_any_call(
             ["gh", "pr", "merge", "7", "--merge", "--admin"], cwd=unittest.mock.ANY, tool_context=tool_context,
         )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_merge_story_pr_refuses_framework_branch(self, mock_run):
+        """
+        Acceptance Criteria: framework/ and steering/ branches (opened by
+        propose_framework_change/propose_steering_change) are left as
+        unmerged drafts for human review on purpose - nothing at the GitHub
+        level enforces that (SECURITY.md: no branch protection by default),
+        so this tool must refuse to merge either prefix itself, regardless
+        of admin or which branch is currently checked out.
+        """
+        mock_run.return_value = {"status": "ok", "stdout": "framework/workbench-20261103120000"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = merge_story_pr(admin=True, tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_called_once_with(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=unittest.mock.ANY, tool_context=tool_context,
+        )
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_merge_story_pr_refuses_steering_branch_by_pr_id(self, mock_run):
+        """Same refusal, but via an explicit branch-name pr_id rather than
+        the implicit current branch - pr_id's shape must not route around
+        the prefix check."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = merge_story_pr(pr_id="steering/devteam-identity-20261103120000", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_run.assert_not_called()
 
     @patch("agents.scrum_team.tools.github._run")
     def test_successful_merge_syncs_local_develop_to_origin(self, mock_run):
@@ -2791,7 +2836,11 @@ class TestMergeStoryPr(unittest.TestCase):
         some later write's own divergence check discovers it. A successful
         merge must fetch+fast-forward local develop immediately.
         """
-        mock_run.return_value = {"status": "ok"}
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": "feature/story-1"},  # branch resolution
+            {"status": "ok"},  # gh pr merge
+            {"status": "ok"}, {"status": "ok"}, {"status": "ok"},  # develop sync
+        ]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
@@ -2811,13 +2860,17 @@ class TestMergeStoryPr(unittest.TestCase):
     def test_failed_merge_does_not_attempt_a_sync(self, mock_run):
         """No PR actually merged - nothing new landed on origin's develop to
         sync to, and attempting one would just be a pointless extra call."""
-        mock_run.return_value = {"status": "error", "stderr": "PR not found"}
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": "feature/story-1"},  # branch resolution
+            {"status": "error", "stderr": "PR not found"},  # gh pr merge
+        ]
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
 
         merge_story_pr(tool_context=tool_context)
 
-        mock_run.assert_called_once_with(
+        self.assertEqual(mock_run.call_count, 2)
+        mock_run.assert_any_call(
             ["gh", "pr", "merge", "--merge"], cwd=unittest.mock.ANY, tool_context=tool_context,
         )
 
