@@ -175,6 +175,11 @@ the background beyond the dashboard's own lightweight polling (GH issue #310).
 - `lib_llm_test.py` / `lib_env.py` — shared helpers (proxy liveness check, live test-request against a model alias; safe `.env` read/write) used by `setup_llm.py`, `doctor.py`, and the other scripts below.
 - `lib_docker.py` — shared Docker Compose helpers (which compose file(s) are active, stopping a leftover stack before starting a new one) used by `run.py` and `rebuild_images.py`.
 - `setup_project.py` — setup script for the project (named to avoid colliding with the `setup.py`/setuptools convention).
+- `setup_github_app.py` — registers a dedicated GitHub App via GitHub's App Manifest flow and installs
+  it on `GITHUB_REPO_URL`, writing `GITHUB_APP_ID`/`GITHUB_APP_PRIVATE_KEY`/`GITHUB_APP_INSTALLATION_ID`
+  into `.env` - the automated alternative to [GitHub Integration](docs/GITHUB-INTEGRATION.md) "Option 2"'s
+  manual click-through. Optional; `gh auth login` (Option 1) is simpler if a dedicated agent identity
+  isn't needed.
 - `run.py` — run script for the agent. Gated by `doctor.py` (refuses to start with any ERROR-level item outstanding); `python3 run.py dev` enables developer mode (rebuilds `agent`/`ollama` images fresh before starting, runs with verbose/`debug` logging for that invocation).
 - `run_tests.py` — script to run tests.
 - `doctor.py` — validates your setup (Docker, `.env`, state repo, GitHub auth, live LLM connectivity) and collects every problem into a punch list of actionable items instead of stopping at the first one - `check()` returns the full structured list (used by `run.py`'s gate and `setup_all.py`); `run()`/the CLI stay a simple pass/fail wrapper around it.
