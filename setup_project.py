@@ -75,7 +75,7 @@ def main() -> None:
     # run regardless of which setup script path a user takes, or how many
     # times.
     lib_env.ensure_master_key(env_path)
-    lib_env.ensure_postgres_password(env_path)
+    lib_docker.ensure_postgres_password_safe(env_path)
 
     # Keeps project_registry.json's name/target_repo in sync with .env -
     # the same call new_project.py (initial install) and setup_llm.py

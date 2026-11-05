@@ -31,6 +31,13 @@ def happy_path(monkeypatch):
     # compose ps` via the also-mocked-but-now-generic subprocess.run above.
     monkeypatch.setattr(setup_project.project_registry, "sync_from_env", lambda *a, **k: None)
     monkeypatch.setattr(setup_project.lib_docker, "ensure_dev_ports_available", lambda *a, **k: [])
+    # ensure_postgres_password_safe's own stale-volume check would otherwise
+    # shell out to a real `docker volume inspect` too (caught by the
+    # generic subprocess.run mock above, which always reports success) -
+    # None here means "can't tell", matching what a real but volume-less
+    # Docker install would report, so the guard never fires in tests that
+    # don't specifically exercise it.
+    monkeypatch.setattr(setup_project.lib_docker, "postgres_volume_exists", lambda *a, **k: None)
 
 
 class TestComposeFileSelection:
@@ -121,7 +128,7 @@ class TestEnvSecretGeneration:
     def test_calls_ensure_master_key_and_postgres_password(self, happy_path, monkeypatch):
         calls = []
         monkeypatch.setattr(setup_project.lib_env, "ensure_master_key", lambda p: calls.append(("master_key", p)))
-        monkeypatch.setattr(setup_project.lib_env, "ensure_postgres_password", lambda p: calls.append(("postgres_password", p)))
+        monkeypatch.setattr(setup_project.lib_docker, "ensure_postgres_password_safe", lambda p: calls.append(("postgres_password", p)))
 
         setup_project.main()
 
