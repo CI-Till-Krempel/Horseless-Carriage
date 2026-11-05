@@ -1209,6 +1209,11 @@ class TestRunCloudProviderOrdering:
         monkeypatch.setattr(setup_llm, "write_litellm_yaml", lambda *a, **k: calls.append("write_yaml"))
         monkeypatch.setattr(setup_llm, "prompt_project_settings", lambda *a, **k: calls.append("project_settings"))
         monkeypatch.setattr(setup_llm, "run_configuration_test", lambda *a, **k: calls.append("run_test"))
+        # ensure_postgres_password_safe's stale-volume check shells out to a
+        # real `docker volume inspect` otherwise - None means "can't tell",
+        # the same as a real volume-less install, so the guard never fires
+        # here and this test's own `input()` sequence isn't consumed by it.
+        monkeypatch.setattr(setup_llm.lib_docker, "postgres_volume_exists", lambda *a, **k: None)
 
         setup_llm.run_cloud_provider(
             "anthropic", "ANTHROPIC_API_KEY",
@@ -1240,6 +1245,7 @@ class TestRunLocalProviderOrdering:
         monkeypatch.setattr(setup_llm, "write_litellm_yaml", lambda *a, **k: calls.append("write_yaml"))
         monkeypatch.setattr(setup_llm, "prompt_project_settings", lambda *a, **k: calls.append("project_settings"))
         monkeypatch.setattr(setup_llm, "run_configuration_test", lambda *a, **k: calls.append("run_test"))
+        monkeypatch.setattr(setup_llm.lib_docker, "postgres_volume_exists", lambda *a, **k: None)
 
         setup_llm.run_local_provider(dev=False)
 
