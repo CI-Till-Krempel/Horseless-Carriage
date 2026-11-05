@@ -37,6 +37,34 @@ HC_LOGO_DATA_URI="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5v
 # live session automatically.
 if [ "$AGENT_MODE" = "web" ]; then
     echo "--- Starting ADK web frontend on port ${ADK_WEB_PORT} ---"
+    # GH issue #(new): adk web always opens with a brand-new session on
+    # load, which reads as "every new instance starts fresh" - but sprint
+    # history isn't actually lost (same persistent --session_service_uri
+    # sqlite DB as CLI mode, bind-mounted via ./sessions in docker-
+    # compose.yaml). ADK's own web frontend has no CLI flag or URL param to
+    # auto-resume a prior session (checked: `adk web --help` and the
+    # bundled Angular app's query-param handling only cover which agent
+    # `app` to open, not which session) - resuming is only reachable
+    # through its own built-in session-history panel in the top bar.
+    # Surfacing the most recent session's id/timestamp here at least makes
+    # that an informed click instead of mistaken for data loss.
+    python3 - "$DB_FILE" <<'PYEOF'
+import sqlite3, sys
+db_file = sys.argv[1]
+try:
+    conn = sqlite3.connect(db_file)
+    row = conn.execute(
+        "SELECT app_name, id, update_time FROM sessions ORDER BY update_time DESC LIMIT 1"
+    ).fetchone()
+except sqlite3.Error:
+    row = None
+if row:
+    app_name, session_id, update_time = row
+    print(f"--- Most recent session: app={app_name} id={session_id} (last updated {update_time}) ---")
+    print("--- adk web opens a NEW session by default - use the session-history panel (top bar) to resume the one above instead ---")
+else:
+    print("--- No previous session found in the session store - starting fresh ---")
+PYEOF
     exec adk web --host 0.0.0.0 --port "${ADK_WEB_PORT}" \
         --session_service_uri "sqlite:///${DB_FILE}" \
         --log_level "${LOG_LEVEL_VAL}" \
