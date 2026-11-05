@@ -2116,8 +2116,11 @@ shipped a recurrence guard, but that guard (`recurs_since_sprint`, set only when
 shares ≥2 literal ≥5-character keywords with a prior one) is narrower than its own Acceptance Criteria
 called for: a chain of genuinely-different wordings circling the same underlying complaint sails straight
 through it every time, each one resetting the livelock. See SPEC-ISSUE-0084 for the full mechanism and a
-proposed fix (key the livelock guard on how many consecutive sprints the *same real story* has been
-displaced, not on text-similarity between retro findings) - not yet implemented.
+proposed fix: make the duplicate-vs-new call an explicit, visible part of logging a retro finding (a
+`list_open_issues`-style lookup plus a required `duplicate_of` decision on `add_retro_action`/
+`add_impediment`, merging into the existing Issue's recurrence count instead of filing a new one),
+backed by a mechanical check that still catches a literal-repeat claimed as "new," plus a consecutive-
+displacement cap as a last-resort backstop - not yet implemented.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so

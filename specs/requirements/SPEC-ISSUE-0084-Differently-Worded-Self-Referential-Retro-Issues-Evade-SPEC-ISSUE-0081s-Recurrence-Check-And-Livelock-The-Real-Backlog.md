@@ -62,22 +62,62 @@ itself directly ahead of whatever is currently "first unimplemented" (which was 
 "Must"-priority product story that reached `Ready` in Sprint 1 never gets a single sprint where it is
 actually first in line long enough for DevTeam to reach it - across all 5 sprints of this run.
 
+**Structural gap underneath all of this: nothing ever shows the retro a list of what's already open.**
+`add_retro_action`/`add_impediment` (`agents/scrum_team/tools/scrum.py:797,848`) take no
+duplicate/reference parameter at all, and there is no tool anywhere in this codebase that lets a role
+enumerate currently-open Issues before logging a new finding (confirmed: only `list_docs`, which lists
+file paths, not status; `upsert_issue`/`upsert_backlog_item` are write-only). The only de-dup signal that
+exists - `recurring_technical_finding_sprint` (`helpers.py:501-525`, invoked from
+`_technical_category_nudge`, `scrum.py:704-751`) - runs automatically at log time but is purely
+literal-keyword-based and, per the trace above, produces an advisory nudge the filing path doesn't
+actually require anyone to act on. ScrumMaster is never put in a position to look at what's already
+tracked and make an explicit call either way.
+
 ## Acceptance Criteria
-- The livelock guard must not key solely on text-similarity between successive retro findings
-  (`recurring_technical_finding_sprint`'s keyword-overlap check). Instead, track displacement from the
-  perspective of the story being pushed back: if the same real (non-Issue) backlog item has been displaced
-  from "next in line" by one or more auto-filed retro Issues for N consecutive sprints (N configurable,
-  e.g. 2) without itself advancing a stage, `_file_retro_items_as_issues`/`_move_item_to_front_of_remaining_work`
-  must stop auto-front-queuing further retro Issues ahead of it - regardless of whether those Issues'
-  wording overlaps with any prior one.
-- A regression test replaying this run's shape: file two retro Issues in consecutive sprints with
-  deliberately disjoint keyword sets (no shared ≥5-char non-stopword tokens), both nominally "technical"
-  findings about unfinished Must work, both naming/implying the same still-`Ready` story as the reason -
-  assert the second one does NOT get front-queued ahead of that story once the configured displacement
-  threshold is reached.
-- A second regression test confirms a genuinely independent, one-off technical finding (SPEC-ISSUE-0076's
-  own original motivating case) still gets front-queued normally when no prior displacement has occurred -
-  the fix must not regress SPEC-ISSUE-0076's intended behavior for real, distinct findings.
+- **Primary: make the duplicate-vs-new decision an explicit, visible part of logging a retro finding**,
+  not a post-hoc text-similarity guess.
+  - Add a way to enumerate currently-open Issues (status not in `_DONE_STATUSES`/not `Rejected`,
+    `helpers.py:351,354`) from `product_backlog` - e.g. a `list_open_issues` tool - so a role logging a
+    retro finding can actually see what's already filed before deciding.
+  - `add_retro_action`/`add_impediment` gain a required field (when `category="technical"`) capturing that
+    decision explicitly, e.g. `duplicate_of: str | None` plus a short `rationale` either way ("duplicate of
+    SPEC-ISSUE-0003 because X" or "distinct from SPEC-ISSUE-0003 because Y").
+  - If `duplicate_of` names a real, currently-open Issue: do **not** file/front-queue a new Issue at
+    sprint-report time (`_file_retro_items_as_issues`, `budget.py:799-852`) - instead bump a recurrence
+    counter on the *existing* Issue and feed it into SPEC-ISSUE-0081's existing 2+-recurrence
+    steering-escalation threshold immediately, rather than waiting for yet another independent Issue to
+    accumulate its own count.
+- **Secondary: verify the self-declared decision, don't just trust it.** This project has already been
+  burned once by relying on unverified model self-assessment for exactly this class of problem - SPEC-
+  ISSUE-0081's own recurrence warning was advisory-only prose a cheap model simply proceeded past. When
+  `duplicate_of` is left unset (claiming "genuinely new"), still run `recurring_technical_finding_sprint`
+  (or an equivalent check) against currently-open Issues' text; if it fires despite the "new" claim, refuse
+  the call and require either a corrected `duplicate_of` reference or an explicit, logged justification for
+  why the lexical overlap is coincidental. This catches the literal-repeat case (SPEC-ISSUE-0081's original
+  run79 evidence) even when the model's own judgment lapses; it will not by itself catch a genuinely
+  differently-worded restatement that the model fails to recognize as a duplicate despite being shown the
+  open-issues list - that's a model-quality gap this primary mechanism narrows but can't fully close.
+- **Tertiary backstop: cap cumulative displacement regardless of how good the dedup is.** Even with the
+  above, track displacement from the perspective of the story being pushed back: if the same real
+  (non-Issue) backlog item has been displaced from "next in line" by auto-filed retro Issues for N
+  consecutive sprints (N configurable, e.g. 2) without itself advancing a stage,
+  `_file_retro_items_as_issues`/`_move_item_to_front_of_remaining_work` must stop auto-front-queuing
+  further retro Issues ahead of it - a defense-in-depth guard against whatever slips past the first two
+  layers (including a run of genuinely-distinct, legitimately-filed technical findings that still happen to
+  starve the same story through bad luck).
+- A regression test replaying this run's shape: log two retro findings in consecutive sprints with
+  deliberately disjoint keyword sets, both nominally "technical," with the second one's `duplicate_of`
+  correctly naming the first's filed Issue - assert no second Issue is created/front-queued.
+- A regression test for the verification backstop: log a retro finding with `duplicate_of=None` whose text
+  is near-identical (shares ≥2 keywords) to an already-open Issue - assert the call is refused rather than
+  silently filing a duplicate.
+- A regression test confirming a genuinely independent, one-off technical finding (SPEC-ISSUE-0076's own
+  original motivating case, `duplicate_of=None`, no keyword overlap with any open Issue) still files and
+  front-queues normally - the fix must not regress SPEC-ISSUE-0076's intended behavior for real, distinct
+  findings.
+- A regression test for the tertiary backstop: simulate N consecutive sprints each correctly filing a
+  distinct, non-duplicate technical Issue that each legitimately front-queues ahead of the same still-
+  `Ready` Must story - assert the N+1th stops front-queuing once the displacement threshold is reached.
 
 ## Notes
 - Distinct from SPEC-ISSUE-0076: that fix (the front-of-queue splice itself,
@@ -95,18 +135,24 @@ actually first in line long enough for DevTeam to reach it - across all 5 sprint
   `eval/0.1.0-run84/*`) and its auto-filed `SPEC-ISSUE-0001` through `SPEC-ISSUE-0005` are evidence
   artifacts of this run, not real tracked issues in this codebase - referenced here only as the data this
   investigation is based on.
-- Worth checking in a follow-up run once fixed: whether capping displacement by story (rather than by
-  retro-text similarity) has any unintended effect on SPEC-ISSUE-0076's original run76 scenario, where the
-  front-queued Issue was a real, independently-resolvable technical blocker genuinely worth prioritizing
-  over the next story.
+- The primary mechanism deliberately shifts dedup from "guess by text similarity after the fact" to
+  "require an explicit, visible decision at filing time" - a cheap model can still get that decision wrong
+  for a subtle semantic duplicate, but it is no longer possible to file a duplicate *without ever having
+  been shown what's already open*, which is the literal gap today (no listing tool exists at all).
+- Worth checking in a follow-up run once fixed: whether the tertiary displacement cap has any unintended
+  effect on SPEC-ISSUE-0076's original run76 scenario, where the front-queued Issue was a real,
+  independently-resolvable technical blocker genuinely worth prioritizing over the next story.
 
 ## Test Approach
-- Unit test on `_file_retro_items_as_issues`/`_move_item_to_front_of_remaining_work` (or wherever the new
-  displacement-count guard lives): seed `product_backlog` with a `Ready`, not-yet-`Accepted` Must story and
-  simulate N consecutive sprints each auto-filing a textually-disjoint "technical" retro Issue naming/
-  implying that story; assert the Nth+1 Issue is not spliced ahead of it.
-- Unit test confirming a single, first-time technical finding (no prior displacement recorded) still
-  front-queues normally - guards against over-correcting into never front-queuing legitimate blockers.
+- Unit tests on `add_retro_action`/`add_impediment`: `duplicate_of` referencing a real open Issue skips
+  filing a new one and increments the existing Issue's recurrence count instead; `duplicate_of=None` with
+  no keyword overlap against open Issues files normally; `duplicate_of=None` WITH keyword overlap against
+  an open Issue is refused.
+- Unit test on the new `list_open_issues`-style helper: seed `product_backlog` with a mix of open/Accepted/
+  Rejected Issues and assert only the genuinely-open ones are returned.
+- Unit test on the tertiary displacement guard: seed a `Ready`, not-yet-`Accepted` Must story and simulate N
+  consecutive sprints each filing a distinct, non-duplicate technical Issue naming/implying that story;
+  assert the Nth+1 stops front-queuing.
 - Integration-level: replay (or script-simulate) a `manifest.json`-shaped sequence matching this run's
-  Sprint 2->Sprint 3 transition and assert `US-0006` is not pushed back by the simulated `SPEC-ISSUE-0004`
-  filing once the displacement threshold is reached.
+  Sprint 2->Sprint 3 transition with the new `duplicate_of` field correctly set, and assert `US-0006` is not
+  pushed back.
