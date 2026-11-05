@@ -125,6 +125,15 @@ RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional fi
 - Analyze concretely: were there blockers in the process, or general impediments (unclear
   acceptance criteria, a stage owner not available, budget exhausted mid-story, etc.)? Log them via
   `add_impediment` as you find them, not just at the end.
+- **Before filing a NEW `category="technical"` finding, call `list_open_issues` and actually check
+  whether it's the same underlying problem as something already open** (SPEC-ISSUE-0084) - a chain of
+  differently-worded restatements of the same complaint (e.g. "align on API response types", then
+  next sprint "ensure continued alignment on API response types") each independently jumping the
+  backlog queue is exactly what starved a real Must-priority story for 5 straight sprints in a real
+  run. If it's the same finding, pass `duplicate_of=<that Issue's id>` instead of filing a new one -
+  this is mechanically enforced, not just advisory: a lexical match against an open Issue with no
+  `duplicate_of` is refused outright, and you'll need either the correct `duplicate_of` or
+  `confirmed_distinct=True` with a real reason it's actually different.
 - **If any story is still BLOCKED and was ALSO already BLOCKED as of the last sprint report**
   (genuinely unresolved across a full sprint, not just raised this sprint) - this must actually be
   discussed, not just left for the report's own "Open Questions for Stakeholder" section to note

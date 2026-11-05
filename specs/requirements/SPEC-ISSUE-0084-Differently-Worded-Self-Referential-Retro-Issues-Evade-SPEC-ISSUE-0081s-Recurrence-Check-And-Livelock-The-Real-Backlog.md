@@ -2,7 +2,7 @@
 
 - Issue ID: SPEC-ISSUE-0084
 - Title: Differently-Worded Self-Referential Retro Issues Evade SPEC-ISSUE-0081's Recurrence Check And Livelock The Real Backlog
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-11-05
@@ -156,3 +156,43 @@ tracked and make an explicit call either way.
 - Integration-level: replay (or script-simulate) a `manifest.json`-shaped sequence matching this run's
   Sprint 2->Sprint 3 transition with the new `duplicate_of` field correctly set, and assert `US-0006` is not
   pushed back.
+
+## Resolution
+Implemented all three layers from the Acceptance Criteria, in priority order:
+
+- **Primary - explicit duplicate-vs-new decision at filing time.** `list_open_issues`
+  (`agents/scrum_team/tools/requirements.py`) enumerates currently-open `product_backlog` Issues (via new
+  `is_issue_open`, `agents/scrum_team/helpers.py`) - the gap that made this impossible before (no tool
+  anywhere could list them). `add_retro_action`/`add_impediment` (`agents/scrum_team/tools/scrum.py`) gain
+  `duplicate_of`/`confirmed_distinct` params; a `duplicate_of` naming a real open Issue sets `issue_id`
+  directly on the entry (reusing `_file_retro_items_as_issues`' existing "already has issue_id, don't
+  refile" skip with zero changes to that function) and bumps the target Issue's new `recurrence_count` field
+  via `bump_issue_recurrence` instead of letting a new Issue get filed/front-queued for the same thing.
+- **Secondary - mechanical verification, not blind trust.** New `find_recurring_open_issue`
+  (`helpers.py`) - like the existing `recurring_technical_finding_sprint` but scoped to entries whose
+  filed Issue is still open, and returning the issue id, not just a sprint number. When `duplicate_of` is
+  omitted, `_resolve_technical_duplicate` (`scrum.py`) runs this check and HARD-REFUSES the call if it
+  fires - this project already learned the advisory-only-warning lesson once (SPEC-ISSUE-0081), so this
+  is a real block, with `confirmed_distinct=True` as the explicit, logged override for a genuine
+  coincidental overlap. An entry whose matching earlier finding's Issue already reached Accepted doesn't
+  block - that complaint was genuinely resolved, so a fresh one sharing its keywords may be new work.
+- **Tertiary - cumulative displacement cap.** `_move_item_to_front_of_remaining_work`
+  (`requirements.py`) now tracks, via `_displacement_streak`/`_displacement_stage_count` on the nearest
+  real (non-Issue) not-yet-Accepted item at or after the insert point, how many consecutive front-jumps
+  have left it un-advanced; past `_MAX_CONSECUTIVE_DISPLACEMENTS` (2), a new Issue is inserted immediately
+  *after* that item instead of before it. Keys on the nearest REAL item specifically (skipping over any
+  Issues already stacked in front), not whichever item happens to sit at the insert point, so a chain of
+  Issues piling up in front of one frozen story is still capped relative to that story.
+- `agents/scrum_team/prompt_modules/ScrumMaster-workflow.md`'s RETROSPECTIVE REASONING section now
+  instructs calling `list_open_issues` before filing a new `category="technical"` finding, matching this
+  project's "enforce in code, reinforce in prompt" pattern - the code-level block is what actually matters,
+  the prompt note is what makes the call-`list_open_issues`-first path the easy/obvious one to reach for.
+- New/updated tests: `test_requirements.py` (`TestMoveItemToFrontOfRemainingWork` gains the displacement-cap
+  cases; new `TestListOpenIssues`, `TestBumpIssueRecurrence`), `test_scrum.py` (new `duplicate_of`/
+  `confirmed_distinct` cases on both `add_retro_action` and `add_impediment`), `test_budget.py` (new case
+  confirming a `duplicate_of`-resolved entry isn't re-filed). Verified via a standalone script exercising
+  the real functions directly (11 scenarios, all passing) plus a manual trace of every existing test in
+  these three files against the new code paths - the Docker-based `agents/scrum_team/tests` suite could not
+  be run in this environment (an unrelated `buildx` filesystem-entitlement prompt against this repo's
+  named build context blocks the image build on this host); a human/CI run of the full suite is still
+  the authoritative check.

@@ -2115,12 +2115,16 @@ SPEC-ISSUE-0081 (Status: Done) had already catalogued this exact failure shape f
 shipped a recurrence guard, but that guard (`recurs_since_sprint`, set only when a new retro finding
 shares ≥2 literal ≥5-character keywords with a prior one) is narrower than its own Acceptance Criteria
 called for: a chain of genuinely-different wordings circling the same underlying complaint sails straight
-through it every time, each one resetting the livelock. See SPEC-ISSUE-0084 for the full mechanism and a
-proposed fix: make the duplicate-vs-new call an explicit, visible part of logging a retro finding (a
-`list_open_issues`-style lookup plus a required `duplicate_of` decision on `add_retro_action`/
-`add_impediment`, merging into the existing Issue's recurrence count instead of filing a new one),
-backed by a mechanical check that still catches a literal-repeat claimed as "new," plus a consecutive-
-displacement cap as a last-resort backstop - not yet implemented.
+through it every time, each one resetting the livelock. Fixed by making the duplicate-vs-new call an
+explicit, visible part of logging a retro finding instead of a post-hoc text-similarity guess: new
+`list_open_issues` (`agents/scrum_team/tools/requirements.py`) lets a role see what's already open before
+filing anything - nothing could do this before - and `add_retro_action`/`add_impediment`
+(`agents/scrum_team/tools/scrum.py`) gain a `duplicate_of` param that merges into the named Issue's
+recurrence count instead of filing a new one. Backed by a mechanical check (not blind trust - this project
+already learned that lesson once in SPEC-ISSUE-0081): omitting `duplicate_of` when the text actually
+overlaps an open Issue is hard-refused, with `confirmed_distinct=True` as the explicit override. A
+consecutive-displacement cap on `_move_item_to_front_of_remaining_work` is the last-resort backstop for
+whatever still slips past both. See SPEC-ISSUE-0084 for the full mechanism and implementation.
 
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
