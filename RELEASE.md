@@ -2096,6 +2096,36 @@ doesn't exist) surfaces as that real error, not a re-statement of the original s
 the common case no longer pays for a wasted retry round-trip. See SPEC-ISSUE-0083 for the full mechanism
 and fix.
 
+### A chain of differently-worded self-referential retro Issues each evaded SPEC-ISSUE-0081's recurrence check and livelocked a Must story for all 5 sprints (0.1.0-run84, SPEC-ISSUE-0084)
+
+A real eval run (0.1.0-run84) showed `report.md`'s Top Problem #1 (severity high): *"US-0006 (View Lists
+and Tasks UI) was left unimplemented and unchecked in the product roadmap."* `manifest.json` confirmed
+`US-0006`'s `stages_completed` frozen at `['Draft', 'Ready']` across all 5 sprint snapshots -
+`start_feature_branch` was never once called with `story_id: "US-0006"` in the whole run - while
+`US-0001`-`US-0005` and `SPEC-ISSUE-0001`-`SPEC-ISSUE-0004` each reached `Accepted` the same sprint they
+were planned. The one-story-at-a-time ordering gate itself worked correctly throughout (it correctly
+blocked `SPEC-ISSUE-0003` from starting ahead of `US-0006` in Sprint 3). The actual mechanism: each
+sprint's retrospective filed a new, textually-different "the team didn't finish its planned Must work"
+Issue (Sprint 2: *"Ensure continued alignment between Dev Team and QA on API response types..."* ->
+`SPEC-ISSUE-0003`; Sprint 3: *"Ensure all stories are successfully planned and implemented before budget
+limits are reached"* -> `SPEC-ISSUE-0004`) - sharing zero literal keywords with each other - and each one
+independently front-queue-jumped ahead of whatever was currently "first unimplemented" via
+`_move_item_to_front_of_remaining_work` (SPEC-ISSUE-0076's own mechanism, working exactly as designed).
+SPEC-ISSUE-0081 (Status: Done) had already catalogued this exact failure shape from an earlier run and
+shipped a recurrence guard, but that guard (`recurs_since_sprint`, set only when a new retro finding
+shares ≥2 literal ≥5-character keywords with a prior one) is narrower than its own Acceptance Criteria
+called for: a chain of genuinely-different wordings circling the same underlying complaint sails straight
+through it every time, each one resetting the livelock. Fixed by making the duplicate-vs-new call an
+explicit, visible part of logging a retro finding instead of a post-hoc text-similarity guess: new
+`list_open_issues` (`agents/scrum_team/tools/requirements.py`) lets a role see what's already open before
+filing anything - nothing could do this before - and `add_retro_action`/`add_impediment`
+(`agents/scrum_team/tools/scrum.py`) gain a `duplicate_of` param that merges into the named Issue's
+recurrence count instead of filing a new one. Backed by a mechanical check (not blind trust - this project
+already learned that lesson once in SPEC-ISSUE-0081): omitting `duplicate_of` when the text actually
+overlaps an open Issue is hard-refused, with `confirmed_distinct=True` as the explicit override. A
+consecutive-displacement cap on `_move_item_to_front_of_remaining_work` is the last-resort backstop for
+whatever still slips past both. See SPEC-ISSUE-0084 for the full mechanism and implementation.
+
 Separate from releasing the *code*, `.github/workflows/eval.yml` automatically
 evaluates how well the agent team itself performs, against a fixed scenario, so
 regressions or improvements in team behavior surface release over release instead

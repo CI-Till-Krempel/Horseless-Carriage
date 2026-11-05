@@ -11,6 +11,7 @@ from agents.scrum_team.tools.requirements import (
     raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
     update_roadmap, _strip_story_block_from_other_versions,
     sync_stories_from_markdown, _migrated_priority, _move_item_to_front_of_remaining_work,
+    list_open_issues, bump_issue_recurrence,
 )
 
 
@@ -2292,6 +2293,100 @@ class TestMoveItemToFrontOfRemainingWork(unittest.TestCase):
         s = self._state([{"id": "US-0001", "type": "User Story", "priority": "Must", "stages_completed": []}])
         _move_item_to_front_of_remaining_work(s, "SPEC-ISSUE-9999")
         self.assertEqual([x["id"] for x in s["product_backlog"]], ["US-0001"])
+
+    def test_displacement_cap_stops_cutting_in_front_after_repeated_hits(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0084): a defense-in-depth backstop,
+        independent of add_retro_action/add_impediment's own duplicate
+        detection - a real eval run (0.1.0-run84) showed a real Must-
+        priority story (US-0006) frozen at ['Draft', 'Ready'] for 5 straight
+        sprints while a chain of Issues each correctly front-queued ahead of
+        it in isolation. After _MAX_CONSECUTIVE_DISPLACEMENTS (2) calls that
+        each left the same real item un-advanced, a 3rd must stop cutting in
+        front of it - still inserted, just no longer ahead.
+        """
+        s = self._state([
+            {"id": "US-0006", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+        ])
+        s["product_backlog"].append({"id": "ISSUE-A", "type": "Issue", "priority": "Must", "stages_completed": []})
+        _move_item_to_front_of_remaining_work(s, "ISSUE-A")
+        self.assertEqual([x["id"] for x in s["product_backlog"]], ["ISSUE-A", "US-0006"])
+
+        s["product_backlog"].append({"id": "ISSUE-B", "type": "Issue", "priority": "Must", "stages_completed": []})
+        _move_item_to_front_of_remaining_work(s, "ISSUE-B")
+        self.assertEqual([x["id"] for x in s["product_backlog"]], ["ISSUE-B", "ISSUE-A", "US-0006"])
+
+        s["product_backlog"].append({"id": "ISSUE-C", "type": "Issue", "priority": "Must", "stages_completed": []})
+        _move_item_to_front_of_remaining_work(s, "ISSUE-C")
+        ids = [x["id"] for x in s["product_backlog"]]
+        self.assertLess(ids.index("US-0006"), ids.index("ISSUE-C"), ids)
+
+    def test_displacement_streak_resets_once_the_real_item_advances(self):
+        """Sibling/contrast: once the displaced item actually progresses a
+        stage, the cap must not have accumulated against it - a story that
+        genuinely gets worked on between front-jumps shouldn't eventually
+        lock out a legitimate new Issue just because of past, now-resolved
+        displacement."""
+        s = self._state([
+            {"id": "US-0006", "type": "User Story", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+        ])
+        s["product_backlog"].append({"id": "ISSUE-A", "type": "Issue", "priority": "Must", "stages_completed": []})
+        _move_item_to_front_of_remaining_work(s, "ISSUE-A")
+
+        for x in s["product_backlog"]:
+            if x["id"] == "US-0006":
+                x["stages_completed"] = ["Draft", "Ready", "Implemented"]
+
+        s["product_backlog"].append({"id": "ISSUE-B", "type": "Issue", "priority": "Must", "stages_completed": []})
+        _move_item_to_front_of_remaining_work(s, "ISSUE-B")
+        ids = [x["id"] for x in s["product_backlog"]]
+        self.assertLess(ids.index("ISSUE-B"), ids.index("US-0006"), ids)
+
+
+class TestListOpenIssues(unittest.TestCase):
+    def test_returns_only_open_issues(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "status": "Ready", "title": "Open one", "priority": "Must"},
+            {"id": "SPEC-ISSUE-0002", "type": "Issue", "status": "Accepted", "title": "Resolved one"},
+            {"id": "US-0001", "type": "User Story", "status": "Ready", "title": "Not an Issue"},
+        ]
+        result = list_open_issues(tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual([i["id"] for i in result["issues"]], ["SPEC-ISSUE-0001"])
+
+    def test_requires_an_active_session(self):
+        result = list_open_issues(tool_context=None)
+        self.assertEqual(result["status"], "error")
+
+
+class TestBumpIssueRecurrence(unittest.TestCase):
+    def test_increments_recurrence_count_on_an_open_issue(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "status": "Ready", "title": "x"},
+        ]
+        result = bump_issue_recurrence("SPEC-ISSUE-0001", tool_context=tool_context)
+        self.assertEqual(result, {"status": "ok", "issue_id": "SPEC-ISSUE-0001", "recurrence_count": 1})
+        result = bump_issue_recurrence("SPEC-ISSUE-0001", tool_context=tool_context)
+        self.assertEqual(result["recurrence_count"], 2)
+
+    def test_refuses_an_issue_that_is_not_open(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "status": "Accepted", "title": "x"},
+        ]
+        result = bump_issue_recurrence("SPEC-ISSUE-0001", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
+
+    def test_refuses_an_unknown_issue_id(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = bump_issue_recurrence("SPEC-ISSUE-9999", tool_context=tool_context)
+        self.assertEqual(result["status"], "error")
 
 
 class TestSetPriorityValidation(unittest.TestCase):

@@ -2037,6 +2037,35 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
         self.assertEqual(second, [])
         self.assertEqual(len(tool_context.state["product_backlog"]), 1)
 
+    def test_does_not_file_an_entry_already_resolved_via_duplicate_of(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0084): add_retro_action/add_impediment
+        set issue_id directly when duplicate_of names an existing open Issue
+        (see tools/scrum.py's _resolve_technical_duplicate) - this reuses the
+        same "already has issue_id" skip as test_does_not_refile_an_already_
+        filed_item above, so no code change was needed here, just coverage
+        for the new path that sets issue_id without ever calling upsert_issue.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Must", "status": "Ready", "title": "x"},
+        ]
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "restated finding",
+                "owner": "DevTeam", "status": "open", "category": "technical",
+                "issue_id": "SPEC-ISSUE-0003", "duplicate_of": "SPEC-ISSUE-0003",
+            },
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(filed, [])
+        self.assertEqual(len(tool_context.state["product_backlog"]), 1)
+
     def test_product_level_leaves_priority_for_the_human(self):
         """At the "Product" interaction level, which impediments get
         tackled in what priority is the Product Owner's call, not

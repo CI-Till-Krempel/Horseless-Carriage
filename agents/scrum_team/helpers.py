@@ -525,6 +525,57 @@ def recurring_technical_finding_sprint(existing_entries, new_text: str, new_spri
     return best_sprint
 
 
+def is_issue_open(item) -> bool:
+    """
+    SPEC-ISSUE-0084: an Issue backlog item (product_backlog entry with
+    `type == "Issue"`) is "open" if it hasn't reached a done status
+    (is_story_done covers Accepted/Done/Completed/Closed) - there is no
+    separate "Rejected" status ever actually set in state (it's a label only
+    the markdown template vocabulary uses, spec-templates/requirements/
+    TEMPLATE-ISSUE.md), so is_story_done alone is the complete check.
+    """
+    return isinstance(item, dict) and item.get("type") == "Issue" and not is_story_done(item.get("status"))
+
+
+def find_recurring_open_issue(existing_entries, product_backlog, new_text: str, new_sprint_number, text_field: str):
+    """
+    SPEC-ISSUE-0084: like recurring_technical_finding_sprint, but returns the
+    `issue_id` of the matching earlier "technical" entry instead of just a
+    sprint number - and ONLY if that entry's own filed Issue is still open in
+    `product_backlog` (is_issue_open). An entry whose Issue already reached
+    Accepted doesn't count: that finding was genuinely resolved, so a fresh
+    one sharing its keywords may legitimately be new work, not a restatement
+    displacing an unresolved backlog item.
+
+    This is what add_retro_action/add_impediment use to HARD-BLOCK a new
+    "technical" finding that evades an explicit `duplicate_of` decision but
+    still lexically overlaps an open Issue - recurring_technical_finding_sprint
+    itself stays unchanged (still feeds the softer sprint-number warning and
+    create_sprint_report's existing steering-escalation backstop).
+    """
+    new_keywords = _retro_keywords(new_text)
+    if len(new_keywords) < _MIN_SHARED_KEYWORDS_FOR_RECURRENCE:
+        return None
+    backlog_by_id = {item.get("id"): item for item in (product_backlog or [])}
+    best_sprint = None
+    best_issue_id = None
+    for entry in existing_entries or []:
+        if entry.get("category") != "technical":
+            continue
+        entry_sprint = entry.get("sprint_number")
+        if entry_sprint is None or entry_sprint >= new_sprint_number:
+            continue
+        issue_id = entry.get("issue_id")
+        if not issue_id or not is_issue_open(backlog_by_id.get(issue_id)):
+            continue
+        existing_keywords = _retro_keywords(entry.get(text_field, ""))
+        if len(new_keywords & existing_keywords) >= _MIN_SHARED_KEYWORDS_FOR_RECURRENCE:
+            if best_sprint is None or entry_sprint > best_sprint:
+                best_sprint = entry_sprint
+                best_issue_id = issue_id
+    return best_issue_id
+
+
 # --- BLOCKED stories (agents stuck on an unresolved question or loop) ---
 # raise_story_blocker/resolve_story_blocker (agents/scrum_team/tools/
 # requirements.py) mark a story BLOCKED - orthogonal to STORY_STAGES, since
