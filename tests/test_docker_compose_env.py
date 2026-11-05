@@ -371,3 +371,39 @@ class TestEnvTemplatesDoNotShipASharedPostgresPassword:
                 f"{env_file}: DATABASE_URL still embeds the old shared 'llm_password' literal "
                 "(GH issue #240)."
             )
+
+
+class TestEnvTemplatesLeaveGithubAuthUnconfigured:
+    """GITHUB_TOKEN/GITHUB_APP_* must be is_placeholder()-true (empty, not a
+    '<...>' string) in the shipped templates. Every consumer of these vars
+    (scrum.py's init_scrum_state, lib_github.py's github_app_fully_configured/
+    resolve_token, base.py's _refresh_github_app_token) only checks truthiness,
+    not is_placeholder() - a '<your_app_id>'-style placeholder (or the old
+    GITHUB_APP_PRIVATE_KEY '-----BEGIN RSA PRIVATE KEY-----\\n...\\n-----END...'
+    placeholder, which doesn't even match is_placeholder()'s own '<...>'
+    pattern) reads back as truthy and gets treated as configured, so a user who
+    copies .env.example without touching these lines gets confusing auth
+    failures instead of a clean 'not configured' state. Empty strings avoid
+    this for free since every consumer already treats empty as unconfigured."""
+
+    def test_env_examples_leave_github_auth_vars_empty(self):
+        import sys
+
+        sys.path.insert(0, str(REPO_ROOT))
+        import lib_env
+
+        github_vars = (
+            "GITHUB_TOKEN",
+            "GITHUB_APP_ID",
+            "GITHUB_APP_PRIVATE_KEY",
+            "GITHUB_APP_INSTALLATION_ID",
+        )
+        for env_file in (".env.example", ".env.local.example"):
+            path = REPO_ROOT / env_file
+            for var in github_vars:
+                value = lib_env.read_env_var(path, var)
+                assert lib_env.is_placeholder(value), (
+                    f"{env_file}: {var} is {value!r}, expected empty - a non-empty "
+                    "placeholder is read back as truthy/configured by every consumer "
+                    "of this var."
+                )
