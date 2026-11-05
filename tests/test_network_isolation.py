@@ -82,13 +82,18 @@ class TestAgentNetworkIsolation:
 class TestNetProxyAllowlist:
     def test_allowlist_only_permits_github_hosts(self):
         """Deliberately narrow scope per GH issue #287's own decision -
-        github.com/api.github.com only, nothing broader. A future addition
+        github.com/api.github.com plus only what a reviewed
+        propose_framework_change workbench proposal has since added
+        (services.gradle.org/repo.maven.apache.org for the Gradle
+        workbench, see PR #493) - nothing broader. A future addition
         should be a conscious edit here, not silent scope creep."""
         text = (REPO_ROOT / "config" / "net-proxy" / "allowlist.filter").read_text(encoding="utf-8")
         patterns = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
         assert patterns == [
             r"^github\.com(:[0-9]+)?$",
             r"^api\.github\.com(:[0-9]+)?$",
+            r"^services\.gradle\.org(:[0-9]+)?$",
+            r"^repo\.maven\.apache\.org(:[0-9]+)?$",
         ]
 
     def test_tinyproxy_conf_references_the_allowlist_and_denies_by_default(self):
