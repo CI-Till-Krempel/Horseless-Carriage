@@ -943,7 +943,7 @@ class TestGithubBranchExistenceCheck:
         assert "branch 'main' exists" in out
         assert "branch 'develop' exists" in out
 
-    def test_missing_develop_branch_is_an_error(self, valid_repo, monkeypatch):
+    def test_missing_develop_branch_is_auto_created_from_default_branch(self, valid_repo, monkeypatch, capsys):
         _patch_proxy_unreachable(monkeypatch)
         self._with_token(valid_repo, monkeypatch)
 
@@ -952,11 +952,37 @@ class TestGithubBranchExistenceCheck:
                 return False, f"branch '{branch}' does not exist on {owner}/{repo}"
             return True, f"branch '{branch}' exists on {owner}/{repo}"
         monkeypatch.setattr(doctor.lib_github, "check_branch_exists", fake_check)
+        monkeypatch.setattr(doctor.lib_github, "get_branch_sha", lambda o, r, b, t: "sha-main" if b == "main" else None)
+        created = []
+        monkeypatch.setattr(
+            doctor.lib_github, "create_branch",
+            lambda o, r, b, sha, t: created.append((b, sha)) or (True, f"created branch '{b}' on {o}/{r}"),
+        )
 
         result = doctor.check(valid_repo)
 
-        assert any("develop" in e.message and "does not exist" in e.message for e in result.errors())
-        assert result.has_errors
+        assert result.errors() == []
+        assert created == [("develop", "sha-main")]
+        assert "did not exist - created branch 'develop'" in capsys.readouterr().out
+
+    def test_missing_develop_branch_auto_create_failure_is_an_error(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        self._with_token(valid_repo, monkeypatch)
+
+        def fake_check(owner, repo, branch, token):
+            if branch == "develop":
+                return False, f"branch '{branch}' does not exist on {owner}/{repo}"
+            return True, f"branch '{branch}' exists on {owner}/{repo}"
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", fake_check)
+        monkeypatch.setattr(doctor.lib_github, "get_branch_sha", lambda o, r, b, t: "sha-main")
+        monkeypatch.setattr(
+            doctor.lib_github, "create_branch",
+            lambda o, r, b, sha, t: (False, f"could not create branch '{b}' on {o}/{r} (HTTP 403): forbidden"),
+        )
+
+        result = doctor.check(valid_repo)
+
+        assert any("develop" in e.message and "auto-create failed" in e.message for e in result.errors())
 
     def test_missing_configured_default_branch_is_an_error(self, valid_repo, monkeypatch):
         _patch_proxy_unreachable(monkeypatch)
@@ -969,10 +995,59 @@ class TestGithubBranchExistenceCheck:
                 return False, f"branch '{branch}' does not exist on {owner}/{repo}"
             return True, f"branch '{branch}' exists on {owner}/{repo}"
         monkeypatch.setattr(doctor.lib_github, "check_branch_exists", fake_check)
+        # No branch exists yet to auto-create 'trunk' from.
+        monkeypatch.setattr(doctor.lib_github, "get_default_branch", lambda o, r, t: None)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("create_branch should not run with no source branch to branch from")
+        monkeypatch.setattr(doctor.lib_github, "create_branch", fail_if_called)
 
         result = doctor.check(valid_repo)
 
         assert any("trunk" in e.message and "does not exist" in e.message for e in result.errors())
+
+    def test_missing_default_branch_is_auto_created_from_github_reported_default(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        env = valid_repo / ".env"
+        env.write_text(env.read_text() + 'GITHUB_REPO_BRANCH="trunk"\n')
+        self._with_token(valid_repo, monkeypatch)
+
+        def fake_check(owner, repo, branch, token):
+            if branch == "trunk":
+                return False, f"branch '{branch}' does not exist on {owner}/{repo}"
+            return True, f"branch '{branch}' exists on {owner}/{repo}"
+        monkeypatch.setattr(doctor.lib_github, "check_branch_exists", fake_check)
+        monkeypatch.setattr(doctor.lib_github, "get_default_branch", lambda o, r, t: "master")
+        monkeypatch.setattr(doctor.lib_github, "get_branch_sha", lambda o, r, b, t: "sha-master" if b == "master" else None)
+        created = []
+        monkeypatch.setattr(
+            doctor.lib_github, "create_branch",
+            lambda o, r, b, sha, t: created.append((b, sha)) or (True, f"created branch '{b}' on {o}/{r}"),
+        )
+
+        result = doctor.check(valid_repo)
+
+        assert result.errors() == []
+        assert created == [("trunk", "sha-master")]
+
+    def test_dry_run_does_not_attempt_branch_auto_create(self, valid_repo, monkeypatch):
+        _patch_proxy_unreachable(monkeypatch)
+        self._with_token(valid_repo, monkeypatch)
+        monkeypatch.setattr(
+            doctor.lib_github, "check_branch_exists",
+            lambda o, r, b, t: (False, f"branch '{b}' does not exist on {o}/{r}"),
+        )
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("dry_run must not attempt to auto-create branches")
+        monkeypatch.setattr(doctor.lib_github, "create_branch", fail_if_called)
+        monkeypatch.setattr(doctor.lib_github, "get_default_branch", fail_if_called)
+        monkeypatch.setattr(doctor.lib_github, "get_branch_sha", fail_if_called)
+
+        result = doctor.check(valid_repo, dry_run=True)
+
+        assert result.has_errors
+        assert any("does not exist" in e.message for e in result.errors())
 
     def test_custom_develop_branch_name_is_respected(self, valid_repo, monkeypatch):
         _patch_proxy_unreachable(monkeypatch)
