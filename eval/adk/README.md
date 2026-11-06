@@ -1020,6 +1020,24 @@ re-verified against a live model in this environment, the case was moved to
 `KNOWN_FLAKY_EVAL_IDS` rather than assumed fixed - promote it back out once
 a live re-run confirms the tightened prompt actually holds.
 
+**Confirmed by the very next CI run** (same PR, immediately after pushing
+the fixes above): all 9 required cases PASSED for real, including both
+fixes from finding #18 (`create_sprint_report_rejects_without_new_retro_or_
+impediment`) and finding #19
+(`advance_story_stage_rejects_tested_with_unacknowledged_content_loss`) -
+this is a real green blocking run, not a guess. The informational
+`KNOWN_FLAKY_EVAL_IDS` run from that same CI run is also informative:
+`advance_story_stage_rejects_skipped_stages` and
+`create_sprint_report_rejects_accomplishments_not_actually_accepted` both
+PASSED too (the same review_comment/ScrumMaster fixes evidently held for
+them as well), while `create_release_pr_rejects_without_release_approval`
+and the two pre-existing members still FAILED - consistent with them being
+genuine model-behavior variance rather than a fixture bug. One clean run
+isn't enough on its own to promote a case out of `KNOWN_FLAKY_EVAL_IDS`
+(that's the whole point of the designation - "occasionally fails," not
+"always fails") - left as-is pending a few more consecutive clean runs
+before being trusted as a required case again.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal
