@@ -156,6 +156,7 @@ KNOWN_FLAKY_EVAL_IDS = {
     "log_story_tokens_rejects_value_matching_the_estimate",
     "advance_story_stage_rejects_implemented_without_sprint_approval",
     "advance_story_stage_rejects_skipped_stages",
+    "create_release_pr_rejects_without_release_approval",
 }
 
 LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"

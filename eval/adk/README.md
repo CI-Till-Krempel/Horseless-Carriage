@@ -938,6 +938,88 @@ set alongside the three pre-existing members - see finding #17's own "Not
 yet re-verified against a live re-run" caveat, which was never confirmed
 fixed in a later run.
 
+## Real findings from the first live CI run of this PR (2026-11-06)
+
+The `pull_request`-triggered run on the PR that added the "non-flaky
+required gate" mechanism above (see its own description for context)
+surfaced two more genuine, code-grounded gaps in the fixtures - not
+guessed fixes, each confirmed by reading the actual enforcing code and the
+real `--print_detailed_results` trajectory diff from that run:
+
+**18. `create_sprint_report` is no longer Product Owner's tool at all -
+GH #395 reassigned it to Scrum Master, and this evalset's three
+`create_sprint_report_rejects_*` cases still addressed Product Owner.**
+`agent.py`'s `product_owner` tool list no longer includes
+`create_sprint_report` (confirmed directly); `scrum_master`'s does.
+`ScrumOrchestrator-workflow.md`'s own ROUTING RULES are explicit: "End-of-
+sprint KPIs & report ... -> Scrum Master, ALWAYS, immediately after its own
+retrospective." The live run's actual trajectory for
+`create_sprint_report_rejects_without_new_retro_or_impediment` showed
+exactly this: `transfer_to_agent(agent_name='ScrumMaster')`, not
+`'ProductOwner'` as scripted - the expected `transfer_to_agent` call never
+matched anything in the real trajectory, scoring the case a hard 0 even
+though the retro gate itself fired correctly on the real
+`create_sprint_report(...)` call right after. (The sibling case,
+`create_sprint_report_rejects_accomplishments_not_actually_accepted`,
+happened to PASS in that same run despite the same stale "ProductOwner,
+call create_sprint_report yourself" prompt - the orchestrator transferred
+to ProductOwner first as asked, and ProductOwner itself then transferred
+onward to ScrumMaster, who made the real call; IN_ORDER subsequence
+matching tolerated that extra hop. This is exactly the kind of routing
+non-determinism finding #1 already describes, not a reason to leave the
+addressee wrong - a case that only passes when the model happens to take a
+circuitous route isn't a real regression guard.) Fixed by directly
+addressing ScrumMaster in all three cases' prompts, expected
+`transfer_to_agent`, and `litellm_keys` fixture - matching the actual,
+current tool owner removes the routing ambiguity entirely rather than
+relying on an internal hand-off happening to occur.
+
+**19. GH #391's `review_comment`/`review_event` fold onto
+`advance_story_stage`'s Reviewed/Tested transitions breaks exact-arg
+trajectory matching whenever the live model (reasonably) supplies one.**
+`advance_story_stage` now posts a real `gh_pr_review` itself when called
+with `review_comment` set, before checking the stage's own review-freshness
+gate (`agents/scrum_team/tools/requirements.py`, both the Reviewed and
+Tested branches). The live run's actual trajectory for
+`advance_story_stage_rejects_tested_with_unacknowledged_content_loss`
+(this PR's own new case) showed QA call
+`advance_story_stage(review_comment='Verified test suite passes and build
+check completed...', review_event='COMMENT', title_or_id='US-0011',
+stage='Tested')` - a reasonable, natural thing for QA to do, but it broke
+exact dict-equality on `args` against the scripted
+`advance_story_stage(title_or_id='US-0011', stage='Tested')`, and (since
+this harness's containers have no working `gh` auth by design - see finding
+#16) the real `gh_pr_review` attempt failed outright, masking the
+content-loss gate entirely behind an unrelated "posting the review via
+gh_pr_review failed" rejection. `advance_story_stage_rejects_skipped_stages`
+(already in `KNOWN_FLAKY_EVAL_IDS` - see above) shares the same exposure:
+its prompt ("I already reviewed it myself informally") practically invites
+the live model to supply a `review_comment` too, even though the stage-
+order check it's actually testing runs unconditionally before the
+Reviewed/Tested-specific review-posting logic ever executes, so the gate
+itself was never actually at risk - only the trajectory match was. Fixed
+both prompts to explicitly state a review was already posted this sprint
+and instruct the model to call `advance_story_stage` with ONLY
+`title_or_id`/`stage` - not a guaranteed fix for live-model compliance (the
+same caveat applies as every other "don't do X" prompt instruction in this
+file), but grounded in the actual code path rather than guesswork.
+
+**Also observed, left as `KNOWN_FLAKY_EVAL_IDS` rather than chased further:**
+`create_release_pr_rejects_without_release_approval` failed in the same run
+with `LlmCallsLimitExceededError`-adjacent behavior - ProductOwner was
+correctly addressed and transferred-to first (matching the script), but
+then itself transferred onward to ScrumMaster and called `calculate_kpis()`
+before ever reaching `create_release_pr`, apparently trying to ensure a
+sprint report existed behind the release first. This is the same class of
+finding as `advance_story_stage_rejects_implemented_without_sprint_approval`
+(already flaky): the model doesn't stop at the first rejection-worthy
+action, it tries to proactively resolve what it perceives as a missing
+prerequisite. The prompt was tightened to state the sprint report/KPIs are
+already finalized (nothing to prepare), but since this couldn't be
+re-verified against a live model in this environment, the case was moved to
+`KNOWN_FLAKY_EVAL_IDS` rather than assumed fixed - promote it back out once
+a live re-run confirms the tightened prompt actually holds.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal
@@ -1022,11 +1104,16 @@ load_eval_set_from_file('eval/adk/scrum_team.evalset.json', 'eval/adk/scrum_team
 get_evaluation_criteria_or_default('eval/adk/test_config.json')  # -> same criteria dict, no error
 ```
 
-Not re-run against a live model in this pass (no Docker/LLM credentials
-available in this environment) - per "These `EvalCase`s were hand-authored"
-below, run the three new cases for real at the next opportunity
-(`--only set_priority_refuses_to_demote_a_committed_blocking_precedent,merge_story_pr_refuses_framework_branch,advance_story_stage_rejects_tested_with_unacknowledged_content_loss`)
-and adjust anything where the live shape differs from what's scripted.
+Not re-run against a live model directly from this environment (no Docker/
+LLM credentials available here) - but this PR's own `pull_request`-triggered
+CI run did exercise the full set for real once (see finding #18/#19 above),
+and every fixture/prompt fix in this pass was derived from that run's actual
+`--print_detailed_results` trajectory diff, not guessed. The fixes
+themselves have not yet been confirmed by a *subsequent* live re-run as of
+this writing - watch the next CI run on this PR (or
+`--only create_sprint_report_rejects_without_new_retro_or_impediment,advance_story_stage_rejects_tested_with_unacknowledged_content_loss`
+for a faster local/CI check of just the two fixed blocking cases) and
+adjust further if the live shape still differs from what's scripted.
 
 ## Files in this directory
 
