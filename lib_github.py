@@ -115,6 +115,34 @@ def check_repo_access(owner: str, repo: str, token: str) -> Tuple[bool, str]:
                     f"permissions do NOT include push - writes (PR merges, comments) will likely fail")
 
 
+def latest_release(owner: str, repo: str, token: str) -> Optional[dict]:
+    """The latest published release for owner/repo - {"tag_name", "commit_sha"}
+    - or None if there are no releases yet (HTTP 404, a normal state early in
+    a product's life, not a configuration error) or the lookup otherwise
+    fails. commit_sha is resolved via GitHub's ref-to-commit endpoint (which
+    accepts a tag name directly) rather than trusting the release's own
+    target_commitish field, which is usually a branch name the release was
+    cut from, not the commit the tag itself points at."""
+    status, body = _api_get(f"/repos/{owner}/{repo}/releases/latest", token)
+    if status != 200:
+        return None
+    try:
+        tag_name = json.loads(body).get("tag_name")
+    except Exception:
+        return None
+    if not tag_name:
+        return None
+
+    commit_sha = None
+    status, body = _api_get(f"/repos/{owner}/{repo}/commits/{tag_name}", token)
+    if status == 200:
+        try:
+            commit_sha = json.loads(body).get("sha")
+        except Exception:
+            pass
+    return {"tag_name": tag_name, "commit_sha": commit_sha}
+
+
 def _api_post(path: str, token: str, payload: dict) -> Tuple[int, str]:
     req = urllib.request.Request(
         f"{API_BASE}{path}",

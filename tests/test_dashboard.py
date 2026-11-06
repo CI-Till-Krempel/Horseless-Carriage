@@ -1,5 +1,6 @@
 """Tests for dashboard.py (GH issue #310)."""
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,15 @@ def _stub_doctor_check(monkeypatch):
     issues" stub instead - tests exercising the real wiring (TestDoctorItems
     below) override this again within their own body."""
     monkeypatch.setattr(dashboard.doctor, "check", lambda *a, **k: doctor.DoctorResult(items=[]))
+
+
+@pytest.fixture(autouse=True)
+def _clear_release_cache():
+    """_cached_latest_release's module-level cache is keyed only on
+    (owner, repo) - without this, an earlier test's mocked GitHub release
+    for "example/example" would leak into a later test reusing that same
+    owner/repo, independent of execution order."""
+    dashboard._release_cache.clear()
 
 
 def _make_project(tmp_path, name="my-project"):
@@ -353,6 +363,61 @@ class TestProjectSnapshot:
 
         assert snap["hc_version"] == "0.2.0"
 
+    def test_hc_commit_reads_short_hash_from_hc_paths_own_git_checkout(self, tmp_path):
+        """dashboard.py runs on the host, where hc_path's .git is directly
+        available (unlike hc_version, recorded from *inside* the agent
+        container, whose image deliberately excludes .git - see
+        _git_short_commit's docstring) - so it's read straight from there, in
+        addition to (not instead of) hc_version, for display as
+        "1.0.0 (e83912ed)"."""
+        hc_path, target_repo = _make_project(tmp_path)
+        subprocess.run(["git", "init"], cwd=hc_path, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=hc_path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=hc_path, check=True)
+        (hc_path / "VERSION").write_text("1.0.0\n")
+        subprocess.run(["git", "add", "VERSION"], cwd=hc_path, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=hc_path, check=True, capture_output=True)
+        expected = subprocess.run(
+            ["git", "-C", str(hc_path), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["hc_commit"] == expected
+
+    def test_hc_commit_is_none_when_hc_path_is_not_a_git_checkout(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["hc_commit"] is None
+
+    def test_project_snapshot_uses_the_latest_github_release_for_product_version(self, tmp_path):
+        """End-to-end: GITHUB_REPO_URL + GITHUB_TOKEN configured in this
+        project's own hc_path/.env, a release already published for that
+        repo - product_version/product_commit should come from the release,
+        not the target repo's local VERSION file."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / ".env").write_text(
+            "GITHUB_REPO_URL='git@github.com:example/example.git'\nGITHUB_TOKEN='tok123'\n"
+        )
+        (target_repo / "VERSION").write_text("0.9.0\n")
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]), \
+             patch.object(dashboard.lib_github, "latest_release",
+                           return_value={"tag_name": "v1.0.0", "commit_sha": "e83912ed1234567"}) as mock_release:
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["product_version"] == "1.0.0"
+        assert snap["product_commit"] == "e83912ed"
+        mock_release.assert_called_once_with("example", "example", "tok123")
+
     def test_hc_version_defaults_to_unknown_when_absent(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)
         entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
@@ -568,6 +633,32 @@ class TestProductVersion:
         assert dashboard._product_version(tmp_path) == "unknown"
 
 
+class TestProductVersionAndCommit:
+    def test_prefers_the_latest_github_release_over_the_local_version_file(self, tmp_path):
+        """If there's already been a release, that's what actually shipped -
+        the local checkout (VERSION file/HEAD) can be ahead of it with
+        mid-sprint commits not yet released."""
+        (tmp_path / "VERSION").write_text("0.9.0\n")
+        with patch.object(dashboard, "_cached_latest_release",
+                           return_value={"tag_name": "v1.0.0", "commit_sha": "e83912ed1234567"}):
+            version, commit = dashboard._product_version_and_commit(tmp_path, ("example", "example"), {})
+
+        assert version == "1.0.0"  # leading "v" stripped to match the VERSION-file style
+        assert commit == "e83912ed"  # truncated to 8 chars
+
+    def test_falls_back_to_version_file_when_no_release_exists(self, tmp_path):
+        (tmp_path / "VERSION").write_text("0.9.0\n")
+        with patch.object(dashboard, "_cached_latest_release", return_value=None):
+            version, commit = dashboard._product_version_and_commit(tmp_path, ("example", "example"), {})
+
+        assert version == "0.9.0"
+
+    def test_falls_back_to_version_file_when_no_owner_repo_configured(self, tmp_path):
+        (tmp_path / "VERSION").write_text("0.9.0\n")
+        version, commit = dashboard._product_version_and_commit(tmp_path, None, {})
+        assert version == "0.9.0"
+
+
 class TestRenderPage:
     def test_renders_no_projects_message_when_registry_is_empty(self):
         with patch.object(project_registry, "load", return_value=[]):
@@ -600,6 +691,31 @@ class TestRenderPage:
             page = dashboard._render_page()
 
         assert "0.2.0" in page
+
+    def test_renders_the_hc_commit_hash_alongside_the_hc_version(self, tmp_path):
+        """GH issue: hc_version alone (e.g. "1.0.0") doesn't pin down which
+        commit at that version actually produced a given sprint's data
+        between releases - render it as "1.0.0 (e83912ed)"."""
+        hc_path, target_repo = _make_project(tmp_path)
+        subprocess.run(["git", "init"], cwd=hc_path, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=hc_path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=hc_path, check=True)
+        (hc_path / "VERSION").write_text("1.0.0\n")
+        subprocess.run(["git", "add", "VERSION"], cwd=hc_path, check=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=hc_path, check=True, capture_output=True)
+        commit = subprocess.run(
+            ["git", "-C", str(hc_path), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({"hc_version": "1.0.0"}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert f"1.0.0 ({commit})" in page
 
     def test_renders_a_github_prs_link_when_configured(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)
