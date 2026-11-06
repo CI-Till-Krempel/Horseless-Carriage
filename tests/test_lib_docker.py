@@ -479,7 +479,11 @@ class TestEnsurePostgresPasswordSafe:
     def test_accepting_the_reset_runs_compose_down_v_then_generates(self, monkeypatch, tmp_path):
         env_file = tmp_path / ".env"
         env_file.write_text("POSTGRES_PASSWORD='<your_postgres_password>'\n")
-        monkeypatch.setattr(lib_docker, "postgres_volume_exists", lambda *a, **k: True)
+        # True before the reset (stale volume found), False after (down -v
+        # actually cleared it) - exercises the post-reset re-check the fix
+        # added, not just the initial stale-volume detection.
+        exists_results = iter([True, False])
+        monkeypatch.setattr(lib_docker, "postgres_volume_exists", lambda *a, **k: next(exists_results))
         monkeypatch.setattr(lib_docker, "compose_file_args", lambda repo_root: [])
         monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
         calls = []
@@ -495,7 +499,11 @@ class TestEnsurePostgresPasswordSafe:
         new_password = lib_env.read_env_var(env_file, "POSTGRES_PASSWORD")
         assert new_password and new_password != "<your_postgres_password>"
 
-    def test_compose_down_failure_warns_but_still_generates(self, monkeypatch, tmp_path, capsys):
+    def test_compose_down_failure_aborts_instead_of_generating(self, monkeypatch, tmp_path, capsys):
+        # GH: a failed/incomplete 'docker compose down -v' used to be logged
+        # as a warning and then fall through to generating a new password
+        # anyway - permanently baking in a mismatch against the volume that
+        # was never actually reset. It must abort instead.
         env_file = tmp_path / ".env"
         env_file.write_text("POSTGRES_PASSWORD='<your_postgres_password>'\n")
         monkeypatch.setattr(lib_docker, "postgres_volume_exists", lambda *a, **k: True)
@@ -503,8 +511,26 @@ class TestEnsurePostgresPasswordSafe:
         monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
         monkeypatch.setattr(lib_docker.subprocess, "run", lambda cmd, **k: _completed(cmd, 1))
 
-        lib_docker.ensure_postgres_password_safe(env_file, tmp_path)
+        with pytest.raises(SystemExit) as exc_info:
+            lib_docker.ensure_postgres_password_safe(env_file, tmp_path)
 
-        assert "did not complete cleanly" in capsys.readouterr().out
-        new_password = lib_env.read_env_var(env_file, "POSTGRES_PASSWORD")
-        assert new_password and new_password != "<your_postgres_password>"
+        assert exc_info.value.code == 1
+        assert "still present" in capsys.readouterr().out
+        assert lib_env.read_env_var(env_file, "POSTGRES_PASSWORD") == "<your_postgres_password>"
+
+    def test_compose_down_raising_aborts_instead_of_generating(self, monkeypatch, tmp_path, capsys):
+        env_file = tmp_path / ".env"
+        env_file.write_text("POSTGRES_PASSWORD='<your_postgres_password>'\n")
+        monkeypatch.setattr(lib_docker, "postgres_volume_exists", lambda *a, **k: True)
+        monkeypatch.setattr(lib_docker, "compose_file_args", lambda repo_root: [])
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+        def raise_run(*a, **k):
+            raise OSError("docker not found")
+        monkeypatch.setattr(lib_docker.subprocess, "run", raise_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            lib_docker.ensure_postgres_password_safe(env_file, tmp_path)
+
+        assert exc_info.value.code == 1
+        assert lib_env.read_env_var(env_file, "POSTGRES_PASSWORD") == "<your_postgres_password>"
