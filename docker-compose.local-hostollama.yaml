@@ -67,6 +67,18 @@ services:
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - DATABASE_URL=${DATABASE_URL}
+      # Optional corporate-proxy passthrough - see docker-compose.yaml's
+      # identical entry for why (litellm's own startup pricing-table fetch
+      # from raw.githubusercontent.com can be blocked by a filtering
+      # web proxy even when other egress works). Empty by default = no
+      # behavior change.
+      - HTTP_PROXY=${LITELLM_HTTP_PROXY:-}
+      - HTTPS_PROXY=${LITELLM_HTTPS_PROXY:-}
+      - NO_PROXY=${LITELLM_NO_PROXY:-}
+      - http_proxy=${LITELLM_HTTP_PROXY:-}
+      - https_proxy=${LITELLM_HTTPS_PROXY:-}
+      - no_proxy=${LITELLM_NO_PROXY:-}
+      - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on:
       - db
