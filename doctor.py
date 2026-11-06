@@ -13,7 +13,10 @@ This script will:
    (additive only - never overwrites an existing file).
 4. Check gh CLI authentication, and - given a GITHUB_REPO_URL and either
    GITHUB_TOKEN or a resolvable GitHub App token - live read access to that
-   repo's issues and pull requests (see lib_github.py).
+   repo's issues and pull requests, and that the configured GITHUB_REPO_BRANCH/
+   GITHUB_DEVELOP_BRANCH actually exist on origin, auto-creating whichever is
+   missing (from the tip of the other, or of GitHub's own reported default
+   branch) unless dry_run (see lib_github.py).
 5. Check the LLM/LiteLLM proxy configuration (see setup_llm.py) - including a
    live test request if the proxy is already running.
 6. If OLLAMA_GPU_ENABLED=true and the ollama container is running, warn
@@ -342,7 +345,15 @@ def check(
                 # surfaced as a confusing "no develop branch" failure
                 # mid-sprint instead of here at setup time. Checked
                 # regardless of access_ok's push-permission result (a
-                # read-only token can still read branch existence).
+                # read-only token can still read branch existence). A
+                # missing branch is auto-created (unless dry_run, since
+                # that's a write) from the tip of whichever branch already
+                # exists - preferring the just-resolved default branch over
+                # GitHub's own reported default_branch, so `develop` branches
+                # off GITHUB_REPO_BRANCH rather than some unrelated branch -
+                # rather than only ever telling the user to do it by hand.
+                resolved_default_branch = None
+                github_default_branch = None
                 for branch_var, branch_default, branch_label in (
                     ("GITHUB_REPO_BRANCH", "main", "default"),
                     ("GITHUB_DEVELOP_BRANCH", "develop", "develop"),
@@ -351,12 +362,48 @@ def check(
                     branch_ok, branch_detail = lib_github.check_branch_exists(owner, repo, branch, token)
                     if branch_ok:
                         print(f"GitHub {branch_label} branch: {branch_detail}")
-                    else:
+                        if branch_var == "GITHUB_REPO_BRANCH":
+                            resolved_default_branch = branch
+                        continue
+
+                    manual_fix = (
+                        f"Create it (e.g. `git push origin HEAD:{branch}` from a checkout of the repo) "
+                        f"or fix {branch_var} in .env if it's pointed at the wrong name."
+                    )
+                    if dry_run:
                         error(
                             f"GitHub {branch_label} branch: {branch_detail}. Horseless Carriage's "
-                            f"GitFlow tooling requires this branch to exist on origin - create it "
-                            f"(e.g. `git push origin HEAD:{branch}` from a checkout of the repo) or "
-                            f"fix {branch_var} in .env if it's pointed at the wrong name."
+                            f"GitFlow tooling requires this branch to exist on origin. {manual_fix}"
+                        )
+                        continue
+
+                    source_branch = resolved_default_branch
+                    if source_branch is None:
+                        if github_default_branch is None:
+                            github_default_branch = lib_github.get_default_branch(owner, repo, token)
+                        source_branch = github_default_branch
+                    source_sha = (
+                        lib_github.get_branch_sha(owner, repo, source_branch, token)
+                        if source_branch and source_branch != branch else None
+                    )
+                    if source_sha is None:
+                        error(
+                            f"GitHub {branch_label} branch: {branch_detail}, and it could not be "
+                            f"auto-created (no existing branch found on {owner}/{repo} to branch it "
+                            f"from). {manual_fix}"
+                        )
+                        continue
+
+                    created_ok, created_detail = lib_github.create_branch(owner, repo, branch, source_sha, token)
+                    if created_ok:
+                        print(f"GitHub {branch_label} branch: did not exist - {created_detail} "
+                              f"(branched from '{source_branch}').")
+                        if branch_var == "GITHUB_REPO_BRANCH":
+                            resolved_default_branch = branch
+                    else:
+                        error(
+                            f"GitHub {branch_label} branch: {branch_detail}, and auto-create failed - "
+                            f"{created_detail}. {manual_fix}"
                         )
 
     # 4. Check if the directories exist
