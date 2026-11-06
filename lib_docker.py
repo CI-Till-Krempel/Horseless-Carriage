@@ -184,10 +184,16 @@ def ensure_postgres_password_safe(env_path: Path, repo_root: Optional[Path] = No
         print("Resetting the database volume...")
         try:
             result = subprocess.run(["docker", "compose", *compose_args, "down", "-v"], cwd=repo_root)
-            if result.returncode != 0:
-                print("WARNING: 'docker compose down -v' did not complete cleanly - proceeding anyway.")
+            down_failed = result.returncode != 0
         except Exception as e:
-            print(f"WARNING: 'docker compose down -v' did not complete cleanly ({e}) - proceeding anyway.")
+            print(f"WARNING: 'docker compose down -v' did not complete cleanly ({e}).")
+            down_failed = True
+        if down_failed or postgres_volume_exists(repo_root) is not False:
+            print("ERROR: the stale 'postgres_data' volume is still present after attempting to")
+            print("reset it, so generating a new POSTGRES_PASSWORD now would still produce a")
+            print("mismatch. Resolve the 'docker compose down -v' failure above (or remove the")
+            print("volume by hand) and re-run setup.")
+            sys.exit(1)
     lib_env.ensure_postgres_password(env_path)
 
 
