@@ -174,3 +174,55 @@ class TestLatestRelease:
         release = lib_github.latest_release("example", "example", "tok")
 
         assert release == {"tag_name": "v1.0.0", "commit_sha": None}
+
+
+class TestGetDefaultBranch:
+    def test_returns_default_branch_field(self, monkeypatch):
+        monkeypatch.setattr(lib_github, "_api_get", lambda path, token: (200, json.dumps({"default_branch": "master"})))
+        assert lib_github.get_default_branch("example", "example", "tok") == "master"
+
+    def test_returns_none_on_failure(self, monkeypatch):
+        monkeypatch.setattr(lib_github, "_api_get", lambda path, token: (404, "not found"))
+        assert lib_github.get_default_branch("example", "example", "tok") is None
+
+
+class TestGetBranchSha:
+    def test_returns_tip_sha(self, monkeypatch):
+        calls = []
+
+        def fake_get(path, token):
+            calls.append(path)
+            return 200, json.dumps({"commit": {"sha": "abc123"}})
+        monkeypatch.setattr(lib_github, "_api_get", fake_get)
+
+        assert lib_github.get_branch_sha("example", "example", "main", "tok") == "abc123"
+        assert calls == ["/repos/example/example/branches/main"]
+
+    def test_returns_none_when_branch_missing(self, monkeypatch):
+        monkeypatch.setattr(lib_github, "_api_get", lambda path, token: (404, "not found"))
+        assert lib_github.get_branch_sha("example", "example", "develop", "tok") is None
+
+
+class TestCreateBranch:
+    def test_success(self, monkeypatch):
+        calls = []
+
+        def fake_post(path, token, payload):
+            calls.append((path, payload))
+            return 201, json.dumps({"ref": "refs/heads/develop"})
+        monkeypatch.setattr(lib_github, "_api_post", fake_post)
+
+        ok, detail = lib_github.create_branch("example", "example", "develop", "abc123", "tok")
+
+        assert ok is True
+        assert "created branch 'develop'" in detail
+        assert calls == [("/repos/example/example/git/refs", {"ref": "refs/heads/develop", "sha": "abc123"})]
+
+    def test_failure_reports_http_status(self, monkeypatch):
+        monkeypatch.setattr(lib_github, "_api_post", lambda path, token, payload: (403, "forbidden"))
+
+        ok, detail = lib_github.create_branch("example", "example", "develop", "abc123", "tok")
+
+        assert ok is False
+        assert "could not create branch 'develop'" in detail
+        assert "403" in detail

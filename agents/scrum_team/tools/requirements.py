@@ -6,6 +6,7 @@ from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file, _coerce_dict_arg, _record_priority_block_precedent
 from ..helpers import (
     is_story_done,
+    is_issue_open,
     STORY_STAGES,
     STAGE_OWNERS,
     blocks_direct_status_set,
@@ -333,6 +334,15 @@ def _resort_backlog_by_priority(s: Dict[str, Any]) -> None:
     s["product_backlog"] = backlog
 
 
+# SPEC-ISSUE-0084: how many consecutive times _move_item_to_front_of_
+# remaining_work may displace the SAME backlog item (without that item
+# itself advancing a stage in between) before it stops cutting in line
+# ahead of it - a defense-in-depth backstop, independent of how good the
+# duplicate-detection in add_retro_action/add_impediment is. See that
+# function's own docstring for why this exists as a third layer.
+_MAX_CONSECUTIVE_DISPLACEMENTS = 2
+
+
 def _move_item_to_front_of_remaining_work(s: Dict[str, Any], item_id: str) -> None:
     """
     SPEC-ISSUE-0076: a real eval run showed a retro-filed Must-priority
@@ -357,6 +367,24 @@ def _move_item_to_front_of_remaining_work(s: Dict[str, Any], item_id: str) -> No
     item. Call once, right after the item is first prioritized Must -
     its position then stays put (nothing re-sorts within a priority band on
     its own) for exactly the same reason the stable sort doesn't disturb it.
+
+    SPEC-ISSUE-0084: even with add_retro_action/add_impediment's own
+    duplicate-detection (the primary defense against this), a run of
+    genuinely-distinct, legitimately-filed Must Issues can still happen to
+    starve the exact same real backlog item sprint after sprint through bad
+    luck - 0.1.0-run84 showed this is possible even when each individual
+    front-jump is, in isolation, correct. Displacement tracking keys on the
+    nearest REAL (non-Issue, non-Epic) not-yet-accepted item at or after the
+    insert point - not just whatever happens to sit there - so a chain of
+    Issues piling up in front of one frozen real story is still capped
+    relative to that story, not reset by each new Issue becoming the
+    immediate neighbor. Once that real item's displacement streak
+    (`_displacement_streak`, reset whenever its own `stages_completed`
+    actually grows since the last check, via `_displacement_stage_count`)
+    exceeds `_MAX_CONSECUTIVE_DISPLACEMENTS`, new Issues stop cutting in
+    front of it - still inserted (still Must-prioritized, still trackable),
+    just immediately after that real item instead of before it, so it
+    finally gets an uncontested turn at the front.
     """
     backlog = list(s.get("product_backlog", []))
     idx = next((i for i, x in enumerate(backlog) if x.get("id") == item_id), None)
@@ -370,6 +398,27 @@ def _move_item_to_front_of_remaining_work(s: Dict[str, Any], item_id: str) -> No
         if "Accepted" not in (x.get("stages_completed") or []):
             insert_at = i
             break
+    real_frontier_idx = None
+    for i in range(insert_at, len(backlog)):
+        x = backlog[i]
+        if x.get("type") in ("Epic", "Issue"):
+            continue
+        if "Accepted" not in (x.get("stages_completed") or []):
+            real_frontier_idx = i
+            break
+    if real_frontier_idx is not None:
+        frontier = backlog[real_frontier_idx]
+        stage_count = len(frontier.get("stages_completed") or [])
+        if frontier.get("_displacement_stage_count") == stage_count:
+            streak = frontier.get("_displacement_streak", 0) + 1
+        else:
+            streak = 1
+        frontier["_displacement_streak"] = streak
+        frontier["_displacement_stage_count"] = stage_count
+        if streak > _MAX_CONSECUTIVE_DISPLACEMENTS:
+            backlog.insert(real_frontier_idx + 1, item)
+            s["product_backlog"] = backlog
+            return
     backlog.insert(insert_at, item)
     s["product_backlog"] = backlog
 
@@ -508,6 +557,54 @@ def upsert_issue(issue: Dict[str, Any], tool_context=None) -> Dict[str, Any]:
         return {"status": "error", "message": str(e)}
     issue["type"] = "Issue"
     return upsert_backlog_item(issue, tool_context=tool_context)
+
+
+def list_open_issues(tool_context=None) -> Dict[str, Any]:
+    """
+    SPEC-ISSUE-0084: lists every currently-open Issue (product_backlog items
+    with type == "Issue" that haven't reached a done status - see
+    is_issue_open) so a role logging a retro finding can actually check what's
+    already tracked before deciding whether it's a duplicate - the gap that
+    let differently-worded restatements of the same underlying complaint each
+    get filed as a brand-new Issue (0.1.0-run84): nothing before this let
+    anyone see the open-issue list at all. Call this before add_retro_action/
+    add_impediment with category="technical", then pass the matching id as
+    duplicate_of if one of these is substantively the same finding.
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return {"status": "error", "message": "list_open_issues requires an active session (tool_context.state)."}
+    backlog = tool_context.state.get("product_backlog", []) or []
+    issues = [
+        {
+            "id": item.get("id"),
+            "title": item.get("title"),
+            "status": item.get("status"),
+            "priority": item.get("priority"),
+            "recurrence_count": item.get("recurrence_count", 0),
+        }
+        for item in backlog
+        if is_issue_open(item)
+    ]
+    return {"status": "ok", "issues": issues}
+
+
+def bump_issue_recurrence(issue_id: str, tool_context=None) -> Dict[str, Any]:
+    """
+    SPEC-ISSUE-0084: increments an open Issue's recurrence_count in place,
+    without filing a new Issue or re-running _move_item_to_front_of_
+    remaining_work - called by add_retro_action/add_impediment when a new
+    finding is explicitly declared (duplicate_of) to restate this one,
+    instead of letting it accumulate its own independent front-queue jump.
+    """
+    if not tool_context or not getattr(tool_context, "state", None):
+        return {"status": "error", "message": "bump_issue_recurrence requires an active session (tool_context.state)."}
+    backlog = list(tool_context.state.get("product_backlog", []))
+    idx = next((i for i, x in enumerate(backlog) if x.get("id") == issue_id), None)
+    if idx is None or not is_issue_open(backlog[idx]):
+        return {"status": "error", "message": f"'{issue_id}' is not a currently-open Issue - call list_open_issues to check."}
+    backlog[idx] = {**backlog[idx], "recurrence_count": backlog[idx].get("recurrence_count", 0) + 1}
+    tool_context.state["product_backlog"] = backlog
+    return {"status": "ok", "issue_id": issue_id, "recurrence_count": backlog[idx]["recurrence_count"]}
 
 
 # SPEC-ISSUE-0048: matches a real item ID at the START of a longer string (e.g.

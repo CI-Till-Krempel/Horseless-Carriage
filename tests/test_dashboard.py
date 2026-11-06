@@ -106,6 +106,38 @@ class TestProjectSnapshot:
 
         assert snap["current_usd_spend"] is None
 
+    def test_surfaces_sprint_phase_and_current_ticket(self, tmp_path):
+        """A coarser, always-on substitute for the fine-grained
+        blocking_summary text (which only ever says anything while a
+        specific interaction is unresolved) - the badge word alone doesn't
+        say what the team is actually doing right now."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "sprint_backlog": [{"id": "US-0001", "type": "User Story", "stages_completed": []}],
+            "product_backlog": [{"id": "US-0001", "type": "User Story", "title": "Add login", "stages_completed": []}],
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["sprint_phase"] == "Development"
+        assert snap["current_ticket"] == "US-0001: Add login"
+
+    def test_sprint_phase_and_current_ticket_are_blank_with_no_state_data(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["sprint_phase"] == ""
+        assert snap["current_ticket"] == ""
+
     def test_waiting_when_running_with_blocking_interactions(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)
         (target_repo / ".hc").mkdir()
@@ -706,6 +738,25 @@ class TestRenderPage:
             page = dashboard._render_page()
 
         assert "not configured" in page
+
+    def test_renders_sprint_phase_and_current_ticket_under_the_state_badge(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "sprint_number": 1,
+            "sprint_backlog_pr_sprint": 1,
+            "sprint_backlog": [{"id": "US-0001", "type": "User Story", "stages_completed": []}],
+            "product_backlog": [{"id": "US-0001", "type": "User Story", "title": "Add login", "stages_completed": []}],
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=["agent"]), \
+             patch.object(dashboard.lib_docker, "running_state_repo_mount", return_value=None):
+            page = dashboard._render_page()
+
+        assert "Phase: Development" in page
+        assert "Ticket: US-0001: Add login" in page
 
     def test_renders_the_sprint_number_alongside_the_sprint_goal(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)

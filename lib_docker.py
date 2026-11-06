@@ -7,6 +7,7 @@ import json
 import re
 import socket
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -117,6 +118,83 @@ def compose_project_args(context: str, repo_root: Optional[Path] = None) -> list
     repo_root = Path(repo_root) if repo_root is not None else Path(".")
     prefix = lib_env.read_env_var(repo_root / ".env", "COMPOSE_PROJECT_NAME_PREFIX") or "horseless-carriage"
     return ["-p", f"{prefix}-{context}"]
+
+
+def postgres_volume_exists(repo_root: Optional[Path] = None, context: str = "dev") -> Optional[bool]:
+    """True if this context's "postgres_data" volume (named
+    "<project>_postgres_data" per Compose's default volume-naming) already
+    exists on this machine, False if it doesn't, None if that can't be
+    determined right now (docker not installed, daemon not running, ...) -
+    callers must treat None as "unknown", not as False, since an
+    unreachable Docker daemon says nothing about whether the volume
+    exists."""
+    repo_root = Path(repo_root) if repo_root is not None else Path(".")
+    volume_name = f"{compose_project_args(context, repo_root)[1]}_postgres_data"
+    try:
+        result = subprocess.run(
+            ["docker", "volume", "inspect", volume_name],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        return None
+    if result.returncode == 0:
+        return True
+    if "No such volume" in (result.stderr or ""):
+        return False
+    return None
+
+
+def ensure_postgres_password_safe(env_path: Path, repo_root: Optional[Path] = None) -> None:
+    """Wraps lib_env.ensure_postgres_password with a guard against a
+    password/volume mismatch that otherwise surfaces much later as
+    litellm's Prisma health probe failing with a bare
+    "httpx.ConnectError": Postgres only applies POSTGRES_PASSWORD when it
+    initializes a fresh, EMPTY "postgres_data" volume. If that volume
+    already exists from a previous setup (e.g. .env was deleted and
+    recreated from the template, or this checkout's directory was reused
+    for a fresh install) while POSTGRES_PASSWORD in .env is still a
+    placeholder, generating a new one here would silently leave the two
+    permanently out of sync - Postgres keeps the old baked-in password
+    forever, litellm gets configured with the new one.
+
+    Offers to reset the stale volume (docker compose down -v) right here,
+    before a mismatched password ever gets written, instead of letting the
+    mismatch happen silently."""
+    repo_root = Path(repo_root) if repo_root is not None else Path(".")
+    current = lib_env.read_env_var(env_path, "POSTGRES_PASSWORD")
+    if lib_env.is_placeholder(current) and postgres_volume_exists(repo_root) is True:
+        print()
+        print("WARNING: .env's POSTGRES_PASSWORD is unset, but a 'postgres_data' Docker")
+        print("volume from a previous setup already exists on this machine. Postgres only")
+        print("applies a password when it initializes an EMPTY volume, so generating a new")
+        print("one now would never match what's already baked into that volume - litellm")
+        print("would then fail to start with a database connection error.")
+        print()
+        answer = input(
+            "Reset the existing database now (docker compose down -v) so a new password "
+            "can be generated safely? This deletes any existing LiteLLM DB contents "
+            "(virtual keys, spend history). [y/N]: "
+        ).strip().lower()
+        if not answer.startswith("y"):
+            print("Leaving the existing volume in place. Set POSTGRES_PASSWORD (and a")
+            print("matching DATABASE_URL) in .env by hand to the password that volume was")
+            print("originally initialized with, then re-run setup.")
+            sys.exit(1)
+        compose_args = compose_file_args(repo_root) + compose_project_args("dev", repo_root)
+        print("Resetting the database volume...")
+        try:
+            result = subprocess.run(["docker", "compose", *compose_args, "down", "-v"], cwd=repo_root)
+            down_failed = result.returncode != 0
+        except Exception as e:
+            print(f"WARNING: 'docker compose down -v' did not complete cleanly ({e}).")
+            down_failed = True
+        if down_failed or postgres_volume_exists(repo_root) is not False:
+            print("ERROR: the stale 'postgres_data' volume is still present after attempting to")
+            print("reset it, so generating a new POSTGRES_PASSWORD now would still produce a")
+            print("mismatch. Resolve the 'docker compose down -v' failure above (or remove the")
+            print("volume by hand) and re-run setup.")
+            sys.exit(1)
+    lib_env.ensure_postgres_password(env_path)
 
 
 def normalize_docker_mount_source(path_str: str) -> str:

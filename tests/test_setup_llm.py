@@ -171,6 +171,24 @@ class TestWriteLitellmYaml:
         data = yaml.safe_load(out_file.read_text())
         po_entry = next(e for e in data["model_list"] if e["model_name"] == "scrum-po")
         assert po_entry["litellm_params"]["api_base"] == "http://host.docker.internal:11434"
+        assert "keep_alive" not in po_entry["litellm_params"]
+
+    def test_local_ollama_host_mode_adds_keep_alive_request_param(self, tmp_path):
+        """Host-mode Ollama runs natively, not as the dockerized `ollama`
+        service - OLLAMA_KEEP_ALIVE (docker-compose.local.yaml) never reaches
+        it, so without a per-request override it falls back to Ollama's own
+        5m idle-unload default. keep_alive in litellm_params reaches the
+        host daemon regardless of how it was started."""
+        out_file = tmp_path / "litellm.yaml"
+        setup_llm.write_litellm_yaml(
+            "local", "llama3.1:8b", "llama3.1:8b", out_file,
+            ollama_api_base="http://host.docker.internal:11434",
+            ollama_keep_alive="-1",
+        )
+        data = yaml.safe_load(out_file.read_text())
+        for role in ("scrum-po", "scrum-eval-cheap"):
+            entry = next(e for e in data["model_list"] if e["model_name"] == role)
+            assert entry["litellm_params"]["keep_alive"] == -1
 
     def test_creates_parent_directories(self, tmp_path):
         out_file = tmp_path / "nested" / "dir" / "litellm.yaml"
@@ -1209,6 +1227,11 @@ class TestRunCloudProviderOrdering:
         monkeypatch.setattr(setup_llm, "write_litellm_yaml", lambda *a, **k: calls.append("write_yaml"))
         monkeypatch.setattr(setup_llm, "prompt_project_settings", lambda *a, **k: calls.append("project_settings"))
         monkeypatch.setattr(setup_llm, "run_configuration_test", lambda *a, **k: calls.append("run_test"))
+        # ensure_postgres_password_safe's stale-volume check shells out to a
+        # real `docker volume inspect` otherwise - None means "can't tell",
+        # the same as a real volume-less install, so the guard never fires
+        # here and this test's own `input()` sequence isn't consumed by it.
+        monkeypatch.setattr(setup_llm.lib_docker, "postgres_volume_exists", lambda *a, **k: None)
 
         setup_llm.run_cloud_provider(
             "anthropic", "ANTHROPIC_API_KEY",
@@ -1240,6 +1263,7 @@ class TestRunLocalProviderOrdering:
         monkeypatch.setattr(setup_llm, "write_litellm_yaml", lambda *a, **k: calls.append("write_yaml"))
         monkeypatch.setattr(setup_llm, "prompt_project_settings", lambda *a, **k: calls.append("project_settings"))
         monkeypatch.setattr(setup_llm, "run_configuration_test", lambda *a, **k: calls.append("run_test"))
+        monkeypatch.setattr(setup_llm.lib_docker, "postgres_volume_exists", lambda *a, **k: None)
 
         setup_llm.run_local_provider(dev=False)
 

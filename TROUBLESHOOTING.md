@@ -103,6 +103,15 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   (`python:3.11-slim`, `ollama/ollama:latest`) on its own. Run `python3 rebuild_images.py` (or
   `python3 run.py dev`, which does this automatically) to force a truly fresh rebuild. See
   [Running the Agent § Rebuilding Images](docs/RUNNING.md#rebuilding-images).
+- **`docker compose logs litellm` shows `LiteLLM: Failed to fetch remote model cost map from
+  https://raw.githubusercontent.com/...: 403 Filtered. Falling back to local backup.`** — a web
+  filter/SWG on your network is blocking that specific host, even though litellm's actual provider
+  calls (OpenAI/Anthropic/Gemini) go through fine. Harmless on its own — litellm falls back to the
+  pricing table bundled with its image — but you can fix it two ways: point `LITELLM_HTTP_PROXY`/
+  `LITELLM_HTTPS_PROXY` (and `LITELLM_NO_PROXY` if needed) in `.env` at a proxy that isn't blocked
+  for that host (see `.env.example`), or set `LITELLM_LOCAL_MODEL_COST_MAP=true` to skip the remote
+  fetch entirely and always use the bundled table. See [Setup § Network
+  Sandboxing](docs/SETUP.md#network-sandboxing-gh-issue-287-180).
 - **LiteLLM dashboard link doesn't load right after starting from `dashboard.py`** — `docker compose
   up -d` only waits for the container to be *running*, not for LiteLLM's own process inside it to
   finish booting (DB connection, config load, uvicorn startup) - this can take 10-30+ seconds.

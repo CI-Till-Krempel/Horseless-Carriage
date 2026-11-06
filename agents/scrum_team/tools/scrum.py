@@ -8,7 +8,7 @@ from .base import _configured_repo_root, _state_file_path, _project_root, _hc_ve
 from .migrations import migrate_state
 from ..helpers import (
     blocks_direct_status_set, is_low_quality_retro_text, new_sprint_item_blocked, get_env_with_deprecated_fallback,
-    looks_like_role_behavior_finding, recurring_technical_finding_sprint,
+    looks_like_role_behavior_finding, recurring_technical_finding_sprint, find_recurring_open_issue, is_issue_open,
 )
 
 DEFAULT_DOD = [
@@ -794,7 +794,73 @@ def _file_general_blocker_if_human(category: str, priority: str, text: str, owne
         pass
 
 
-def add_impediment(description: str, owner: str, category: str, priority: str = "normal", tool_context=None) -> Dict[str, Any]:
+def _resolve_technical_duplicate(text, existing_entries, sprint_number, text_field, duplicate_of, confirmed_distinct, tool_context):
+    """
+    SPEC-ISSUE-0084: the primary defense against a chain of differently-
+    worded self-referential retro findings each independently front-queue-
+    jumping (0.1.0-run84) - make duplicate-vs-new an explicit, checked
+    decision at filing time instead of a post-hoc keyword-overlap guess.
+
+    - duplicate_of given: must name a currently-open Issue (list_open_issues
+      is how a caller finds that id) - bumps its recurrence_count instead of
+      letting a new Issue get filed/front-queued for the same thing.
+    - duplicate_of absent: still runs a mechanical check
+      (find_recurring_open_issue) against currently-OPEN Issues specifically
+      (not just any prior entry, open or already resolved) and HARD-BLOCKS
+      if it fires - this project has already been burned once by trusting an
+      unverified self-assessment here (SPEC-ISSUE-0081: the equivalent
+      warning was advisory-only prose a cheap model simply proceeded past).
+      `confirmed_distinct=True` is the explicit override for a genuine
+      coincidental lexical overlap.
+
+    Returns (error_dict_or_None, extra_entry_fields_or_None, warning_or_None).
+    """
+    from .requirements import bump_issue_recurrence
+
+    product_backlog = tool_context.state.get("product_backlog", []) or []
+    if duplicate_of:
+        match = next((x for x in product_backlog if x.get("id") == duplicate_of), None)
+        if not match or not is_issue_open(match):
+            return (
+                {
+                    "status": "error",
+                    "message": (
+                        f"duplicate_of '{duplicate_of}' does not reference a currently-open Issue - "
+                        "call list_open_issues first to find the right id."
+                    ),
+                },
+                None,
+                None,
+            )
+        bump_issue_recurrence(duplicate_of, tool_context=tool_context)
+        return None, {"issue_id": duplicate_of, "duplicate_of": duplicate_of}, None
+
+    open_match = find_recurring_open_issue(existing_entries, product_backlog, text, sprint_number, text_field)
+    if open_match and not confirmed_distinct:
+        return (
+            {
+                "status": "error",
+                "message": (
+                    f"This looks like it restates already-open Issue '{open_match}' - call "
+                    f"list_open_issues to check, then either pass duplicate_of={open_match!r} if it's "
+                    "the same finding, or confirmed_distinct=True if it's genuinely different despite "
+                    "the overlap."
+                ),
+            },
+            None,
+            None,
+        )
+    warning, recurs_since_sprint = _technical_category_nudge(text, existing_entries, sprint_number, text_field)
+    extra = {"recurs_since_sprint": recurs_since_sprint}
+    if confirmed_distinct and open_match:
+        extra["confirmed_distinct_from"] = open_match
+    return None, extra, warning
+
+
+def add_impediment(
+    description: str, owner: str, category: str, priority: str = "normal",
+    duplicate_of: str | None = None, confirmed_distinct: bool = False, tool_context=None,
+) -> Dict[str, Any]:
     """
     Add an impediment to impediment_log.
 
@@ -804,6 +870,14 @@ def add_impediment(description: str, owner: str, category: str, priority: str = 
     can close), or "human" (genuinely outside the team's own authority -
     immediately raised as a general_blockers entry, escalated to the human
     if `priority="high"`). See _RETRO_CATEGORIES' own comment above.
+
+    `duplicate_of`/`confirmed_distinct` (SPEC-ISSUE-0084, only meaningful for
+    category="technical"): call list_open_issues first - if this impediment
+    is substantively the same finding as an already-open Issue, pass its id
+    as `duplicate_of` instead of letting a new one get filed. If it genuinely
+    isn't, but still shares keywords with one, pass `confirmed_distinct=True`
+    to say so explicitly. Omitting both when a lexical overlap exists is
+    refused outright - see _resolve_technical_duplicate.
     """
     if is_low_quality_retro_text(description):
         return {
@@ -824,6 +898,11 @@ def add_impediment(description: str, owner: str, category: str, priority: str = 
             "status": "error",
             "message": f"priority must be one of {list(_RETRO_PRIORITIES)}, not {priority!r}.",
         }
+    if (duplicate_of or confirmed_distinct) and category != "technical":
+        return {
+            "status": "error",
+            "message": "duplicate_of/confirmed_distinct only apply to category='technical' findings.",
+        }
     s = tool_context.state
     sprint_number = s.get("sprint_number", 0)
     imp = {
@@ -832,11 +911,16 @@ def add_impediment(description: str, owner: str, category: str, priority: str = 
     }
     warning = None
     if category == "technical":
-        warning, recurs_since_sprint = _technical_category_nudge(description, s.get("impediment_log", []), sprint_number, "description")
-        # SPEC-ISSUE-0081: persisted on the entry itself (not just the
+        error, extra, warning = _resolve_technical_duplicate(
+            description, s.get("impediment_log", []), sprint_number, "description",
+            duplicate_of, confirmed_distinct, tool_context,
+        )
+        if error:
+            return error
+        # SPEC-ISSUE-0081/0084: persisted on the entry itself (not just the
         # warning text) so _file_retro_items_as_issues can mechanically act
         # on it later - see _technical_category_nudge's own docstring.
-        imp["recurs_since_sprint"] = recurs_since_sprint
+        imp.update(extra)
     s["impediment_log"] = list(s.get("impediment_log", [])) + [imp]
     _file_general_blocker_if_human(category, priority, description, owner, tool_context)
     _ = save_state_to_repo(tool_context)
@@ -845,7 +929,10 @@ def add_impediment(description: str, owner: str, category: str, priority: str = 
         result["warning"] = warning
     return result
 
-def add_retro_action(action: str, owner: str, success_metric: str, category: str, priority: str = "normal", tool_context=None) -> Dict[str, Any]:
+def add_retro_action(
+    action: str, owner: str, success_metric: str, category: str, priority: str = "normal",
+    duplicate_of: str | None = None, confirmed_distinct: bool = False, tool_context=None,
+) -> Dict[str, Any]:
     """
     Add an action item from retrospectives.
 
@@ -855,6 +942,14 @@ def add_retro_action(action: str, owner: str, success_metric: str, category: str
     can close), or "human" (genuinely outside the team's own authority -
     immediately raised as a general_blockers entry, escalated to the human
     if `priority="high"`). See _RETRO_CATEGORIES' own comment above.
+
+    `duplicate_of`/`confirmed_distinct` (SPEC-ISSUE-0084, only meaningful for
+    category="technical"): call list_open_issues first - if this action is
+    substantively the same finding as an already-open Issue, pass its id as
+    `duplicate_of` instead of letting a new one get filed. If it genuinely
+    isn't, but still shares keywords with one, pass `confirmed_distinct=True`
+    to say so explicitly. Omitting both when a lexical overlap exists is
+    refused outright - see _resolve_technical_duplicate.
     """
     if is_low_quality_retro_text(action) or is_low_quality_retro_text(success_metric):
         return {
@@ -876,6 +971,11 @@ def add_retro_action(action: str, owner: str, success_metric: str, category: str
             "status": "error",
             "message": f"priority must be one of {list(_RETRO_PRIORITIES)}, not {priority!r}.",
         }
+    if (duplicate_of or confirmed_distinct) and category != "technical":
+        return {
+            "status": "error",
+            "message": "duplicate_of/confirmed_distinct only apply to category='technical' findings.",
+        }
     s = tool_context.state
     sprint_number = s.get("sprint_number", 0)
     entry = {
@@ -888,9 +988,14 @@ def add_retro_action(action: str, owner: str, success_metric: str, category: str
     }
     warning = None
     if category == "technical":
-        warning, recurs_since_sprint = _technical_category_nudge(action, s.get("retro_actions", []), sprint_number, "action")
-        # SPEC-ISSUE-0081: see _technical_category_nudge's own docstring.
-        entry["recurs_since_sprint"] = recurs_since_sprint
+        error, extra, warning = _resolve_technical_duplicate(
+            action, s.get("retro_actions", []), sprint_number, "action",
+            duplicate_of, confirmed_distinct, tool_context,
+        )
+        if error:
+            return error
+        # SPEC-ISSUE-0081/0084: see _technical_category_nudge's own docstring.
+        entry.update(extra)
     s["retro_actions"] = list(s.get("retro_actions", [])) + [entry]
     _file_general_blocker_if_human(category, priority, action, owner, tool_context)
     _ = save_state_to_repo(tool_context)
@@ -927,6 +1032,25 @@ def record_human_approval(approval_type: str, note: str = "", tool_context=None)
     entry = {"type": approval_type, "note": note.strip()}
     s["human_approvals"] = list(s.get("human_approvals", [])) + [entry]
     _ = save_state_to_repo(tool_context)
+
+    # Dashboard "stuck on waiting for confirmation" bug: advance_story_stage's
+    # Implemented gate and create_release_pr's release gate each call
+    # record_blocking_interaction(kind="approval", ...) when they refuse for
+    # lack of this very approval, but neither captures the returned
+    # interaction's id to resolve it later - so blocking_interactions stayed
+    # `resolved: false` forever, even once the approval that satisfies it
+    # actually landed right here. Both gates word their summary/detail
+    # identically ("... a '{approval_type}' human approval ..."), which is
+    # the only thing tying a blocking interaction back to the approval_type
+    # that resolves it - match on that instead of an id neither gate kept.
+    from .notifications import resolve_blocking_interaction
+    marker = f"'{approval_type}' human approval"
+    for interaction in s.get("blocking_interactions", []) or []:
+        if interaction.get("resolved") or interaction.get("kind") != "approval":
+            continue
+        if marker in interaction.get("summary", "") or marker in interaction.get("detail", ""):
+            resolve_blocking_interaction(interaction["id"], tool_context=tool_context)
+
     return {"status": "ok", "approval": entry}
 
 def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:

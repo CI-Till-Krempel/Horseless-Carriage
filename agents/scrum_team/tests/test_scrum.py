@@ -348,6 +348,138 @@ class TestScrumTools(unittest.TestCase):
         result = add_retro_action("Improve testing", "ScrumMaster", "CI passes", category="technical", tool_context=tool_context)
         self.assertIsNone(result["retro_action"]["recurs_since_sprint"])
 
+    def test_duplicate_of_a_valid_open_issue_bumps_recurrence_instead_of_filing_new(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0084): the primary fix - an explicit,
+        checked decision at filing time instead of a post-hoc keyword guess.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0003", "type": "Issue", "status": "Ready", "title": "x"},
+        ]
+        result = add_retro_action(
+            "Ensure all stories are successfully planned and implemented before budget limits",
+            "DevTeam", "Zero recurrence of this finding next sprint.", category="technical",
+            duplicate_of="SPEC-ISSUE-0003", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["retro_action"]["issue_id"], "SPEC-ISSUE-0003")
+        self.assertEqual(result["retro_action"]["duplicate_of"], "SPEC-ISSUE-0003")
+        issue = next(x for x in tool_context.state["product_backlog"] if x["id"] == "SPEC-ISSUE-0003")
+        self.assertEqual(issue["recurrence_count"], 1)
+
+    def test_duplicate_of_a_non_open_issue_is_refused(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        result = add_retro_action(
+            "Some finding worth a full sentence of description here",
+            "DevTeam", "Zero recurrence of this finding next sprint.", category="technical",
+            duplicate_of="SPEC-ISSUE-9999", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("currently-open Issue", result["message"])
+
+    def test_undeclared_lexical_duplicate_of_an_open_issue_is_hard_blocked(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0084): this project has already been
+        burned once by trusting an unverified self-assessment here (SPEC-
+        ISSUE-0081's equivalent warning was advisory-only prose a cheap
+        model simply proceeded past) - a lexical match against an OPEN Issue
+        with no explicit duplicate_of decision must be refused outright, not
+        just warned about.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_number"] = 3
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0003", "type": "Issue", "status": "Ready", "title": "x"},
+        ]
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure continued alignment between Dev Team and QA on API response types during story planning and test fixture setup",
+                "category": "technical", "sprint_number": 2, "issue_id": "SPEC-ISSUE-0003", "status": "open",
+            },
+        ]
+        result = add_retro_action(
+            "Ensure continued alignment on API response types during planning",
+            "DevTeam", "Zero recurrence of this finding next sprint.", category="technical", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("SPEC-ISSUE-0003", result["message"])
+        self.assertEqual(len(tool_context.state["retro_actions"]), 1)
+
+    def test_confirmed_distinct_overrides_the_lexical_block(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_number"] = 3
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0003", "type": "Issue", "status": "Ready", "title": "x"},
+        ]
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure continued alignment between Dev Team and QA on API response types during story planning and test fixture setup",
+                "category": "technical", "sprint_number": 2, "issue_id": "SPEC-ISSUE-0003", "status": "open",
+            },
+        ]
+        result = add_retro_action(
+            "Ensure continued alignment on API response types during planning",
+            "DevTeam", "Zero recurrence of this finding next sprint.", category="technical",
+            confirmed_distinct=True, tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["retro_action"]["confirmed_distinct_from"], "SPEC-ISSUE-0003")
+
+    def test_no_block_when_the_earlier_matching_issue_is_already_resolved(self):
+        """A lexical overlap with an entry whose own Issue already reached
+        Accepted doesn't block - that finding was genuinely resolved, so a
+        fresh one sharing its keywords may legitimately be new work."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_number"] = 3
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0003", "type": "Issue", "status": "Accepted", "title": "x"},
+        ]
+        tool_context.state["retro_actions"] = [
+            {
+                "action": "Ensure continued alignment between Dev Team and QA on API response types during story planning and test fixture setup",
+                "category": "technical", "sprint_number": 2, "issue_id": "SPEC-ISSUE-0003", "status": "open",
+            },
+        ]
+        result = add_retro_action(
+            "Ensure continued alignment on API response types during planning",
+            "DevTeam", "Zero recurrence of this finding next sprint.", category="technical", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+
+    def test_duplicate_of_rejected_for_a_non_technical_category(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0003", "type": "Issue", "status": "Ready", "title": "x"},
+        ]
+        result = add_retro_action(
+            "A role-behavior finding worth a full sentence here", "DevTeam", "Zero recurrence of this finding next sprint.",
+            category="steering", duplicate_of="SPEC-ISSUE-0003", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("only apply to category", result["message"])
+
+    def test_add_impediment_supports_duplicate_of_the_same_way(self):
+        """add_impediment mirrors add_retro_action's duplicate_of handling -
+        same _resolve_technical_duplicate helper, different text field."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0003", "type": "Issue", "status": "Ready", "title": "x"},
+        ]
+        result = add_impediment(
+            "A concrete impediment worth a full sentence of description here",
+            "Architect", category="technical", duplicate_of="SPEC-ISSUE-0003", tool_context=tool_context,
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["impediment"]["issue_id"], "SPEC-ISSUE-0003")
+
     def test_record_human_approval(self):
         """
         Acceptance Criteria (SPEC-ISSUE-0001): a human approval event is recorded
@@ -375,6 +507,79 @@ class TestScrumTools(unittest.TestCase):
         result = record_human_approval("budget", "Approved sprint budget", tool_context=tool_context)
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tool_context.state["human_approvals"][0]["type"], "budget")
+
+    def test_record_human_approval_resolves_the_blocking_interaction_it_satisfies(self):
+        """
+        Dashboard bug: advance_story_stage's Implemented gate and
+        create_release_pr's release gate each raise a kind="approval"
+        blocking_interaction when the required approval hasn't been recorded
+        yet, but neither captures the returned interaction's id to resolve
+        it later - so the dashboard's blocking-interaction-derived status
+        badge stayed stuck on "waiting for confirmation" forever, even once
+        the approval that satisfies it actually lands right here.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["blocking_interactions"] = [{
+            "id": 1,
+            "kind": "approval",
+            "summary": "Story 'US-0001' is waiting on a 'sprint' human approval before it can be marked Implemented.",
+            "detail": "Cannot mark a story Implemented - this interaction level requires a fresh 'sprint' human approval for this sprint.",
+            "resolved": False,
+            "resolved_at": None,
+        }]
+        result = record_human_approval("sprint", "Reviewed goal and backlog", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        interaction = tool_context.state["blocking_interactions"][0]
+        self.assertTrue(interaction["resolved"])
+        self.assertIsNotNone(interaction["resolved_at"])
+
+    def test_record_human_approval_does_not_resolve_a_different_approval_type(self):
+        """A 'sprint' approval must not clear a still-pending 'release' gate's
+        blocking interaction - only the approval_type actually named in the
+        interaction's own summary/detail resolves it."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["blocking_interactions"] = [{
+            "id": 1,
+            "kind": "approval",
+            "summary": "Release PR 'v0.2.0' is waiting on a 'release' human approval.",
+            "detail": "Cannot create a release PR - this interaction level requires a fresh 'release' human approval for this increment.",
+            "resolved": False,
+            "resolved_at": None,
+        }]
+        record_human_approval("sprint", "Reviewed goal and backlog", tool_context=tool_context)
+        self.assertFalse(tool_context.state["blocking_interactions"][0]["resolved"])
+
+    def test_record_human_approval_does_not_resolve_an_already_resolved_or_non_approval_interaction(self):
+        """Resolution must only ever target unresolved, kind="approval"
+        entries - never re-touch an already-resolved one (resolve_blocking_
+        interaction errors on that) or a different kind (e.g. "stalled")
+        that happens to mention similar wording."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["blocking_interactions"] = [
+            {
+                "id": 1,
+                "kind": "approval",
+                "summary": "Story 'US-0001' is waiting on a 'sprint' human approval before it can be marked Implemented.",
+                "detail": "",
+                "resolved": True,
+                "resolved_at": "2026-01-01T00:00:00+00:00",
+            },
+            {
+                "id": 2,
+                "kind": "stalled",
+                "summary": "Team stalled waiting on a 'sprint' human approval, apparently.",
+                "detail": "",
+                "resolved": False,
+                "resolved_at": None,
+            },
+        ]
+        result = record_human_approval("sprint", "Reviewed goal and backlog", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["blocking_interactions"][0]["resolved_at"], "2026-01-01T00:00:00+00:00")
+        self.assertFalse(tool_context.state["blocking_interactions"][1]["resolved"])
 
     def test_update_roadmap_records_touched_path(self):
         """

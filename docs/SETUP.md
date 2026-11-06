@@ -265,7 +265,12 @@ This starts the same `db` + `litellm` + `agent` services as `docker-compose.yaml
   container pays the full model-load time again after every 5 minutes of idle time. Since this
   container serves one model to this one team continuously, `-1` (never unload) is the right default
   here; only lower it if you're sharing this Ollama instance with other, bursty workloads too where
-  freeing the memory between uses is actually desired.
+  freeing the memory between uses is actually desired. In [host mode](#gpu-support) (Ollama running
+  natively instead of in a container) there's no dockerized `ollama` service for this env var to
+  reach, so `setup_llm.py` instead writes
+  `OLLAMA_KEEP_ALIVE`'s value into each role's `litellm_params.keep_alive` in
+  `config/model-templates/litellm.local-ollama.yaml` - a per-request field LiteLLM forwards straight to
+  the host's native Ollama daemon, regardless of how it was started.
 - **CPU/RAM**: `docker-compose.local.yaml` deliberately sets no `deploy.resources.limits` on the
   `ollama` service, so it isn't artificially capped by this repo's own configuration - by default a
   container can already use as much CPU/RAM as Docker Desktop's own VM is allocated. If Ollama still
@@ -395,6 +400,18 @@ inside a generated test, whatever - fails outright, not silently through to some
 - **Test coverage**: `tests/test_network_isolation.py` asserts the network topology (agent-net is
   `internal: true`, `agent` is on it alone, `litellm`/`net-proxy` bridge both networks, the
   allowlist file's exact contents) across all three compose files, so this can't silently regress.
+- **Optional: routing `litellm` through your own corporate proxy** - "unrestricted egress" above
+  means *this project* doesn't restrict it; your network might still. If `docker compose logs
+  litellm` shows `LiteLLM: Failed to fetch remote model cost map from
+  https://raw.githubusercontent.com/...: 403 Filtered. Falling back to local backup.`, that's a web
+  filter/SWG on your network specifically blocking that CDN (other provider calls can go through
+  fine - this is just litellm's own startup fetch of its pricing table). It's a harmless warning
+  either way (litellm falls back to the pricing table bundled with its image), but you can resolve
+  it properly by setting `LITELLM_HTTP_PROXY`/`LITELLM_HTTPS_PROXY`/`LITELLM_NO_PROXY` in `.env`
+  (see `.env.example`) - these get passed straight through as `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+  on the `litellm` container only, unset/no-op by default. Or set `LITELLM_LOCAL_MODEL_COST_MAP=true`
+  to skip the remote fetch outright and always use the bundled pricing table, which silences the
+  warning instead of routing around it.
 
 ## Human Interaction Levels
 
