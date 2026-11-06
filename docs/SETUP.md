@@ -265,7 +265,12 @@ This starts the same `db` + `litellm` + `agent` services as `docker-compose.yaml
   container pays the full model-load time again after every 5 minutes of idle time. Since this
   container serves one model to this one team continuously, `-1` (never unload) is the right default
   here; only lower it if you're sharing this Ollama instance with other, bursty workloads too where
-  freeing the memory between uses is actually desired.
+  freeing the memory between uses is actually desired. In [host mode](#gpu-support) (Ollama running
+  natively instead of in a container) there's no dockerized `ollama` service for this env var to
+  reach, so `setup_llm.py` instead writes
+  `OLLAMA_KEEP_ALIVE`'s value into each role's `litellm_params.keep_alive` in
+  `config/model-templates/litellm.local-ollama.yaml` - a per-request field LiteLLM forwards straight to
+  the host's native Ollama daemon, regardless of how it was started.
 - **CPU/RAM**: `docker-compose.local.yaml` deliberately sets no `deploy.resources.limits` on the
   `ollama` service, so it isn't artificially capped by this repo's own configuration - by default a
   container can already use as much CPU/RAM as Docker Desktop's own VM is allocated. If Ollama still
