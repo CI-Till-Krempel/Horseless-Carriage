@@ -395,6 +395,18 @@ inside a generated test, whatever - fails outright, not silently through to some
 - **Test coverage**: `tests/test_network_isolation.py` asserts the network topology (agent-net is
   `internal: true`, `agent` is on it alone, `litellm`/`net-proxy` bridge both networks, the
   allowlist file's exact contents) across all three compose files, so this can't silently regress.
+- **Optional: routing `litellm` through your own corporate proxy** - "unrestricted egress" above
+  means *this project* doesn't restrict it; your network might still. If `docker compose logs
+  litellm` shows `LiteLLM: Failed to fetch remote model cost map from
+  https://raw.githubusercontent.com/...: 403 Filtered. Falling back to local backup.`, that's a web
+  filter/SWG on your network specifically blocking that CDN (other provider calls can go through
+  fine - this is just litellm's own startup fetch of its pricing table). It's a harmless warning
+  either way (litellm falls back to the pricing table bundled with its image), but you can resolve
+  it properly by setting `LITELLM_HTTP_PROXY`/`LITELLM_HTTPS_PROXY`/`LITELLM_NO_PROXY` in `.env`
+  (see `.env.example`) - these get passed straight through as `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`
+  on the `litellm` container only, unset/no-op by default. Or set `LITELLM_LOCAL_MODEL_COST_MAP=true`
+  to skip the remote fetch outright and always use the bundled pricing table, which silences the
+  warning instead of routing around it.
 
 ## Human Interaction Levels
 
