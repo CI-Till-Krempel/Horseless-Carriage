@@ -29,6 +29,7 @@ import html
 import io
 import json
 import subprocess
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -43,6 +44,7 @@ import project_registry
 
 _STACK_ACTION_TIMEOUT_SECS = 300
 _REACHABILITY_CHECK_TIMEOUT_SECS = 2
+_RELEASE_CACHE_TTL_SECS = 60
 
 
 def _url_reachable(url: str, timeout_secs: float = _REACHABILITY_CHECK_TIMEOUT_SECS) -> bool:
@@ -111,6 +113,81 @@ def _product_version(target_repo: Path) -> str:
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip()
     return "unknown"
+
+
+def _git_short_commit(repo_path: Path) -> str:
+    """Short HEAD commit hash of the git checkout at repo_path - used for
+    both hc_commit (hc_path, this project's HC checkout - distinct from
+    hc_version, the VERSION file contents recorded into state.json from
+    *inside* the agent container, where .git is deliberately excluded from
+    the image, see .dockerignore/GH issue #123 and base.py's _hc_version
+    docstring) and, as a fallback, product_commit (target_repo, when it has
+    no GitHub release yet to read a commit from instead). dashboard.py
+    itself runs on the host, where both repos' .git are directly available,
+    so this reads it straight from there - same host-side `git rev-parse`
+    pattern as run_adk_eval.py's hc_version_and_commit - rather than needing
+    an HC_COMMIT_SHA env var."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        return None
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+    return None
+
+
+_release_cache = {}
+
+
+def _cached_latest_release(owner: str, repo: str, env: dict) -> dict:
+    """lib_github.latest_release(), cached per (owner, repo) for
+    _RELEASE_CACHE_TTL_SECS. This page auto-refreshes every 10s (see
+    _render_page's own <meta refresh>) for every registered project, and
+    _doctor_items already runs doctor.check() in skip_llm_probe=True mode
+    specifically to avoid paying for a live GitHub network call on every one
+    of those refreshes (see its own docstring) - querying GitHub's releases
+    API that often would reintroduce exactly the cost that guards against,
+    and risks tripping GitHub's rate limit. Token resolution (which, for a
+    GitHub App, itself mints a token over the network) is likewise only
+    attempted on a cache miss, not on every render."""
+    key = (owner, repo)
+    now = time.time()
+    cached = _release_cache.get(key)
+    if cached and now - cached[0] < _RELEASE_CACHE_TTL_SECS:
+        return cached[1]
+    token, _source = lib_github.resolve_token(env)
+    release = lib_github.latest_release(owner, repo, token) if token else None
+    _release_cache[key] = (now, release)
+    return release
+
+
+def _product_version_and_commit(target_repo: Path, owner_repo, hc_env: dict) -> tuple:
+    """(version, short_commit) for the Product Version column, in the same
+    "X.Y.Z (abcdef1)" display format as hc_version/hc_commit. Prefers the
+    latest published GitHub release (what actually shipped) over the
+    checkout's local VERSION file/HEAD when a release exists and GitHub
+    access is configured, since the checkout can be ahead of the last
+    release (e.g. mid-sprint commits not yet released) - falls back to the
+    local VERSION file + target_repo's own HEAD otherwise (no release yet,
+    or no GitHub access configured)."""
+    if owner_repo:
+        release = _cached_latest_release(owner_repo[0], owner_repo[1], hc_env)
+        if release and release.get("tag_name"):
+            commit_sha = release.get("commit_sha")
+            # Tags are cut as "vX.Y.Z" (agents/scrum_team/tools/github.py's
+            # gh_release_create) but the VERSION file - and this column,
+            # pre-release - has always read "X.Y.Z" with no "v"; strip it so
+            # the column doesn't change shape the moment a project ships
+            # its first release.
+            version = release["tag_name"][1:] if release["tag_name"].startswith("v") else release["tag_name"]
+            return version, (commit_sha[:8] if commit_sha else None)
+
+    version = _product_version(target_repo) if target_repo.is_dir() else "unknown"
+    commit = _git_short_commit(target_repo) if target_repo.is_dir() else None
+    return version, commit
 
 
 def _compose_args(hc_path: Path) -> list:
@@ -239,7 +316,8 @@ def project_snapshot(entry: dict) -> dict:
     # unresolved interaction's own summary instead of leaving it a dead end.
     blocking_summary = blocking[-1].get("summary", "") if blocking else ""
 
-    product_version = _product_version(target_repo) if target_repo.is_dir() else "unknown"
+    hc_env = lib_env.load_env_file(hc_path / ".env")
+    product_version, product_commit = _product_version_and_commit(target_repo, owner_repo, hc_env)
     # agents/scrum_team/tools/scrum.py's init_scrum_state sets this to
     # _hc_version() (the Horseless Carriage checkout's own VERSION file) on
     # every session, persisted into REPO_STATE_KEYS alongside everything
@@ -248,6 +326,12 @@ def project_snapshot(entry: dict) -> dict:
     # this is which version of the tooling itself actually produced this
     # sprint's data, independent of which product it's driving.
     hc_version = state_data.get("hc_version") or "unknown"
+    # GH issue: the dashboard showed hc_version alone (e.g. "1.0.0"), which
+    # doesn't pin down *which* commit at that version actually produced a
+    # given sprint's data between releases - hc_commit is this project's HC
+    # checkout's current commit (read host-side, see _git_short_commit),
+    # displayed alongside it as "1.0.0 (e83912ed)".
+    hc_commit = _git_short_commit(hc_path) if hc_path.is_dir() else None
 
     return {
         "name": name,
@@ -271,7 +355,9 @@ def project_snapshot(entry: dict) -> dict:
         # callback) - the dashboard previously just never read this field.
         "current_usd_spend": budgets.get("current_usd_spend"),
         "product_version": product_version,
+        "product_commit": product_commit,
         "hc_version": hc_version,
+        "hc_commit": hc_commit,
         "litellm_port": litellm_port,
         "agent_web_port": agent_web_port,
         "litellm_reachable": litellm_reachable,
@@ -459,6 +545,12 @@ def _render_page(message: str = "") -> str:
             f"<a href='{e(snap['github_prs_url'])}' target='_blank'>PRs &rarr;</a>"
             if snap.get("github_prs_url") else "<em>not configured</em>"
         )
+        product_version_html = e(snap["product_version"])
+        if snap.get("product_commit"):
+            product_version_html += f" ({e(snap['product_commit'])})"
+        hc_version_html = e(snap["hc_version"])
+        if snap.get("hc_commit"):
+            hc_version_html += f" ({e(snap['hc_commit'])})"
         rows.append(
             "<tr>"
             f"<td>{e(snap['name'])}</td>"
@@ -467,8 +559,8 @@ def _render_page(message: str = "") -> str:
             f"<td>{e(snap['interaction_level'])}</td>"
             f"<td>{sprint_goal_html}</td>"
             f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {e(spend_str)} / {usd} budget</td>"
-            f"<td>{e(snap['product_version'])}</td>"
-            f"<td>{e(snap['hc_version'])}</td>"
+            f"<td>{product_version_html}</td>"
+            f"<td>{hc_version_html}</td>"
             f"<td>{github_html}</td>"
             f"<td>{_doctor_badge(snap['doctor_items'])}</td>"
             f"<td>{ports_html} / {web_html}</td>"

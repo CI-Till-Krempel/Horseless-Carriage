@@ -137,3 +137,40 @@ class TestCheckBranchExists:
         assert "does not exist" not in detail
         assert "could not check" in detail
         assert "403" in detail
+
+
+class TestLatestRelease:
+    def test_returns_tag_and_resolved_commit_sha(self, monkeypatch):
+        responses = iter([
+            (200, json.dumps({"tag_name": "v1.0.0"})),
+            (200, json.dumps({"sha": "e83912ed1234567890abcdef1234567890abcdef"})),
+        ])
+        calls = []
+
+        def fake_get(path, token):
+            calls.append(path)
+            return next(responses)
+        monkeypatch.setattr(lib_github, "_api_get", fake_get)
+
+        release = lib_github.latest_release("example", "example", "tok")
+
+        assert release == {"tag_name": "v1.0.0", "commit_sha": "e83912ed1234567890abcdef1234567890abcdef"}
+        assert calls == [
+            "/repos/example/example/releases/latest",
+            "/repos/example/example/commits/v1.0.0",
+        ]
+
+    def test_no_releases_returns_none(self, monkeypatch):
+        monkeypatch.setattr(lib_github, "_api_get", lambda path, token: (404, "Not Found"))
+        assert lib_github.latest_release("example", "example", "tok") is None
+
+    def test_commit_lookup_failure_still_returns_tag_with_no_commit(self, monkeypatch):
+        responses = iter([
+            (200, json.dumps({"tag_name": "v1.0.0"})),
+            (403, "forbidden"),
+        ])
+        monkeypatch.setattr(lib_github, "_api_get", lambda path, token: next(responses))
+
+        release = lib_github.latest_release("example", "example", "tok")
+
+        assert release == {"tag_name": "v1.0.0", "commit_sha": None}
