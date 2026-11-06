@@ -4,7 +4,29 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # Runs on every PR too, not just release tags - this is the whole point of
+  # it being ~10 short, cheap-model, scripted single/few-turn conversations
+  # (see adk_eval_command's KNOWN_FLAKY_EVAL_IDS exclusion below for how it
+  # stays non-blocking-flake-free as a required PR gate): catching a
+  # gate-enforcement regression at PR time is far cheaper than catching it at
+  # release-tag time. A PR opened from a fork never sees this job's secrets
+  # (GitHub Actions withholds environment/repo secrets from fork-triggered
+  # pull_request runs by design) - the job still runs, it just fails fast at
+  # the LiteLLM-not-ready step instead of silently skipping, which is
+  # acceptable here since this repo's actual contribution flow is
+  # same-repo branches, not forks.
+  pull_request: {}
   workflow_dispatch: {}
+
+# Cancel a still-running eval for an older push to the same PR - this job
+# spins up real Docker services and spends real Gemini tokens per run, so a
+# developer pushing 3 times in a minute shouldn't pay for 3 full runs when
+# only the latest commit's result matters. Release-tag/workflow_dispatch
+# runs (no pull_request number) always get a unique group, so cancellation
+# never touches those.
+concurrency:
+  group: adk-eval-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   adk-eval:
@@ -14,12 +36,13 @@ jobs:
     # across 5 sprints, gated behind a maintainer-approved "eval-approval"
     # environment), this eval set is ~10 short, scripted single/few-turn
     # conversations against a cheap Gemini model (eval/adk/litellm.ci.yaml)
-    # - cheap and fast enough to run automatically on every release tag as a
-    # regression gate, with no manual approval step. Still uses its own
-    # "adk-eval" environment (created with zero protection rules, unlike
-    # "eval-approval") rather than repo-level secrets, purely to scope
-    # GOOGLE_API_KEY/LITELLM_MASTER_KEY to this one workflow instead of
-    # exposing them repo-wide.
+    # - cheap and fast enough to run automatically on every release tag (and
+    # every PR, see the `on:` block above) as a regression gate, with no
+    # manual approval step. Still uses its own "adk-eval" environment
+    # (created with zero protection rules, unlike "eval-approval") rather
+    # than repo-level secrets, purely to scope GOOGLE_API_KEY/
+    # LITELLM_MASTER_KEY to this one workflow instead of exposing them
+    # repo-wide.
     environment: adk-eval
     steps:
       - uses: actions/checkout@v4

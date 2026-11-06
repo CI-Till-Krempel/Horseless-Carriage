@@ -172,10 +172,10 @@ class TestParseEvalCaseStatuses:
     Acceptance Criteria: `adk eval --print_detailed_results`'s own console
     output prints "Eval Id: <id>" immediately followed by "Overall Eval
     Status: PASSED|FAILED" for every case (see the real, installed
-    cli_eval.pretty_print_eval_result) - print_known_flaky_retry_annotation
-    needs to read that back out of a captured supplementary retry run's
-    stdout, with no machine-readable result format `adk eval` actually
-    provides.
+    cli_eval.pretty_print_eval_result) -
+    run_known_flaky_eval_ids_informationally needs to read that back out of
+    a captured run's stdout, with no machine-readable result format `adk
+    eval` actually provides.
     """
 
     def test_single_passed_case(self):
@@ -202,13 +202,32 @@ class TestParseEvalCaseStatuses:
         assert run_adk_eval.parse_eval_case_statuses(output) == {}
 
 
-class TestKnownFlakyRetryAnnotation:
+class TestLoadEvalCaseIds:
+    def test_returns_eval_ids_in_file_order(self, tmp_path):
+        path = tmp_path / "evalset.json"
+        path.write_text(json.dumps({
+            "eval_set_id": "x",
+            "eval_cases": [{"eval_id": "case_b"}, {"eval_id": "case_a"}],
+        }))
+        assert run_adk_eval.load_eval_case_ids(str(path)) == ["case_b", "case_a"]
+
+    def test_empty_eval_cases_returns_empty_list(self, tmp_path):
+        path = tmp_path / "evalset.json"
+        path.write_text(json.dumps({"eval_set_id": "x", "eval_cases": []}))
+        assert run_adk_eval.load_eval_case_ids(str(path)) == []
+
+
+class TestRunKnownFlakyEvalIdsInformationally:
     """
-    Acceptance Criteria: annotate-only - print_known_flaky_retry_annotation
-    runs a supplementary retry of KNOWN_FLAKY_EVAL_IDS and prints how each
-    one scored, but must never influence the caller's own exit code (main()
-    never reads this function's return value or the subprocess result it
-    captures for anything but printing).
+    Acceptance Criteria: informational-only -
+    run_known_flaky_eval_ids_informationally runs KNOWN_FLAKY_EVAL_IDS
+    separately from the blocking run (which excludes them entirely - see
+    main()'s required_ids) and prints how each one scored, but must never
+    influence the caller's own exit code (main() never reads this
+    function's return value or the subprocess result it captures for
+    anything but printing) - this is what lets a live-model-variance case
+    sit in a required PR gate (adk-eval.yml's `pull_request` trigger)
+    without ever blocking a PR.
     """
 
     def test_reruns_only_the_known_flaky_eval_ids(self, monkeypatch, capsys):
@@ -226,7 +245,7 @@ class TestKnownFlakyRetryAnnotation:
 
         monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
 
-        run_adk_eval.print_known_flaky_retry_annotation(["-p", "horseless-carriage-eval"], ".env", {}, False)
+        run_adk_eval.run_known_flaky_eval_ids_informationally(["-p", "horseless-carriage-eval"], ".env", {}, False)
 
         eval_arg = next(a for a in captured_cmd["cmd"] if a.startswith("eval/adk/scrum_team.evalset.generated.json:"))
         rerun_ids = set(eval_arg.split(":", 1)[1].split(","))
@@ -242,7 +261,7 @@ class TestKnownFlakyRetryAnnotation:
 
         monkeypatch.setattr(run_adk_eval.subprocess, "run", lambda cmd, **kwargs: FakeResult())
 
-        run_adk_eval.print_known_flaky_retry_annotation([], ".env", {}, False)
+        run_adk_eval.run_known_flaky_eval_ids_informationally([], ".env", {}, False)
 
         out = capsys.readouterr().out
         assert "UNKNOWN" in out
@@ -259,7 +278,7 @@ class TestKnownFlakyRetryAnnotation:
 
         monkeypatch.setattr(run_adk_eval.subprocess, "run", fake_run)
 
-        run_adk_eval.print_known_flaky_retry_annotation([], ".env", {}, True)
+        run_adk_eval.run_known_flaky_eval_ids_informationally([], ".env", {}, True)
 
         cmd = captured_cmd["cmd"]
         assert "-e" in cmd
@@ -610,9 +629,14 @@ class TestBuildEvalSetWithRealKeys:
         for case in data["eval_cases"]:
             assert case["session_input"]["state"]["litellm_keys"] == real_keys
 
-    def test_leaves_no_key_fixture_cases_untouched(self, tmp_path):
-        no_key_id = next(iter(run_adk_eval.NO_KEY_FIXTURE_EVAL_IDS))
-        template = self._write_template(tmp_path, [(no_key_id, {})])
+    def test_leaves_no_key_fixture_cases_untouched(self, tmp_path, monkeypatch):
+        # NO_KEY_FIXTURE_EVAL_IDS is currently empty (the one case that
+        # needed it was removed - see eval/adk/README.md's "Removed:
+        # sub_agent_blocked_without_budget_capped_virtual_key") - monkeypatch
+        # in a synthetic id so this exemption mechanism itself still stays
+        # covered for whenever a future case needs it again.
+        monkeypatch.setattr(run_adk_eval, "NO_KEY_FIXTURE_EVAL_IDS", {"some_no_key_case"})
+        template = self._write_template(tmp_path, [("some_no_key_case", {})])
         output = tmp_path / "generated.json"
 
         run_adk_eval.build_eval_set_with_real_keys(str(template), str(output), {"DevTeam": "sk-real-dev"})
@@ -819,6 +843,25 @@ class TestMain:
     def _isolate(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr(run_adk_eval.os, "chdir", lambda _path: None)
+        # main() now reads EVAL_SET_PATH itself (load_eval_case_ids, to
+        # compute the blocking run's required_ids = every eval_id minus
+        # KNOWN_FLAKY_EVAL_IDS) before any docker command runs - a minimal
+        # real file here keeps every test below (which predate this step)
+        # from needing to know or care about it, the same way
+        # prepare_scratch_state_repo is no-op'd above for tests that predate
+        # it. Includes one real flaky id so required_ids-filtering tests can
+        # assert it's actually excluded from the blocking run's command.
+        eval_dir = tmp_path / "eval" / "adk"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        flaky_id = next(iter(run_adk_eval.KNOWN_FLAKY_EVAL_IDS))
+        (eval_dir / "scrum_team.evalset.json").write_text(json.dumps({
+            "eval_set_id": "x",
+            "eval_cases": [
+                {"eval_id": "case_required_a", "session_input": {"state": {}}},
+                {"eval_id": "case_required_b", "session_input": {"state": {}}},
+                {"eval_id": flaky_id, "session_input": {"state": {}}},
+            ],
+        }))
         # hc_version_and_commit() shells out to `git` - unrelated to what
         # these tests exercise, and would otherwise be swept up by the
         # docker-focused subprocess.run monkeypatches below.
@@ -854,9 +897,10 @@ class TestMain:
         class FakeResult:
             def __init__(self, code):
                 self.returncode = code
-                # print_known_flaky_retry_annotation's capture_output=True
-                # call reads .stdout - empty is fine for tests that don't
-                # care about its parsed content, just that the call happens.
+                # run_known_flaky_eval_ids_informationally's
+                # capture_output=True call reads .stdout - empty is fine for
+                # tests that don't care about its parsed content, just that
+                # the call happens.
                 self.stdout = ""
                 self.stderr = ""
 
@@ -948,13 +992,18 @@ class TestMain:
 
         # Acceptance Criteria: the eval stack must be torn down after the run,
         # not just brought up and left running (`restart: unless-stopped` +
-        # no teardown previously meant every run leaked containers).
-        assert len(calls) == 3
+        # no teardown previously meant every run leaked containers). 4, not
+        # 3: up, run (required ids only), the informational flaky-ids run
+        # (always runs now, pass or fail - see
+        # run_known_flaky_eval_ids_informationally), down.
+        assert len(calls) == 4
         assert calls[0][-3:] == ["up", "-d", "db"] or "litellm" in calls[0]
         assert "run" in calls[1]
         assert run_adk_eval.EVAL_RUNNER_SHIM_PATH in calls[1]
-        assert "down" in calls[2]
-        assert "-v" not in calls[2]  # local mode keeps the pulled-model volume
+        assert "run" in calls[2]
+        assert run_adk_eval.EVAL_RUNNER_SHIM_PATH in calls[2]
+        assert "down" in calls[3]
+        assert "-v" not in calls[3]  # local mode keeps the pulled-model volume
 
     def test_ci_teardown_removes_volumes(self, tmp_path, monkeypatch):
         self._isolate(tmp_path, monkeypatch)
@@ -970,7 +1019,7 @@ class TestMain:
         except SystemExit as e:
             assert e.code == 0
 
-        assert "-v" in calls[2]  # ephemeral CI runner - matches eval.yml's own `down -v`
+        assert "-v" in calls[3]  # ephemeral CI runner - matches eval.yml's own `down -v`
 
     def test_default_run_does_not_force_debug_log_level(self, tmp_path, monkeypatch):
         """
@@ -1151,7 +1200,7 @@ class TestMain:
             assert e.code == 0
 
         assert ollama_wait_calls == []
-        assert len(calls) == 3  # up, run, down - eval still actually ran
+        assert len(calls) == 4  # up, run, informational flaky-ids run, down - eval still actually ran
 
     def test_host_ollama_mode_runs_full_lifecycle_without_dockerized_ollama_wait(self, tmp_path, monkeypatch):
         """
@@ -1193,7 +1242,8 @@ class TestMain:
         assert calls[0] == ["ollama", "list"]
         assert "docker-compose.local-hostollama.yaml" in calls[1]
         assert "run" in calls[2] and run_adk_eval.EVAL_RUNNER_SHIM_PATH in calls[2]
-        assert "down" in calls[3]
+        assert "run" in calls[3] and run_adk_eval.EVAL_RUNNER_SHIM_PATH in calls[3]
+        assert "down" in calls[4]
         assert "-v" not in calls[3]  # host-ollama mode keeps host-managed volumes/state alone
 
     def test_host_ollama_preflight_failure_exits_before_any_docker_call(self, tmp_path, monkeypatch):
@@ -1250,17 +1300,18 @@ class TestMain:
     def test_eval_failure_exit_code_propagates_after_teardown(self, tmp_path, monkeypatch):
         """Acceptance Criteria: teardown must never swallow the eval's own
         pass/fail signal - a CI job needs main() to still exit non-zero when
-        the eval set itself reports failures, even though a `down` call (and,
-        since the eval failed, the known-flaky-cases retry annotation - see
-        TestKnownFlakyRetryAnnotation) runs afterward and succeeds."""
+        the required (non-flaky) eval set itself reports failures, even
+        though a `down` call (and the informational flaky-ids run - see
+        TestRunKnownFlakyEvalIdsInformationally) runs afterward and
+        succeeds."""
         self._isolate(tmp_path, monkeypatch)
         (tmp_path / ".env").write_text("")
         monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
         monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
 
         calls = []
-        # up, run (fails), the flaky-retry annotation's own supplementary
-        # run, down - see main()'s call to print_known_flaky_retry_annotation.
+        # up, run (fails), the informational flaky-ids run, down - see
+        # main()'s call to run_known_flaky_eval_ids_informationally.
         monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls, returncodes=[0, 1, 0, 0]))
 
         try:
@@ -1273,26 +1324,28 @@ class TestMain:
         assert len(calls) == 4
         assert "down" in calls[3]
 
-    def test_no_flaky_retry_annotation_when_the_eval_passes(self, tmp_path, monkeypatch):
-        """The supplementary retry pass must only run when the main eval run
-        itself failed - it would be pure wasted cost/time on every green run
-        otherwise."""
+    def test_flaky_eval_ids_run_informationally_even_when_the_eval_passes(self, tmp_path, monkeypatch):
+        """Acceptance Criteria: the informational flaky-ids run happens pass
+        or fail, not only after a failure - it's what keeps those ids out of
+        the blocking run entirely (see main()'s required_ids) so this eval
+        set can be a required PR gate without live-model variance ever
+        failing someone's PR, while still surfacing their result every time."""
         self._isolate(tmp_path, monkeypatch)
         (tmp_path / ".env").write_text("")
         monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
         monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
 
         calls = []
-        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls, returncodes=[0, 0, 0]))
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls, returncodes=[0, 0, 0, 0]))
 
         try:
             run_adk_eval.main()
         except SystemExit as e:
             assert e.code == 0
 
-        assert len(calls) == 3  # up, run, down - no supplementary retry call
+        assert len(calls) == 4  # up, run, informational flaky-ids run, down
 
-    def test_no_flaky_retry_annotation_for_an_explicit_only_run(self, tmp_path, monkeypatch):
+    def test_no_flaky_informational_run_for_an_explicit_only_run(self, tmp_path, monkeypatch):
         """A developer who already asked for one specific case via --only
         doesn't need a second supplementary run of a different, fixed set of
         cases they didn't ask about."""
@@ -1309,5 +1362,28 @@ class TestMain:
         except SystemExit as e:
             assert e.code == 1
 
-        assert len(calls) == 3  # up, run, down - no supplementary retry call
+        assert len(calls) == 3  # up, run, down - no supplementary informational run
         assert any("some_eval_id" in arg for arg in calls[1])
+
+    def test_required_run_excludes_known_flaky_eval_ids(self, tmp_path, monkeypatch):
+        """Acceptance Criteria: the blocking run's own eval_ids suffix must
+        never include a KNOWN_FLAKY_EVAL_IDS member - that's the whole
+        mechanism that keeps this eval set non-flaky as a required PR gate."""
+        self._isolate(tmp_path, monkeypatch)
+        (tmp_path / ".env").write_text("")
+        monkeypatch.setattr(run_adk_eval.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run_adk_eval.sys, "argv", ["run_adk_eval.py"])
+
+        calls = []
+        monkeypatch.setattr(run_adk_eval.subprocess, "run", self._fake_run_recording(calls, returncodes=[0, 0, 0, 0]))
+
+        try:
+            run_adk_eval.main()
+        except SystemExit:
+            pass
+
+        eval_run_cmd = calls[1]
+        eval_arg = next(a for a in eval_run_cmd if a.startswith("eval/adk/scrum_team.evalset.generated.json:"))
+        required_ids = set(eval_arg.split(":", 1)[1].split(","))
+        assert required_ids == {"case_required_a", "case_required_b"}
+        assert required_ids.isdisjoint(run_adk_eval.KNOWN_FLAKY_EVAL_IDS)

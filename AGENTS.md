@@ -155,10 +155,11 @@ locally before opening any PR that touches `agents/scrum_team/` (tools, prompts,
 python3 run_adk_eval.py          # uses your own .env-configured provider
 ```
 
-It also runs automatically on every `v*.*.*` release tag and is available via `workflow_dispatch`
-on `.github/workflows/adk-eval.yml` for any branch - use the manual trigger to sanity-check a
-feature branch's effect on gate-enforcement behavior before merging, not just at release time. See
-[docs/EVALUATION.md](docs/EVALUATION.md) and `eval/adk/README.md`.
+It also runs automatically as a required check on every pull request and on every `v*.*.*` release
+tag, and is available via `workflow_dispatch` on `.github/workflows/adk-eval.yml` for any branch -
+use the manual trigger to sanity-check a feature branch's effect on gate-enforcement behavior before
+opening a PR, not just at release time. See [docs/EVALUATION.md](docs/EVALUATION.md) and
+`eval/adk/README.md`.
 
 ## 9. The Team Performance Evaluation is maintainer-only
 
