@@ -32,7 +32,7 @@ import subprocess
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import doctor
 import lib_docker
@@ -40,6 +40,7 @@ import lib_env
 import lib_github
 import lib_llm_test
 import project_registry
+import update_hc
 
 _STACK_ACTION_TIMEOUT_SECS = 300
 _REACHABILITY_CHECK_TIMEOUT_SECS = 2
@@ -394,6 +395,16 @@ def _render_page(message: str = "") -> str:
             if snap["state"] != "resting"
             else f"<a href='/start?hc_path={e(hc_path)}'>Start</a>"
         )
+        # GH issue: updating an installed checkout used to mean a hand-rolled
+        # `git -C horseless-carriage fetch && git checkout ...` dance outside
+        # this dashboard entirely - these call update_hc.run_update, which
+        # stops the stack first (if running), updates, rebuilds images if the
+        # update actually warrants it, and restarts (if it was running)
+        # before this redirects back here.
+        action += (
+            f"<br><a href='/update?hc_path={e(hc_path)}&channel=release'>Update (latest release)</a>"
+            f"<br><a href='/update?hc_path={e(hc_path)}&channel=main'>Update (main)</a>"
+        )
         web_url = f"http://localhost:{snap['agent_web_port']}"
         state_html = f"<span style='color:{color};font-weight:bold'>{e(snap['state'])}</span>"
         if snap["state"] == "waiting for confirmation":
@@ -480,7 +491,12 @@ def _render_page(message: str = "") -> str:
             "<tr><td colspan='12'><em>No projects registered yet - run "
             "<code>python3 new_project.py --target-repo /path/to/your-project</code> to add one.</em></td></tr>"
         )
-    message_html = f"<p style='color:#1565c0'>{html.escape(message)}</p>" if message else ""
+    # update_hc.run_update's own messages are routinely multi-line (one line
+    # per step, e.g. "Stopped." / "Updated v0.1.0 -> v0.2.0." / "Started.") -
+    # preserve that as <br>s rather than squashing it into one unreadable line.
+    message_html = (
+        f"<p style='color:#1565c0;white-space:pre-line'>{html.escape(message)}</p>" if message else ""
+    )
     return f"""<!doctype html>
 <html><head><meta http-equiv="refresh" content="10">
 <title>Horseless Carriage - Projects</title>
@@ -517,8 +533,14 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _redirect_to_root(self, message: str) -> None:
+        # update_hc.run_update's own messages are routinely multi-line (one
+        # line per step) - quote() (not html.escape, which leaves newlines
+        # and '&' as literal bytes) so a multi-line message can't break the
+        # Location header's own line framing or get parsed as extra query
+        # params; _render_page html-escapes the value again once parse_qs on
+        # the other end has decoded it back.
         self.send_response(303)
-        self.send_header("Location", f"/?msg={html.escape(message)}")
+        self.send_header("Location", f"/?msg={quote(message)}")
         self.end_headers()
 
     def do_GET(self):
@@ -527,18 +549,24 @@ class _DashboardHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/":
             self._send_html(_render_page(query.get("msg", [""])[0]))
-        elif parsed.path in ("/start", "/stop"):
+        elif parsed.path in ("/start", "/stop", "/update"):
             hc_path = query.get("hc_path", [""])[0]
             # Only ever act on a path that's actually in the registry - the
             # query param alone must not be enough to make this endpoint
-            # run `docker compose` against an arbitrary local directory.
+            # run `docker compose`/git against an arbitrary local directory.
             registered_paths = {entry.get("hc_path") for entry in project_registry.load()}
             if hc_path not in registered_paths:
                 message = "Not a registered project."
             elif parsed.path == "/start":
                 message = _start_stack(Path(hc_path))
-            else:
+            elif parsed.path == "/stop":
                 message = _stop_stack(Path(hc_path))
+            else:
+                channel = query.get("channel", ["release"])[0]
+                if channel not in update_hc.CHANNELS:
+                    message = f"Unknown update channel '{channel}'."
+                else:
+                    message = update_hc.run_update(Path(hc_path), channel=channel)
             self._redirect_to_root(message)
         else:
             self._send_html("Not found", code=404)

@@ -120,6 +120,31 @@ Like the ADK web UI/LiteLLM proxy (GH issue #239), this has **no authentication 
 binds to `127.0.0.1` by default for the same reason. Don't set `--bind-host 0.0.0.0` on a network
 you don't trust.
 
+### Updating an installed project: `update_hc.py`
+
+Each project row also has **Update (latest release)** / **Update (main)** links - the easiest way
+to pull a newer Horseless Carriage into a product repo's `horseless-carriage/` submodule. Clicking
+one:
+
+1. Cleanly stops that project's stack first, if it's running (`docker compose down`).
+2. Fetches and checks out the latest `vX.Y.Z` release tag, or the latest `main` commit - whichever
+   link you clicked.
+3. Recreates the setup if the update actually warrants it: rebuilds the `agent`/`ollama` images if
+   `requirements.txt`, a `Dockerfile`, or a compose file changed, and appends any new key
+   `.env.example` introduced (never touching one you've already set) so you know what to fill in.
+4. Restarts the stack again, if it was running before step 1.
+
+Run the same thing from the command line, from inside the submodule itself:
+
+```bash
+python3 update_hc.py                  # latest release tag (the default)
+python3 update_hc.py --channel main   # track `main` instead
+```
+
+It refuses to touch a checkout with uncommitted changes to a tracked file (pass `--force` to
+override) - untracked files (`.env`, `__pycache__`, ...) never block it, since `git checkout` never
+touches those anyway.
+
 ## 1. Guided LLM/project setup: `setup_llm.py`
 
 ```bash
@@ -190,7 +215,7 @@ for what `doctor.py` checks.
 ## Setting up on Windows
 
 All of this project's host-side tooling (`setup_all.py`, `setup_llm.py`, `setup_project.py`,
-`doctor.py`, `run.py`, `run_tests.py`, `check_state_repo.py`, `rebuild_images.py`,
+`doctor.py`, `run.py`, `run_tests.py`, `check_state_repo.py`, `rebuild_images.py`, `update_hc.py`,
 `watch_roadmap.py`) is plain stdlib Python - no bash, no WSL2 required. Docker Desktop may still use
 WSL2 internally as its own backend, but that's automatic and not something you need to set up
 yourself.

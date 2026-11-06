@@ -279,7 +279,34 @@ needed beyond what `docker-compose.yaml` already provides.
    rm -rf eval-output
    ```
 
-## 10. Where to go next
+## 10. Updating Horseless Carriage in your product repo
+
+Horseless Carriage lives in your product repo as a `horseless-carriage/` git submodule
+(`new_project.py`). Pulling a newer version in used to mean a hand-rolled `git fetch` +
+`git checkout` in that directory, with no guarantee the running stack was stopped
+first or that a changed `Dockerfile`/`requirements.txt` got rebuilt. `python3
+dashboard.py` now has an **Update** link per project — **(latest release)** or
+**(main)**, your choice — that does the whole thing in one click:
+
+1. Stops that project's stack cleanly, if it's running.
+2. Fetches and checks out the latest release tag, or the latest `main` commit.
+3. Rebuilds the `agent`/`ollama` images if the update touched something that would
+   make them stale, and adds any new `.env.example` key the update introduced (never
+   touching one you've already set, so your API keys/config are untouched).
+4. Restarts the stack again, if it was running before step 1.
+
+The same thing is available from the command line, run from inside the submodule
+itself:
+
+```bash
+python3 update_hc.py                  # latest release (the default)
+python3 update_hc.py --channel main   # track main instead
+```
+
+It won't touch a checkout with uncommitted edits to a tracked file unless you pass
+`--force` — your own local changes are never silently discarded.
+
+## 11. Where to go next
 
 - [README.md](README.md) — project overview and links to every doc below.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — architecture diagram, story-workflow pipeline.

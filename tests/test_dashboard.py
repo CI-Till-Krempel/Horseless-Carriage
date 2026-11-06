@@ -553,6 +553,17 @@ class TestRenderPage:
         assert "my-project" in page
         assert "resting" in page
 
+    def test_renders_update_links_for_both_channels(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert f"/update?hc_path={hc_path}&channel=release" in page
+        assert f"/update?hc_path={hc_path}&channel=main" in page
+
     def test_renders_the_horseless_carriage_version_used(self, tmp_path):
         """Distinct from the target repo's own Product Version column -
         this is which version of the HC tooling itself produced this
