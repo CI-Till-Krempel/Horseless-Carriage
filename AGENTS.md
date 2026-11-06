@@ -161,7 +161,52 @@ use the manual trigger to sanity-check a feature branch's effect on gate-enforce
 opening a PR, not just at release time. See [docs/EVALUATION.md](docs/EVALUATION.md) and
 `eval/adk/README.md`.
 
-## 9. The Team Performance Evaluation is maintainer-only
+## 9. A tool/agent behavior change is not done until the ADK eval reflects it
+
+`eval/adk/scrum_team.evalset.json` is a set of hand-authored, scripted conversations asserting the
+*exact* tool-call trajectory a live model should produce for one specific gate-enforcement behavior
+(see "A real, load-bearing limitation" and "These `EvalCase`s were hand-authored, not captured from
+a live run" in `eval/adk/README.md`). Unlike the mocked unit tests in `agents/scrum_team/tests/`, it
+is never type-checked against the tools it scripts - it can silently go stale (wrong tool owner,
+stale argument shape, a precondition message that no longer matches, a gate that no longer exists)
+without any local command failing, and nothing will actually catch it until a live model runs it.
+Treat any change to `agents/scrum_team/tools/*.py`, `agent.py`'s callbacks, `STAGE_OWNERS`, or any
+role's prompt/tool list in `agents/scrum_team/prompt_modules/` as carrying an obligation to check this
+evalset, the same way section 7 already requires for unit tests:
+
+- **Reassigning a tool to a different role** (e.g. GH #395 moving `create_sprint_report` from Product
+  Owner to Scrum Master) breaks every `EvalCase` that still addresses the old owner or scripts the old
+  `transfer_to_agent` target - grep `eval/adk/scrum_team.evalset.json` for the tool name and the old
+  role, and update the addressee, the expected `transfer_to_agent` call, and the `litellm_keys`
+  fixture together.
+- **Adding/renaming a parameter on an existing tool** (e.g. GH #391 adding `review_comment`/
+  `review_event` to `advance_story_stage`) risks a live model spontaneously supplying it even when a
+  case doesn't script it, which fails `tool_trajectory_avg_score`'s exact `args` dict-equality - check
+  whether any scripted case now needs an explicit "don't pass `<new_param>`" instruction (see
+  `eval/adk/README.md`'s own diagnosis history for the exact pattern), not just whether the gate
+  logic itself still works.
+- **Changing a rejection's precondition or exact message** - update the matching case's
+  `tool_responses`/`final_response` text; this doesn't affect scoring (trajectory matching only checks
+  `tool_uses` name+args, never response text) but a stale message misleads the next person reading it.
+- **Adding a new mechanically-enforced gate that's mission-critical** (a new refusal path guarding
+  against a real incident, a protected-branch/role/approval/data-integrity check) needs a *new*
+  `EvalCase`, following the existing convention: address the actual owning role directly, give it
+  enough fixture state to reach the gate on the very first turn (no setup/status-check detour - see
+  `eval/adk/README.md` finding #15), and avoid prompt phrasing that invites an optional-argument
+  variant the fixture doesn't script.
+- **Removing a tool or gate** - remove or rewrite the `EvalCase`(s) that exercised it; don't leave a
+  case that no longer tests anything real sitting in the file reporting a false PASSED (see
+  `eval/adk/README.md`'s "Removed: `sub_agent_blocked_without_budget_capped_virtual_key`" for exactly
+  this failure mode and why it was removed rather than patched).
+
+Since this evalset is now a required PR gate (section 8 above), a staleness bug introduced by one
+PR will often only surface as a *different*, unrelated PR's CI failure once a live model actually
+runs it - catch it at authoring time instead: run `python3 run_adk_eval.py --only
+<the_eval_id(s)_you_touched_or_added>` locally (or via `workflow_dispatch`) against whatever
+tool/prompt/gate change you just made, before opening the PR, rather than assuming "nothing obviously
+broke" means the evalset is still accurate.
+
+## 10. The Team Performance Evaluation is maintainer-only
 
 `.github/workflows/eval.yml` ("Team Performance Evaluation") runs the full 5-sprint simulated team
 against a throwaway target repo - real LLM spend, up to an hour of runtime. It is gated behind the
@@ -172,7 +217,7 @@ Do not trigger it yourself as an agent unless the maintainer has explicitly aske
 run - this is different from the ADK eval above, which is cheap and self-service. See RELEASE.md
 "Team performance evaluation" for the full mechanics.
 
-## 10. Breaking changes need an automated migration
+## 11. Breaking changes need an automated migration
 
 Per `RELEASE.md`'s versioning rules, a **MAJOR**-class change (breaking agent tool contracts,
 `ScrumState` shape, or CLI/env interface) must not leave an existing installation's state repo
@@ -188,7 +233,7 @@ broken. Use the migration scaffold that already exists for exactly this:
 - Do not ship a breaking `ScrumState`/tool-contract change without this - "users can just re-init"
   is not an acceptable migration path; existing installations' state repos must keep working.
 
-## 11. Guardrails and budget mechanisms require human confirmation
+## 12. Guardrails and budget mechanisms require human confirmation
 
 Two categories of code are deliberately load-bearing for safety/cost control, not ordinary
 refactor targets:
@@ -220,5 +265,6 @@ infer silent approval from a PR simply being merged.
 | Releasing a new version of this repo | [RELEASE.md](RELEASE.md) |
 | Running tests | [docs/TESTING.md](docs/TESTING.md) |
 | Running either eval | [docs/EVALUATION.md](docs/EVALUATION.md) |
+| Changing a tool/prompt/gate in `agents/scrum_team/` | Section 9 above, `eval/adk/README.md` |
 | Budget/guardrail mechanics | [docs/BUDGET.md](docs/BUDGET.md), [docs/DEVELOPMENT-WORKFLOW.md](docs/DEVELOPMENT-WORKFLOW.md) "Customization points" |
 | Secret handling | [SECURITY.md](SECURITY.md) |
