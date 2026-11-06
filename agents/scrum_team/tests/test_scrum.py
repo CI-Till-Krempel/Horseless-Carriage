@@ -508,6 +508,79 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tool_context.state["human_approvals"][0]["type"], "budget")
 
+    def test_record_human_approval_resolves_the_blocking_interaction_it_satisfies(self):
+        """
+        Dashboard bug: advance_story_stage's Implemented gate and
+        create_release_pr's release gate each raise a kind="approval"
+        blocking_interaction when the required approval hasn't been recorded
+        yet, but neither captures the returned interaction's id to resolve
+        it later - so the dashboard's blocking-interaction-derived status
+        badge stayed stuck on "waiting for confirmation" forever, even once
+        the approval that satisfies it actually lands right here.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["blocking_interactions"] = [{
+            "id": 1,
+            "kind": "approval",
+            "summary": "Story 'US-0001' is waiting on a 'sprint' human approval before it can be marked Implemented.",
+            "detail": "Cannot mark a story Implemented - this interaction level requires a fresh 'sprint' human approval for this sprint.",
+            "resolved": False,
+            "resolved_at": None,
+        }]
+        result = record_human_approval("sprint", "Reviewed goal and backlog", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        interaction = tool_context.state["blocking_interactions"][0]
+        self.assertTrue(interaction["resolved"])
+        self.assertIsNotNone(interaction["resolved_at"])
+
+    def test_record_human_approval_does_not_resolve_a_different_approval_type(self):
+        """A 'sprint' approval must not clear a still-pending 'release' gate's
+        blocking interaction - only the approval_type actually named in the
+        interaction's own summary/detail resolves it."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["blocking_interactions"] = [{
+            "id": 1,
+            "kind": "approval",
+            "summary": "Release PR 'v0.2.0' is waiting on a 'release' human approval.",
+            "detail": "Cannot create a release PR - this interaction level requires a fresh 'release' human approval for this increment.",
+            "resolved": False,
+            "resolved_at": None,
+        }]
+        record_human_approval("sprint", "Reviewed goal and backlog", tool_context=tool_context)
+        self.assertFalse(tool_context.state["blocking_interactions"][0]["resolved"])
+
+    def test_record_human_approval_does_not_resolve_an_already_resolved_or_non_approval_interaction(self):
+        """Resolution must only ever target unresolved, kind="approval"
+        entries - never re-touch an already-resolved one (resolve_blocking_
+        interaction errors on that) or a different kind (e.g. "stalled")
+        that happens to mention similar wording."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["blocking_interactions"] = [
+            {
+                "id": 1,
+                "kind": "approval",
+                "summary": "Story 'US-0001' is waiting on a 'sprint' human approval before it can be marked Implemented.",
+                "detail": "",
+                "resolved": True,
+                "resolved_at": "2026-01-01T00:00:00+00:00",
+            },
+            {
+                "id": 2,
+                "kind": "stalled",
+                "summary": "Team stalled waiting on a 'sprint' human approval, apparently.",
+                "detail": "",
+                "resolved": False,
+                "resolved_at": None,
+            },
+        ]
+        result = record_human_approval("sprint", "Reviewed goal and backlog", tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["blocking_interactions"][0]["resolved_at"], "2026-01-01T00:00:00+00:00")
+        self.assertFalse(tool_context.state["blocking_interactions"][1]["resolved"])
+
     def test_update_roadmap_records_touched_path(self):
         """
         Acceptance Criteria (US-0009):

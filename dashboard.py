@@ -3,12 +3,13 @@
 GH issue #310: a small always-on local web dashboard listing every
 Horseless Carriage project registered on this machine (project_registry.py
 - populated by new_project.py, GH issue #288) - name, config mode
-(local/cloud), state (working/waiting for confirmation/resting),
-interaction level, sprint goal, budget, product version, and assigned
-LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT - with manual start/stop per
-project's docker stack. Starting a stopped project re-checks its ports are
-still actually free and reassigns+persists (then rebuilds) if another
-process has since taken one - see lib_docker.ensure_dev_ports_available.
+(local/cloud), state (working/waiting for confirmation/resting), current
+sprint phase and ticket, interaction level, sprint goal, budget, product
+version, and assigned LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT - with manual
+start/stop per project's docker stack. Starting a stopped project
+re-checks its ports are still actually free and reassigns+persists (then
+rebuilds) if another process has since taken one - see
+lib_docker.ensure_dev_ports_available.
 
 Minimal first cut, per GH issue #310's own decision comment: reads each
 project's cached `.hc/state.json` and `.env` (and, only while that
@@ -40,6 +41,7 @@ import lib_env
 import lib_github
 import lib_llm_test
 import project_registry
+from agents.scrum_team.helpers import current_sprint_phase
 
 _STACK_ACTION_TIMEOUT_SECS = 300
 _REACHABILITY_CHECK_TIMEOUT_SECS = 2
@@ -115,6 +117,31 @@ def _product_version(target_repo: Path) -> str:
 
 def _compose_args(hc_path: Path) -> list:
     return lib_docker.compose_file_args(hc_path) + lib_docker.compose_project_args("dev", hc_path)
+
+
+def _current_ticket_label(state_data: dict) -> str:
+    """The story the team is currently working, for the status bar's "Ticket:
+    ..." line - a coarser, always-available substitute for the one-off
+    blocking_summary text (which only ever said anything while a specific
+    interaction was unresolved). agents.scrum_team.tools.requirements can't
+    be imported at module level here: importing it runs its package's
+    tools/__init__.py, which eagerly imports tools/budget.py's `import
+    requests` - a dependency only installed inside the agent's own docker
+    image, not on the host running this stdlib-only dashboard (same
+    constraint lib_github.py's auth_github import works around)."""
+    try:
+        from agents.scrum_team.tools.requirements import _current_story_in_progress
+    except Exception:
+        return ""
+    product_backlog = state_data.get("product_backlog") or []
+    item = _current_story_in_progress(product_backlog)
+    if not item:
+        return ""
+    story_id = item.get("id")
+    title = item.get("title")
+    if story_id and title:
+        return f"{story_id}: {title}"
+    return story_id or title or ""
 
 
 def project_snapshot(entry: dict) -> dict:
@@ -239,6 +266,22 @@ def project_snapshot(entry: dict) -> dict:
     # unresolved interaction's own summary instead of leaving it a dead end.
     blocking_summary = blocking[-1].get("summary", "") if blocking else ""
 
+    # The state badge (working/waiting for confirmation/resting) is a coarse
+    # 3-way health signal, and blocking_summary only ever says anything while
+    # a specific interaction is unresolved - neither tells a user what the
+    # team is actually doing right now. Surface the same sprint phase/current
+    # ticket the live agent session already tracks for itself (agent.py's
+    # console-log prefix), computed fresh from state.json on every render so
+    # it's never stale the way an orphaned blocking_interaction can be.
+    try:
+        sprint_phase = current_sprint_phase(state_data) if state_data else ""
+    except Exception:
+        sprint_phase = ""
+    try:
+        current_ticket = _current_ticket_label(state_data) if state_data else ""
+    except Exception:
+        current_ticket = ""
+
     product_version = _product_version(target_repo) if target_repo.is_dir() else "unknown"
     # agents/scrum_team/tools/scrum.py's init_scrum_state sets this to
     # _hc_version() (the Horseless Carriage checkout's own VERSION file) on
@@ -259,6 +302,8 @@ def project_snapshot(entry: dict) -> dict:
         "config_mode": config_mode,
         "interaction_level": interaction_level,
         "state": state,
+        "sprint_phase": sprint_phase,
+        "current_ticket": current_ticket,
         "sprint_goal": sprint_goal,
         "sprint_number": sprint_number,
         "github_prs_url": github_prs_url,
@@ -396,6 +441,18 @@ def _render_page(message: str = "") -> str:
         )
         web_url = f"http://localhost:{snap['agent_web_port']}"
         state_html = f"<span style='color:{color};font-weight:bold'>{e(snap['state'])}</span>"
+        # The badge word alone (and, while a human review is pending, the
+        # specific blocking_summary below) doesn't say what the team is
+        # actually doing right now - a coarser, always-on "what phase, which
+        # ticket" line reads less alarming than a stuck-looking one-word
+        # state, without the noise of e.g. every individual tool call.
+        phase_ticket_bits = []
+        if snap.get("sprint_phase"):
+            phase_ticket_bits.append(f"Phase: {e(snap['sprint_phase'])}")
+        if snap.get("current_ticket"):
+            phase_ticket_bits.append(f"Ticket: {e(snap['current_ticket'])}")
+        if phase_ticket_bits:
+            state_html += f"<br><small>{' &middot; '.join(phase_ticket_bits)}</small>"
         if snap["state"] == "waiting for confirmation":
             # GH issue #454: starting a project whose stack comes up already
             # blocked on a human looked like an endless hang - there was no

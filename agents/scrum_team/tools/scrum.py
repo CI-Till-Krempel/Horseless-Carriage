@@ -1032,6 +1032,25 @@ def record_human_approval(approval_type: str, note: str = "", tool_context=None)
     entry = {"type": approval_type, "note": note.strip()}
     s["human_approvals"] = list(s.get("human_approvals", [])) + [entry]
     _ = save_state_to_repo(tool_context)
+
+    # Dashboard "stuck on waiting for confirmation" bug: advance_story_stage's
+    # Implemented gate and create_release_pr's release gate each call
+    # record_blocking_interaction(kind="approval", ...) when they refuse for
+    # lack of this very approval, but neither captures the returned
+    # interaction's id to resolve it later - so blocking_interactions stayed
+    # `resolved: false` forever, even once the approval that satisfies it
+    # actually landed right here. Both gates word their summary/detail
+    # identically ("... a '{approval_type}' human approval ..."), which is
+    # the only thing tying a blocking interaction back to the approval_type
+    # that resolves it - match on that instead of an id neither gate kept.
+    from .notifications import resolve_blocking_interaction
+    marker = f"'{approval_type}' human approval"
+    for interaction in s.get("blocking_interactions", []) or []:
+        if interaction.get("resolved") or interaction.get("kind") != "approval":
+            continue
+        if marker in interaction.get("summary", "") or marker in interaction.get("detail", ""):
+            resolve_blocking_interaction(interaction["id"], tool_context=tool_context)
+
     return {"status": "ok", "approval": entry}
 
 def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
