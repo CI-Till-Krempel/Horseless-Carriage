@@ -115,6 +115,103 @@ def check_repo_access(owner: str, repo: str, token: str) -> Tuple[bool, str]:
                     f"permissions do NOT include push - writes (PR merges, comments) will likely fail")
 
 
+def latest_release(owner: str, repo: str, token: str) -> Optional[dict]:
+    """The latest published release for owner/repo - {"tag_name", "commit_sha"}
+    - or None if there are no releases yet (HTTP 404, a normal state early in
+    a product's life, not a configuration error) or the lookup otherwise
+    fails. commit_sha is resolved via GitHub's ref-to-commit endpoint (which
+    accepts a tag name directly) rather than trusting the release's own
+    target_commitish field, which is usually a branch name the release was
+    cut from, not the commit the tag itself points at."""
+    status, body = _api_get(f"/repos/{owner}/{repo}/releases/latest", token)
+    if status != 200:
+        return None
+    try:
+        tag_name = json.loads(body).get("tag_name")
+    except Exception:
+        return None
+    if not tag_name:
+        return None
+
+    commit_sha = None
+    status, body = _api_get(f"/repos/{owner}/{repo}/commits/{tag_name}", token)
+    if status == 200:
+        try:
+            commit_sha = json.loads(body).get("sha")
+        except Exception:
+            pass
+    return {"tag_name": tag_name, "commit_sha": commit_sha}
+
+
+def _api_post(path: str, token: str, payload: dict) -> Tuple[int, str]:
+    req = urllib.request.Request(
+        f"{API_BASE}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        return 0, str(e)
+
+
+def get_default_branch(owner: str, repo: str, token: str) -> Optional[str]:
+    """The repo's actual GitHub-reported default branch (the `default_branch`
+    field on the repo object) - independent of whatever GITHUB_REPO_BRANCH
+    configures in .env, since that's exactly the branch that may be missing
+    when this is called. Used as the fallback source to auto-create a
+    missing configured branch from (see create_branch below) when there's no
+    already-resolved default branch to prefer instead. None if the repo
+    lookup itself fails."""
+    status, body = _api_get(f"/repos/{owner}/{repo}", token)
+    if status != 200:
+        return None
+    try:
+        return json.loads(body).get("default_branch")
+    except Exception:
+        return None
+
+
+def get_branch_sha(owner: str, repo: str, branch: str, token: str) -> Optional[str]:
+    """The tip commit SHA of `branch` - the source commit create_branch below
+    needs to point a newly created branch at. None if `branch` doesn't exist
+    or the lookup fails."""
+    status, body = _api_get(f"/repos/{owner}/{repo}/branches/{branch}", token)
+    if status != 200:
+        return None
+    try:
+        return json.loads(body).get("commit", {}).get("sha")
+    except Exception:
+        return None
+
+
+def create_branch(owner: str, repo: str, branch: str, source_sha: str, token: str) -> Tuple[bool, str]:
+    """Creates `branch` on origin pointing at source_sha. doctor.py's
+    branch-existence check used to only ever tell the user to create a
+    missing main/develop branch by hand - this lets it do so instead, from
+    the tip of whichever branch already exists, so a freshly `git init`-ed
+    repo (or one that never had a `develop` branch created) ends up with the
+    pair Horseless Carriage's GitFlow tooling hard-depends on instead of
+    failing confusingly mid-sprint. Requires push access - a read-only token
+    fails here (surfaced in the returned detail string) rather than
+    silently no-op'ing."""
+    status, body = _api_post(f"/repos/{owner}/{repo}/git/refs", token, {
+        "ref": f"refs/heads/{branch}",
+        "sha": source_sha,
+    })
+    if status == 201:
+        return True, f"created branch '{branch}' on {owner}/{repo}"
+    return False, f"could not create branch '{branch}' on {owner}/{repo} (HTTP {status or 'network error'}): {body[:200]}"
+
+
 def check_branch_exists(owner: str, repo: str, branch: str, token: str) -> Tuple[bool, str]:
     """True iff `branch` exists on origin for owner/repo - a repo passing
     check_repo_access (it exists, the token can read it) says nothing about

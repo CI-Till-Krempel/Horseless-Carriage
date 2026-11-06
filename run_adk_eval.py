@@ -65,7 +65,13 @@ Usage:
   python3 run_adk_eval.py --only ID1,ID2       Run only these eval_id(s) (comma-separated) instead of the full
                                                 set - `adk eval`'s own `evalset.json:id1,id2` suffix syntax, so
                                                 iterating on one failing/flaky case doesn't pay for the full
-                                                ~10-case run and Docker stack bring-up every time.
+                                                eval-set run and Docker stack bring-up every time.
+
+Runs as a required PR gate (.github/workflows/adk-eval.yml's `pull_request`
+trigger) - KNOWN_FLAKY_EVAL_IDS are excluded from the blocking run entirely
+and run separately, informationally (see
+run_known_flaky_eval_ids_informationally), so documented live-model
+non-determinism can never fail someone's PR.
 """
 
 import argparse
@@ -123,23 +129,34 @@ _SPECIALIST_AGENT_NAMES = ["ProductOwner", "ScrumMaster", "DevTeam", "QA", "Arch
 # Eval cases whose whole point is exercising the missing-key block itself
 # (see agent.py's fallback-key guard) - these must keep their fixture's
 # empty/absent litellm_keys rather than getting a real key like every other
-# case, or the one thing they're testing would never trigger.
-NO_KEY_FIXTURE_EVAL_IDS = {"sub_agent_blocked_without_budget_capped_virtual_key"}
+# case, or the one thing they're testing would never trigger. Currently
+# empty: sub_agent_blocked_without_budget_capped_virtual_key (the one case
+# that needed this) was removed from the eval set entirely - see
+# eval/adk/README.md's "Removed: sub_agent_blocked_without_budget_capped_
+# virtual_key" for why. Left in place (rather than deleting the mechanism)
+# since any future "assert a role has no key yet" case would need it again.
+NO_KEY_FIXTURE_EVAL_IDS = set()
 
-# eval_id(s) eval/adk/README.md's own diagnosis history ("Re-running once
-# isolation was fixed exposed one more layer" / the two "residual failures"
-# noted afterward) documents as occasionally failing under a live model for
-# reasons that are genuine model-behavior variance, not a fixture or gate
-# defect - re-diagnosed there each time rather than assumed. A run that
-# fails one of these is NOT automatically waved through (this is
-# annotate-only, see print_known_flaky_retry_annotation - the run's exit
-# code is untouched); it exists so a human staring at a fresh CI failure
-# doesn't have to re-derive "have we seen this exact case flake before?" by
-# hand every time, before deciding whether to actually dig in.
+# eval_id(s) this eval set's own diagnosis history (see eval/adk/README.md -
+# search "live-model non-determinism") documents as occasionally failing
+# under a live model for reasons that are genuine model-behavior variance
+# (extra turns taken after a gate already fired correctly, a model re-
+# verifying a rejection it should have treated as final, etc.), not a
+# fixture or code-level gate defect. This runs as a PR gate (see
+# adk-eval.yml's `pull_request` trigger), so these are excluded from the
+# blocking run entirely (see main()'s required_ids) rather than merely
+# annotated after a failure - a non-deterministic case inside a required
+# check is worse than no check at all, since it trains everyone to re-run
+# CI instead of reading failures. They still run every time, in a separate,
+# non-blocking invocation (see run_known_flaky_eval_ids_informationally) -
+# a human reads their result when investigating, but they can never fail
+# the job.
 KNOWN_FLAKY_EVAL_IDS = {
     "create_sprint_report_rejects_accomplishments_not_actually_accepted",
     "log_story_tokens_rejects_value_matching_the_estimate",
     "advance_story_stage_rejects_implemented_without_sprint_approval",
+    "advance_story_stage_rejects_skipped_stages",
+    "create_release_pr_rejects_without_release_approval",
 }
 
 LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"
@@ -322,8 +339,8 @@ def adk_eval_command(eval_ids: list = None) -> list:
     to build that suffix; None (the default) runs every case in the file,
     unchanged from before this parameter existed. See parse_only_eval_ids
     for --only's CLI-facing counterpart, and
-    print_known_flaky_retry_annotation for the other caller (a
-    KNOWN_FLAKY_EVAL_IDS-scoped supplementary retry)."""
+    run_known_flaky_eval_ids_informationally for the other caller (a
+    KNOWN_FLAKY_EVAL_IDS-scoped, always-runs, non-blocking invocation)."""
     eval_set_arg = GENERATED_EVAL_SET_PATH
     if eval_ids:
         eval_set_arg = f"{eval_set_arg}:{','.join(eval_ids)}"
@@ -347,7 +364,7 @@ def parse_eval_case_statuses(output: str) -> dict:
     just the one pair of lines every case's block always starts with,
     matched line by line rather than depending on anything about what comes
     between them. Only used to interpret
-    print_known_flaky_retry_annotation's own supplementary retry output."""
+    run_known_flaky_eval_ids_informationally's own output."""
     statuses = {}
     pending_id = None
     for line in output.splitlines():
@@ -363,38 +380,46 @@ def parse_eval_case_statuses(output: str) -> dict:
     return statuses
 
 
-def print_known_flaky_retry_annotation(compose_args: list, env_file: str, run_env: dict, debug: bool) -> None:
-    """Called only when the main eval run just failed (see main()). Re-runs
-    KNOWN_FLAKY_EVAL_IDS alone (via adk_eval_command's eval_ids param - the
-    same mechanism --only uses) and prints how each one scored on this
-    supplementary attempt - annotate-only: this never changes the run's own
-    exit code, it exists purely so whoever is looking at a fresh CI failure
-    can immediately tell "this is the same live-model variance we've seen
-    before on this case" apart from "this looks new," without re-deriving
-    that by hand from eval/adk/README.md's diagnosis history every time.
+def load_eval_case_ids(path: str = EVAL_SET_PATH) -> list:
+    """All eval_id(s) in the checked-in evalset template, in file order -
+    used by main() to compute the blocking run's eval_ids (everything minus
+    KNOWN_FLAKY_EVAL_IDS) without hand-maintaining a duplicate id list here.
+    Reads EVAL_SET_PATH (the template), not GENERATED_EVAL_SET_PATH -
+    provisioning only ever replaces each case's litellm_keys, never adds/
+    removes/renames a case, so the id list is identical either way and the
+    template is available earlier (before LiteLLM is even up)."""
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return [case["eval_id"] for case in data.get("eval_cases", [])]
 
-    Deliberately does not try to correlate this retry against exactly which
-    case(s) failed in the main run - main() doesn't capture that run's
-    output (see its own docstring note on why), and re-running the full set
-    just to get a same-shape failure list would cost as much as the run
-    that just failed. Running the small, fixed KNOWN_FLAKY_EVAL_IDS set
-    unconditionally is cheap (at most a few cases) and still answers the
-    useful question either way: if the case that just failed is in this
-    set, its retry result here is directly informative; if it isn't, seeing
-    every known-flaky case PASS here is itself a (weaker but still useful)
-    signal that the failure is something new, not the usual suspects."""
+
+def run_known_flaky_eval_ids_informationally(compose_args: list, env_file: str, run_env: dict, debug: bool) -> None:
+    """Runs KNOWN_FLAKY_EVAL_IDS (via adk_eval_command's eval_ids param - the
+    same mechanism --only uses) and prints how each one scored - always,
+    regardless of whether the main run (which excludes these ids entirely,
+    see main()'s required_ids) passed or failed. Purely informational: never
+    changes the run's own exit code, and never gates anything - these ids
+    are documented live-model non-determinism (see eval/adk/README.md,
+    search "live-model non-determinism"), not something a human needs to
+    act on immediately. It exists so that diagnosing is still possible
+    without re-running the full blocking set: a human looking into "is this
+    gate still behaving?" can check this supplementary result instead.
+
+    Skipped entirely by main() for an explicit --only run - a developer who
+    already asked for one specific case doesn't need a second supplementary
+    run telling them about a different, fixed set of cases they didn't ask
+    about - and when KNOWN_FLAKY_EVAL_IDS is empty."""
     retry_cmd = ["docker", "compose", *compose_args, "--env-file", env_file, "run", "--rm"]
     if debug:
         retry_cmd += ["-e", "LOG_LEVEL=debug"]
     retry_cmd += ["--entrypoint", "", "agent", *adk_eval_command(sorted(KNOWN_FLAKY_EVAL_IDS))]
 
-    print(f"--- This run failed - re-running {len(KNOWN_FLAKY_EVAL_IDS)} documented-flaky eval case(s) alone, "
-          "to help tell known live-model variance apart from a new regression (see KNOWN_FLAKY_EVAL_IDS) ---")
+    print(f"--- Running {len(KNOWN_FLAKY_EVAL_IDS)} documented-flaky eval case(s) separately, "
+          "non-blocking (excluded from the required run above - see KNOWN_FLAKY_EVAL_IDS) ---")
     result = subprocess.run(retry_cmd, env=run_env, capture_output=True, text=True)
     statuses = parse_eval_case_statuses(result.stdout)
-    print("Known-flaky eval case(s) - supplementary retry result (does NOT change this run's own exit code):")
+    print("Known-flaky eval case(s) result (informational only - does NOT affect this job's exit code):")
     for eval_id in sorted(KNOWN_FLAKY_EVAL_IDS):
-        print(f"  {eval_id}: {statuses.get(eval_id, 'UNKNOWN (not found in retry output)')}")
+        print(f"  {eval_id}: {statuses.get(eval_id, 'UNKNOWN (not found in output)')}")
     print("See eval/adk/README.md's diagnosis history for these eval_id(s) - search "
           "\"live-model non-determinism\" - for why they're expected to be occasionally flaky.")
 
@@ -747,7 +772,19 @@ def main() -> None:
     # distinct from the dev stack's (run.py) and the test suite's
     # (run_tests.py) - see lib_docker.compose_project_args.
     compose_args, extra_env = compose_setup(args.ci, host_ollama)
-    adk_cmd = adk_eval_command(parse_only_eval_ids(args.only))
+    only_ids = parse_only_eval_ids(args.only)
+    # The blocking run never includes KNOWN_FLAKY_EVAL_IDS - they run
+    # separately and informationally instead (see
+    # run_known_flaky_eval_ids_informationally), so this eval set can be a
+    # required PR gate (adk-eval.yml's `pull_request` trigger) without a
+    # live-model variance case ever failing someone's PR. An explicit --only
+    # still runs exactly what was asked, flaky or not - a developer
+    # iterating on one specific case by id already knows what they're
+    # getting.
+    required_ids = only_ids if only_ids else [
+        eid for eid in load_eval_case_ids() if eid not in KNOWN_FLAKY_EVAL_IDS
+    ]
+    adk_cmd = adk_eval_command(required_ids)
     # Always this run's own scratch repo (see prepare_scratch_state_repo),
     # never whatever STATE_REPO_PATH this developer's own .env happens to
     # have configured for their real day-to-day dev work.
@@ -818,15 +855,15 @@ def main() -> None:
             print(f"ERROR: Ollama did not finish pulling {LOCAL_OLLAMA_MODEL} within {OLLAMA_MODEL_PULL_TIMEOUT_SECONDS}s.")
             exit_code = 1
         else:
-            print(f"--- Running ADK eval set: {GENERATED_EVAL_SET_PATH} ---")
+            print(f"--- Running ADK eval set: {GENERATED_EVAL_SET_PATH} ({len(required_ids)} required case(s)) ---")
             result = subprocess.run(run_cmd, env=run_env)
             exit_code = result.returncode
-            if exit_code != 0 and not args.only:
-                # Skipped for an explicit --only run (args.only set) - a
-                # developer who already asked for one specific case doesn't
-                # need a second supplementary run telling them about a
-                # different, fixed set of cases they didn't ask about.
-                print_known_flaky_retry_annotation(compose_args, args.env_file, run_env, args.debug)
+            if not args.only and KNOWN_FLAKY_EVAL_IDS:
+                # Always runs, pass or fail - see
+                # run_known_flaky_eval_ids_informationally's own docstring
+                # for why this is unconditional now rather than only after
+                # a failure, and why it's skipped for an explicit --only run.
+                run_known_flaky_eval_ids_informationally(compose_args, args.env_file, run_env, args.debug)
     finally:
         # The stack was previously left running indefinitely after every
         # run (`restart: unless-stopped`, no teardown anywhere) - always

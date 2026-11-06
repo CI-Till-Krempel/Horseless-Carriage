@@ -49,6 +49,28 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - DATABASE_URL=${DATABASE_URL}
+      # Optional corporate-proxy passthrough: on a host network behind a
+      # filtering web proxy/SWG, litellm's own startup fetch of the latest
+      # pricing table (model_prices_and_context_window.json) from
+      # raw.githubusercontent.com can come back "403 Filtered" even though
+      # provider API calls (openai.com/anthropic.com/...) go through fine -
+      # some filters specifically flag that CDN. Unset by default (empty
+      # value = no proxy, matching today's "unrestricted direct egress"
+      # behavior - httpx/urllib treat an empty HTTP(S)_PROXY as not set), so
+      # this only changes anything for installs that set these in .env. See
+      # docs/SETUP.md's "Network Sandboxing" section.
+      - HTTP_PROXY=${LITELLM_HTTP_PROXY:-}
+      - HTTPS_PROXY=${LITELLM_HTTPS_PROXY:-}
+      - NO_PROXY=${LITELLM_NO_PROXY:-}
+      - http_proxy=${LITELLM_HTTP_PROXY:-}
+      - https_proxy=${LITELLM_HTTPS_PROXY:-}
+      - no_proxy=${LITELLM_NO_PROXY:-}
+      # Alternative to the proxy vars above: skip the remote fetch entirely
+      # and always use the pricing table bundled with the litellm image,
+      # silencing the "403 Filtered"/fallback warning outright instead of
+      # routing around it. Empty by default (litellm's own default: try the
+      # remote fetch, fall back silently-ish on failure).
+      - LITELLM_LOCAL_MODEL_COST_MAP=${LITELLM_LOCAL_MODEL_COST_MAP:-}
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on:
       - db
