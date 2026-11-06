@@ -28,7 +28,12 @@ commands and output.
 `pull_request` trigger, in addition to every release tag) - see "Keeping
 the blocking run non-flaky" below for how `KNOWN_FLAKY_EVAL_IDS` is kept
 out of the blocking run entirely rather than merely annotated after a
-failure, which is what makes that viable as a required check.
+failure, which is what makes that viable as a required check. A PR that
+genuinely doesn't touch `agents/scrum_team/` (docs, host-only scripts,
+setup/env templates, CI/infra config) can carry the `NO_ADK_EVAL` label
+instead of actually running it - see AGENTS.md section 9 and the workflow's
+own "Check for NO_ADK_EVAL label" step for exactly what qualifies and how
+the job still reports success rather than getting stuck pending.
 
 ## How this complements the existing scenario-based harness
 

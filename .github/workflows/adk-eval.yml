@@ -15,7 +15,13 @@ on:
   # the LiteLLM-not-ready step instead of silently skipping, which is
   # acceptable here since this repo's actual contribution flow is
   # same-repo branches, not forks.
-  pull_request: {}
+  #
+  # types adds labeled/unlabeled to the pull_request default (opened,
+  # synchronize, reopened) - see the "Check for NO_ADK_EVAL label" step
+  # below: applying/removing that label after the PR already has commits
+  # must re-evaluate this job without requiring an empty commit to nudge it.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch: {}
 
 # Cancel a still-running eval for an older push to the same PR - this job
@@ -47,7 +53,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # NO_ADK_EVAL label: for PRs that don't touch agents/scrum_team/ at
+      # all (docs, host-only scripts/dashboard, setup/env templates, CI/
+      # infra config) - see AGENTS.md section 9, which explains exactly
+      # which changes DO require this eval. Applying the label skips the
+      # two steps below but the job still runs and reports success (not
+      # skipped-at-the-job-level), so a required-status-check branch
+      # protection rule never gets stuck pending on a PR that opted out.
+      # github.event.pull_request is only present on pull_request-triggered
+      # runs - push (release tag)/workflow_dispatch always run for real.
+      - name: Check for NO_ADK_EVAL label
+        id: label_check
+        run: |
+          echo "skip=${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'NO_ADK_EVAL') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Skipped - NO_ADK_EVAL label present
+        if: steps.label_check.outputs.skip == 'true'
+        run: echo "This PR has the NO_ADK_EVAL label (no agents/scrum_team/ changes) - skipping the eval run. See AGENTS.md section 9 before relying on this label for a change that touches agent tools/prompts/gates."
+
       - name: Write eval environment file
+        if: steps.label_check.outputs.skip != 'true'
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
@@ -80,6 +105,7 @@ jobs:
           # whatever this env file says.
 
       - name: Run ADK gate-enforcement eval set
+        if: steps.label_check.outputs.skip != 'true'
         # --debug: unlike an interactive local run (where it just floods the
         # shell), a CI run's log is only read after the fact, and only when
         # diagnosing a failure - the app's own debug logging is worth having
@@ -98,5 +124,5 @@ jobs:
       # only catches the case where the job got killed/cancelled before that
       # finally block could run at all.
       - name: Stop dependency services (backstop)
-        if: always()
+        if: always() && steps.label_check.outputs.skip != 'true'
         run: docker compose -p horseless-carriage-eval --env-file .env.adk-eval down -v

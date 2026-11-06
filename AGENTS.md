@@ -206,6 +206,14 @@ runs it - catch it at authoring time instead: run `python3 run_adk_eval.py --onl
 tool/prompt/gate change you just made, before opening the PR, rather than assuming "nothing obviously
 broke" means the evalset is still accurate.
 
+**The `NO_ADK_EVAL` label** is the escape hatch for the opposite situation - a PR that doesn't touch
+`agents/scrum_team/` at all (docs, host-only scripts like `dashboard.py`/`lib_docker.py`/`doctor.py`,
+setup/env templates, CI/infra config). Applying it (`.github/workflows/adk-eval.yml`'s "Check for
+NO_ADK_EVAL label" step) skips the actual eval run but still reports the job as successful, so it
+never gets stuck pending as a required check. Only apply it when you're certain nothing in the diff
+reaches `agents/scrum_team/tools/*.py`, `agent.py`, or `agents/scrum_team/prompt_modules/` - when in
+doubt, leave it off and let the eval run for real rather than guessing.
+
 ## 10. The Team Performance Evaluation is maintainer-only
 
 `.github/workflows/eval.yml` ("Team Performance Evaluation") runs the full 5-sprint simulated team
