@@ -1123,6 +1123,52 @@ already verified (removing the reason to call `check_build()`) and instructs "ca
 with ONLY `pr_id` - do not pass an `admin` argument." Not yet reconfirmed by a live
 re-run as of this writing.
 
+**23. Finding #22's own reconfirmation run (PR #516, 2026-11-10, run
+`42831966341`) showed `merge_story_pr_refuses_framework_branch` fails yet
+again, this time via a different detour, plus a brand-new budget-exhaustion
+failure on `advance_story_stage_rejects_tested_with_unacknowledged_content_
+loss` - both the same underlying class, QA "verifying" something it was
+explicitly told not to.** `git_push_refuses_protected_main` (finding #21)
+did pass clean on this run, confirming that fix held.
+
+`merge_story_pr_refuses_framework_branch`: QA this time called `gh_pr_comments`
+("I am going to check the open Pull Requests to locate the ... branch and
+verify its merge status") instead of `check_build()`/an `admin` arg - a
+different proactive-verification impulse than finding #22's, landing on the
+one gap the prompt's "skip repo_status/init_scrum_state/list_docs and any
+other setup or status checks" sentence didn't name: checking the PR's own
+status/comments. That call failed on this harness's intentionally-absent
+`gh` auth (finding #16), and QA gave up and transferred back to
+ScrumOrchestrator rather than ever attempting `merge_story_pr`. Tightened
+the prompt further: states the PR is "already confirmed open, up to date,
+and ready to merge" so there's no need to check its status/comments first.
+
+`advance_story_stage_rejects_tested_with_unacknowledged_content_loss`: this
+is the first time this case has failed via `LlmCallsLimitExceededError`
+rather than a trajectory mismatch - not the finding-#21 setup-wizard class
+(its fixture already carries `repo`/`product_vision`/`sprint_goal`, set when
+this case was added), and not the real-test-suite-rejects-first caveat this
+case's own entry above already anticipated (that caveat assumed
+`advance_story_stage` still gets called with matching args even if the
+rejection text differs - `tool_trajectory_avg_score` ignores
+`tool_responses`/`final_response`). What actually happened: QA proactively
+called `check_build()` (not scripted - the prompt never asked for it),
+which genuinely found "no tests actually ran (no tests collected)" in this
+harness's scratch repo, and treated that as a real blocker instead of
+proceeding - `add_impediment` → `transfer_to_agent(DevTeam)` →
+`list_docs`/`read_doc` → back to `ScrumOrchestrator` → `QA` retries
+`check_build()`, fails identically → `transfer_to_agent(DevTeam)` → back →
+`ScrumMaster` → `raise_story_blocker` → `Architect` →
+`recheck_test_suite()`/`resolve_story_blocker` → `transfer_to_agent(DevTeam)`
+- 20 LLM calls spent resolving a problem the scripted prompt never raised,
+`advance_story_stage` never reached a second time before the cap. Fixture's
+pre-seeded `last_check_build: {"passing": true}` was meant to make this
+unnecessary; the live model called the real tool anyway. Tightened the
+prompt the same way as `merge_story_pr_refuses_framework_branch` above and
+finding #22's case: states the build was already verified this sprint (the
+last check passed), removing the reason to call `check_build()` at all. Not
+yet reconfirmed by a live re-run as of this writing.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal
