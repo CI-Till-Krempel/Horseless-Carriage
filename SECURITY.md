@@ -192,6 +192,19 @@ default, narrower allowlist unconditionally. Per the issue's own decision, this 
 checked-in file requiring a normal human-reviewed PR to change — there's no runtime/agent-driven
 mechanism that can broaden it.
 
+**Per-project additions: `NET_PROXY_EXTRA_ALLOWLIST_HOSTS` (a local `.env` var), not a tracked-file
+edit.** A project's own workbench may need a host the default allowlist doesn't grant (e.g. a
+`propose_framework_change` proposal's `additional_allowlist_hosts` - see `agents/scrum_team/tools/
+workflow.py`). Rather than hand-editing `config/net-proxy/allowlist.filter` (a change that would
+conflict with `git pull`ing a new Horseless Carriage version), set a comma-separated host list in
+`NET_PROXY_EXTRA_ALLOWLIST_HOSTS` in `.env` (gitignored, local-only - see `.env.example`);
+`entrypoint.sh` regenerates the live allowlist from the tracked baseline and merges this in on every
+`net-proxy` container start, idempotently (a plain `restart` without `docker compose up` won't pick
+up a change, since the container isn't recreated). This is still exclusively a **human**-operated
+channel: `.env` is only ever read/written by host-side scripts (`new_project.py`, `setup_github_app.py`,
+`lib_docker.py`'s `lib_env` helpers), never by anything the agent's own tools can call at runtime -
+the "no runtime/agent-driven mechanism that can broaden it" guarantee above still holds.
+
 ## Known limitations (being upfront, not exhaustive)
 
 - No automated secret-scanning (e.g. gitleaks) runs in CI yet.

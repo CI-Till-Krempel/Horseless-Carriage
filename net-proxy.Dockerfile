@@ -16,7 +16,12 @@ FROM alpine:3.20
 RUN apk add --no-cache tinyproxy socat
 
 COPY config/net-proxy/tinyproxy.conf /etc/tinyproxy/tinyproxy.conf
-COPY config/net-proxy/allowlist.filter /etc/tinyproxy/allowlist.filter
+# Kept as a pristine `.default` copy, not the live path tinyproxy.conf's
+# Filter directive actually reads - entrypoint.sh regenerates the live file
+# from this baseline on every container start (see entrypoint.sh), so a
+# NET_PROXY_EXTRA_ALLOWLIST_HOSTS-sourced addition never accumulates
+# duplicate lines across restarts of the same image.
+COPY config/net-proxy/allowlist.filter /etc/tinyproxy/allowlist.filter.default
 COPY config/net-proxy/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

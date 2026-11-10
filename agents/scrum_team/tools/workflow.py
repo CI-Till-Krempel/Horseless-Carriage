@@ -422,8 +422,10 @@ def propose_framework_change(
             "have yet. Merging this PR alone is **not enough** - a human must also, in "
             "Horseless Carriage's own repository:\n"
             f"{hosts_list}\n\n"
-            "1. Add the host(s) above to `config/net-proxy/allowlist.filter`.\n"
-            "2. Rebuild/restart `net-proxy` for the change to take effect.\n\n"
+            "1. Add the host(s) above (comma-separated) to `NET_PROXY_EXTRA_ALLOWLIST_HOSTS` in "
+            "that repo's own `.env` - see `.env.example`. No need to edit the tracked "
+            "`config/net-proxy/allowlist.filter` directly.\n"
+            "2. Run `docker compose up` (not just `restart`) for the change to take effect.\n\n"
             f"No agent tool can do this directly - open an issue there if unsure how: {_NEW_ISSUE_URL_FOR_ALLOWLIST}"
         )
 
@@ -453,8 +455,8 @@ def propose_framework_change(
                 f"Workbench change needs new network access: {', '.join(additional_allowlist_hosts)}",
                 detail=(
                     f"Draft PR opened by {agent_name or 'an agent'}: {(pr_res.get('stdout') or '').strip()}. "
-                    "A human operator must add the listed host(s) to Horseless Carriage's own "
-                    "config/net-proxy/allowlist.filter and restart net-proxy, outside this repo, "
+                    "A human operator must add the listed host(s) to NET_PROXY_EXTRA_ALLOWLIST_HOSTS "
+                    "in Horseless Carriage's own .env and run `docker compose up`, outside this repo, "
                     "before this workbench's tests can actually reach them."
                 ),
                 tool_context=tool_context,

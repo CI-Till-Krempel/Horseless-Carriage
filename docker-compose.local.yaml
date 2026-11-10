@@ -246,6 +246,9 @@ services:
     ports:
       # SPEC-ISSUE-0063: see docker-compose.yaml's identical entry.
       - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
+    environment:
+      # See docker-compose.yaml's identical entry.
+      - NET_PROXY_EXTRA_ALLOWLIST_HOSTS=${NET_PROXY_EXTRA_ALLOWLIST_HOSTS:-}
     networks:
       - external-net
       - agent-net

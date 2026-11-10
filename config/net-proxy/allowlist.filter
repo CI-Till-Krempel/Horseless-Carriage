@@ -7,9 +7,3 @@
 # explaining why) if a future tool genuinely needs another host.
 ^github\.com(:[0-9]+)?$
 ^api\.github\.com(:[0-9]+)?$
-
-# Architect-proposed workbench change (Gradle toolchain, via
-# propose_framework_change) needs these to download the Gradle
-# distribution and resolve Maven-hosted JVM dependencies.
-^services\.gradle\.org(:[0-9]+)?$
-^repo\.maven\.apache\.org(:[0-9]+)?$

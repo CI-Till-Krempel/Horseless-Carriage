@@ -82,24 +82,65 @@ class TestAgentNetworkIsolation:
 class TestNetProxyAllowlist:
     def test_allowlist_only_permits_github_hosts(self):
         """Deliberately narrow scope per GH issue #287's own decision -
-        github.com/api.github.com plus only what a reviewed
-        propose_framework_change workbench proposal has since added
-        (services.gradle.org/repo.maven.apache.org for the Gradle
-        workbench, see PR #493) - nothing broader. A future addition
-        should be a conscious edit here, not silent scope creep."""
+        just github.com/api.github.com, nothing broader. A per-project
+        addition (e.g. services.gradle.org/repo.maven.apache.org for a
+        Gradle workbench, see PR #493/#516) now lives in a human's own
+        local .env (NET_PROXY_EXTRA_ALLOWLIST_HOSTS, merged in by
+        entrypoint.sh at container start - see TestNetProxyExtraAllowlistEnvVar
+        below), not this tracked file, so this baseline never needs an edit
+        for a project-specific host and `git pull` never conflicts with one."""
         text = (REPO_ROOT / "config" / "net-proxy" / "allowlist.filter").read_text(encoding="utf-8")
         patterns = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
         assert patterns == [
             r"^github\.com(:[0-9]+)?$",
             r"^api\.github\.com(:[0-9]+)?$",
-            r"^services\.gradle\.org(:[0-9]+)?$",
-            r"^repo\.maven\.apache\.org(:[0-9]+)?$",
         ]
 
     def test_tinyproxy_conf_references_the_allowlist_and_denies_by_default(self):
         text = (REPO_ROOT / "config" / "net-proxy" / "tinyproxy.conf").read_text(encoding="utf-8")
         assert "FilterDefaultDeny Yes" in text
         assert "allowlist.filter" in text
+
+
+class TestNetProxyExtraAllowlistEnvVar:
+    """
+    A per-project workbench (e.g. a propose_framework_change proposal, see
+    agents/scrum_team/tools/workflow.py) may need network access the
+    default allowlist above doesn't grant. Rather than requiring a human
+    to hand-edit the tracked config/net-proxy/allowlist.filter (which would
+    conflict with `git pull`ing a new Horseless Carriage version),
+    NET_PROXY_EXTRA_ALLOWLIST_HOSTS (a local, gitignored .env var) is merged
+    in by entrypoint.sh at container start instead.
+    """
+
+    def test_every_compose_file_wires_the_env_var_through_to_net_proxy(self):
+        for compose_file in _COMPOSE_FILES:
+            data = _load(compose_file)
+            entries = data["services"]["net-proxy"]["environment"]
+            env = {e.split("=", 1)[0]: e.split("=", 1)[1] for e in entries}
+            assert "NET_PROXY_EXTRA_ALLOWLIST_HOSTS" in env, (
+                f"{compose_file}'s net-proxy service must pass through NET_PROXY_EXTRA_ALLOWLIST_"
+                "HOSTS, or a project's local .env addition silently has no effect."
+            )
+
+    def test_dockerfile_copies_the_baseline_to_a_default_path_not_the_live_one(self):
+        """entrypoint.sh regenerates the live allowlist from this baseline
+        on every container start (idempotent across restarts) - if the
+        Dockerfile instead COPYs straight to the live path, entrypoint.sh's
+        own `[ ! -e "$ALLOWLIST_PATH" ]` guard would see it as already
+        present and never merge NET_PROXY_EXTRA_ALLOWLIST_HOSTS in at all."""
+        text = (REPO_ROOT / "net-proxy.Dockerfile").read_text(encoding="utf-8")
+        assert "allowlist.filter.default" in text
+        assert "COPY config/net-proxy/allowlist.filter /etc/tinyproxy/allowlist.filter\n" not in text
+
+    def test_entrypoint_merges_extra_hosts_without_touching_an_externally_provided_file(self):
+        text = (REPO_ROOT / "config" / "net-proxy" / "entrypoint.sh").read_text(encoding="utf-8")
+        assert "NET_PROXY_EXTRA_ALLOWLIST_HOSTS" in text
+        assert 'if [ ! -e "$ALLOWLIST_PATH" ]' in text, (
+            "must skip regeneration when the live path already exists (docker-compose.eval.yml "
+            "bind-mounts its own curated allowlist-eval.filter there read-only for CI) - "
+            "unconditionally overwriting it would break that override."
+        )
 
 
 class TestEvalNetworkAllowlistOverride:
