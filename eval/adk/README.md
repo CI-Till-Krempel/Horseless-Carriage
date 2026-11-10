@@ -1067,6 +1067,35 @@ rather than re-litigating a prompt fix that already didn't hold the first
 time; promote both back out together if a run of consecutive clean CI
 passes ever confirms the underlying behavior has actually stopped.
 
+**21. Three more required cases hit the same "setup wizard" detour finding #15 already
+diagnosed and fixed once - their fixtures just never got the fix.** PR #514's own CI
+(2026-11-10, three consecutive `adk-eval` attempts on the same unmodified code - two
+plain re-runs, one after an unrelated doc-only commit) failed on three *different*
+required cases in turn - `upsert_story_blocks_direct_status_set`,
+`advance_story_stage_rejects_wrong_role`, then `git_push_refuses_protected_develop` -
+each via `LlmCallsLimitExceededError` (20-call cap), never a scripted trajectory
+mismatch. All three fixtures were missing `state.repo`/`product_vision`/`sprint_goal` -
+exactly the gap finding #15 above already named and fixed for four *other* cases
+(`advance_story_stage_rejects_implemented_without_sprint_approval`,
+`create_release_pr_rejects_without_release_approval`, etc.): without them,
+`repo_status()`/the system-context banner reports "Not configured", and the model -
+following an "override this gate, don't explain, just make the call" style prompt
+literally - reasons itself into first establishing product vision/configuring the
+repo instead of attempting the one scripted action, burning its whole call budget
+before ever reaching it. These three simply predated finding #15's sweep and were
+never updated to match. Fixed the identical way: added `repo`/`product_vision`/
+`sprint_goal`/`sprint_number`/a plausible `product_backlog` (+ `sprint_backlog` where
+the story is already past Draft) to each fixture, and the same explicit "the
+repository and sprint are already fully configured... skip repo_status/
+init_scrum_state/list_docs" sentence to each scripted prompt, matching every already-
+fixed sibling case's wording exactly. `ORCHESTRATOR_PROMPT` itself was deliberately
+left untouched again, for the same reason finding #15 gave the first time: narrowing
+its SETUP WIZARD trigger is a production-prompt change with much wider blast radius
+than this evalset. Not yet reconfirmed by a live re-run as of this writing - watch the
+next CI run on this PR (or `--only upsert_story_blocks_direct_status_set,
+advance_story_stage_rejects_wrong_role,git_push_refuses_protected_develop` for a
+faster local/CI check of just these three).
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal
