@@ -17,6 +17,8 @@ DEFAULT_DOD = [
     "Acceptance criteria met",
     "No critical security issues",
     "Docs updated if needed",
+    "End-user docs updated via upsert_user_doc if user-facing behavior changed (or explicitly "
+    "marked not applicable for an internal-only change)",
     "specs/ROADMAP.md updated via update_roadmap to reflect this story's completed status",
     "Actual tokens spent logged via log_story_tokens",
 ]

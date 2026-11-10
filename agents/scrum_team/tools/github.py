@@ -1813,6 +1813,7 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)
     default_branch = _default_push_branch(tool_context)
+    changelog_warning = None
 
     # Land the sprint report/transcript on develop before opening the PR -
     # see this function's own docstring above for why neither is there
@@ -1833,6 +1834,19 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         from .budget import render_fallback_sprint_report, _write_conversation_transcript
         render_fallback_sprint_report(tool_context=tool_context)
         _write_conversation_transcript(tool_context=tool_context)
+        # US-0014: changelog generation failing must not block the release
+        # itself - isolate it behind its own try/except and surface a
+        # warning rather than erroring the whole release PR out. write_file
+        # (which generate_changelog funnels through) already records
+        # CHANGELOG.md via _record_touched_file, so US-0010's release-diff
+        # verification doesn't flag it as an unexpected change.
+        try:
+            from .changelog import generate_changelog
+            changelog_res = generate_changelog(tool_context=tool_context)
+            if changelog_res.get("status") != "ok":
+                changelog_warning = f"Changelog generation was skipped: {changelog_res.get('message')}"
+        except Exception as e:
+            changelog_warning = f"Changelog generation was skipped due to an error: {e}"
         # integrate_open_changes rather than add_all=True: scoped to
         # specs/ and .hc/ only (see its own docstring) - by this point in
         # the sprint any *code* change should already be merged in via a
@@ -1916,11 +1930,14 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         if tool_context and getattr(tool_context, "state", None):
             from .scrum import save_state_to_repo
             save_state_to_repo(tool_context)
-    return {
+    result = {
         "status": "ok" if ok else "error",
         "fetch": fetch_res,
         "pr": pr_res,
     }
+    if changelog_warning:
+        result["changelog_warning"] = changelog_warning
+    return result
 
 def _record_pr_review_call(tool_context) -> None:
     """

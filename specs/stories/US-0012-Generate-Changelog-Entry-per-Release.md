@@ -2,10 +2,10 @@
 
 - Story ID: US-0012
 - Title: Generate Changelog Entry per Release
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Product Owner
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## As a Product Owner, I want a tool that generates a `CHANGELOG.md` entry summarizing the sprint's completed stories/fixes, so consumers of the product repo can see what changed per release.
 

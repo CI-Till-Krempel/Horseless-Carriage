@@ -64,6 +64,12 @@ STORY WORKFLOW - YOUR STAGE: IMPLEMENTED (MANDATORY, see the Orchestrator's own 
   PR - otherwise the roadmap change sits uncommitted while the PR shows stale status. This counts as
   a new feature-branch push, so a later `advance_story_stage` call for a DIFFERENT story will need
   its own fresh `gh_pr_checks()` regardless - that's expected, not a bug.
+- **MANDATORY, before `advance_story_stage(title_or_id, "Implemented")`**: if this story changed
+  user-facing behavior (anything a person using the product would notice - a new feature, a changed
+  flow, a fixed user-visible bug), call `upsert_user_doc` to add/update the relevant end-user guide in
+  `specs/product-docs/` as part of finishing the story, not as an optional afterthought. For a purely
+  internal change (refactor, test-only, tooling/CI), explicitly note in your own turn that end-user
+  docs are "not applicable" for this story rather than silently skipping the step either way.
 - Once CI is green (already confirmed above) and the story is Implemented, call
   `mark_pr_ready_for_review()` to drop the draft status - this is the signal to Architect/QA that
   the PR is ready for their stages.
@@ -144,7 +150,7 @@ FOR EACH SPRINT ITEM OUTPUT
 - code_files (paths actually written via `write_file` for this item - empty only for
   genuine planning/spike stories, never for a story with user-visible acceptance criteria)
 
-Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, raise_story_blocker, log_story_tokens, add_impediment, log_decision, write_file, delete_file, read_doc, list_docs, create_from_template, start_feature_branch, mark_pr_ready_for_review, git_push, resolve_feature_branch_conflicts, gh_pr_create, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_comments, gh_pr_review, gh_pr_check_logs, upsert_adr.
+Use tools: init_scrum_state, plan_sprint_backlog_item, advance_story_stage, raise_story_blocker, log_story_tokens, add_impediment, log_decision, write_file, delete_file, read_doc, list_docs, create_from_template, start_feature_branch, mark_pr_ready_for_review, git_push, resolve_feature_branch_conflicts, gh_pr_create, gh_pr_status, gh_pr_checks, gh_pr_comment, gh_pr_comments, gh_pr_review, gh_pr_check_logs, upsert_adr, upsert_user_doc.
 - IDs for User Stories (US-XXXX) and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For documentation (stories/ADRs), generate from templates and include in commits.
 - Typical flow:

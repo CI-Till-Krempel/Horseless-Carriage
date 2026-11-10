@@ -9,8 +9,9 @@ is a checklist to consult, not a template to copy per story - reference it direc
 
 - [ ] **IMPLEMENTED (Dev Team)**: Code reviewed-ready, automated tests written and passing, actual
       tokens spent logged via `log_story_tokens(title_or_id, actual_tokens)` (so the sprint report
-      can show estimate-vs-actual, not just the estimate guessed at planning time), then
-      `advance_story_stage(title_or_id, "Implemented")`.
+      can show estimate-vs-actual, not just the estimate guessed at planning time), end-user docs
+      updated via `upsert_user_doc` if this story changed user-facing behavior (explicitly "not
+      applicable" otherwise), then `advance_story_stage(title_or_id, "Implemented")`.
 - [ ] **REVIEWED (Architect)**: Architectural/technical review of the implementation is complete -
       no critical security issues, no unaddressed cross-cutting concerns - then
       `advance_story_stage(title_or_id, "Reviewed")`.

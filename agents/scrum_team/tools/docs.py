@@ -304,8 +304,25 @@ def upsert_srs(content: str, filename: str, tool_context=None) -> Dict[str, Any]
         filename += ".md"
     if not filename.startswith("SRS-"):
         filename = "SRS-" + filename
-        
+
     path = f"specs/requirements/{filename}"
+    return write_file(path, content, overwrite=True, tool_context=tool_context)
+
+def upsert_user_doc(content: str, filename: str, tool_context=None) -> Dict[str, Any]:
+    """
+    US-0019: create or update an end-user, how-to-use-the-product document
+    (`TEMPLATE-USER-GUIDE.md`-shaped) in specs/product-docs/ - the end-user
+    doc counterpart to upsert_prd/upsert_srs's internal-spec pattern.
+    Distinct from specs/requirements/ (internal PRD/SRS/Issues, written for
+    the team): this is written for the person USING the product.
+    - filename: e.g. "GUIDE-Getting-Started.md"
+    """
+    if not filename.endswith(".md"):
+        filename += ".md"
+    if not filename.startswith("GUIDE-"):
+        filename = "GUIDE-" + filename
+
+    path = f"specs/product-docs/{filename}"
     return write_file(path, content, overwrite=True, tool_context=tool_context)
 
 def upsert_architecture_vision(content: str, tool_context=None) -> Dict[str, Any]:

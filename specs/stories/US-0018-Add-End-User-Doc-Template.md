@@ -2,7 +2,7 @@
 
 - Story ID: US-0018
 - Title: Add End-User Doc Template
-- Status: Ready
+- Status: Done
 - Priority: Should
 - Owner: Dev Team
 - Last Updated: 2026-07-16
