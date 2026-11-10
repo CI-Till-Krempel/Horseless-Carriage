@@ -110,6 +110,8 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -127,6 +129,12 @@ jobs:
 ```
 
 - Trigger: any tag matching `v*.*.*` pushed (e.g. from step 2 above).
+- `permissions: contents: write` is required on the job - this repo's default
+  `GITHUB_TOKEN` permissions are read-only, so `gh release create` 403s
+  ("Resource not accessible by integration") without it (found cutting
+  `v0.2.0`: the tag's own test rerun passed but the publish step failed this
+  way, requiring the release to be created by hand and this workflow fixed
+  for next time).
 - Re-runs the test suite before publishing — belt-and-suspenders, since `main` should
   already be green from the release PR's own CI run, but a tag can in principle be
   pushed independent of a PR merge.
