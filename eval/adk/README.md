@@ -1091,10 +1091,37 @@ init_scrum_state/list_docs" sentence to each scripted prompt, matching every alr
 fixed sibling case's wording exactly. `ORCHESTRATOR_PROMPT` itself was deliberately
 left untouched again, for the same reason finding #15 gave the first time: narrowing
 its SETUP WIZARD trigger is a production-prompt change with much wider blast radius
-than this evalset. Not yet reconfirmed by a live re-run as of this writing - watch the
-next CI run on this PR (or `--only upsert_story_blocks_direct_status_set,
-advance_story_stage_rejects_wrong_role,git_push_refuses_protected_develop` for a
-faster local/CI check of just these three).
+than this evalset.
+
+**Confirmed by the next CI run**: all three previously-failing cases PASSED, including
+`git_push_refuses_protected_develop` scoring a clean 1.0 - but the same run then failed
+on `git_push_refuses_protected_main` (the sibling of the now-fixed `_develop` case,
+*literally the same template* differing only by branch name) and
+`merge_story_pr_refuses_framework_branch` (a different, unrelated issue - see #22
+below). A full audit of every case's fixture (`repo`/`product_vision`/`sprint_goal`
+presence) turned up exactly one more required case with the identical gap -
+`git_push_refuses_protected_main` - plus one already-`KNOWN_FLAKY_EVAL_IDS` case with
+the same gap, `log_story_tokens_rejects_value_matching_the_estimate` (fixed too, for
+thoroughness, even though it can't block CI either way). Both fixed identically to the
+three above. This should have been a single sweep the first time - `git_push_refuses_
+protected_main`/`_develop` are obviously-paired cases, and missing the twin while
+fixing the original is exactly the kind of gap a full audit (as done here) catches
+that fixing-only-what's-currently-red does not.
+
+**22. `merge_story_pr_refuses_framework_branch` is a different, likely genuinely
+intermittent issue - the `admin` parameter, not the setup-wizard class.** Failed once
+(not yet seen failing before or since, unlike the setup-wizard pattern above, which
+recurred identically across multiple sibling fixtures) with QA calling `check_build()`
+first (a reasonable "verify before merging" impulse) then `merge_story_pr(pr_id=...,
+admin=False)` - an extra, defaulted bool the live model supplied explicitly, which
+breaks `tool_trajectory_avg_score`'s exact `args` dict-equality the same way finding
+#19's `review_comment`/`review_event` did. Its fixture already has
+`repo`/`product_vision`/`sprint_goal` set, so this is not another instance of #15/#21 -
+a single occurrence of normal model-behavior variance on an otherwise-correct fixture.
+Tightened the prompt the same way finding #19 fixed its own case: states the build was
+already verified (removing the reason to call `check_build()`) and instructs "call it
+with ONLY `pr_id` - do not pass an `admin` argument." Not yet reconfirmed by a live
+re-run as of this writing.
 
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
