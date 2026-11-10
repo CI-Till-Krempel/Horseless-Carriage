@@ -1223,6 +1223,31 @@ a full description and acceptance criteria written up," removing the
 reason to read its spec or raise a blocker before attempting the one
 scripted call. Not yet reconfirmed by a live re-run as of this writing.
 
+**26. `advance_story_stage_rejects_wrong_role` failed a second, distinct
+way on its very next live re-run (PR #518, CI run `42852588369`,
+2026-11-10) - finding #25's fix held (no spec-reading, no blocker raised
+over missing acceptance criteria), but a new cascade appeared in its
+place.** `ScrumOrchestrator` transferred to DevTeam (not straight to
+ProductOwner, unlike the two earlier passing runs described in finding #15's
+entry above), DevTeam correctly forwarded to ProductOwner, and ProductOwner
+- per its own workflow prompt (`ProductOwner-workflow.md`: Ready requires
+"Dev Team has estimated it" before calling `advance_story_stage`) -
+legitimately transferred back to DevTeam to get that estimate. That third
+hand-off in a row (Orchestrator→DevTeam→ProductOwner→DevTeam) matched the
+`TRANSFER LOOP DETECTED` breaker's 3-in-a-row pattern even though each hop
+was individually reasonable, not a real bounce - the story was auto-BLOCKED,
+and the resulting resolve/re-attempt/override cascade (the same shape as
+finding #25's) burned the full 20-call budget before the scripted action
+was ever reached or cleanly refused. Tightened the prompt once more (states
+Dev Team has already given an estimate too, closing the one remaining
+legitimate reason to transfer back), but the underlying variance - whether
+`ScrumOrchestrator` routes straight to ProductOwner or detours through
+DevTeam first - isn't something a fixture-side prompt tweak can fully pin
+down, and this eval case has now passed twice then failed twice via two
+*different* cascade mechanisms on the same PR. Same conclusion as finding
+#23's `merge_story_pr_refuses_framework_branch`: moved to
+`KNOWN_FLAKY_EVAL_IDS` rather than chasing a third variant of this prompt.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal
