@@ -1043,6 +1043,30 @@ isn't enough on its own to promote a case out of `KNOWN_FLAKY_EVAL_IDS`
 "always fails") - left as-is pending a few more consecutive clean runs
 before being trusted as a required case again.
 
+**20. `create_sprint_report_rejects_without_new_retro_or_impediment` regressed
+back to flaky after its finding-#18 fix, for the exact same reason
+`create_release_pr_rejects_without_release_approval` was already flaky.**
+Despite "Confirmed by the very next CI run" above, this case failed again on
+a later `pull_request`-triggered run (2026-11-06, run `42208029313`, branch
+`worktree-adk-eval-pr-gate`) and twice more on a completely unrelated PR
+(2026-11-10, runs `42781643443`/`42782955591`, branch
+`worktree-v0.2.0-release-stories` - a PR touching only
+`agents/scrum_team/tools/docs.py`/`github.py`'s changelog/announcement/
+product-doc tooling, `ProductOwner`/`DevTeam` prompts, and `tools/scrum.py`'s
+`DEFAULT_DOD` - none of which touch `ScrumMaster-workflow.md`,
+`create_sprint_report`, or `calculate_kpis`, ruling out that PR's own changes
+as the cause). The `--print_detailed_results` diff from the 2026-11-10 run
+showed the identical class of finding already documented just above for
+`create_release_pr_rejects_without_release_approval`: ScrumMaster, despite
+the prompt's explicit "don't ask for confirmation... Just make the call and
+tell me what happens", called `calculate_kpis()` before ever attempting
+`create_sprint_report` - proactively trying to resolve a perceived missing
+prerequisite (fresh KPIs for the report) rather than attempting the scripted
+call directly. Moved to `KNOWN_FLAKY_EVAL_IDS` to match its sibling case
+rather than re-litigating a prompt fix that already didn't hold the first
+time; promote both back out together if a run of consecutive clean CI
+passes ever confirms the underlying behavior has actually stopped.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal

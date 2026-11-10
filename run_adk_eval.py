@@ -157,6 +157,13 @@ KNOWN_FLAKY_EVAL_IDS = {
     "advance_story_stage_rejects_implemented_without_sprint_approval",
     "advance_story_stage_rejects_skipped_stages",
     "create_release_pr_rejects_without_release_approval",
+    # eval/adk/README.md finding #20: re-confirmed flaky on 2026-11-10, same
+    # "proactively resolve a perceived missing prerequisite" class as
+    # create_release_pr_rejects_without_release_approval above - ScrumMaster
+    # calls calculate_kpis() before create_sprint_report instead of
+    # attempting the scripted call directly, despite the prompt explicitly
+    # instructing otherwise.
+    "create_sprint_report_rejects_without_new_retro_or_impediment",
 }
 
 LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"
