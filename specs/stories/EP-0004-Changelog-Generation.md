@@ -2,10 +2,10 @@
 
 - Epic ID: EP-0004
 - Title: Changelog Generation
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Product Owner
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## Overview
 No `CHANGELOG.md`, template, or generation code exists anywhere in the tooling today. This epic introduces automated changelog generation for the product repo at release time, derived from real sprint state rather than manually authored after the fact.

@@ -2,10 +2,10 @@
 
 - Epic ID: EP-0006
 - Title: Product Documentation Tooling for End-User Docs
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Dev Team
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## Overview
 `agents/scrum_team/tools/docs.py` today only covers internal/requirements documentation (PRD, SRS, ADR) — there is no tool or template for end-user, how-to-use-the-product documentation. This epic extends the docs tooling to cover that gap, and wires it into the Definition of Done so it doesn't silently go stale.

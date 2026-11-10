@@ -43,25 +43,25 @@ Stories:
   - [x] [US-0010] Verify Release PR Diff Against Sprint Tracking
   - [x] [US-0011] Block Release on Uncommitted Sprint Work
 
-### v0.2 — Release Communication & Documentation (target: 2026-10)
+### v0.2 — Release Communication & Documentation (Released: `v0.2.0`, 2026-11-10)
 Goals
 - Generate an accurate, automated changelog per release.
 - Draft a customer-facing announcement from real release content.
 - Extend documentation tooling to cover end-user product docs, not just internal specs.
 
 Stories:
-- [ ] [EP-0004] Changelog Generation
-  - [ ] [US-0012] Generate Changelog Entry per Release
-  - [ ] [US-0013] Derive Changelog Content from Sprint State
-  - [ ] [US-0014] Include Changelog in Release PR
-- [ ] [EP-0005] Customer-Facing Announcement Generation
+- [x] [EP-0004] Changelog Generation
+  - [x] [US-0012] Generate Changelog Entry per Release
+  - [x] [US-0013] Derive Changelog Content from Sprint State
+  - [x] [US-0014] Include Changelog in Release PR
+- [x] [EP-0005] Customer-Facing Announcement Generation
   - [x] [US-0015] Add Announcement Template
-  - [ ] [US-0016] Generate Draft Announcement from Release Content
-  - [ ] [US-0017] Require Announcement Drafting in Sprint Review
-- [ ] [EP-0006] Product Documentation Tooling for End-User Docs
+  - [x] [US-0016] Generate Draft Announcement from Release Content
+  - [x] [US-0017] Require Announcement Drafting in Sprint Review
+- [x] [EP-0006] Product Documentation Tooling for End-User Docs
   - [x] [US-0018] Add End-User Doc Template
-  - [ ] [US-0019] Add `upsert_user_doc` Tool
-  - [ ] [US-0020] Wire Product Docs into Definition of Done
+  - [x] [US-0019] Add `upsert_user_doc` Tool
+  - [x] [US-0020] Wire Product Docs into Definition of Done
 
 ### v0.3 — Process Trust, Versioning & Governance (planned)
 Goals
@@ -168,7 +168,7 @@ Notes
 
 | To Do | In Progress | In Review | Done |
 |------|-------------|-----------|------|
-| EP-0004, US-0012–US-0014, EP-0005, US-0016–US-0017, EP-0006, US-0019–US-0020 | | | US-0015, US-0018 |
+| | | | EP-0004, US-0012–US-0014, EP-0005, US-0015–US-0017, EP-0006, US-0018–US-0020 |
 
 ---
 

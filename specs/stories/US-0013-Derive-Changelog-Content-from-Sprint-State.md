@@ -2,10 +2,10 @@
 
 - Story ID: US-0013
 - Title: Derive Changelog Content from Sprint State
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Scrum Master
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## As a Scrum Master, I want the generator to pull from `sprint_backlog`/`decision_log` (state), so entries are accurate without manual authoring.
 

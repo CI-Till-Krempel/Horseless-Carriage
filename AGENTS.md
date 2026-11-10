@@ -36,18 +36,23 @@ If you're investigating a Team Performance Evaluation run, use the
 `investigate-eval-run` skill/process (`.claude/skills/investigate-eval-run/`) - it produces exactly
 this kind of spec-issue and a matching `RELEASE.md` entry.
 
-## 2. Branch and PR — never push directly to `main`
+## 2. Branch and PR — trunk-based, never push directly to `main`
+
+This repo develops itself trunk-based (see `RELEASE.md` "Branching model — trunk-based
+development" for the full rationale). There is no `develop` branch and never target one:
 
 - Branch from `main` (`feature/<slug>`, `fix/<slug>`, `fix-NNN-<slug>`, `investigate-eval-runNN-...`
   are all patterns already in use - match the existing style for the branch's purpose).
+- Open every PR against `main`. **Do not target `develop`** - an earlier GitFlow plan created it
+  as the intended integration branch after `v0.1.0`, but that plan was never adopted (every PR
+  since has targeted `main` directly), so it now sits stale, hundreds of commits behind `main`. A
+  PR based on `main` but opened against `develop` will show every one of those missed commits as
+  part of its own diff, not just its real changes - this has actually happened, caught and
+  retargeted before merge. If you see a stray reference recommending `develop` anywhere, it's
+  describing that retired plan, not current practice - open against `main` regardless.
 - `main` is not GitHub-branch-protected in this repo today - that makes it a **convention you must
   enforce yourself**, not a safety net that catches you. Never `git push origin main` directly,
   even for a one-line fix.
-- `develop` exists in this repo's history (`RELEASE.md` "Branching model — GitFlow") as the
-  eventual integration branch once a second release is underway, but it has been stale since
-  v0.1.0 shipped - every PR since has still targeted `main` directly. Match current practice: open
-  PRs against `main` unless you've confirmed `develop` is active again (check
-  `git log origin/develop -1` against `git log origin/main -1`).
 - Every PR must link back to what it implements (issue, spec-issue, or story) - see
   [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md)'s "Related Issues" section.
   Reference the spec-issue/story path in the PR body even though GitHub won't auto-link it; use a
@@ -96,8 +101,12 @@ renumber, or move anything with an ID:
 
 A code change without the matching doc update is incomplete, not "a follow-up." Depending on what
 changed, update:
-- [RELEASE.md](RELEASE.md) - add a new `### <heading>` entry when the change came from a real eval
-  run or fixes a user-visible behavior (match the style/evidence density of existing entries).
+- [announcements/unreleased-changelog.md](announcements/unreleased-changelog.md) - add a new
+  `### <heading>` entry when the change came from a real eval run or fixes a user-visible behavior
+  (match the style/evidence density of existing entries, e.g.
+  [announcements/0.1.0-changelog.md](announcements/0.1.0-changelog.md)). This is Horseless
+  Carriage's own changelog, not [RELEASE.md](RELEASE.md) (process only, not a running devlog -
+  see its own intro for why these were split apart).
 - The relevant page under [docs/](docs/) (`ARCHITECTURE.md`, `DEVELOPMENT-WORKFLOW.md`,
   `BUDGET.md`, `CONFIGURATION.md`, `GITHUB-INTEGRATION.md`, `TESTING.md`, etc.) - these are the
   source of truth referenced from `README.md`'s doc table; keep that table and its links valid.
@@ -105,6 +114,25 @@ changed, update:
   `## Resolution` section, if the change closes out tracked work.
 - `README.md`/`MANUAL.md`/`FAQ.md`/`TROUBLESHOOTING.md` for anything user-facing (new env var, new
   CLI flag, new failure mode and its fix).
+
+**Finishing a story/epic is not done until its own tracking docs say so, in the same PR** - this is
+a mandatory step, not optional polish, the exact same distinction this file draws elsewhere between
+a code change and the "follow-up" documentation for it:
+- Every `specs/stories/US-NNNN-*.md`/`EP-NNNN-*.md` the change completes: flip `Status` to `Done`
+  (and `Last Updated` to today).
+- `specs/ROADMAP.md`: flip that story/epic's `- [ ]` to `- [x]`, move it off the "To Do" column of
+  its version's Kanban table into "Done", and freeze the version's own heading with the release tag
+  and date once every story in it has shipped (the file's own "How to use"/"Release checklist"
+  sections already describe this - the gap is agents skipping it, not the instructions being
+  unclear).
+- The matching `specs/implementation-plans/IP-NNNN-*.md`, if one exists for the epic: flip `Status`
+  to `Done` and `Last Updated` to today (per `TEMPLATE-IMPLEMENTATION-PLAN.md`'s own Status enum,
+  and ADR-0001's framing of an Implementation Plan as "expected to be updated as work proceeds" -
+  unlike an ADR, which is a frozen historical record once Accepted).
+- A stale status here is exactly as real a bug as stale code: a future agent (or human) reading
+  `specs/ROADMAP.md` to decide what's safe to build next, or what's actually shipped in a release,
+  is reading a lie if the tracking doc says "Draft"/`- [ ]` for work that already merged. Don't defer
+  this sync to "the next PR" - do it in the same PR that completes the work.
 
 ## 7. Tests: keep them green, extend them
 
@@ -271,6 +299,7 @@ infer silent approval from a PR simply being merged.
 | Filing a new gap/bug for this repo itself | `spec-templates/requirements/TEMPLATE-ISSUE.md`, recent `specs/requirements/SPEC-ISSUE-006*.md` |
 | Understanding the simulated team's own process (not this repo's) | [docs/DEVELOPMENT-WORKFLOW.md](docs/DEVELOPMENT-WORKFLOW.md) |
 | Releasing a new version of this repo | [RELEASE.md](RELEASE.md) |
+| Logging a fix/finding for this repo's own changelog | [announcements/unreleased-changelog.md](announcements/unreleased-changelog.md) |
 | Running tests | [docs/TESTING.md](docs/TESTING.md) |
 | Running either eval | [docs/EVALUATION.md](docs/EVALUATION.md) |
 | Changing a tool/prompt/gate in `agents/scrum_team/` | Section 9 above, `eval/adk/README.md` |

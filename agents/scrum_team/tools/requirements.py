@@ -1518,7 +1518,7 @@ def _preceding_story(product_backlog: List[Dict[str, Any]], story_id: str, title
     A BLOCKED predecessor (see raise_story_blocker) is skipped too, not
     just Epics - a story stuck on an unresolved question shouldn't also
     freeze every lower-priority story behind it; the team is meant to move
-    on to the next one while it waits (see RELEASE.md "Blocked stories").
+    on to the next one while it waits (see announcements/0.1.0-changelog.md "BLOCKED stories").
     The blocked story itself stays exactly where it is in product_backlog -
     only the ordering *check* looks past it, so its priority position is
     preserved for whenever it's resolved.

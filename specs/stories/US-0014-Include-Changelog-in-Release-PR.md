@@ -2,10 +2,10 @@
 
 - Story ID: US-0014
 - Title: Include Changelog in Release PR
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Dev Team
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## As a Dev Team member, I want the generated changelog diff bundled into the same release PR, so changelog updates ship atomically with code.
 

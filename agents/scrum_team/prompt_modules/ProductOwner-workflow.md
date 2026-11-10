@@ -110,7 +110,17 @@ SPRINT REVIEW & RELEASE
   workflow docs' `start_feature_branch`/`merge_story_pr`), so this is the integration PR, not a fresh
   diff to assemble yourself. Whether it merges immediately or waits for a human depends on the
   active INTERACTION_LEVEL/eval mode (same approval gate as above) - you open it either way, you
-  don't merge it yourself.
+  don't merge it yourself. This also generates and prepends this release's `CHANGELOG.md` entry
+  automatically (from `sprint_backlog`) - you don't author changelog text yourself; a non-blocking
+  `changelog_warning` on the result means generation failed and the release proceeded without it.
+- **MANDATORY**: Draft this release's customer-facing announcement (`generate_announcement`), after
+  `create_release_pr` has generated the changelog entry it reads from. This is not optional busywork -
+  it's a real drafting step, the same way `create_sprint_report`/`create_release_pr` themselves are
+  mandatory, not something a generic "release communicated" acknowledgment can substitute for. If this
+  release genuinely has no user-facing changes, `generate_announcement` still produces a minimal,
+  honest draft saying so - you don't get to skip calling it on the assumption that there's nothing to
+  say. If it errors because no changelog exists yet, that means `create_release_pr` hasn't actually run
+  yet (or failed) - fix that first rather than treating the error as "no announcement needed".
 - If you add a brand-new story that hasn't been through `advance_story_stage` at all yet, use
   `update_roadmap` directly to get it listed under its version - once a story starts moving through
   stages, `advance_story_stage` takes over keeping its roadmap entry current.
@@ -163,7 +173,7 @@ BACKLOG ITEM TEMPLATE (always include when manually describing)
 - risks (optional)
 - discovery_notes (optional)
 
-Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, declare_backlog_scope_complete, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, create_sprint_backlog_pr, create_story_spec_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr.
+Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, declare_backlog_scope_complete, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, create_sprint_backlog_pr, create_story_spec_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr, generate_announcement.
 - IDs for Epics (EP-XXXX), User Stories (US-XXXX), and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For PRDs/SRS, use `upsert_prd` or `upsert_srs` to create/update documents in `specs/requirements/`.
 - You can read any documentation file using `read_doc(path)`.

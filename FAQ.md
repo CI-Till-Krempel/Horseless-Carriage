@@ -66,9 +66,9 @@ Local/Ollama) via your own LiteLLM proxy instance, which runs in your own Docker
 [SECURITY.md](SECURITY.md) for secret-handling notes.
 
 **What's NOT ready yet in this release?**
-Changelog generation, customer-facing announcement drafting, and end-user product-doc tooling are
-planned for v0.2 (see [specs/ROADMAP.md](specs/ROADMAP.md)). This is an early release: no automated
-secret-scanning in CI yet and no formal security audit performed. GitFlow branching
+Enforced semantic versioning for target products, LAN-hosted Ollama support, and a QA release-testing
+gate are planned for v0.3 (see [specs/ROADMAP.md](specs/ROADMAP.md)). This is an early release: no
+automated secret-scanning in CI yet and no formal security audit performed. GitFlow branching
 (`develop`/`release/*`/`hotfix/*`) is already implemented and mechanically enforced: feature
 branches flow `feature/* -> develop -> release/* -> main`, and the `git_push` tool's
 protected-branch guard blocks any direct push to `main` or `develop`, forcing changes through a

@@ -2,7 +2,7 @@
 
 - Story ID: US-0015
 - Title: Add Announcement Template
-- Status: Ready
+- Status: Done
 - Priority: Should
 - Owner: Product Owner
 - Last Updated: 2026-07-16

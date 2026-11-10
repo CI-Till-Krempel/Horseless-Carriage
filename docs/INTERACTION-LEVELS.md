@@ -92,7 +92,8 @@ unconditionally). Only what this one report *renders* for the human changes. Whe
 section, the report says so explicitly under a "Full Process Detail" heading, naming what was left
 out and where it still lives - `retro_actions`/`impediment_log`/`story_estimates` in `.hc/state.json`,
 the conversation transcript in `specs/reports/TRANSCRIPT-LATEST.md` (a human-readable Markdown file,
-not a raw blob in `.hc/state.json` - see `RELEASE.md` "State persistence") - a silently thinner report
+not a raw blob in `.hc/state.json` - see `announcements/unreleased-changelog.md` "GH issue #397")
+- a silently thinner report
 would look like nothing happened, rather than like a level-appropriate summary.
 
 ## Blocked-story routing

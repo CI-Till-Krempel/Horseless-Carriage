@@ -2,10 +2,10 @@
 
 - Story ID: US-0016
 - Title: Generate Draft Announcement from Release Content
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Product Owner
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## As a Product Owner, I want a tool that drafts a customer-facing announcement from the sprint's shipped stories/changelog, so I don't write it from scratch.
 

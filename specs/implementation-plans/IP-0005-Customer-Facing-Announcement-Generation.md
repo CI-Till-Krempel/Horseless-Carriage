@@ -3,9 +3,9 @@
 - Plan ID: IP-0005
 - Title: Customer-Facing Announcement Generation
 - Epic: EP-0005
-- Status: Draft
+- Status: Done
 - Owner: Product Owner
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## 1. Objective
 Produce a draft, external, non-technical release announcement for every release, sourced from the changelog rather than authored freehand.

@@ -1043,6 +1043,86 @@ isn't enough on its own to promote a case out of `KNOWN_FLAKY_EVAL_IDS`
 "always fails") - left as-is pending a few more consecutive clean runs
 before being trusted as a required case again.
 
+**20. `create_sprint_report_rejects_without_new_retro_or_impediment` regressed
+back to flaky after its finding-#18 fix, for the exact same reason
+`create_release_pr_rejects_without_release_approval` was already flaky.**
+Despite "Confirmed by the very next CI run" above, this case failed again on
+a later `pull_request`-triggered run (2026-11-06, run `42208029313`, branch
+`worktree-adk-eval-pr-gate`) and twice more on a completely unrelated PR
+(2026-11-10, runs `42781643443`/`42782955591`, branch
+`worktree-v0.2.0-release-stories` - a PR touching only
+`agents/scrum_team/tools/docs.py`/`github.py`'s changelog/announcement/
+product-doc tooling, `ProductOwner`/`DevTeam` prompts, and `tools/scrum.py`'s
+`DEFAULT_DOD` - none of which touch `ScrumMaster-workflow.md`,
+`create_sprint_report`, or `calculate_kpis`, ruling out that PR's own changes
+as the cause). The `--print_detailed_results` diff from the 2026-11-10 run
+showed the identical class of finding already documented just above for
+`create_release_pr_rejects_without_release_approval`: ScrumMaster, despite
+the prompt's explicit "don't ask for confirmation... Just make the call and
+tell me what happens", called `calculate_kpis()` before ever attempting
+`create_sprint_report` - proactively trying to resolve a perceived missing
+prerequisite (fresh KPIs for the report) rather than attempting the scripted
+call directly. Moved to `KNOWN_FLAKY_EVAL_IDS` to match its sibling case
+rather than re-litigating a prompt fix that already didn't hold the first
+time; promote both back out together if a run of consecutive clean CI
+passes ever confirms the underlying behavior has actually stopped.
+
+**21. Three more required cases hit the same "setup wizard" detour finding #15 already
+diagnosed and fixed once - their fixtures just never got the fix.** PR #514's own CI
+(2026-11-10, three consecutive `adk-eval` attempts on the same unmodified code - two
+plain re-runs, one after an unrelated doc-only commit) failed on three *different*
+required cases in turn - `upsert_story_blocks_direct_status_set`,
+`advance_story_stage_rejects_wrong_role`, then `git_push_refuses_protected_develop` -
+each via `LlmCallsLimitExceededError` (20-call cap), never a scripted trajectory
+mismatch. All three fixtures were missing `state.repo`/`product_vision`/`sprint_goal` -
+exactly the gap finding #15 above already named and fixed for four *other* cases
+(`advance_story_stage_rejects_implemented_without_sprint_approval`,
+`create_release_pr_rejects_without_release_approval`, etc.): without them,
+`repo_status()`/the system-context banner reports "Not configured", and the model -
+following an "override this gate, don't explain, just make the call" style prompt
+literally - reasons itself into first establishing product vision/configuring the
+repo instead of attempting the one scripted action, burning its whole call budget
+before ever reaching it. These three simply predated finding #15's sweep and were
+never updated to match. Fixed the identical way: added `repo`/`product_vision`/
+`sprint_goal`/`sprint_number`/a plausible `product_backlog` (+ `sprint_backlog` where
+the story is already past Draft) to each fixture, and the same explicit "the
+repository and sprint are already fully configured... skip repo_status/
+init_scrum_state/list_docs" sentence to each scripted prompt, matching every already-
+fixed sibling case's wording exactly. `ORCHESTRATOR_PROMPT` itself was deliberately
+left untouched again, for the same reason finding #15 gave the first time: narrowing
+its SETUP WIZARD trigger is a production-prompt change with much wider blast radius
+than this evalset.
+
+**Confirmed by the next CI run**: all three previously-failing cases PASSED, including
+`git_push_refuses_protected_develop` scoring a clean 1.0 - but the same run then failed
+on `git_push_refuses_protected_main` (the sibling of the now-fixed `_develop` case,
+*literally the same template* differing only by branch name) and
+`merge_story_pr_refuses_framework_branch` (a different, unrelated issue - see #22
+below). A full audit of every case's fixture (`repo`/`product_vision`/`sprint_goal`
+presence) turned up exactly one more required case with the identical gap -
+`git_push_refuses_protected_main` - plus one already-`KNOWN_FLAKY_EVAL_IDS` case with
+the same gap, `log_story_tokens_rejects_value_matching_the_estimate` (fixed too, for
+thoroughness, even though it can't block CI either way). Both fixed identically to the
+three above. This should have been a single sweep the first time - `git_push_refuses_
+protected_main`/`_develop` are obviously-paired cases, and missing the twin while
+fixing the original is exactly the kind of gap a full audit (as done here) catches
+that fixing-only-what's-currently-red does not.
+
+**22. `merge_story_pr_refuses_framework_branch` is a different, likely genuinely
+intermittent issue - the `admin` parameter, not the setup-wizard class.** Failed once
+(not yet seen failing before or since, unlike the setup-wizard pattern above, which
+recurred identically across multiple sibling fixtures) with QA calling `check_build()`
+first (a reasonable "verify before merging" impulse) then `merge_story_pr(pr_id=...,
+admin=False)` - an extra, defaulted bool the live model supplied explicitly, which
+breaks `tool_trajectory_avg_score`'s exact `args` dict-equality the same way finding
+#19's `review_comment`/`review_event` did. Its fixture already has
+`repo`/`product_vision`/`sprint_goal` set, so this is not another instance of #15/#21 -
+a single occurrence of normal model-behavior variance on an otherwise-correct fixture.
+Tightened the prompt the same way finding #19 fixed its own case: states the build was
+already verified (removing the reason to call `check_build()`) and instructs "call it
+with ONLY `pr_id` - do not pass an `admin` argument." Not yet reconfirmed by a live
+re-run as of this writing.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal

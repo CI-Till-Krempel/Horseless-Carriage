@@ -12,6 +12,8 @@ from agents.scrum_team.tools.docs import (
     upsert_prd,
     upsert_srs,
     upsert_adr,
+    upsert_user_doc,
+    list_docs,
     create_from_template,
     seed_repository,
     _heal_gitignore_drift,
@@ -55,6 +57,19 @@ class TestDocsTools(unittest.TestCase):
         tool_context.state = ScrumState().model_dump()
         upsert_srs("This is an SRS.", "test.md", tool_context=tool_context)
         mock_write_file.assert_called_with("specs/requirements/SRS-test.md", "This is an SRS.", overwrite=True, tool_context=tool_context)
+
+    @patch("agents.scrum_team.tools.docs.write_file")
+    def test_upsert_user_doc(self, mock_write_file):
+        """
+        Acceptance Criteria (US-0019): an end-user guide is created/updated
+        in specs/product-docs/, mirroring upsert_prd's pattern.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        upsert_user_doc("This is a guide.", "Getting-Started.md", tool_context=tool_context)
+        mock_write_file.assert_called_with(
+            "specs/product-docs/GUIDE-Getting-Started.md", "This is a guide.", overwrite=True, tool_context=tool_context
+        )
 
 
 class TestSprintFilesTouched(unittest.TestCase):
@@ -310,6 +325,51 @@ class TestSprintFilesTouched(unittest.TestCase):
           list, not missing/undefined.
         """
         self.assertEqual(ScrumState().model_dump()["sprint_files_touched"], [])
+
+    def test_upsert_user_doc_records_touched_path(self):
+        upsert_user_doc("Guide content.", "Getting-Started.md", tool_context=self.tool_context)
+        self.assertIn("specs/product-docs/GUIDE-Getting-Started.md", self.tool_context.state["sprint_files_touched"])
+
+
+class TestUpsertUserDoc(unittest.TestCase):
+    """
+    Acceptance Criteria (US-0019): creates on first call, updates (not
+    duplicates) on a second call with the same filename, and the result is
+    discoverable via list_docs().
+    """
+
+    def setUp(self):
+        self.repo_root = Path(tempfile.mkdtemp())
+        patcher = patch("agents.scrum_team.tools.docs._configured_repo_root", return_value=self.repo_root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tool_context = MagicMock()
+        self.tool_context.state = ScrumState().model_dump()
+        self.tool_context.agent_name = "DevTeam"
+
+    def test_first_call_creates_file(self):
+        result = upsert_user_doc("v1 content", "Getting-Started.md", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        path = self.repo_root / "specs/product-docs/GUIDE-Getting-Started.md"
+        self.assertEqual(path.read_text(encoding="utf-8"), "v1 content")
+
+    def test_second_call_updates_rather_than_duplicates(self):
+        upsert_user_doc("v1 content", "Getting-Started.md", tool_context=self.tool_context)
+        upsert_user_doc("v2 content", "Getting-Started.md", tool_context=self.tool_context)
+        product_docs_dir = self.repo_root / "specs/product-docs"
+        files = list(product_docs_dir.glob("GUIDE-Getting-Started*.md"))
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].read_text(encoding="utf-8"), "v2 content")
+
+    @patch("agents.scrum_team.tools.docs._project_root")
+    def test_list_docs_includes_product_docs(self, mock_project_root):
+        mock_project_root.return_value = Path(tempfile.mkdtemp())
+        upsert_user_doc("content", "Getting-Started.md", tool_context=self.tool_context)
+        result = list_docs(tool_context=self.tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(
+            any("product-docs/GUIDE-Getting-Started.md" in f for f in result["files"]["specs"])
+        )
 
 
 class TestSeedRepositoryBranch(unittest.TestCase):

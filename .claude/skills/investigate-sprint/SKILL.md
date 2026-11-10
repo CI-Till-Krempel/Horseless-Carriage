@@ -158,8 +158,9 @@ Two separate codebases can be at fault, and they live in different places:
 Once you have a candidate mechanism (a rejected tool call, a stale-state symptom, a confabulated
 claim), read the actual implementation rather than guessing from an error string alone - trace the
 data backwards: which function last wrote the value that's wrong, under what condition, and whether
-`RELEASE.md`/`specs/requirements/SPEC-ISSUE-*.md` in this repo already has a "Done" fix for this exact
-symptom that this run's mechanism evades.
+`announcements/unreleased-changelog.md`/`announcements/0.1.0-changelog.md`/
+`specs/requirements/SPEC-ISSUE-*.md` in this repo already has a "Done" fix for this exact symptom
+that this run's mechanism evades.
 
 ## Step 6 - Decide: framework bug, agent/process behavior, or project-specific issue?
 
