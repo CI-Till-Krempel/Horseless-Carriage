@@ -217,7 +217,7 @@ class TestProposeFrameworkChange(unittest.TestCase):
         self.assertEqual(len(pr_calls), 1)
         self.assertIn("HUMAN OPERATOR ACTION REQUIRED", pr_calls[0])
         self.assertIn("repo.maven.apache.org", pr_calls[0])
-        self.assertIn("config/net-proxy/allowlist.filter", pr_calls[0])
+        self.assertIn("NET_PROXY_EXTRA_ALLOWLIST_HOSTS", pr_calls[0])
 
         self.assertEqual(len(blocking_calls), 1)
         self.assertEqual(blocking_calls[0]["kind"], "framework_change")

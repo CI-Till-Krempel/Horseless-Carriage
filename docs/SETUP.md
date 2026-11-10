@@ -412,10 +412,20 @@ inside a generated test, whatever - fails outright, not silently through to some
   budget-scoped path distinct from `agent`'s arbitrary tool access. It's also on `agent-net` so
   `agent` reaches it *directly* (never through `net-proxy` - `NO_PROXY=litellm` on `agent`), keeping
   every real LLM call on the fast, direct path.
-- **Extending the allowlist**: edit `config/net-proxy/allowlist.filter` (one regex per line, matched
-  against the CONNECT target `host[:port]`) and rebuild `net-proxy` (`docker compose build
-  net-proxy`). Add a comment explaining why - this is a deliberately narrow, two-host allowlist, not
-  a general-purpose egress policy.
+- **Extending the allowlist, project-locally**: set `NET_PROXY_EXTRA_ALLOWLIST_HOSTS` in your own
+  `.env` (comma-separated hostnames - see `.env.example`) and run `docker compose up` (not just
+  `restart` - the container needs to be recreated, not merely restarted, to re-run its startup
+  logic). `entrypoint.sh` regenerates the live allowlist from the tracked baseline and merges this
+  in on every container start, so your addition never means editing a tracked file and never
+  conflicts with `git pull`ing a new Horseless Carriage version. This is what a
+  `propose_framework_change` proposal's `additional_allowlist_hosts` (see `agents/scrum_team/tools/
+  workflow.py`) asks a human to do.
+- **Extending the allowlist, upstream (changing the default every project gets)**: edit
+  `config/net-proxy/allowlist.filter` itself (one regex per line, matched against the CONNECT target
+  `host[:port]`) and rebuild `net-proxy` (`docker compose build net-proxy`). Add a comment
+  explaining why - this is a deliberately narrow, two-host allowlist, not a general-purpose egress
+  policy, and a tracked-file edit should be reserved for a change that genuinely belongs in every
+  installation, not one project's own workbench needs.
 - **Known limitation - this is best-effort, not a hard security boundary**: `internal: true` is
   real Docker Engine enforcement on Linux and inside Docker Desktop's Linux VM (Mac/Windows) alike,
   but a container with enough privilege (e.g. `NET_ADMIN`, which this project's compose files never

@@ -256,6 +256,15 @@ services:
       # env vars/defaults as before - this is a transparent relocation, not
       # a behavior change for anyone who already configured these.
       - "${AGENT_WEB_BIND_HOST:-127.0.0.1}:${AGENT_WEB_HOST_PORT:-8000}:8000"
+    environment:
+      # Comma-separated extra hostnames (e.g. a propose_framework_change
+      # proposal's additional_allowlist_hosts) merged into the live
+      # allowlist at container start - entrypoint.sh regenerates it from
+      # the repo-tracked baseline every start, so a local addition here
+      # never means hand-editing config/net-proxy/allowlist.filter and
+      # never conflicts with `git pull`ing a new Horseless Carriage
+      # version. See SECURITY.md.
+      - NET_PROXY_EXTRA_ALLOWLIST_HOSTS=${NET_PROXY_EXTRA_ALLOWLIST_HOSTS:-}
     networks:
       - external-net
       - agent-net

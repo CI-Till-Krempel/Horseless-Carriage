@@ -40,4 +40,34 @@ This depends on a separate, already-filed fix: `merge_story_pr` (`agents/scrum_t
 - `config/net-proxy/allowlist.filter`, `net-proxy.Dockerfile`
 - `SPEC-ISSUE-0064-...md` (the original JVM/Gradle incident that motivated `propose_framework_change`)
 - PR #493 (manual precedent: Gradle hosts added to Horseless Carriage's own allowlist)
-- PR #494 (`merge_story_pr` framework/steering branch guard - hard dependency for this ADR)
+- PR #494 (`merge_story_pr` framework/steering branch guard - hard dependency for this ADR) - **merged 2026-11-05, before this ADR's own 2026-11-03 draft date; the dependency this ADR names as blocking it is already resolved.**
+
+## Update (2026-11-10): the "final application step" friction is already partly addressed
+
+A separate, narrower change (PR #516's follow-up) added `NET_PROXY_EXTRA_ALLOWLIST_HOSTS` - a
+comma-separated hostname list in Horseless Carriage's own `.env` (gitignored, local-only), merged
+into the live allowlist by `entrypoint.sh` on every `net-proxy` container start, idempotently. This
+replaces PR #493's manual precedent (hand-editing `config/net-proxy/allowlist.filter` directly,
+which this ADR's Context section cites) and is now what `propose_framework_change`'s own PR-body
+"HUMAN OPERATOR ACTION REQUIRED" text asks a human to do.
+
+This changes two factual premises above, not the overall decision:
+- **Decision item #4** said applying a change "still requir[es] an explicit `docker compose build
+  net-proxy` + restart." That's no longer accurate for a `NET_PROXY_EXTRA_ALLOWLIST_HOSTS` addition
+  specifically - no rebuild needed, just `docker compose up` (container recreate, not merely
+  `restart`, so entrypoint.sh's startup logic actually re-runs). A tracked-file edit to
+  `config/net-proxy/allowlist.filter` itself (a genuinely new *default*, not a per-project addition)
+  still needs the rebuild step as before.
+- **Decision item #5**'s proposed human-invoked sync helper should target `NET_PROXY_EXTRA_
+  ALLOWLIST_HOSTS` in `.env`, not append lines to `config/net-proxy/allowlist.filter` directly - the
+  whole point of this update is that a per-project addition should never need a tracked-file edit at
+  all, the same reasoning Option B's rejection already applied to a live mount.
+
+**Still open, unaddressed by this update:** the actual per-project, versioned, reviewable manifest
+this ADR's Decision (`.hc/allowlist.filter` in the product/state repo) and Consequences
+("explicit, versioned, reviewable artifact living with that project") describe. Today's
+`NET_PROXY_EXTRA_ALLOWLIST_HOSTS` is still a flat, uncommented, single-operator-local list with no
+audit trail of which proposal/PR justified each host - exactly the gap this ADR's Option D
+(status quo) rejection already named. This update only fixes *how a human applies* an approved
+addition, not *what a reviewer can see* about why each host is there. The sync-helper step (#5)
+remains the natural place to close that gap once this ADR is picked up.
