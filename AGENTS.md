@@ -106,6 +106,25 @@ changed, update:
 - `README.md`/`MANUAL.md`/`FAQ.md`/`TROUBLESHOOTING.md` for anything user-facing (new env var, new
   CLI flag, new failure mode and its fix).
 
+**Finishing a story/epic is not done until its own tracking docs say so, in the same PR** - this is
+a mandatory step, not optional polish, the exact same distinction this file draws elsewhere between
+a code change and the "follow-up" documentation for it:
+- Every `specs/stories/US-NNNN-*.md`/`EP-NNNN-*.md` the change completes: flip `Status` to `Done`
+  (and `Last Updated` to today).
+- `specs/ROADMAP.md`: flip that story/epic's `- [ ]` to `- [x]`, move it off the "To Do" column of
+  its version's Kanban table into "Done", and freeze the version's own heading with the release tag
+  and date once every story in it has shipped (the file's own "How to use"/"Release checklist"
+  sections already describe this - the gap is agents skipping it, not the instructions being
+  unclear).
+- The matching `specs/implementation-plans/IP-NNNN-*.md`, if one exists for the epic: flip `Status`
+  to `Done` and `Last Updated` to today (per `TEMPLATE-IMPLEMENTATION-PLAN.md`'s own Status enum,
+  and ADR-0001's framing of an Implementation Plan as "expected to be updated as work proceeds" -
+  unlike an ADR, which is a frozen historical record once Accepted).
+- A stale status here is exactly as real a bug as stale code: a future agent (or human) reading
+  `specs/ROADMAP.md` to decide what's safe to build next, or what's actually shipped in a release,
+  is reading a lie if the tracking doc says "Draft"/`- [ ]` for work that already merged. Don't defer
+  this sync to "the next PR" - do it in the same PR that completes the work.
+
 ## 7. Tests: keep them green, extend them
 
 - `python3 run_tests.py` runs everything: the host-script suite (`tests/`, no Docker needed) then

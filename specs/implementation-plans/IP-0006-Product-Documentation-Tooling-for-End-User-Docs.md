@@ -3,9 +3,9 @@
 - Plan ID: IP-0006
 - Title: Product Documentation Tooling for End-User Docs
 - Epic: EP-0006
-- Status: Draft
+- Status: Done
 - Owner: Dev Team
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## 1. Objective
 Extend the docs tooling to cover end-user, how-to-use-the-product documentation, distinct from the existing internal PRD/SRS/ADR coverage, and ensure it's kept current via the Definition of Done.

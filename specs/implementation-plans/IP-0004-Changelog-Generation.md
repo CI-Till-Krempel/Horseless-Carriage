@@ -3,9 +3,9 @@
 - Plan ID: IP-0004
 - Title: Changelog Generation
 - Epic: EP-0004
-- Status: Draft
+- Status: Done
 - Owner: Product Owner
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## 1. Objective
 Introduce automated `CHANGELOG.md` generation for the product repo, derived from real sprint state, shipped atomically with each release.
