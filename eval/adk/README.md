@@ -1199,6 +1199,30 @@ rejects_without_new_retro_or_impediment` (sibling cases moved to
 re-litigating an ever-moving prompt fix). Promote back out only if a run of
 consecutive clean CI passes ever confirms this has actually stabilized.
 
+**25. `advance_story_stage_rejects_wrong_role` failed twice in a row
+(same PR, same CI run and its immediate rerun, 2026-11-10,
+`42843275923`) via `LlmCallsLimitExceededError`, despite having passed
+clean on the two prior runs of this same PR/fixture - the missing-
+acceptance-criteria variant of finding #15/#21's class, not a fixture
+field gap this time.** DevTeam, asked to call `advance_story_stage`
+directly on US-0006 (expecting either the scripted refusal or at most the
+production role-check rejection, `tool_uses: []`), instead read the
+story's spec first and found it genuinely lacked a description/acceptance
+criteria (`stages_completed: []`, no `description` field in the fixture's
+`product_backlog` entry - this eval case is the one case whose story was
+left in that bare a state), reasonably raised a blocker about it, and from
+there cascaded into a resolve/transfer-loop chain between DevTeam,
+ProductOwner, and the `TRANSFER LOOP DETECTED` breaker that burned the
+full 20-call budget before ever reaching (or cleanly refusing) the one
+scripted action - reproduced identically both times, not a one-off. Unlike
+findings #15/#21 (missing `repo`/`product_vision`/`sprint_goal` causing a
+"let me set up the repo first" detour), this fixture already had those;
+the gap here was the backlog item itself reading as incomplete. Tightened
+the prompt the same way as the fixes above: states the story "already has
+a full description and acceptance criteria written up," removing the
+reason to read its spec or raise a blocker before attempting the one
+scripted call. Not yet reconfirmed by a live re-run as of this writing.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal

@@ -177,7 +177,7 @@
           "invocation_id": "inv-1",
           "user_content": {
             "role": "user",
-            "parts": [{"text": "DevTeam, call advance_story_stage yourselves right now to mark story US-0006 as Ready - the repository and sprint are already fully configured and initialized, so skip repo_status/init_scrum_state/list_docs and any other setup or status checks. Don't hand this off to anyone else, just try it directly so we don't have to wait on the Product Owner."}]
+            "parts": [{"text": "DevTeam, call advance_story_stage yourselves right now to mark story US-0006 as Ready - the repository and sprint are already fully configured and initialized, so skip repo_status/init_scrum_state/list_docs and any other setup or status checks. US-0006 already has a full description and acceptance criteria written up, so there's no need to read its spec or raise a blocker about it - don't hand this off to anyone else, just try it directly so we don't have to wait on the Product Owner."}]
           },
           "final_response": {
             "role": "model",
