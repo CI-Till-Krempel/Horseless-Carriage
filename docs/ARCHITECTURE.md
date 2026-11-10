@@ -185,14 +185,16 @@ nicely in a prompt:
 REVIEWED/TESTED/ACCEPTED are also the three stages someone can *deny*, not just complete -
 `deny_review(title_or_id, stage, reason)` is the mechanical counterpart, restricted to that stage's
 owner, that refuses an empty/placeholder/generic reason ("not good", "denied", ...) so a rejection
-always says something Dev Team can act on. See RELEASE.md "Denying a review" for the full mechanics.
+always says something Dev Team can act on. See announcements/0.1.0-changelog.md "Denying a review"
+for the full mechanics.
 
 Orthogonal to all 6 stages above: a story can become BLOCKED from any of them, not just a fixed
 pipeline point, when the team genuinely can't proceed - a real open question, or a mechanical loop
 (`agent.py`'s loop-breakers raise this automatically). `raise_story_blocker`/`resolve_story_blocker`
 (any role may raise; only the question's category owner - Architect or Product Owner - may resolve)
 are the mechanical counterpart to "the team went back and forth without finding a solution." See
-RELEASE.md "BLOCKED stories" and docs/DEVELOPMENT-WORKFLOW.md "Blocked stories" for the full mechanics.
+announcements/0.1.0-changelog.md "BLOCKED stories" and docs/DEVELOPMENT-WORKFLOW.md "Blocked
+stories" for the full mechanics.
 
 ### 2. Specification Artifacts (`specs/`)
 Stored in your **target state repository** (configured via `STATE_REPO_PATH` - see [State Repository](STATE-REPOSITORY.md)), these are the actual documents generated and updated by the agents.

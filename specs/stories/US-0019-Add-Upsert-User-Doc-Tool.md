@@ -2,10 +2,10 @@
 
 - Story ID: US-0019
 - Title: Add `upsert_user_doc` Tool
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Dev Team
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## As a Dev Team member, I want a tool analogous to `upsert_prd`/`upsert_adr`, so end-user docs can be created/updated the same way internal specs are.
 

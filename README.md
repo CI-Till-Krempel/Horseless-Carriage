@@ -152,6 +152,7 @@ restarting again — see `update_hc.py` below.
 | [PREFLIGHT.md](PREFLIGHT.md) | Pre-flight checklist before your first run |
 | [MANUAL.md](MANUAL.md) | User manual: concepts, day-to-day usage, common workflows |
 | [RELEASE.md](RELEASE.md) | How this repo itself is versioned/released, and the evaluation harness's technical mechanics |
+| [announcements/](announcements/) | This repo's own changelog, one file per version |
 | [SECURITY.md](SECURITY.md) | Secret-handling notes and how to report a vulnerability |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Symptom → cause → fix reference: setup, Docker/containers, budget/cost, mid-session agent behavior, GitHub integration |
 | [FAQ.md](FAQ.md) | Frequently asked questions: providers, cost, oversight, what's not ready yet, where to get help |
@@ -197,7 +198,8 @@ restarting again — see `update_hc.py` below.
 
 - `PREFLIGHT.md` — a pre-flight checklist to ensure your environment is correctly set up.
 - `MANUAL.md` — a user manual: concepts, day-to-day usage, and common workflows.
-- `RELEASE.md` — how this repo itself is versioned and released (SemVer + GitFlow), and how the team-performance evaluation harness works.
+- `RELEASE.md` — how this repo itself is versioned and released (SemVer, trunk-based), and how the team-performance evaluation harness works.
+- `announcements/` — this repo's own changelog, one file per version (plus `unreleased-changelog.md` for work merged since the last tag).
 - `SECURITY.md` — secret-handling notes and how to report a vulnerability.
 - `VERSION` — the current Horseless Carriage version.
 - `eval/scenario/PRODUCT-VISION.md` — the fixed product vision used to automatically evaluate the agent team's own performance each release; see [Evaluation](docs/EVALUATION.md).

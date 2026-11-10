@@ -2,10 +2,10 @@
 
 - Story ID: US-0020
 - Title: Wire Product Docs into Definition of Done
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Scrum Master
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## As a Scrum Master, I want the DoD and `DEV_PROMPT` to require updating end-user docs when user-facing behavior changes, so product documentation doesn't silently go stale.
 

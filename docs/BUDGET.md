@@ -219,8 +219,9 @@ human has to act on the suggestion deliberately.
 
 Unlike every other section, "Retrospective Actions"/"Impediments" aren't just rendered - the whole
 report generation is gated on them. `create_sprint_report` refuses to run at all unless a *new*
-retro action or impediment has been logged since the last successful report (see RELEASE.md "Sprint
-retrospective enforcement"), so if you see a report at all, at least one of these two sections is
+retro action or impediment has been logged since the last successful report (see
+announcements/0.1.0-changelog.md "Sprint retrospective enforcement"), so if you see a report at
+all, at least one of these two sections is
 guaranteed to have real, new content - never both saying "none" at once.
 
 ### Admin UI

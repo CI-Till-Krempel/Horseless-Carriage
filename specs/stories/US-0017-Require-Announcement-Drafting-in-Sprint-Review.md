@@ -2,10 +2,10 @@
 
 - Story ID: US-0017
 - Title: Require Announcement Drafting in Sprint Review
-- Status: Draft
+- Status: Done
 - Priority: Could
 - Owner: ScrumOrchestrator
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## As a ScrumOrchestrator, I want `PO_PROMPT` updated to mandate announcement drafting during Sprint Review, so this step isn't silently skipped the way KPIs/changelog were.
 

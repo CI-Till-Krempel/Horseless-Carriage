@@ -51,7 +51,10 @@ For integration tests to function, the `run_tests.py` script utilizes `docker co
 
 ## Manual QA test plans
 
-Before cutting a release, a human walks through [qa/](../qa/) - see e.g.
-[qa/0.1.0-testplan.md](../qa/0.1.0-testplan.md) - covering the interactive
+Before cutting a release, a human walks through [qa/](../qa/) - one dated test
+plan per release (e.g. [qa/0.2.0-testplan.md](../qa/0.2.0-testplan.md),
+[qa/0.1.0-testplan.md](../qa/0.1.0-testplan.md)) - covering the interactive
 flows, real Docker/GitHub behavior, and cross-platform checks the automated
-suites above can't fully exercise on their own.
+suites above can't fully exercise on their own. Create the next release's plan
+alongside the existing ones rather than overwriting the latest - each is kept
+as a record of what was actually verified for that version.

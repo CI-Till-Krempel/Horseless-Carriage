@@ -964,7 +964,7 @@ class TestGitHubTools(unittest.TestCase):
         Acceptance Criteria: create_release_pr must not always report "ok" -
         a failed gh_pr_create (e.g. base doesn't exist on the remote yet)
         has to be visible to the caller, not silently swallowed (see
-        0.1.0-run4 in RELEASE.md).
+        0.1.0-run4 in announcements/unreleased-changelog.md).
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
@@ -1080,6 +1080,80 @@ class TestCreateReleasePrLandsSprintReport(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         mock_gh_pr_create.assert_not_called()
+
+
+class TestCreateReleasePrChangelog(unittest.TestCase):
+    """
+    Acceptance Criteria (US-0014): the generated changelog diff ships in the
+    same release PR, and a changelog-generation failure surfaces a warning
+    without blocking the release itself.
+    """
+
+    def _tool_context(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        tool_context.state["sprint_report"] = "real report content"
+        return tool_context
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.budget._write_conversation_transcript")
+    @patch("agents.scrum_team.tools.budget.render_fallback_sprint_report")
+    @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
+    @patch("agents.scrum_team.tools.changelog.generate_changelog", return_value={"status": "ok"})
+    def test_changelog_is_generated_before_landing_on_develop(
+        self, mock_changelog, mock_checkout, mock_render, mock_transcript, mock_integrate, mock_push, mock_run, mock_gh_pr_create,
+    ):
+        mock_checkout.return_value = {"status": "ok", "checkout": {"status": "ok"}, "fetch": {"status": "ok"}, "auto_integrated": None}
+        tool_context = self._tool_context()
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("changelog_warning", result)
+        mock_changelog.assert_called_once_with(tool_context=tool_context)
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.budget._write_conversation_transcript")
+    @patch("agents.scrum_team.tools.budget.render_fallback_sprint_report")
+    @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
+    @patch("agents.scrum_team.tools.changelog.generate_changelog", side_effect=RuntimeError("boom"))
+    def test_changelog_failure_does_not_block_the_release(
+        self, mock_changelog, mock_checkout, mock_render, mock_transcript, mock_integrate, mock_push, mock_run, mock_gh_pr_create,
+    ):
+        mock_checkout.return_value = {"status": "ok", "checkout": {"status": "ok"}, "fetch": {"status": "ok"}, "auto_integrated": None}
+        tool_context = self._tool_context()
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("changelog_warning", result)
+        mock_gh_pr_create.assert_called_once()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._git_push_impl", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.budget._write_conversation_transcript")
+    @patch("agents.scrum_team.tools.budget.render_fallback_sprint_report")
+    @patch("agents.scrum_team.tools.github._checkout_develop_or_recover")
+    @patch("agents.scrum_team.tools.changelog.generate_changelog", return_value={"status": "error", "message": "disk full"})
+    def test_changelog_tool_error_result_surfaces_as_warning(
+        self, mock_changelog, mock_checkout, mock_render, mock_transcript, mock_integrate, mock_push, mock_run, mock_gh_pr_create,
+    ):
+        mock_checkout.return_value = {"status": "ok", "checkout": {"status": "ok"}, "fetch": {"status": "ok"}, "auto_integrated": None}
+        tool_context = self._tool_context()
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("disk full", result["changelog_warning"])
 
 
 class TestStartFeatureBranch(unittest.TestCase):

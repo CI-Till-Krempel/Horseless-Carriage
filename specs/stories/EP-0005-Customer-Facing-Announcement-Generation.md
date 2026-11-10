@@ -2,10 +2,10 @@
 
 - Epic ID: EP-0005
 - Title: Customer-Facing Announcement Generation
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Product Owner
-- Last Updated: 2026-07-16
+- Last Updated: 2026-11-10
 
 ## Overview
 No tool, template, or prompt reference for a customer-facing release announcement exists today. This epic adds a lightweight template and generation tool so each release produces an external, non-technical announcement alongside its internal artifacts.

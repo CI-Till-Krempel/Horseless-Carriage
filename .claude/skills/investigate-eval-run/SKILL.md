@@ -10,14 +10,16 @@ AI Scrum team (ProductOwner, ScrumMaster, Architect, DevTeam, QA, ScrumOrchestra
 separate, throwaway target repo, `CI-Till-Krempel/horseless-carriage-eval-todo-app`, building the
 fixed `eval/scenario/PRODUCT-VISION.md` to-do-list MVP. It exists specifically so regressions or
 improvements in the *team's own behavior* surface release over release, not just anecdotally - see
-`RELEASE.md`'s "Team performance evaluation" section for the full mechanics (GitFlow branch layout,
-auto-merge/auto-approval simplifications, budget/duration guardrails) before digging in; this skill
-assumes you've skimmed it.
+`RELEASE.md`'s "Team Performance Evaluation" section for the full mechanics (the target eval repo's
+own GitFlow branch layout, auto-merge/auto-approval simplifications, budget/duration guardrails)
+before digging in; this skill assumes you've skimmed it.
 
-Every eval run adds one `### <heading>` entry to `RELEASE.md` describing what a real run showed and
-what got fixed because of it ("A real eval run (0.1.0-runNN) showed ..."), and (when the finding is a
-genuine code-level gap, not just an agent having a bad run) a matching `specs/requirements/SPEC-ISSUE-NNNN.md`
-filed via this same investigation process. Skim a few recent ones (e.g. SPEC-ISSUE-0050, SPEC-ISSUE-0051) before
+Every eval run adds one `### <heading>` entry to `announcements/unreleased-changelog.md` (this
+repo's own changelog - see `RELEASE.md`'s intro for why eval/SPEC-ISSUE findings live there now,
+not in `RELEASE.md` itself) describing what a real run showed and what got fixed because of it ("A
+real eval run (0.1.0-runNN) showed ..."), and (when the finding is a genuine code-level gap, not
+just an agent having a bad run) a matching `specs/requirements/SPEC-ISSUE-NNNN.md` filed via this
+same investigation process. Skim a few recent ones (e.g. SPEC-ISSUE-0050, SPEC-ISSUE-0051) before
 writing a new one - they show the expected evidence density and tone: concrete quotes/line numbers,
 not "the agent seemed confused."
 
@@ -114,8 +116,9 @@ symptom, a repeated confabulation), **read the actual tool implementation in thi
 e.g. a guardrail doing exactly what its message says but reading state that got silently clobbered
 upstream, or a git helper with no status-checking on its own subprocess calls. Trace the data
 backwards: which function last wrote the value that's wrong, under what condition, and whether that
-write path has ever been exercised safely before (check `RELEASE.md`/existing `SPEC-ISSUE-*.md` for whether
-this exact symptom already has a "Done" fix that this run's mechanism evades).
+write path has ever been exercised safely before (check `announcements/unreleased-changelog.md`/
+`announcements/0.1.0-changelog.md`/existing `SPEC-ISSUE-*.md` for whether this exact symptom
+already has a "Done" fix that this run's mechanism evades).
 
 ## Step 4 - Decide: code bug, or agent/prompt behavior?
 

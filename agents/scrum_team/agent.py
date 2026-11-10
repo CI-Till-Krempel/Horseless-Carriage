@@ -339,6 +339,8 @@ from .tools import (
     upsert_srs,
     upsert_adr,
     upsert_architecture_vision,
+    upsert_user_doc,
+    generate_announcement,
 )
 # Not re-exported from .tools (agent-facing tools only) - this internal
 # variant is only for _sync_and_commit_roadmap_on_exhaustion below, which
@@ -2839,6 +2841,7 @@ product_owner = LlmAgent(
         upsert_prd,
         upsert_srs,
         upsert_adr,
+        generate_announcement,
     ],
     **COMMON_AGENT_CALLBACKS,
 )
@@ -2913,6 +2916,7 @@ dev_team = LlmAgent(
         gh_pr_review,
         gh_pr_check_logs,
         upsert_adr,
+        upsert_user_doc,
     ],
     **COMMON_AGENT_CALLBACKS,
 )

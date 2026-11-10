@@ -25,7 +25,8 @@ role," separate from the tool/state/gate icons below.
 
 Each `LlmAgent`'s exact `tools=[...]` list (`agents/scrum_team/agent.py`) is the hard boundary - a
 role literally cannot call a tool not listed there; ADK's dispatch rejects it (`on_tool_error_callback`
-recovers gracefully instead of crashing - see RELEASE.md "Tool dispatch resilience").
+recovers gracefully instead of crashing - see announcements/0.1.0-changelog.md "Tool dispatch
+resilience").
 
 Both flowcharts below share the same color key and icon vocabulary:
 
@@ -299,4 +300,4 @@ approval-withheld-then-merged flow, and the Story Spec PR evidence gate.
 customization can't override the fixed parts) ·
 [Interaction Levels](INTERACTION-LEVELS.md) (full gate/approval semantics) ·
 [Budget Management](BUDGET.md) · [GitHub Integration](GITHUB-INTEGRATION.md) ·
-[RELEASE.md](../RELEASE.md) "Story workflow"/"Branching model" (operational/GitFlow detail)
+[RELEASE.md](../RELEASE.md) "Story workflow"/"Branching model" (operational detail, this repo's own trunk-based branching)
