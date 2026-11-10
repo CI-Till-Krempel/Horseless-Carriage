@@ -63,6 +63,19 @@ to `REPO_STATE_KEYS`.
 - **The target/state repo itself may be a real git repo that gets pushed to
   GitHub.** Treat anything written under `REPO_STATE_KEYS` as eventually public
   within your team/org, even if the repo is private.
+- **The CI eval harness's own ADK event capture is a separate path and is now
+  redacted too.** `run_eval.py` (`agents/scrum_team/scripts/`) records every
+  ADK event's text, tool-call args, and tool-call responses independently of
+  `ScrumState`/`agent.py`'s own redaction, into `manifest.json`/`transcript.md`
+  (both uploaded as CI artifacts) and into a real PR comment on the eval target
+  repo (`_post_sprint_transcript`). This previously bypassed `_redact_secrets`
+  entirely, so a real value such as the raw key `create_litellm_virtual_key`
+  returns (`agents/scrum_team/tools/budget.py`) would flow unredacted into a
+  public PR comment and a 90-day CI artifact. `run_eval.py` now applies
+  `_redact_structure` (a recursive, structure-preserving wrapper around
+  `_redact_secrets`) to each event's text/tool-call-args/tool-response before
+  it's appended to `events`, so every downstream sink (manifest, transcript,
+  PR comment) inherits the redaction automatically.
 
 ## What the `agent` container can read (GH issue #296)
 
