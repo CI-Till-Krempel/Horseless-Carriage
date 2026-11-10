@@ -1018,7 +1018,7 @@ class TestOneStoryAtATimeOrdering(unittest.TestCase):
         """
         Acceptance Criteria: a BLOCKED story (raise_story_blocker) shouldn't
         also freeze every lower-priority story behind it - the team is meant
-        to move on to the next one while it waits (RELEASE.md "Blocked
+        to move on to the next one while it waits (announcements/0.1.0-changelog.md "BLOCKED
         stories"). _preceding_story must skip a BLOCKED predecessor and look
         further back, not treat it as an ordinary incomplete story.
         """

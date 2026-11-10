@@ -964,7 +964,7 @@ class TestGitHubTools(unittest.TestCase):
         Acceptance Criteria: create_release_pr must not always report "ok" -
         a failed gh_pr_create (e.g. base doesn't exist on the remote yet)
         has to be visible to the caller, not silently swallowed (see
-        0.1.0-run4 in RELEASE.md).
+        0.1.0-run4 in announcements/unreleased-changelog.md).
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()

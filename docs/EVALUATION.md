@@ -17,9 +17,11 @@ what you need:
   change before pushing it.
 - **[`.github/workflows/eval.yml`](../.github/workflows/eval.yml)** — the full technical
   mechanics: the isolated eval repo, the `run_eval.py` driver, budget/timeout guardrails,
-  auto-merge behavior, transcript capture, and the judge-LLM analysis/report step. Individual
-  fixes to this harness are documented as they land in RELEASE.md (search it for "eval run" or a
-  specific `0.1.0-runNN`/`SPEC-ISSUE-NNNN` reference).
+  auto-merge behavior, transcript capture, and the judge-LLM analysis/report step (see
+  RELEASE.md's own "Team Performance Evaluation" section). Individual fixes to this harness are
+  documented as they land in [announcements/unreleased-changelog.md](../announcements/unreleased-changelog.md)
+  (search it, or [announcements/0.1.0-changelog.md](../announcements/0.1.0-changelog.md), for
+  "eval run" or a specific `0.1.0-runNN`/`SPEC-ISSUE-NNNN` reference).
 
 ## The short version
 
