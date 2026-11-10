@@ -171,6 +171,17 @@ KNOWN_FLAKY_EVAL_IDS = {
     # transfer-loop breaker - despite prompt tightening after each one.
     # Irreducible live-model variance, not a fixable fixture/prompt gap.
     "merge_story_pr_refuses_framework_branch",
+    # eval/adk/README.md finding #26: failed a second, distinct way after
+    # finding #25's prompt fix (missing acceptance criteria) - this time
+    # ProductOwner legitimately bounced to DevTeam for a Ready-stage estimate
+    # per its own workflow prompt, landing as the 3rd hop in a row and
+    # tripping the transfer-loop breaker before the scripted call ever
+    # resolved. Prompt tightened again (states an estimate already exists
+    # too), but given two prior passes then two distinct cascade failures on
+    # the same fixture, this is the same irreducible-variance class as
+    # merge_story_pr_refuses_framework_branch above, not a fixture gap left
+    # to find.
+    "advance_story_stage_rejects_wrong_role",
 }
 
 LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"
