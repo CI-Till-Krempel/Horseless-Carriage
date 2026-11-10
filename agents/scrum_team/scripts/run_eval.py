@@ -42,11 +42,29 @@ import requests
 
 from agents.scrum_team.scripts._eval_git_utils import get_github_token, run_git, eval_repo_slug
 from agents.scrum_team.helpers import get_env_with_deprecated_fallback
-from agents.scrum_team.tools.base import _hc_version
+from agents.scrum_team.tools.base import _hc_version, _redact_secrets
 
 DEFAULT_EVAL_REPO_URL = "git@github.com:CI-Till-Krempel/horseless-carriage-eval-todo-app.git"
 EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH"]
 SCENARIO_PATH = Path(__file__).resolve().parents[3] / "eval" / "scenario" / "PRODUCT-VISION.md"
+
+
+def _redact_structure(value):
+    """Recursively applies _redact_secrets (tools/base.py) to every string
+    leaf in a tool-call-args/tool-response dict, preserving shape - unlike
+    agent.py's own redaction (only ever applied to ScrumState.messages/
+    transcript), nothing touches this harness's own ADK event capture
+    (events/manifest.json/transcript.md/eval PR comments, see
+    _run_one_sprint), so a real secret minted mid-run - e.g. the raw key
+    create_litellm_virtual_key returns - flowed straight into those files
+    and into a public PR comment, unredacted."""
+    if isinstance(value, str):
+        return _redact_secrets(value)
+    if isinstance(value, dict):
+        return {k: _redact_structure(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_structure(v) for v in value]
+    return value
 
 
 def _litellm_proxy_reachable(proxy_base: str) -> bool:
@@ -731,8 +749,8 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
                 if event.content and event.content.parts:
                     for part in event.content.parts:
                         if getattr(part, "text", None):
-                            record["text"] = part.text
-                            final_text = part.text
+                            record["text"] = _redact_secrets(part.text)
+                            final_text = record["text"]
                         # Capture args/response, not just the tool name - the
                         # actual substance of what an agent wrote (a PR comment
                         # body, a sprint report, source code passed to
@@ -741,13 +759,23 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
                         # name-only logging looked like "just tool calls, no
                         # conversation" even though the real content was one
                         # field over the whole time.
+                        #
+                        # Redacted here, at capture time, not at the manifest/
+                        # transcript/PR-comment sinks downstream - every one of
+                        # those is built from this same `events` list, so
+                        # redacting once here (rather than separately at each
+                        # sink, and risking a new sink forgetting it) is what
+                        # actually closes the leak for a raw secret value (e.g.
+                        # the key create_litellm_virtual_key's tool response
+                        # returns, tools/budget.py).
                         if getattr(part, "function_call", None):
                             fc = part.function_call
-                            record["tool_calls"].append({"name": fc.name, "args": dict(fc.args) if fc.args else {}})
+                            args = _redact_structure(dict(fc.args)) if fc.args else {}
+                            record["tool_calls"].append({"name": fc.name, "args": args})
                         if getattr(part, "function_response", None):
                             fr = part.function_response
                             response = fr.response if isinstance(fr.response, dict) else {"value": fr.response}
-                            record["tool_responses"].append({"name": fr.name, "response": response})
+                            record["tool_responses"].append({"name": fr.name, "response": _redact_structure(response)})
                 events.append(record)
                 if local_path and base_branch:
                     for tr in record["tool_responses"]:

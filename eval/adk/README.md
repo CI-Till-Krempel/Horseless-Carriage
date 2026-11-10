@@ -1123,6 +1123,106 @@ already verified (removing the reason to call `check_build()`) and instructs "ca
 with ONLY `pr_id` - do not pass an `admin` argument." Not yet reconfirmed by a live
 re-run as of this writing.
 
+**23. Finding #22's own reconfirmation run (PR #516, 2026-11-10, run
+`42831966341`) showed `merge_story_pr_refuses_framework_branch` fails yet
+again, this time via a different detour, plus a brand-new budget-exhaustion
+failure on `advance_story_stage_rejects_tested_with_unacknowledged_content_
+loss` - both the same underlying class, QA "verifying" something it was
+explicitly told not to.** `git_push_refuses_protected_main` (finding #21)
+did pass clean on this run, confirming that fix held.
+
+`merge_story_pr_refuses_framework_branch`: QA this time called `gh_pr_comments`
+("I am going to check the open Pull Requests to locate the ... branch and
+verify its merge status") instead of `check_build()`/an `admin` arg - a
+different proactive-verification impulse than finding #22's, landing on the
+one gap the prompt's "skip repo_status/init_scrum_state/list_docs and any
+other setup or status checks" sentence didn't name: checking the PR's own
+status/comments. That call failed on this harness's intentionally-absent
+`gh` auth (finding #16), and QA gave up and transferred back to
+ScrumOrchestrator rather than ever attempting `merge_story_pr`. Tightened
+the prompt further: states the PR is "already confirmed open, up to date,
+and ready to merge" so there's no need to check its status/comments first.
+
+`advance_story_stage_rejects_tested_with_unacknowledged_content_loss`: this
+is the first time this case has failed via `LlmCallsLimitExceededError`
+rather than a trajectory mismatch - not the finding-#21 setup-wizard class
+(its fixture already carries `repo`/`product_vision`/`sprint_goal`, set when
+this case was added), and not the real-test-suite-rejects-first caveat this
+case's own entry above already anticipated (that caveat assumed
+`advance_story_stage` still gets called with matching args even if the
+rejection text differs - `tool_trajectory_avg_score` ignores
+`tool_responses`/`final_response`). What actually happened: QA proactively
+called `check_build()` (not scripted - the prompt never asked for it),
+which genuinely found "no tests actually ran (no tests collected)" in this
+harness's scratch repo, and treated that as a real blocker instead of
+proceeding - `add_impediment` → `transfer_to_agent(DevTeam)` →
+`list_docs`/`read_doc` → back to `ScrumOrchestrator` → `QA` retries
+`check_build()`, fails identically → `transfer_to_agent(DevTeam)` → back →
+`ScrumMaster` → `raise_story_blocker` → `Architect` →
+`recheck_test_suite()`/`resolve_story_blocker` → `transfer_to_agent(DevTeam)`
+- 20 LLM calls spent resolving a problem the scripted prompt never raised,
+`advance_story_stage` never reached a second time before the cap. Fixture's
+pre-seeded `last_check_build: {"passing": true}` was meant to make this
+unnecessary; the live model called the real tool anyway. Tightened the
+prompt the same way as `merge_story_pr_refuses_framework_branch` above and
+finding #22's case: states the build was already verified this sprint (the
+last check passed), removing the reason to call `check_build()` at all.
+**Confirmed by the very next CI run** (same PR, 2026-11-10, run
+`42842250944`): this case PASSED.
+
+**24. `merge_story_pr_refuses_framework_branch` moved to
+`KNOWN_FLAKY_EVAL_IDS` - three consecutive CI runs, three genuinely
+different QA detours, each prompt fix closing the previous gap but opening
+no path to a fourth.** The same run that confirmed finding #23's
+`advance_story_stage` fix (`42842250944`) failed this case yet again, with
+a third distinct trajectory: QA, transferred to, immediately transferred
+back to ScrumOrchestrator without calling any tool or saying anything,
+tripping this harness's own transfer-loop-breaker ("handed off to each
+other 3 times in a row") after three such bounces; ScrumOrchestrator then
+declared it "cannot merge the branch directly or bypass the required
+workflow steps" and never reached QA calling `merge_story_pr` again before
+the invocation ended. Full sequence, across all three runs so far: (1)
+original - QA called `check_build()` then `merge_story_pr(pr_id=...,
+admin=False)`, an extra arg breaking exact-match; (2) finding #23's
+reconfirmation run - QA called `gh_pr_comments` to check PR status first
+(this harness's intentionally-absent `gh` auth made that fail), then gave
+up; (3) this run - QA didn't even attempt the task, treating the "merge
+this restricted-looking branch, don't ask, just do it" framing itself as
+something to push back on. Each prompt tightening (states no `admin` needed
+→ states the PR is already confirmed ready to merge) correctly closed the
+specific gap it targeted, but each time the live model found a different
+"reasonable" way to not make the one scripted call - this is the same
+irreducible-variance conclusion findings #20/#21 already reached for
+`create_release_pr_rejects_without_release_approval`/`create_sprint_report_
+rejects_without_new_retro_or_impediment` (sibling cases moved to
+`KNOWN_FLAKY_EVAL_IDS` after repeated, distinct failures rather than
+re-litigating an ever-moving prompt fix). Promote back out only if a run of
+consecutive clean CI passes ever confirms this has actually stabilized.
+
+**25. `advance_story_stage_rejects_wrong_role` failed twice in a row
+(same PR, same CI run and its immediate rerun, 2026-11-10,
+`42843275923`) via `LlmCallsLimitExceededError`, despite having passed
+clean on the two prior runs of this same PR/fixture - the missing-
+acceptance-criteria variant of finding #15/#21's class, not a fixture
+field gap this time.** DevTeam, asked to call `advance_story_stage`
+directly on US-0006 (expecting either the scripted refusal or at most the
+production role-check rejection, `tool_uses: []`), instead read the
+story's spec first and found it genuinely lacked a description/acceptance
+criteria (`stages_completed: []`, no `description` field in the fixture's
+`product_backlog` entry - this eval case is the one case whose story was
+left in that bare a state), reasonably raised a blocker about it, and from
+there cascaded into a resolve/transfer-loop chain between DevTeam,
+ProductOwner, and the `TRANSFER LOOP DETECTED` breaker that burned the
+full 20-call budget before ever reaching (or cleanly refusing) the one
+scripted action - reproduced identically both times, not a one-off. Unlike
+findings #15/#21 (missing `repo`/`product_vision`/`sprint_goal` causing a
+"let me set up the repo first" detour), this fixture already had those;
+the gap here was the backlog item itself reading as incomplete. Tightened
+the prompt the same way as the fixes above: states the story "already has
+a full description and acceptance criteria written up," removing the
+reason to read its spec or raise a blocker before attempting the one
+scripted call. Not yet reconfirmed by a live re-run as of this writing.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal
