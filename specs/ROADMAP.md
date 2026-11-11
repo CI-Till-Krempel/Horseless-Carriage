@@ -63,15 +63,22 @@ Stories:
   - [x] [US-0019] Add `upsert_user_doc` Tool
   - [x] [US-0020] Wire Product Docs into Definition of Done
 
-### v0.3 — Process Trust, Versioning & Governance (planned)
+### v0.3 — Pluggable Development Workbenches, Process Trust, Versioning & Governance (planned)
 Goals
+- Ship pre-built, swappable per-tech-stack "Development Workbench" templates (toolchain, MCP config, network allowlist) that the Architect can select/customize per project, always via human-reviewed PR — headline feature of this release. This is GH-291's Phase 1 (technical dev roles only); PO/UX/Testing-role workbenches are deferred to a later phase.
 - Enforce semantic versioning discipline and a "snapshot" suffix during development.
 - Let the stack point at a local-network Ollama server instead of only a bundled container.
 - Keep GitHub issues/milestones and this roadmap in sync going forward.
 - Close the loop on reported issues that stall instead of getting planned or explicitly declined.
 - Add a QA release-testing gate and tighten sprint-approval/review mechanics.
+- Investigate agent context-window/prompt-cache health (ADK cache-miss warning, conversation token budget).
 
 Stories:
+- [ ] [EP-0010] Pluggable Development Workbench Templates
+  - [ ] [US-0021] Introduce the Development Workbench Template Mechanism
+  - [ ] [US-0022] Ship Three Reference Development Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
+  - [ ] [US-0023] Document How to Contribute a New Development Workbench
+- [ ] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling (moved from v0.5 — largely a consequence of EP-0010 shipping)
 - [ ] [GH-501] Enforce semantic versioning and a development "snapshot" suffix
 - [ ] [GH-502] Support pointing Horseless Carriage at a local-network Ollama server (LAN IP/hostname)
 - [ ] [GH-272] Sync GitHub Issues and versions to roadmap
@@ -79,6 +86,8 @@ Stories:
 - [ ] [GH-273] Release testing (QA audit/regression gate before shipping)
 - [ ] [GH-452] Approval of the sprint should be done after creating the sprint PR
 - [ ] [GH-316] Use CODEOWNER mechanism to enforce reviews for files that require human approval
+- [ ] [GH-513] Context window optimizations (per-story/task conversations, leaner steering docs, prompt-size metrics)
+- [ ] [GH-515] Investigate ADK performance warning: system instructions changing mid-session breaks prompt-cache alignment
 
 ### v0.4 — Security & Platform Hardening (planned)
 Goals
@@ -107,7 +116,6 @@ Stories:
 - [ ] [GH-312] ADK Eval run logs are out of order
 - [ ] [GH-188] Tool calls do not work on Windows
 - [ ] [GH-293] Quick start script
-- [ ] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling
 
 ### v0.6 — LiteLLM & ADK Platform Depth (planned)
 Goals
@@ -130,7 +138,7 @@ Goals
 Stories:
 - [ ] [GH-289] Abstraction layer for development workflow
 - [ ] [GH-290] Customizable Team staffing
-- [ ] [GH-291] Role Workbenches
+- [ ] [GH-291] Role Workbenches (Phase 1, the Development Workbench, ships in v0.3 as EP-0010 — this remaining scope is PO/UX/Testing-role workbenches)
 - [ ] [GH-282] Modularize the tooling by topic (Process, Specs, Implementation)
 - [ ] [GH-308] The horseless carriage settings are project specific, and should be stored in the project repo
 - [ ] [GH-292] Check whether simplifying existing development workflow could improve system performance
@@ -190,9 +198,9 @@ Notes
 
 - v0.1: EP-0001, US-0001, US-0002, US-0003, US-0004, EP-0002, US-0005, US-0006, US-0007, US-0008, EP-0003, US-0009, US-0010, US-0011
 - v0.2: EP-0004, US-0012, US-0013, US-0014, EP-0005, US-0015, US-0016, US-0017, EP-0006, US-0018, US-0019, US-0020
-- v0.3: GH-501, GH-502, GH-272, GH-295, GH-273, GH-452, GH-316
+- v0.3: EP-0010, US-0021, US-0022, US-0023, GH-456, GH-501, GH-502, GH-272, GH-295, GH-273, GH-452, GH-316, GH-513, GH-515
 - v0.4: GH-503, GH-179, GH-180, GH-300, GH-304, GH-286
-- v0.5: GH-453, GH-278, GH-312, GH-188, GH-293, GH-456
+- v0.5: GH-453, GH-278, GH-312, GH-188, GH-293
 - v0.6: GH-284, GH-285, GH-297, GH-299
 - v0.7: GH-289, GH-290, GH-291, GH-282, GH-308, GH-292
 - Research backlog: GH-96, GH-97, GH-178
