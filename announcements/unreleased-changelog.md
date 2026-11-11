@@ -37,3 +37,28 @@ process, not just that one tool call.
 Filed as SPEC-ISSUE-0085 (Ready, not yet implemented) - the fix is to coerce `value_hypothesis`/
 `rationale`/`test_approach` to `str` the same defensive way `acceptance_criteria` already is, so a
 list-shaped free-text field renders as readable text instead of crashing the run.
+
+### `_story_readiness_issues` crashed the entire run with an unhandled `AttributeError` when `user_story` was a dict (0.2.0-run89, SPEC-ISSUE-0087)
+
+A real eval run (0.2.0-run89) stopped after **0 of 5** requested sprints: `report.md` showed
+`stop_reason: crashed`, `crash_error: AttributeError: 'dict' object has no attribute 'strip'`, with no
+traceback captured anywhere. The raw Action log placed the crash immediately after ProductOwner's
+third attempt to satisfy the Definition of Ready for US-0001, described in its own preceding text as
+"Updating US-0001 with structured `user_story` field for DoR compliance" - after two prior plain-string
+attempts were cleanly rejected.
+
+**Confirmed mechanism:** the cheap eval model, after two string-based DoR rejections, reinterpreted
+`DOR.md`'s "As a ... I want ... so that ..." guidance as calling for a structured object (e.g.
+`{"as_a": ..., "i_want": ..., "so_that": ...}`) instead of a plain string. Nothing rejects this shape:
+`upsert_story`/`_coerce_backlog_item_dict` only coerces the top-level `story` argument into *a* dict,
+never validating individual field types, and `ScrumState.product_backlog` is a bare `List[Dict]` with
+no nested schema. The dict-shaped `user_story` reaches `_story_readiness_issues`
+(`agents/scrum_team/tools/requirements.py:449`), which does
+`(item.get("user_story") or "").strip()` - since a non-empty dict is truthy, `or ""` never fires, and
+`.strip()` on the dict raises `AttributeError`, uncaught anywhere in the call chain, killing the whole
+run. The identical `(item.get(...) or "").strip()` pattern is equally unguarded for `title` and
+`overview`/`description` two lines above.
+
+Filed as SPEC-ISSUE-0087 (Ready, not yet implemented) - the fix is an `isinstance(..., str)` guard on
+`title`/`user_story`/`overview` before `_story_readiness_issues` calls `.strip()` on them, rejecting a
+non-string value with a clean structured error instead of crashing.
