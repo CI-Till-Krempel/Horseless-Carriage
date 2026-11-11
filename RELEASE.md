@@ -10,11 +10,13 @@ This document covers *process only* - versioning rules, branching, how a release
 cut. For "what actually changed and why" in a given release - real findings from eval
 runs/CI and the fix each one led to - see [announcements/](announcements/): one
 `<version>-changelog.md` per release (`announcements/0.1.0-changelog.md`,
-`announcements/unreleased-changelog.md` for work merged since). This is Horseless
-Carriage's *own* changelog, at the repo root - distinct from
-`spec-templates/announcements/` (EP-0005's template for a *target* product's
-customer-facing release announcement, drafted by `generate_announcement` for repos
-this tool manages, not for this one).
+`announcements/unreleased-changelog.md` for work merged since), plus one
+`<version>-announcement.md` per release (see
+[Customer-facing release announcement](#customer-facing-release-announcement) below).
+These are Horseless Carriage's *own* changelog/announcement, at the repo root -
+distinct from `spec-templates/announcements/` (EP-0005's template for a *target*
+product's customer-facing release announcement, drafted by `generate_announcement` for
+repos this tool manages, not for this one).
 
 ## Scope
 
@@ -90,9 +92,47 @@ first place.
    `<version>-changelog.md`, add its "Released YYYY-MM-DD" line, start a fresh empty
    `unreleased-changelog.md`) - either as the last commit of the PR that completes the
    release-worthy work, or its own small follow-up PR. Merge it.
-2. Tag the merge commit `vX.Y.Z` on `main` and push the tag.
-3. Pushing the tag triggers the GitHub Action below, which publishes the GitHub
+2. Write `announcements/<version>-announcement.md`, the customer-facing counterpart to
+   that changelog - see
+   [Customer-facing release announcement](#customer-facing-release-announcement) below
+   for what goes in it. Same PR as step 1, or its own small follow-up; either way, land
+   it before tagging so the tag's release notes can link to it.
+3. Tag the merge commit `vX.Y.Z` on `main` and push the tag.
+4. Pushing the tag triggers the GitHub Action below, which publishes the GitHub
    Release. No manual `gh release create` needed.
+
+## Customer-facing release announcement
+
+Each release gets `announcements/<version>-announcement.md` alongside its
+`<version>-changelog.md` - started with v0.2.0 (`announcements/0.2.0-announcement.md`),
+not yet done for v0.1.0. Where the changelog is the engineering record (every
+real finding and fix, written for someone maintaining this tool), the announcement is
+the pitch (what a user of Horseless Carriage gets out of this release, written for
+someone deciding whether to upgrade). Follow the existing v0.2.0 announcement's shape:
+
+- **Release / Audience / Status / Released** header fields - the same shape as
+  `spec-templates/announcements/TEMPLATE-ANNOUNCEMENT.md` (the *target*-product
+  template EP-0005 uses), with `Released: YYYY-MM-DD` once the field's value is known
+  (the template's `Last Updated` makes less sense for a doc that's finished once
+  written, not iterated on) - this is Horseless Carriage's own doc, not a generated
+  one, but keeps the two kinds of announcement skimmable the same way.
+- **Pitch** - one or two sentences, what Horseless Carriage is, for a reader who's
+  never seen this doc before.
+- **Headline** - one or two sentences, the one-line version of what this release does
+  for a user.
+- **What's New** - a bullet per user-visible capability (not every merged PR - roll
+  related changes into one bullet), bold lead-in phrase then the plain-language payoff.
+  Skip internal refactors, test-only changes, and process/CI work that doesn't change
+  what a user of the tool can do.
+- **Links** - at minimum README.md, this RELEASE.md, specs/ROADMAP.md, and that
+  release's own `<version>-changelog.md`.
+
+Write it from the merged release-worthy work (PR titles/descriptions, the roadmap
+entries closed this release, and the changelog from step 1 above) - it should hold up
+even for a reader who never looks at the changelog. No separate "generate the
+announcement" tool for this doc (that's `generate_announcement`, which is for *target*
+products per EP-0005) - write it directly as part of the release PR/follow-up in step 2
+above.
 
 ## GitHub Action
 
@@ -128,7 +168,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 ```
 
-- Trigger: any tag matching `v*.*.*` pushed (e.g. from step 2 above).
+- Trigger: any tag matching `v*.*.*` pushed (e.g. from step 3 above).
 - `permissions: contents: write` is required on the job - this repo's default
   `GITHUB_TOKEN` permissions are read-only, so `gh release create` 403s
   ("Resource not accessible by integration") without it (found cutting
