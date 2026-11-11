@@ -1248,6 +1248,45 @@ down, and this eval case has now passed twice then failed twice via two
 #23's `merge_story_pr_refuses_framework_branch`: moved to
 `KNOWN_FLAKY_EVAL_IDS` rather than chasing a third variant of this prompt.
 
+**27. `advance_story_stage_rejects_tested_with_unacknowledged_content_loss`
+moved to `KNOWN_FLAKY_EVAL_IDS` - finding #23's confirmed prompt fix
+regressed on a later, unrelated PR, the same way finding #20's did.**
+Two consecutive CI runs on PR #524 (2026-11-11, runs `43013494159` and
+`43014590293` - a PR touching only `agents/scrum_team/scripts/run_eval.py`/
+`run_eval_analysis.py`'s run-level stop-reason labeling and their tests,
+nothing under `agents/scrum_team/tools/`, `QA-workflow.md`, or this
+fixture itself) both failed this case with QA calling `check_build()`
+despite the fixture's prompt explicitly stating "the build was already
+verified earlier this sprint (the last check passed) so skip check_build
+too" - the exact same detour finding #23 diagnosed and fixed once
+already, confirmed by its own very-next-CI-run pass (`42842250944`).
+
+Run `43014590293`'s trajectory: `check_build()` → genuinely found "no
+tests actually ran (no tests collected)" in this harness's scratch repo
+→ `advance_story_stage(stage="Tested", review_event="COMMENT",
+title_or_id="US-0011")` → rejected on that real test-suite finding (not
+the content-loss gate this case exists to exercise) → `deny_review(...)`
+- breaking `tool_trajectory_avg_score`'s exact match the same way finding
+#23 described. Run `43013494159`'s trajectory went further off-script
+from the same starting detour: `check_build()` → the same rejection →
+`advance_story_stage(..., review_event="COMMENT")` → `deny_review(...)` →
+DevTeam/ProductOwner bounced `transfer_to_agent` 6 times in a row,
+tripping the transfer-loop breaker → BLOCKED → ScrumMaster
+`add_impediment(...)` → `LlmCallsLimitExceededError` (20-call cap) before
+`advance_story_stage` was ever reached a second time.
+
+No further prompt tightening attempted - the prompt already says
+precisely what finding #23's fix prescribed, and the live model ignored
+it on two separate, independent CI runs regardless. This is the same
+"appears fixed once, confirmed by the very next CI run, then recurs
+identically on a later, unrelated PR" pattern already established for
+`create_sprint_report_rejects_without_new_retro_or_impediment` (finding
+#20) and `merge_story_pr_refuses_framework_branch`/
+`advance_story_stage_rejects_wrong_role` (findings #24/#26) -
+irreducible live-model variance, not a fixable fixture/prompt gap.
+Promote back out only if a run of consecutive clean CI passes ever
+confirms this has actually stabilized.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal
