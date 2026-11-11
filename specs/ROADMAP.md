@@ -63,8 +63,9 @@ Stories:
   - [x] [US-0019] Add `upsert_user_doc` Tool
   - [x] [US-0020] Wire Product Docs into Definition of Done
 
-### v0.3 — Process Trust, Versioning & Governance (planned)
+### v0.3 — Pluggable Framework Workbenches, Process Trust, Versioning & Governance (planned)
 Goals
+- Ship pre-built, swappable per-tech-stack "workbench" templates (toolchain, MCP config, network allowlist) that the Architect can select/customize per project, always via human-reviewed PR — headline feature of this release.
 - Enforce semantic versioning discipline and a "snapshot" suffix during development.
 - Let the stack point at a local-network Ollama server instead of only a bundled container.
 - Keep GitHub issues/milestones and this roadmap in sync going forward.
@@ -73,6 +74,11 @@ Goals
 - Investigate agent context-window/prompt-cache health (ADK cache-miss warning, conversation token budget).
 
 Stories:
+- [ ] [EP-0010] Pluggable Framework Workbench Templates
+  - [ ] [US-0021] Introduce the Workbench Template Mechanism
+  - [ ] [US-0022] Ship Three Reference Framework Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
+  - [ ] [US-0023] Document How to Contribute a New Framework Workbench
+- [ ] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling (moved from v0.5 — largely a consequence of EP-0010 shipping)
 - [ ] [GH-501] Enforce semantic versioning and a development "snapshot" suffix
 - [ ] [GH-502] Support pointing Horseless Carriage at a local-network Ollama server (LAN IP/hostname)
 - [ ] [GH-272] Sync GitHub Issues and versions to roadmap
@@ -110,7 +116,6 @@ Stories:
 - [ ] [GH-312] ADK Eval run logs are out of order
 - [ ] [GH-188] Tool calls do not work on Windows
 - [ ] [GH-293] Quick start script
-- [ ] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling
 
 ### v0.6 — LiteLLM & ADK Platform Depth (planned)
 Goals
@@ -193,9 +198,9 @@ Notes
 
 - v0.1: EP-0001, US-0001, US-0002, US-0003, US-0004, EP-0002, US-0005, US-0006, US-0007, US-0008, EP-0003, US-0009, US-0010, US-0011
 - v0.2: EP-0004, US-0012, US-0013, US-0014, EP-0005, US-0015, US-0016, US-0017, EP-0006, US-0018, US-0019, US-0020
-- v0.3: GH-501, GH-502, GH-272, GH-295, GH-273, GH-452, GH-316, GH-513, GH-515
+- v0.3: EP-0010, US-0021, US-0022, US-0023, GH-456, GH-501, GH-502, GH-272, GH-295, GH-273, GH-452, GH-316, GH-513, GH-515
 - v0.4: GH-503, GH-179, GH-180, GH-300, GH-304, GH-286
-- v0.5: GH-453, GH-278, GH-312, GH-188, GH-293, GH-456
+- v0.5: GH-453, GH-278, GH-312, GH-188, GH-293
 - v0.6: GH-284, GH-285, GH-297, GH-299
 - v0.7: GH-289, GH-290, GH-291, GH-282, GH-308, GH-292
 - Research backlog: GH-96, GH-97, GH-178
