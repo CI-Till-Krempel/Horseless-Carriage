@@ -3446,6 +3446,52 @@ class TestPatchedAdkAcompletion(unittest.TestCase):
 
         self.assertIn("SAFETY BLOCK", response.choices[0].message.content)
 
+    def test_model_not_found_degrades_instead_of_raising(self):
+        """SPEC-ISSUE-0086: a real local-Ollama install (OLLAMA_HOST_MODE=
+        true, which skips the framework's usual auto-pull) had its very
+        first LLM call 404 with "model not found", and litellm.NotFoundError
+        propagated uncaught all the way through ADK, crashing the whole
+        root node/session on the first turn. Must degrade like every other
+        known LLM-call failure, naming the exact missing model tag so the
+        operator knows what to `ollama pull`."""
+        import litellm.exceptions
+
+        async def _raise_not_found(self, *args, **kwargs):
+            raise litellm.exceptions.NotFoundError(
+                message=(
+                    'litellm.NotFoundError: OllamaException - {"error":"model \'qwen2.5-coder:32b\' not found"}. '
+                    "Received Model Group=scrum-orchestrator"
+                ),
+                model="scrum-orchestrator",
+                llm_provider="ollama",
+            )
+
+        with patch.object(agent_module, "_orig_adk_acompletion", _raise_not_found):
+            response = self._run(agent_module._patched_adk_acompletion(MagicMock(), model="scrum-orchestrator"))
+
+        self.assertIn("MODEL NOT FOUND", response.choices[0].message.content)
+        self.assertIn("qwen2.5-coder:32b", response.choices[0].message.content)
+        self.assertIn("ollama pull qwen2.5-coder:32b", response.choices[0].message.content)
+
+    def test_model_not_found_falls_back_to_model_kwarg_when_tag_unparseable(self):
+        """If the provider's error string doesn't match the expected
+        "model '<tag>' not found" shape, fall back to the model kwarg
+        rather than silently omitting which model was the problem."""
+        import litellm.exceptions
+
+        async def _raise_not_found(self, *args, **kwargs):
+            raise litellm.exceptions.NotFoundError(
+                message="404 - totally different provider wording",
+                model="scrum-orchestrator",
+                llm_provider="ollama",
+            )
+
+        with patch.object(agent_module, "_orig_adk_acompletion", _raise_not_found):
+            response = self._run(agent_module._patched_adk_acompletion(MagicMock(), model="scrum-orchestrator"))
+
+        self.assertIn("MODEL NOT FOUND", response.choices[0].message.content)
+        self.assertIn("scrum-orchestrator", response.choices[0].message.content)
+
 
 if __name__ == "__main__":
     unittest.main()

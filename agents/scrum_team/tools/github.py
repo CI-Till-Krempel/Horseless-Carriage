@@ -144,16 +144,111 @@ def integrate_open_changes(tool_context=None) -> Dict[str, Any]:
     return {"status": "ok", "integrated": True, "files": files, "commit": commit}
 
 
+def _untrack_gitignored_dirty_files(repo_root: str, tool_context=None) -> Dict[str, Any]:
+    """
+    SPEC-ISSUE-0085: integrate_open_changes only ever sweeps specs/.hc -
+    deliberately, so it never touches DevTeam's own in-progress source
+    edits (see _OPEN_CHANGES_PATHS' own comment). But a tracked file that is
+    neither of those AND is matched by the repo's own .gitignore (the
+    classic case: .idea/workspace.xml, .DS_Store - committed before the
+    ignore rule existed, so the rule is currently a no-op for them, and now
+    perpetually rewritten just by having the project open in an IDE/Finder)
+    can never be swept by that path-scoped helper either, yet it's
+    unambiguously safe to stop tracking: the repo's own .gitignore already
+    says this file's content doesn't belong under version control. A real
+    install hit this directly - ScrumMaster correctly diagnosed ".idea/
+    workspace.xml preventing checkout" in its own decision_log over and
+    over, with no tool able to act on that diagnosis, burning ~2M tokens
+    across two sprint attempts without ever planning a single story.
+
+    Only ever considers paths `git status --porcelain` reports as MODIFIED
+    ("M"/"T" status) - never "??" (untracked). An untracked file blocking a
+    checkout is a different git error entirely ("untracked working tree
+    files would be overwritten") and out of scope here; silently adding one
+    to the index would be a far more surprising side effect than untracking
+    an already-tracked, already-ignored one.
+
+    `git rm --cached` only removes the path from the index - the file's
+    actual on-disk content is left completely untouched, so nothing is ever
+    destructively discarded, unlike `git checkout -- <path>` or `git clean`.
+    A tracked dirty file NOT matched by .gitignore is left alone entirely:
+    that's a real, unrecognized conflict this helper has no business
+    guessing about.
+
+    Returns {"status", "integrated": bool, "files": [...]} - "integrated"
+    mirrors integrate_open_changes' own key so callers/tests can treat
+    both recovery mechanisms the same way. When nothing was untracked,
+    also returns "dirty_tracked_files" (every modified tracked path seen,
+    ignored or not) so a caller that's still going to fail can surface
+    exactly what's blocking it instead of just git's raw stderr.
+    """
+    status = _run(["git", "status", "--porcelain"], cwd=repo_root, tool_context=tool_context)
+    if status.get("status") != "ok":
+        return {"status": "error", "integrated": False, "message": "Could not read git status.", "git_status": status}
+
+    modified_paths = []
+    for line in (status.get("stdout") or "").splitlines():
+        if len(line) < 4:
+            continue
+        code, path = line[:2], line[3:]
+        if code.strip() == "??":
+            continue
+        if "M" not in code and "T" not in code:
+            continue
+        modified_paths.append(path)
+
+    if not modified_paths:
+        return {"status": "ok", "integrated": False, "files": [], "dirty_tracked_files": [],
+                "message": "No modified tracked files found."}
+
+    ignored = _run(["git", "check-ignore", "--"] + modified_paths, cwd=repo_root, tool_context=tool_context)
+    # check-ignore's own exit codes: 0 = at least one match (printed to
+    # stdout), 1 = none match (not a real error for us), only anything else
+    # is a genuine command failure.
+    if ignored.get("returncode") not in (0, 1):
+        return {"status": "error", "integrated": False, "message": "Could not check .gitignore status.",
+                "git_check_ignore": ignored, "dirty_tracked_files": modified_paths}
+
+    ignored_paths = [p for p in (ignored.get("stdout") or "").splitlines() if p.strip()]
+    if not ignored_paths:
+        return {"status": "ok", "integrated": False, "files": [], "dirty_tracked_files": modified_paths,
+                "message": "No gitignored tracked files are dirty."}
+
+    rm = _run(["git", "rm", "--cached", "-q", "--"] + ignored_paths, cwd=repo_root, tool_context=tool_context)
+    if rm.get("status") != "ok":
+        return {"status": "error", "integrated": False, "message": "Failed to untrack gitignored dirty files.",
+                "files": ignored_paths, "rm": rm}
+
+    commit = _run(
+        ["git", "commit", "-m", "chore: stop tracking gitignored files blocking checkout (" + ", ".join(ignored_paths) + ")"],
+        cwd=repo_root, tool_context=tool_context,
+    )
+    if commit.get("status") != "ok":
+        return {"status": "error", "integrated": False, "message": "Failed to commit untracked-files removal.",
+                "files": ignored_paths, "commit": commit}
+
+    return {"status": "ok", "integrated": True, "files": ignored_paths}
+
+
 def _checkout_with_auto_integrate(checkout_cmd: list, repo_root: str, tool_context=None) -> tuple:
     """
     Runs a git checkout command; on the specific "local changes would be
-    overwritten" failure, self-heals by calling integrate_open_changes()
-    (committing dangling specs/.hc writes out of the way onto whatever
-    branch is currently checked out) and retrying the checkout once. Any
-    other failure (network, auth, a real content conflict) is returned
-    as-is, unretried - this only ever recovers the one specific, safe-to-
-    auto-resolve failure mode _checkout_develop_or_recover's own docstring
-    already documents in depth.
+    overwritten" failure, self-heals in up to two tiers and retries the
+    checkout once per tier that actually changes something:
+
+    1. integrate_open_changes() - committing dangling specs/.hc writes out
+       of the way onto whatever branch is currently checked out.
+    2. _untrack_gitignored_dirty_files() (SPEC-ISSUE-0085) - only tried if
+       (1) found nothing to do: stops tracking any dirty file that's
+       already matched by the repo's own .gitignore (IDE/OS metadata noise
+       like .idea/workspace.xml, .DS_Store - neither specs/.hc planning
+       output nor real source work, a third category (1) was never built to
+       cover).
+
+    Any other failure (network, auth, a real content conflict neither tier
+    recognizes) is returned as-is, unretried - this only ever recovers the
+    specific, safe-to-auto-resolve failure modes _checkout_develop_or_recover's
+    own docstring documents in depth.
 
     Shared by every checkout call site in this module (GH eval run41:
     start_feature_branch's own feature-branch checkout hit exactly this and
@@ -164,9 +259,12 @@ def _checkout_with_auto_integrate(checkout_cmd: list, repo_root: str, tool_conte
     now factored out here so a new checkout call site can't reintroduce the
     same gap by simply forgetting to copy it.
 
-    Returns (checkout_result, auto_integrated_result_or_None) - callers
-    should surface auto_integrated in their own error message when present,
-    same convention _checkout_develop_or_recover already established.
+    Returns (checkout_result, auto_integrated_result_or_None) - "integrated"
+    is set on whichever tier's result is returned (or None if recovery was
+    never attempted at all), so callers can keep testing that one key
+    regardless of which tier actually fired; callers should surface
+    auto_integrated in their own error message when present, same
+    convention _checkout_develop_or_recover already established.
     """
     checkout = _run(checkout_cmd, cwd=repo_root, tool_context=tool_context)
     auto_integrated = None
@@ -174,6 +272,11 @@ def _checkout_with_auto_integrate(checkout_cmd: list, repo_root: str, tool_conte
         auto_integrated = integrate_open_changes(tool_context)
         if auto_integrated.get("integrated"):
             checkout = _run(checkout_cmd, cwd=repo_root, tool_context=tool_context)
+        else:
+            untracked = _untrack_gitignored_dirty_files(repo_root, tool_context=tool_context)
+            auto_integrated = untracked
+            if untracked.get("integrated"):
+                checkout = _run(checkout_cmd, cwd=repo_root, tool_context=tool_context)
     return checkout, auto_integrated
 
 
