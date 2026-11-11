@@ -94,3 +94,26 @@ one PR it only ever tracked as `US-0001`, leaving `US-0002`-`US-0006` fully work
 code but permanently stuck at `Ready` in the backlog - flagged for whoever investigates the next run
 where it recurs, since no code-level guardrail can currently detect "this diff also satisfies another
 story's acceptance criteria" without real semantic analysis.
+
+### `create_release_pr` deadlocked retrying forever on its own dirty `CHANGELOG.md`, burning an entire sprint's token budget (0.2.0-run90, SPEC-ISSUE-0088)
+
+A real eval run (0.2.0-run90) stopped after 2 of 5 sprints with `stop_reason: budget_critical_halt`.
+Sprint 2's own sprint report (logged mid-sprint) showed only 2.66M of its 5M token budget used and
+"all planned stories completed within budget" - but the sprint then burned nearly 2.9M more tokens
+*after* that report, retrying `create_release_pr` in an identical, never-resolving loop (33+ occurrences
+of the same git error in the transcript).
+
+**Confirmed mechanism:** `create_release_pr` calls `generate_changelog`, which writes `CHANGELOG.md`
+to disk uncommitted. `integrate_open_changes` (scoped to `specs/`/`.hc/` only) never swept it, so when
+`_git_push_impl`'s protected-branch path re-checked-out `develop` internally, it hit git's "local
+changes would be overwritten by checkout: CHANGELOG.md" every time - a failure mode neither of
+`_checkout_with_auto_integrate`'s two recovery tiers covered (tier 1 out of scope; tier 2,
+`_untrack_gitignored_dirty_files`, only handles `.gitignore`-matched files, and `CHANGELOG.md` is
+deliberately tracked). `ProductOwner` raised a blocker each time; `Architect`'s `resolve_story_blocker`
+cleared it on free-text narrative alone (no mechanical recheck exists for this blocker category) -
+never touching the real dirty file - so the identical failure recurred on every immediate retry.
+
+Fixed as SPEC-ISSUE-0088: `_OPEN_CHANGES_PATHS` now includes `CHANGELOG.md` alongside `specs`/`.hc` -
+safe because `generate_changelog` is its only writer anywhere in this codebase, never DevTeam's
+uncommitted source work. A dirty `CHANGELOG.md` is now committed out of the way by
+`integrate_open_changes` before any later checkout can ever see it dirty.

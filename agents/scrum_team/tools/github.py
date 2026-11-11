@@ -65,11 +65,20 @@ def release_pr_still_open(tool_context=None) -> bool:
 # Paths the scrum tools themselves write to outside of an explicit git_push
 # call - upsert_story/upsert_epic/upsert_issue/update_roadmap/upsert_prd/
 # upsert_srs/upsert_adr write under specs/, save_state_to_repo writes
-# .hc/state.json. Deliberately NOT "-A"/the whole working tree: this repo is
+# .hc/state.json, generate_changelog writes CHANGELOG.md (SPEC-ISSUE-0088 -
+# create_release_pr's own generate_changelog call left CHANGELOG.md dirty
+# across its later re-checkout of develop inside _git_push_impl, with no
+# recovery tier able to touch it - neither this function's old specs/.hc
+# scope nor _untrack_gitignored_dirty_files' gitignore-only scope covers a
+# deliberately tracked, non-ignored root file - so the checkout failed
+# identically on every retry, burning an entire sprint's token budget in
+# 0.2.0-run90). Deliberately NOT "-A"/the whole working tree: this repo is
 # also where DevTeam's own uncommitted source-code edits live between
 # start_feature_branch calls, and an automatic recovery step has no business
-# sweeping those into an unrelated "planning docs" commit.
-_OPEN_CHANGES_PATHS = ["specs", ".hc"]
+# sweeping those into an unrelated "planning docs" commit - CHANGELOG.md is
+# safe to include here specifically because generate_changelog is its only
+# writer, never DevTeam.
+_OPEN_CHANGES_PATHS = ["specs", ".hc", "CHANGELOG.md"]
 
 
 def integrate_open_changes(tool_context=None) -> Dict[str, Any]:
