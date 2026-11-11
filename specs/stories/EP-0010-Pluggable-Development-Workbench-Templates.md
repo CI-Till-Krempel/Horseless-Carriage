@@ -2,7 +2,7 @@
 
 - Epic ID: EP-0010
 - Title: Pluggable Development Workbench Templates
-- Status: Draft
+- Status: In Progress — US-0021 (the template mechanism itself) is Done; US-0022 (reference templates) and US-0023 (contributor doc) remain.
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-11-11

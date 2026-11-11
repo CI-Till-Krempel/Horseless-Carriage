@@ -74,8 +74,8 @@ Goals
 - Investigate agent context-window/prompt-cache health (ADK cache-miss warning, conversation token budget).
 
 Stories:
-- [ ] [EP-0010] Pluggable Development Workbench Templates
-  - [ ] [US-0021] Introduce the Development Workbench Template Mechanism
+- [~] [EP-0010] Pluggable Development Workbench Templates
+  - [x] [US-0021] Introduce the Development Workbench Template Mechanism
   - [ ] [US-0022] Ship Three Reference Development Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
   - [ ] [US-0023] Document How to Contribute a New Development Workbench
 - [ ] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling (moved from v0.5 — largely a consequence of EP-0010 shipping)
