@@ -70,6 +70,7 @@ Goals
 - Keep GitHub issues/milestones and this roadmap in sync going forward.
 - Close the loop on reported issues that stall instead of getting planned or explicitly declined.
 - Add a QA release-testing gate and tighten sprint-approval/review mechanics.
+- Investigate agent context-window/prompt-cache health (ADK cache-miss warning, conversation token budget).
 
 Stories:
 - [ ] [GH-501] Enforce semantic versioning and a development "snapshot" suffix
@@ -79,6 +80,8 @@ Stories:
 - [ ] [GH-273] Release testing (QA audit/regression gate before shipping)
 - [ ] [GH-452] Approval of the sprint should be done after creating the sprint PR
 - [ ] [GH-316] Use CODEOWNER mechanism to enforce reviews for files that require human approval
+- [ ] [GH-513] Context window optimizations (per-story/task conversations, leaner steering docs, prompt-size metrics)
+- [ ] [GH-515] Investigate ADK performance warning: system instructions changing mid-session breaks prompt-cache alignment
 
 ### v0.4 — Security & Platform Hardening (planned)
 Goals
@@ -190,7 +193,7 @@ Notes
 
 - v0.1: EP-0001, US-0001, US-0002, US-0003, US-0004, EP-0002, US-0005, US-0006, US-0007, US-0008, EP-0003, US-0009, US-0010, US-0011
 - v0.2: EP-0004, US-0012, US-0013, US-0014, EP-0005, US-0015, US-0016, US-0017, EP-0006, US-0018, US-0019, US-0020
-- v0.3: GH-501, GH-502, GH-272, GH-295, GH-273, GH-452, GH-316
+- v0.3: GH-501, GH-502, GH-272, GH-295, GH-273, GH-452, GH-316, GH-513, GH-515
 - v0.4: GH-503, GH-179, GH-180, GH-300, GH-304, GH-286
 - v0.5: GH-453, GH-278, GH-312, GH-188, GH-293, GH-456
 - v0.6: GH-284, GH-285, GH-297, GH-299
