@@ -1,7 +1,7 @@
 # agents/scrum_team/tools/requirements.py
 from __future__ import annotations
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 from .base import _configured_repo_root, _state_file_path, _project_root, _record_touched_file, _coerce_dict_arg, _record_priority_block_precedent
 from ..helpers import (
@@ -428,6 +428,24 @@ def _normalize_title_for_dup_check(title: str) -> str:
     return _NON_ALNUM_RE.sub("", (title or "").lower())
 
 
+def _readiness_text_field(raw: Any, field_name: str, issues: List[str]) -> Optional[str]:
+    """
+    Returns the stripped string for a free-text readiness field, or appends a
+    type-mismatch issue and returns None if raw is a non-string truthy value
+    (e.g. a model passing a structured `{"as_a": ..., "i_want": ...}` object
+    instead of plain text - see SPEC-ISSUE-0087). `(raw or "").strip()` alone
+    only self-heals falsy values; a truthy dict/list reaching that `.strip()`
+    call crashes with an unhandled AttributeError instead of a clean
+    rejection.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        issues.append(f"{field_name} must be plain text (a string), not a {type(raw).__name__}")
+        return None
+    return raw.strip()
+
+
 def _story_readiness_issues(item: Dict[str, Any], is_epic: bool, is_issue: bool = False) -> List[str]:
     """
     Mechanical content-completeness check, applied when a story is being
@@ -438,16 +456,22 @@ def _story_readiness_issues(item: Dict[str, Any], is_epic: bool, is_issue: bool 
     so that ." with every slot blank, no acceptance criteria at all).
     """
     issues = []
-    title = (item.get("title") or "").strip()
-    if not title or _BARE_ID_PATTERN.match(title):
+    title = _readiness_text_field(item.get("title"), "title", issues)
+    if title is not None and (not title or _BARE_ID_PATTERN.match(title)):
         issues.append("title is missing or is just another item's ID, not a real description")
     if is_issue:
-        overview = (item.get("overview") or item.get("description") or "").strip()
-        if not overview:
+        overview = _readiness_text_field(
+            item.get("overview") or item.get("description"), "overview/description", issues
+        )
+        if overview is not None and not overview:
             issues.append("overview/description is empty - describe the concrete gap this issue documents")
     elif not is_epic:
-        user_story = (item.get("user_story") or "").strip()
-        if not user_story or user_story == _PLACEHOLDER_USER_STORY or _BLANK_USER_STORY_PATTERN.match(user_story):
+        user_story = _readiness_text_field(item.get("user_story"), "user_story", issues)
+        if user_story is not None and (
+            not user_story
+            or user_story == _PLACEHOLDER_USER_STORY
+            or _BLANK_USER_STORY_PATTERN.match(user_story)
+        ):
             issues.append("user_story is missing, still the template placeholder, or has every slot left blank")
     if not item.get("acceptance_criteria"):
         issues.append("acceptance_criteria is empty")
@@ -1366,6 +1390,8 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
         item["id"] = item_id
 
     title = item.get("title", "Untitled")
+    if not isinstance(title, str):
+        title = str(title)
     filename_title = "Untitled" if _BARE_ID_PATTERN.match(title.strip()) else title
     filename = f"{item_id}-{filename_title.replace(' ', '-').replace('/', '-')}.md"
     # Issues document a process/tooling gap rather than a product feature, so
@@ -1407,9 +1433,17 @@ def _update_story_markdown(item: Dict[str, Any], tool_context=None) -> Dict[str,
     template_content = _strip_agent_safeguard_comments(template_path.read_text(encoding="utf-8", errors="replace"))
     priority = item.get("priority", "Must")
     
-    # User story text for stories, or overview for epics/issues
+    # User story text for stories, or overview for epics/issues. Coerced to
+    # str defensively (not just relying on the Ready/Done gate above) so a
+    # non-string value reaching this far - e.g. a Draft-status story, which
+    # _story_readiness_issues never even runs against - can't crash the
+    # content.replace() calls below (see SPEC-ISSUE-0087).
     user_story = item.get("user_story", "")
+    if not isinstance(user_story, str):
+        user_story = str(user_story)
     overview = item.get("overview", "") or item.get("description", "")
+    if not isinstance(overview, str):
+        overview = str(overview)
 
     if not user_story and not is_epic and not is_issue:
          user_story = "As a <role>, I want <capability>, so that <benefit>."

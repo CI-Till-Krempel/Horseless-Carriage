@@ -11,7 +11,7 @@ from agents.scrum_team.tools.requirements import (
     raise_story_blocker, resolve_story_blocker, declare_backlog_scope_complete,
     update_roadmap, _strip_story_block_from_other_versions,
     sync_stories_from_markdown, _migrated_priority, _move_item_to_front_of_remaining_work,
-    list_open_issues, bump_issue_recurrence,
+    list_open_issues, bump_issue_recurrence, _story_readiness_issues,
 )
 
 
@@ -1668,6 +1668,92 @@ class TestUpdateStoryMarkdownRemovesOrphanedFile(unittest.TestCase):
                 )
                 remaining = sorted(p.name for p in (Path(tmp) / "specs" / "stories").glob("*.md"))
                 self.assertEqual(remaining, ["US-0001-Renamed-title.md", "US-0002-Some-other-story.md"])
+
+
+class TestStoryReadinessRejectsNonStringFields(unittest.TestCase):
+    """
+    SPEC-ISSUE-0087: 0.2.0-run89 crashed with an unhandled
+    `AttributeError: 'dict' object has no attribute 'strip'` when the
+    ProductOwner, retrying a Definition-of-Ready rejection, passed
+    `user_story` as a structured dict instead of a plain string.
+    `_story_readiness_issues`'s old `(item.get(...) or "").strip()` only
+    self-heals falsy values - a truthy dict reached `.strip()` unguarded.
+    A non-string value for title/user_story/overview must now be rejected
+    cleanly, never raise.
+    """
+
+    def test_dict_user_story_rejected_not_raised(self):
+        issues = _story_readiness_issues(
+            {
+                "title": "Create To-Do List",
+                "user_story": {"as_a": "user", "i_want": "to create a list", "so_that": "I can track tasks"},
+                "acceptance_criteria": ["Given X, when Y, then Z"],
+            },
+            is_epic=False,
+        )
+        self.assertTrue(any("user_story" in issue and "dict" in issue for issue in issues))
+
+    def test_dict_title_rejected_not_raised(self):
+        issues = _story_readiness_issues(
+            {
+                "title": {"headline": "Create To-Do List"},
+                "user_story": "As a user, I want to create a list, so that I can track tasks.",
+                "acceptance_criteria": ["Given X, when Y, then Z"],
+            },
+            is_epic=False,
+        )
+        self.assertTrue(any("title" in issue and "dict" in issue for issue in issues))
+
+    def test_dict_overview_rejected_not_raised(self):
+        issues = _story_readiness_issues(
+            {
+                "title": "Fix the thing",
+                "overview": {"summary": "the gap"},
+                "acceptance_criteria": ["Given X, when Y, then Z"],
+            },
+            is_epic=False,
+            is_issue=True,
+        )
+        self.assertTrue(any("overview" in issue and "dict" in issue for issue in issues))
+
+    def test_update_story_markdown_rejects_dict_user_story_on_ready_status(self):
+        """End-to-end replay of 0.2.0-run89's crash shape: a Ready-status
+        story with a dict-shaped user_story must come back as a clean
+        status=error DoR rejection, not raise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                result = _update_story_markdown(
+                    {
+                        "id": "US-0001",
+                        "title": "Create To-Do List",
+                        "type": "User Story",
+                        "status": "Ready",
+                        "user_story": {"as_a": "user", "i_want": "...", "so_that": "..."},
+                        "acceptance_criteria": ["Given X, when Y, then Z"],
+                    },
+                    tool_context=MagicMock(state={}),
+                )
+                self.assertEqual(result["status"], "error")
+                self.assertIn("user_story", result["message"])
+
+    def test_update_story_markdown_survives_dict_user_story_on_draft_status(self):
+        """Defense in depth: a Draft-status story never reaches the DoR gate
+        at all, so a dict-shaped user_story must not crash the markdown
+        rendering step either."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("agents.scrum_team.tools.requirements._configured_repo_root", return_value=Path(tmp)):
+                result = _update_story_markdown(
+                    {
+                        "id": "US-0001",
+                        "title": "Create To-Do List",
+                        "type": "User Story",
+                        "status": "Draft",
+                        "user_story": {"as_a": "user", "i_want": "...", "so_that": "..."},
+                        "acceptance_criteria": ["Given X, when Y, then Z"],
+                    },
+                    tool_context=MagicMock(state={}),
+                )
+                self.assertEqual(result["status"], "ok")
 
 
 @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})

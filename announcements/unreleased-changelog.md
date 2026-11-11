@@ -59,6 +59,8 @@ no nested schema. The dict-shaped `user_story` reaches `_story_readiness_issues`
 run. The identical `(item.get(...) or "").strip()` pattern is equally unguarded for `title` and
 `overview`/`description` two lines above.
 
-Filed as SPEC-ISSUE-0087 (Ready, not yet implemented) - the fix is an `isinstance(..., str)` guard on
-`title`/`user_story`/`overview` before `_story_readiness_issues` calls `.strip()` on them, rejecting a
-non-string value with a clean structured error instead of crashing.
+Fixed as SPEC-ISSUE-0087: `_story_readiness_issues` now rejects a non-string `title`/`user_story`/
+`overview` with a clean, structured error naming the field and type seen, instead of reaching the old
+unguarded `.strip()` call. `_update_story_markdown`'s later rendering code is independently defensive
+too (coerces to `str` before use), so a non-string value can't crash the markdown-rendering step even
+on a Draft-status story that never reaches the readiness gate at all.

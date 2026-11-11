@@ -2,7 +2,7 @@
 
 - Issue ID: SPEC-ISSUE-0087
 - Title: `_story_readiness_issues`'s `(item.get("user_story") or "").strip()` Crashes The Entire Run With An Unhandled `AttributeError` When `user_story` Is A Dict
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-11-11
@@ -111,3 +111,26 @@ this file.
 - A case seeding `_update_story_markdown`'s `item["user_story"]` directly with a non-string value
   (bypassing the gate above, simulating defense-in-depth) and confirming the function still returns a
   structured error rather than raising inside the `content.replace(...)` call at `:1459`.
+
+## Resolution
+`_story_readiness_issues` (`agents/scrum_team/tools/requirements.py`) now routes `title`,
+`user_story`, and `overview`/`description` through a new `_readiness_text_field` helper: `None`/absent
+still self-heals to `""`, but a non-string truthy value (dict, list, etc.) is rejected with a
+structured issue naming the field and the type actually seen (e.g. `"user_story must be plain text (a
+string), not a dict"`), instead of reaching the old unguarded `.strip()` call.
+
+`_update_story_markdown`'s later rendering code is independently defensive: `title` (used before the
+Ready/Done gate even runs, so a Draft-status story was never protected by the check above) and
+`user_story`/`overview` (used in the `content.replace(...)` calls) are each coerced to `str` if not
+already a string, so a non-string value can't crash the markdown-rendering step regardless of status.
+
+Five new regression tests in `TestStoryReadinessRejectsNonStringFields`
+(`agents/scrum_team/tests/test_requirements.py`): three unit tests on `_story_readiness_issues`
+directly (dict `user_story`, dict `title`, dict `overview` each rejected with a type-naming issue, not
+raised), plus two end-to-end `_update_story_markdown` tests - one replaying `0.2.0-run89`'s exact
+crash shape (`status="Ready"`, dict `user_story`) and asserting a clean `status == "error"` response,
+the other confirming a `status="Draft"` story with the same dict `user_story` renders without
+crashing (the defense-in-depth case, since Draft never reaches the readiness gate at all).
+
+Full suite (`python3 run_tests.py`, host suite + `agents/scrum_team/tests` via Docker Compose) passes:
+798 host tests + 1250 agent-suite tests (138 subtests), zero failures, including all five new tests.
