@@ -27,6 +27,7 @@ from agents.scrum_team.tools.github import (
     integrate_open_changes,
     _checkout_develop_or_recover,
     _checkout_with_auto_integrate,
+    _untrack_gitignored_dirty_files,
     _preserve_local_only_develop_commits,
     release_pr_still_open,
 )
@@ -1895,6 +1896,109 @@ class TestIntegrateOpenChanges(unittest.TestCase):
             self.assertNotIn(".hc", status_call.args[0])
 
 
+class TestUntrackGitignoredDirtyFiles(unittest.TestCase):
+    """
+    SPEC-ISSUE-0085: a tracked file matched by the repo's own .gitignore
+    (classic case: .idea/workspace.xml, .DS_Store - committed before the
+    ignore rule existed) is neither specs/.hc planning output nor real
+    source work - integrate_open_changes can never recover it, but it's
+    always safe to stop tracking since the repo's own ignore rule already
+    says the content doesn't belong under version control.
+    """
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_noop_when_nothing_is_dirty(self, mock_run):
+        mock_run.return_value = {"status": "ok", "stdout": ""}
+        result = _untrack_gitignored_dirty_files("/repo", tool_context=MagicMock())
+        self.assertFalse(result["integrated"])
+        self.assertEqual(result["dirty_tracked_files"], [])
+        mock_run.assert_called_once_with(["git", "status", "--porcelain"], cwd="/repo", tool_context=unittest.mock.ANY)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_ignores_untracked_files_entirely(self, mock_run):
+        # "??" is a brand new untracked file - a different checkout failure
+        # mode ("untracked working tree files would be overwritten"), never
+        # this helper's business to touch.
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": "?? some/new/file.txt"},
+        ]
+        result = _untrack_gitignored_dirty_files("/repo", tool_context=MagicMock())
+        self.assertFalse(result["integrated"])
+        self.assertEqual(result["dirty_tracked_files"], [])
+        self.assertEqual(mock_run.call_count, 1)  # never even asks check-ignore about it
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_leaves_a_dirty_tracked_file_alone_when_not_gitignored(self, mock_run):
+        # A real, in-progress source edit - must never be touched, matching
+        # integrate_open_changes' own safety guarantee.
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M src/real_edit.py"},  # git status --porcelain
+            {"status": "error", "returncode": 1, "stdout": ""},  # git check-ignore: no matches
+        ]
+        result = _untrack_gitignored_dirty_files("/repo", tool_context=MagicMock())
+        self.assertFalse(result["integrated"])
+        self.assertEqual(result["files"], [])
+        self.assertEqual(result["dirty_tracked_files"], ["src/real_edit.py"])
+        self.assertEqual(mock_run.call_count, 2)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_untracks_and_commits_a_gitignored_dirty_tracked_file(self, mock_run):
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M .idea/workspace.xml"},  # git status --porcelain
+            {"status": "ok", "returncode": 0, "stdout": ".idea/workspace.xml"},  # git check-ignore
+            {"status": "ok"},  # git rm --cached
+            {"status": "ok"},  # git commit
+        ]
+        result = _untrack_gitignored_dirty_files("/repo", tool_context=MagicMock())
+        self.assertTrue(result["integrated"])
+        self.assertEqual(result["files"], [".idea/workspace.xml"])
+        rm_call = mock_run.call_args_list[2]
+        self.assertEqual(rm_call.args[0], ["git", "rm", "--cached", "-q", "--", ".idea/workspace.xml"])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_only_untracks_the_gitignored_subset_of_several_dirty_files(self, mock_run):
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M .idea/workspace.xml\n M src/real_edit.py"},  # status
+            {"status": "ok", "returncode": 0, "stdout": ".idea/workspace.xml"},  # check-ignore: only one matches
+            {"status": "ok"},  # git rm --cached
+            {"status": "ok"},  # git commit
+        ]
+        result = _untrack_gitignored_dirty_files("/repo", tool_context=MagicMock())
+        self.assertTrue(result["integrated"])
+        self.assertEqual(result["files"], [".idea/workspace.xml"])
+        rm_call = mock_run.call_args_list[2]
+        self.assertNotIn("src/real_edit.py", rm_call.args[0])
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_does_not_discard_file_content_only_untracks(self, mock_run):
+        # Acceptance criterion: never a destructive discard - only
+        # `git rm --cached` (index-only), never `git checkout --`/`git clean`.
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M .DS_Store"},
+            {"status": "ok", "returncode": 0, "stdout": ".DS_Store"},
+            {"status": "ok"},
+            {"status": "ok"},
+        ]
+        _untrack_gitignored_dirty_files("/repo", tool_context=MagicMock())
+        all_cmds = [call.args[0] for call in mock_run.call_args_list]
+        for cmd in all_cmds:
+            self.assertNotIn("clean", cmd)
+            self.assertNotIn("reset", cmd)
+            if cmd[:2] == ["git", "checkout"]:
+                self.fail(f"should never call git checkout on the blocking file: {cmd}")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_surfaces_error_when_rm_fails(self, mock_run):
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M .idea/workspace.xml"},
+            {"status": "ok", "returncode": 0, "stdout": ".idea/workspace.xml"},
+            {"status": "error", "stderr": "fatal: pathspec error"},
+        ]
+        result = _untrack_gitignored_dirty_files("/repo", tool_context=MagicMock())
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(result["integrated"])
+
+
 class TestCheckoutWithAutoIntegrate(unittest.TestCase):
     """
     Acceptance Criteria (GH eval run41): the shared self-heal-on-"would be
@@ -1937,17 +2041,47 @@ class TestCheckoutWithAutoIntegrate(unittest.TestCase):
         mock_integrate.assert_not_called()
         self.assertEqual(mock_run.call_count, 1)
 
+    @patch("agents.scrum_team.tools.github._untrack_gitignored_dirty_files")
     @patch("agents.scrum_team.tools.github.integrate_open_changes")
     @patch("agents.scrum_team.tools.github._run")
-    def test_gives_up_when_integration_finds_nothing_to_integrate(self, mock_run, mock_integrate):
+    def test_gives_up_when_neither_recovery_tier_finds_anything(self, mock_run, mock_integrate, mock_untrack):
+        # SPEC-ISSUE-0085: integrate_open_changes finding nothing no longer
+        # means giving up immediately - _untrack_gitignored_dirty_files gets
+        # a chance too. Only once BOTH tiers report nothing to do is this a
+        # real, unrecognized conflict worth giving up on.
         mock_run.return_value = {"status": "error", "stderr": "would be overwritten by checkout"}
         mock_integrate.return_value = {"status": "ok", "integrated": False, "message": "nothing to integrate"}
+        mock_untrack.return_value = {"status": "ok", "integrated": False, "dirty_tracked_files": ["src/real_edit.py"]}
 
         checkout, auto_integrated = _checkout_with_auto_integrate(["git", "checkout", "-B", "develop"], "/repo", tool_context=MagicMock())
 
         self.assertEqual(checkout["status"], "error")
         self.assertFalse(auto_integrated["integrated"])
+        self.assertEqual(auto_integrated["dirty_tracked_files"], ["src/real_edit.py"])
+        mock_untrack.assert_called_once()
         self.assertEqual(mock_run.call_count, 1)
+
+    @patch("agents.scrum_team.tools.github._untrack_gitignored_dirty_files")
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_self_heals_via_untrack_tier_when_integrate_finds_nothing(self, mock_run, mock_integrate, mock_untrack):
+        # SPEC-ISSUE-0085: a dirty tracked file matched by .gitignore (e.g.
+        # .idea/workspace.xml) is neither specs/.hc planning output nor real
+        # source work - integrate_open_changes has nothing to do, but the
+        # second tier can still recover without ever involving a human.
+        mock_run.side_effect = [
+            {"status": "error", "stderr": "would be overwritten by checkout"},
+            {"status": "ok"},  # retried checkout, after untracking
+        ]
+        mock_integrate.return_value = {"status": "ok", "integrated": False, "message": "nothing to integrate"}
+        mock_untrack.return_value = {"status": "ok", "integrated": True, "files": [".idea/workspace.xml"]}
+
+        checkout, auto_integrated = _checkout_with_auto_integrate(["git", "checkout", "-B", "develop"], "/repo", tool_context=MagicMock())
+
+        self.assertEqual(checkout["status"], "ok")
+        self.assertTrue(auto_integrated["integrated"])
+        self.assertEqual(auto_integrated["files"], [".idea/workspace.xml"])
+        self.assertEqual(mock_run.call_count, 2)
 
     @patch("agents.scrum_team.tools.github.integrate_open_changes")
     @patch("agents.scrum_team.tools.github._run")
@@ -2010,23 +2144,49 @@ class TestCheckoutDevelopOrRecover(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 2)
 
     @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits", return_value=None)
+    @patch("agents.scrum_team.tools.github._untrack_gitignored_dirty_files")
     @patch("agents.scrum_team.tools.github.integrate_open_changes")
     @patch("agents.scrum_team.tools.github._run")
-    def test_gives_up_if_integration_finds_nothing_to_integrate(self, mock_run, mock_integrate, mock_preserve):
-        # Not every "would be overwritten" is dangling specs/.hc writes (could
-        # be an untracked file elsewhere in the shared checkout) - if
-        # integrate_open_changes had nothing to do, retrying would just fail
-        # identically, so don't bother.
+    def test_gives_up_if_neither_recovery_tier_finds_anything(self, mock_run, mock_integrate, mock_untrack, mock_preserve):
+        # Not every "would be overwritten" is dangling specs/.hc writes or
+        # gitignored noise (could be a real, unrecognized conflict in the
+        # shared checkout) - if BOTH integrate_open_changes and
+        # _untrack_gitignored_dirty_files (SPEC-ISSUE-0085) have nothing to
+        # do, retrying would just fail identically, so don't bother.
         mock_run.side_effect = [
             {"status": "ok"},  # fetch
             {"status": "error", "stderr": "would be overwritten by checkout"},
         ]
         mock_integrate.return_value = {"status": "ok", "integrated": False, "message": "nothing to integrate"}
+        mock_untrack.return_value = {"status": "ok", "integrated": False, "dirty_tracked_files": ["src/real_edit.py"]}
 
         result = _checkout_develop_or_recover("/repo", "develop", tool_context=MagicMock())
 
         self.assertEqual(result["status"], "error")
         self.assertEqual(mock_run.call_count, 2)
+
+    @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits", return_value=None)
+    @patch("agents.scrum_team.tools.github._untrack_gitignored_dirty_files")
+    @patch("agents.scrum_team.tools.github.integrate_open_changes")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_self_heals_via_untrack_tier_when_integration_finds_nothing(self, mock_run, mock_integrate, mock_untrack, mock_preserve):
+        # SPEC-ISSUE-0085: a real install's ScrumMaster was stuck here
+        # forever because .idea/workspace.xml (gitignored but still tracked
+        # from before the ignore rule existed) was the only thing dirty -
+        # integrate_open_changes alone could never recover that.
+        mock_run.side_effect = [
+            {"status": "ok"},  # fetch
+            {"status": "error", "stderr": "would be overwritten by checkout"},
+            {"status": "ok"},  # retried checkout, after untracking
+        ]
+        mock_integrate.return_value = {"status": "ok", "integrated": False, "message": "nothing to integrate"}
+        mock_untrack.return_value = {"status": "ok", "integrated": True, "files": [".idea/workspace.xml"]}
+
+        result = _checkout_develop_or_recover("/repo", "develop", tool_context=MagicMock())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["auto_integrated"]["files"], [".idea/workspace.xml"])
+        self.assertEqual(mock_run.call_count, 3)
 
     @patch("agents.scrum_team.tools.github._preserve_local_only_develop_commits")
     @patch("agents.scrum_team.tools.github._run")

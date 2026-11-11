@@ -2,7 +2,7 @@
 
 - Issue ID: SPEC-ISSUE-0086
 - Title: An Ollama `model not found` 404 On The First LLM Call Crashes The Whole ADK Root Node Instead Of Degrading Like Every Other Known LLM-Call Failure
-- Status: Draft
+- Status: Done
 - Priority: Should
 - Owner: Architect
 - Last Updated: 2026-11-11
@@ -90,3 +90,38 @@ only at interactive first-setup time, not as a standing reference a user re-read
   returned and the real exception never propagates.
 - Manual/docs check: confirm `docs/SETUP.md`'s revised wording no longer contains a literal
   copy-pastable wrong-tag example near the `OLLAMA_MODEL`-specific pull instruction.
+
+## Resolution
+Added a new branch to `_patched_adk_acompletion`'s exception handling (`agents/scrum_team/agent.py`),
+alongside the existing Gemini-safety-block/connection-failure/rate-limit degrades: `litellm.exceptions.
+NotFoundError` (confirmed via `NotFoundError.__mro__` to be a distinct subclass of
+`openai.NotFoundError`/`APIStatusError`, never caught by any of the existing `isinstance` checks) is now
+degraded into the same kind of synthetic in-band response as every other known failure, instead of
+falling through to the unconditional `raise e` and crashing the ADK root node.
+
+The degraded message names the actual missing model tag, not just the litellm model-group alias: a
+regex (`model ['"]([^'"]+)['"] not found`) pulls the real tag (e.g. `qwen2.5-coder:32b`) out of the
+provider's own error string when present, falling back to the `model` kwarg (the litellm alias, e.g.
+`scrum-orchestrator`) when the string doesn't match that shape - so the operator always sees *something*
+actionable to `ollama pull`, never a blank. Wording mirrors `setup_llm.py`'s own correct phrasing and
+explicitly calls out that `OLLAMA_HOST_MODE` skips the usual auto-pull.
+
+`docs/SETUP.md`'s host-mode pull instructions (the macOS native-Ollama section) no longer show the
+literal default tag as a copy-pastable example; it now reads `ollama pull "$OLLAMA_MODEL"` with the
+default shown only as a trailing comment, with a comment line calling out that whatever `OLLAMA_MODEL`
+was changed to must be pulled, not the line verbatim.
+
+Tests added (`agents/scrum_team/tests/test_agent.py`, `TestPatchedAdkAcompletion`):
+- `test_model_not_found_degrades_instead_of_raising` - the real incident's exact traceback shape
+  (`OllamaException - model 'qwen2.5-coder:32b' not found`), asserts the degraded message names both
+  "MODEL NOT FOUND" and the exact tag, and that it's actionable (`ollama pull qwen2.5-coder:32b`).
+- `test_model_not_found_falls_back_to_model_kwarg_when_tag_unparseable` - a differently-worded 404 from
+  a provider whose error string doesn't match the expected shape, asserts the fallback to the `model`
+  kwarg still names something rather than omitting the model entirely.
+
+Full `agents/scrum_team/tests` suite (via `docker compose -p horseless-carriage-test run --rm
+--entrypoint "" agent pytest`, same project-scoped invocation `run_tests.py` uses): 1256 passed, no
+regressions - including the pre-existing `test_safety_block_still_degrades`/`test_connection_error_
+degrades_instead_of_raising`/`test_unrelated_internal_server_error_still_raises` regression guards,
+confirming the new branch doesn't disturb any of the other degrade paths or the one real propagate-on-
+purpose case.

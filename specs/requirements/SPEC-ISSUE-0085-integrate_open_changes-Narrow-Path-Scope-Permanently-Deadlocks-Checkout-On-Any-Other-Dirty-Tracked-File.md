@@ -2,7 +2,7 @@
 
 - Issue ID: SPEC-ISSUE-0085
 - Title: `integrate_open_changes`'s `specs/`+`.hc/`-Only Path Scope Permanently Deadlocks Every Checkout Helper The Moment Any Other Tracked File (e.g. IDE/OS Metadata) Is Dirty, With No Tool Able To Recover
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-11-11
@@ -105,3 +105,41 @@ team never found a way out on its own in either attempt.
 - Add/extend a case alongside `_preserve_local_only_develop_commits`'s own existing tests confirming
   this new path doesn't interact badly with that function's merge/push/rescue-branch logic when both
   conditions occur in the same checkout attempt.
+
+## Resolution
+Added a new second recovery tier, `_untrack_gitignored_dirty_files` (`agents/scrum_team/tools/
+github.py`), tried by `_checkout_with_auto_integrate` only after `integrate_open_changes` reports
+nothing to integrate. It reads `git status --porcelain`, keeps only paths reported as **modified**
+tracked files ("M"/"T" status - never "??" untracked, a different failure mode entirely), narrows that
+down via `git check-ignore` to the subset actually matched by the repo's own `.gitignore`, and
+`git rm --cached` + commits the removal for exactly those - never touching a dirty file that isn't
+gitignore-matched (a real, unrecognized conflict is still left alone and still fails, same as before).
+`git rm --cached` only removes the path from the index; the file's on-disk content is never discarded.
+
+`_checkout_with_auto_integrate` now tries tier 1 (`integrate_open_changes`, unchanged), and only if
+that reports `integrated: False`, tries tier 2 (`_untrack_gitignored_dirty_files`) and retries the
+checkout again if it reports `integrated: True`. Both tiers share the same `"integrated"` boolean key
+in their return dict, so every existing caller that reads `auto_integrated.get("integrated")` for its
+own error message keeps working unchanged regardless of which tier fired. When neither tier finds
+anything, the second tier's result also carries `dirty_tracked_files` (every modified tracked path it
+saw, ignored-matched or not) so a caller that's still going to fail surfaces exactly what's blocking it.
+
+Two existing tests encoded the now-fixed behavior as a contract ("if `integrate_open_changes` had
+nothing to do, retrying would just fail identically, so don't bother") and were rewritten to reflect
+that a second tier now gets a chance first: `TestCheckoutWithAutoIntegrate.
+test_gives_up_when_neither_recovery_tier_finds_anything` / `TestCheckoutDevelopOrRecover.
+test_gives_up_if_neither_recovery_tier_finds_anything` (renamed from their "...when_integration_finds_
+nothing..." originals), plus one new "self-heals via the untrack tier" test added alongside each.
+
+Tests added:
+- `test_github.py`'s new `TestUntrackGitignoredDirtyFiles` class (7 tests): clean no-op, ignores
+  untracked ("??") files entirely, leaves a non-gitignored dirty tracked file alone, untracks+commits a
+  gitignored one, only touches the gitignored subset when several files are dirty, confirms no
+  `clean`/`reset`/`checkout --` ever runs against the blocking file (content never discarded), and
+  surfaces an error if `git rm --cached` itself fails.
+- `TestCheckoutWithAutoIntegrate`/`TestCheckoutDevelopOrRecover`: one new test each for the
+  self-heal-via-untrack path, alongside the two rewritten give-up tests above.
+
+Full `agents/scrum_team/tests` suite (via `docker compose -p horseless-carriage-test run --rm
+--entrypoint "" agent pytest`, same project-scoped invocation `run_tests.py` uses): 1256 passed, no
+regressions.

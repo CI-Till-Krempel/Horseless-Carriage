@@ -2,6 +2,7 @@
 import ast
 import os
 import json
+import re
 import requests
 import logging
 import sys
@@ -226,6 +227,27 @@ try:
                     "further LLM calls on this key until then."
                 )
                 return _degraded_llm_response("rate-limit-error", "stop", error_msg, model_name, kwargs.get("stream"))
+            # SPEC-ISSUE-0086: a real local-Ollama install (OLLAMA_HOST_MODE=
+            # true, which - unlike the dockerized ollama service - never
+            # auto-pulls the configured model tag) had its very first LLM
+            # call 404 with "model not found", and litellm.NotFoundError
+            # propagated uncaught all the way through ADK, crashing the
+            # entire root node/session on the first turn. Degrade the same
+            # way as every other known LLM-call failure above, with a
+            # message that actually names the missing tag and how to fix it
+            # (mirroring setup_llm.py's own correct `ollama pull <model>`
+            # wording) instead of a raw traceback.
+            if isinstance(e, litellm.exceptions.NotFoundError):
+                logger.warning(f"Detected LiteLLM 'model not found' failure: {e}")
+                match = re.search(r"model ['\"]([^'\"]+)['\"] not found", str(e))
+                missing_model = match.group(1) if match else model_name
+                error_msg = (
+                    f"⚠️ [MODEL NOT FOUND] The LLM provider reports model '{missing_model}' is not "
+                    f"available ({e}). If this is a local Ollama install, pull the exact tag first: "
+                    f"`ollama pull {missing_model}` (OLLAMA_HOST_MODE skips the usual auto-pull). "
+                    "This agent cannot make further LLM calls until the model is available."
+                )
+                return _degraded_llm_response("model-not-found", "stop", error_msg, model_name, kwargs.get("stream"))
             raise e
 
     adk_litellm.LiteLLMClient.acompletion = _patched_adk_acompletion
