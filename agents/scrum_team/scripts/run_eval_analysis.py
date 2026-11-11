@@ -516,6 +516,7 @@ def _call_judge(prompt: str, model: str) -> dict:
 _STOP_REASON_EXPLANATIONS = {
     "max_duration_exceeded": "the run's own wall-clock safety net (--max-duration-minutes) was reached",
     "budget_critical_halt": "a sprint hit a critical token/USD budget halt with no clean close-out afterward",
+    "sprint_closeout_stalled": "a sprint exhausted this harness's own retry ceiling before its close-out (sprint report done, release PR) could finish",
     "crashed": "the run crashed with an unhandled exception",
     "blocked_needs_human": "a BLOCKED story's category escalates straight to a human this scripted driver has no way to provide",
     "blocked_unresolved_across_sprint": "a BLOCKED story was still unresolved after a full sprint's own budget to fix it",

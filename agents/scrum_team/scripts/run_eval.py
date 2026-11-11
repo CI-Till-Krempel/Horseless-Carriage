@@ -504,6 +504,28 @@ def _sprint_should_abort_run(sprint_result: dict) -> bool:
     return bool(sprint_result.get("sprint_report")) and bool(sprint_result.get("sprint_report_pending_release"))
 
 
+def _abort_run_stop_reason(sprint_result: dict) -> str:
+    """
+    The run-level manifest["stop_reason"] to record when _sprint_should_abort_run
+    above returns True - "budget_critical_halt" only if sprint_result["critical_halt"]
+    was actually set (check_cost_budget_callback's real token/USD guardrail,
+    agent.py's _notify_critical_halt), else "sprint_closeout_stalled".
+
+    SPEC-ISSUE-0086: the caller used to hardcode "budget_critical_halt"
+    unconditionally whenever _sprint_should_abort_run returned True, regardless
+    of which of its two branches fired. A real run (0.2.0-run88) hit the
+    non-critical-halt branch - sprint_report_pending_release still true after
+    the harness's own nudge ceiling ran out (max_nudges_exhausted), no budget
+    halt ever notified (critical_halt was False the whole sprint) - and the
+    resulting report still claimed "a critical token/USD budget halt," which
+    was simply false. This is the same diagnostic-wording defect SPEC-ISSUE-0077
+    already fixed once in a sibling call site (_ensure_sprint_report_on_final_halt's
+    own reason-aware report/commit wording) - that fix never reached this outer,
+    run-level label.
+    """
+    return "budget_critical_halt" if sprint_result["critical_halt"] else "sprint_closeout_stalled"
+
+
 def _blocked_stories(sprint_result: dict) -> dict:
     """{story_id_or_title: blocked_dict} for every story currently BLOCKED
     (raise_story_blocker, agents/scrum_team/tools/requirements.py) at the
@@ -1138,13 +1160,19 @@ async def _main_async(args: argparse.Namespace) -> dict:
             break
 
         if _sprint_should_abort_run(sprint_result):
+            abort_reason = _abort_run_stop_reason(sprint_result)
+            abort_log_text = (
+                "hit a critical budget halt with no clean sprint close-out"
+                if abort_reason == "budget_critical_halt"
+                else "exhausted this harness's own retry ceiling with the sprint close-out "
+                "(report produced, release PR) still stalled"
+            )
             print(
-                f"--- sprint {sprint_number}/{args.sprints} hit a critical budget halt with no clean "
-                "sprint close-out - stopping run ---",
+                f"--- sprint {sprint_number}/{args.sprints} {abort_log_text} - stopping run ---",
                 file=sys.stderr,
             )
             manifest["stopped_early"] = True
-            manifest["stop_reason"] = "budget_critical_halt"
+            manifest["stop_reason"] = abort_reason
             break
         elif sprint_result["critical_halt"]:
             print(

@@ -12,6 +12,7 @@ from unittest.mock import patch
 from agents.scrum_team.scripts.run_eval import (
     _run_one_sprint,
     _sprint_should_abort_run,
+    _abort_run_stop_reason,
     _blocked_stories,
     _sprint_needs_human_this_harness_cannot_provide,
     _unresolved_high_priority_general_blocker,
@@ -424,6 +425,32 @@ def test_sprint_should_not_abort_without_a_critical_halt_when_nothing_was_ever_p
     assert _sprint_should_abort_run({
         "critical_halt": False, "stop_reason": "max_events_reached", "sprint_report_pending_release": True,
     }) is False
+
+
+def test_abort_run_stop_reason_is_budget_critical_halt_when_a_real_budget_halt_occurred():
+    """The existing, correct budget-halt case (SPEC-ISSUE-0086 acceptance
+    criteria: must not regress) - critical_halt True keeps the original
+    "budget_critical_halt" label regardless of why _sprint_should_abort_run
+    returned True."""
+    assert _abort_run_stop_reason({
+        "critical_halt": True, "stop_reason": "max_nudges_exhausted",
+    }) == "budget_critical_halt"
+
+
+def test_abort_run_stop_reason_is_sprint_closeout_stalled_without_a_critical_halt():
+    """SPEC-ISSUE-0086: 0.2.0-run88 hit _sprint_should_abort_run's
+    non-critical-halt branch (critical_halt False, stop_reason
+    "max_nudges_exhausted", a report produced but
+    sprint_report_pending_release still True) and the run-level stop_reason
+    used to hardcode "budget_critical_halt" anyway - false, since no budget
+    halt was ever notified. Must get a distinct label that doesn't claim a
+    budget halt."""
+    reason = _abort_run_stop_reason({
+        "critical_halt": False, "stop_reason": "max_nudges_exhausted",
+        "sprint_report": "a real report", "sprint_report_pending_release": True,
+    })
+    assert reason == "sprint_closeout_stalled"
+    assert reason != "budget_critical_halt"
 
 
 def _story(story_id, blocked=None):
