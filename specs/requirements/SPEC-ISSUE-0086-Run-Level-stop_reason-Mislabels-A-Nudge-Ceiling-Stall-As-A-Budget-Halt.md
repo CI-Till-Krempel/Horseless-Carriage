@@ -2,7 +2,7 @@
 
 - Issue ID: SPEC-ISSUE-0086
 - Title: `run_eval.py`'s Run-Level `stop_reason` Hardcodes `"budget_critical_halt"` Even When No Budget Halt Was Ever Notified
-- Status: Ready
+- Status: Done
 - Priority: Should
 - Owner: Architect
 - Last Updated: 2026-11-11
@@ -113,3 +113,36 @@ colliding with a close-out sequence that needed one more turn).
   original label/behavior is unchanged.
 - `agents/scrum_team/tests/test_run_eval_analysis.py` (or equivalent): assert the new nudges-ceiling
   stop reason string maps to explanatory text that does not mention "token/USD budget."
+
+## Resolution
+Extracted the labeling decision `_sprint_should_abort_run`'s caller used to inline into its own small,
+directly-testable function, `_abort_run_stop_reason(sprint_result) -> str`
+(`agents/scrum_team/scripts/run_eval.py`, right after `_sprint_should_abort_run`): returns
+`"budget_critical_halt"` only when `sprint_result["critical_halt"]` is actually `True`, else the new
+`"sprint_closeout_stalled"`. The call site (`run_eval.py:1140-1148`, inside the per-sprint loop) now
+calls this helper for both the manifest's `stop_reason` and the matching stderr log line, instead of
+hardcoding the budget wording unconditionally.
+
+`run_eval_analysis.py`'s `_STOP_REASON_EXPLANATIONS` gained a `"sprint_closeout_stalled"` entry: *"a
+sprint exhausted this harness's own retry ceiling before its close-out (sprint report done, release
+PR) could finish"* - no mention of budget/cost, matching the acceptance criteria. The existing
+`"budget_critical_halt"` entry and its behavior are untouched, so the real budget-halt case (SPEC-
+ISSUE-0045) keeps its original wording byte-for-byte.
+
+The secondary observation noted above (Sprint 1 implementing all 6 stories' functionality under cover
+of one tracked story) remains unaddressed - no code change was made for it, per this issue's own Notes
+explaining why it doesn't yet have a falsifiable fix shape.
+
+Tests added:
+- `test_run_eval.py`: `test_abort_run_stop_reason_is_budget_critical_halt_when_a_real_budget_halt_occurred`
+  (regression guard for the existing, correct case) and
+  `test_abort_run_stop_reason_is_sprint_closeout_stalled_without_a_critical_halt` (replays `0.2.0-run88`'s
+  exact shape - `critical_halt=False`, `stop_reason="max_nudges_exhausted"`, a report present,
+  `sprint_report_pending_release=True` - and asserts the result is `"sprint_closeout_stalled"`, not
+  `"budget_critical_halt"`).
+- `test_run_eval_analysis.py` (`TestRenderStoppedEarlyCallout`):
+  `test_sprint_closeout_stalled_does_not_claim_a_budget_halt` asserts the rendered explanation for the
+  new stop reason contains no mention of "budget."
+
+Full suite (`agents/scrum_team/tests`, via `docker compose run`, project-scoped per
+`lib_docker.compose_project_args("test")`) passes: 1248 passed, 0 failed.

@@ -57,11 +57,14 @@ the same diagnostic-wording defect SPEC-ISSUE-0077 already fixed once, in a sibl
 (the in-sprint fallback report's own wording) - this outer, run-level label was never updated the
 same way.
 
-Filed as SPEC-ISSUE-0086 (Ready, not yet implemented) - the fix is to thread the existing
-`critical_halt` distinction through to the run-level `stop_reason`/report headline, the same way
-SPEC-ISSUE-0077 already did one level down. Also noted as a secondary, not-yet-actionable observation:
-this run's Sprint 1 wrote the full CRUD implementation for all 6 planned user stories in one
-PR it only ever tracked as `US-0001`, leaving `US-0002`-`US-0006` fully working in the shipped code
-but permanently stuck at `Ready` in the backlog - flagged for whoever investigates the next run where
-it recurs, since no code-level guardrail can currently detect "this diff also satisfies another
+Fixed by threading the existing `critical_halt` distinction through to the run-level `stop_reason`/
+report headline, the same way SPEC-ISSUE-0077 already did one level down: a new
+`_abort_run_stop_reason` helper (`agents/scrum_team/scripts/run_eval.py`) returns
+`"budget_critical_halt"` only when a real budget halt was notified, else `"sprint_closeout_stalled"` -
+and `run_eval_analysis.py`'s explanation for the new reason makes no mention of budget/cost. See
+SPEC-ISSUE-0086 for the full mechanism and fix. Also noted as a secondary, not-yet-actionable
+observation: this run's Sprint 1 wrote the full CRUD implementation for all 6 planned user stories in
+one PR it only ever tracked as `US-0001`, leaving `US-0002`-`US-0006` fully working in the shipped
+code but permanently stuck at `Ready` in the backlog - flagged for whoever investigates the next run
+where it recurs, since no code-level guardrail can currently detect "this diff also satisfies another
 story's acceptance criteria" without real semantic analysis.

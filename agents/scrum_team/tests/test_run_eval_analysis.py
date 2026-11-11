@@ -510,6 +510,16 @@ class TestRenderStoppedEarlyCallout:
         assert "budget_critical_halt" in rendered
         assert "1" in rendered and "5" in rendered
 
+    def test_sprint_closeout_stalled_does_not_claim_a_budget_halt(self):
+        """SPEC-ISSUE-0086: a real run (0.2.0-run88) hit this stop_reason
+        with no budget halt ever notified (critical_halt was False the whole
+        sprint) - the explanation text must not claim a token/USD budget
+        halt happened."""
+        manifest = {"stopped_early": True, "stop_reason": "sprint_closeout_stalled", "sprints_requested": 5, "sprints": [1, 2]}
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "sprint_closeout_stalled" in rendered
+        assert "budget" not in rendered.lower()
+
     def test_surfaces_the_blocked_story_when_present(self):
         manifest = {
             "stopped_early": True,
