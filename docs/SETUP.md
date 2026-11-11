@@ -373,8 +373,11 @@ container.
 #    https://ollama.com/download
 ollama serve
 
-# 2. Pull the model configured in .env's OLLAMA_MODEL (default llama3.1:8b):
-ollama pull llama3.1:8b
+# 2. Pull the EXACT tag you set (or kept) for OLLAMA_MODEL in .env - host
+#    mode has no dockerized `ollama` service, so unlike the NVIDIA path
+#    above, nothing here auto-pulls it on first start. Whatever you changed
+#    OLLAMA_MODEL to, pull that same string, not the line below verbatim:
+ollama pull "$OLLAMA_MODEL"   # e.g. ollama pull llama3.1:8b if you kept the default
 
 # 3. Use the host-Ollama compose file INSTEAD OF docker-compose.local.yaml
 #    (a separate file, not a merged override - Compose merges rather than

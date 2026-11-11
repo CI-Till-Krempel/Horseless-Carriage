@@ -182,6 +182,18 @@ KNOWN_FLAKY_EVAL_IDS = {
     # merge_story_pr_refuses_framework_branch above, not a fixture gap left
     # to find.
     "advance_story_stage_rejects_wrong_role",
+    # eval/adk/README.md finding #27: finding #23 already tightened this
+    # case's prompt to explicitly state the build was already verified ("the
+    # last check passed... skip check_build too") and confirmed it fixed by
+    # the next CI run - but two consecutive later CI runs on an unrelated PR
+    # (#524) both failed again via the identical QA-calls-check_build-anyway
+    # detour, hitting this harness's real "no tests collected" scratch-repo
+    # failure and denying the review instead of calling advance_story_stage
+    # directly. Same "confirmed fix regresses on a later, unrelated PR"
+    # pattern as create_sprint_report_rejects_without_new_retro_or_impediment
+    # (finding #20) - irreducible live-model variance, not a fixture/prompt
+    # gap left to find.
+    "advance_story_stage_rejects_tested_with_unacknowledged_content_loss",
 }
 
 LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"

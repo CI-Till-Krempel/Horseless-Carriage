@@ -64,3 +64,33 @@ Fixed as SPEC-ISSUE-0087: `_story_readiness_issues` now rejects a non-string `ti
 unguarded `.strip()` call. `_update_story_markdown`'s later rendering code is independently defensive
 too (coerces to `str` before use), so a non-string value can't crash the markdown-rendering step even
 on a Draft-status story that never reaches the readiness gate at all.
+### The follow-up run's own stop-reason headline falsely blamed a "critical token/USD budget halt" for a harness nudge-ceiling stall (0.2.0-run88, SPEC-ISSUE-0086)
+
+The very next run after SPEC-ISSUE-0085 was filed (0.2.0-run88) got further - 2 of 5 sprints - and
+did not hit that crash again. It still stopped early, though, and `report.md`'s headline read: *"a
+sprint hit a critical token/USD budget halt with no clean close-out afterward"*. False:
+`manifest.json`'s sprint 2 entry shows `critical_halt: false` and `stop_reason:
+"max_nudges_exhausted"` - no budget wall was ever hit. Sprint 2 simply ran out of this harness's own
+fixed per-sprint retry ceiling before Scrum Master's close-out sequence (report done, release PR
+never opened) finished.
+
+**Confirmed mechanism:** `_sprint_should_abort_run` (`agents/scrum_team/scripts/run_eval.py:438-504`)
+already knows the difference internally (`if sprint_result["critical_halt"]: ... else: ...`), but its
+caller (`run_eval.py:1140-1148`) ignores which branch fired and unconditionally hardcodes
+`manifest["stop_reason"] = "budget_critical_halt"` whenever it returns `True` - which
+`run_eval_analysis.py` then maps straight to the misleading "token/USD budget halt" sentence. This is
+the same diagnostic-wording defect SPEC-ISSUE-0077 already fixed once, in a sibling call site
+(the in-sprint fallback report's own wording) - this outer, run-level label was never updated the
+same way.
+
+Fixed by threading the existing `critical_halt` distinction through to the run-level `stop_reason`/
+report headline, the same way SPEC-ISSUE-0077 already did one level down: a new
+`_abort_run_stop_reason` helper (`agents/scrum_team/scripts/run_eval.py`) returns
+`"budget_critical_halt"` only when a real budget halt was notified, else `"sprint_closeout_stalled"` -
+and `run_eval_analysis.py`'s explanation for the new reason makes no mention of budget/cost. See
+SPEC-ISSUE-0086 for the full mechanism and fix. Also noted as a secondary, not-yet-actionable
+observation: this run's Sprint 1 wrote the full CRUD implementation for all 6 planned user stories in
+one PR it only ever tracked as `US-0001`, leaving `US-0002`-`US-0006` fully working in the shipped
+code but permanently stuck at `Ready` in the backlog - flagged for whoever investigates the next run
+where it recurs, since no code-level guardrail can currently detect "this diff also satisfies another
+story's acceptance criteria" without real semantic analysis.
