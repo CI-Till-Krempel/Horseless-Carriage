@@ -63,9 +63,9 @@ Stories:
   - [x] [US-0019] Add `upsert_user_doc` Tool
   - [x] [US-0020] Wire Product Docs into Definition of Done
 
-### v0.3 — Pluggable Framework Workbenches, Process Trust, Versioning & Governance (planned)
+### v0.3 — Pluggable Development Workbenches, Process Trust, Versioning & Governance (planned)
 Goals
-- Ship pre-built, swappable per-tech-stack "workbench" templates (toolchain, MCP config, network allowlist) that the Architect can select/customize per project, always via human-reviewed PR — headline feature of this release.
+- Ship pre-built, swappable per-tech-stack "Development Workbench" templates (toolchain, MCP config, network allowlist) that the Architect can select/customize per project, always via human-reviewed PR — headline feature of this release. This is GH-291's Phase 1 (technical dev roles only); PO/UX/Testing-role workbenches are deferred to a later phase.
 - Enforce semantic versioning discipline and a "snapshot" suffix during development.
 - Let the stack point at a local-network Ollama server instead of only a bundled container.
 - Keep GitHub issues/milestones and this roadmap in sync going forward.
@@ -74,10 +74,10 @@ Goals
 - Investigate agent context-window/prompt-cache health (ADK cache-miss warning, conversation token budget).
 
 Stories:
-- [ ] [EP-0010] Pluggable Framework Workbench Templates
-  - [ ] [US-0021] Introduce the Workbench Template Mechanism
-  - [ ] [US-0022] Ship Three Reference Framework Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
-  - [ ] [US-0023] Document How to Contribute a New Framework Workbench
+- [ ] [EP-0010] Pluggable Development Workbench Templates
+  - [ ] [US-0021] Introduce the Development Workbench Template Mechanism
+  - [ ] [US-0022] Ship Three Reference Development Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
+  - [ ] [US-0023] Document How to Contribute a New Development Workbench
 - [ ] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling (moved from v0.5 — largely a consequence of EP-0010 shipping)
 - [ ] [GH-501] Enforce semantic versioning and a development "snapshot" suffix
 - [ ] [GH-502] Support pointing Horseless Carriage at a local-network Ollama server (LAN IP/hostname)
@@ -138,7 +138,7 @@ Goals
 Stories:
 - [ ] [GH-289] Abstraction layer for development workflow
 - [ ] [GH-290] Customizable Team staffing
-- [ ] [GH-291] Role Workbenches
+- [ ] [GH-291] Role Workbenches (Phase 1, the Development Workbench, ships in v0.3 as EP-0010 — this remaining scope is PO/UX/Testing-role workbenches)
 - [ ] [GH-282] Modularize the tooling by topic (Process, Specs, Implementation)
 - [ ] [GH-308] The horseless carriage settings are project specific, and should be stored in the project repo
 - [ ] [GH-292] Check whether simplifying existing development workflow could improve system performance

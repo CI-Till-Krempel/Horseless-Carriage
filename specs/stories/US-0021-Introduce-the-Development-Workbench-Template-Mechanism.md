@@ -1,7 +1,7 @@
 # User Story
 
 - Story ID: US-0021
-- Title: Introduce the Workbench Template Mechanism
+- Title: Introduce the Development Workbench Template Mechanism
 - Status: Draft
 - Priority: Must
 - Owner: Architect
@@ -18,7 +18,7 @@
 
 ## Notes
 - Parent epic: EP-0010.
-- Design/technical notes: extends `propose_framework_change` (`agents/scrum_team/tools/workflow.py:295-469`); needs a new template-resolution step (template name → script + MCP config + allowlist) before the existing PR-creation logic runs. Template storage should mirror `config/model-templates/`'s convention (e.g. `config/workbench-templates/<stack-name>/`).
+- Design/technical notes: extends `propose_framework_change` (`agents/scrum_team/tools/workflow.py:295-469`); needs a new template-resolution step (template name → script + MCP config + allowlist) before the existing PR-creation logic runs. Template storage should mirror `config/model-templates/`'s convention (e.g. `config/development-workbench-templates/<stack-name>/`).
 - Depends on resolving how `additional_allowlist_hosts` is tracked going forward — see `specs/architecture/ADR-0002-Per-Project-Workbench-Network-Allowlist-Proposals.md` (Status: Proposed, not yet implemented). This story should either implement that ADR or explicitly scope itself as building on top of today's PR-body-only behavior and note the gap.
 - Feeds US-0022 (reference templates need this mechanism to exist first) and US-0023 (doc describes this contract).
 

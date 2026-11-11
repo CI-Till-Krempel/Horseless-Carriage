@@ -1,7 +1,7 @@
 # User Story
 
 - Story ID: US-0023
-- Title: Document How to Contribute a New Framework Workbench
+- Title: Document How to Contribute a New Development Workbench
 - Status: Draft
 - Priority: Must
 - Owner: Architect
@@ -18,7 +18,7 @@
 ## Notes
 - Parent epic: EP-0010.
 - Depends on US-0021 (mechanism) for the contract to document, and benefits from US-0022's templates existing as worked examples — can be drafted in parallel and finalized once both land.
-- Should cross-reference GH-456 ("document the list of supported tech stacks...") and briefly disambiguate this epic's "workbench" from GH-291's "Role Workbenches" (per-role tool containers) so a reader doesn't conflate the two.
+- Should cross-reference GH-456 ("document the list of supported tech stacks...") and note that this epic implements GH-291's Phase 1 (the Development Workbench, for technical roles); PO/UX/Testing-role workbenches are a later phase of GH-291, not covered by this doc.
 
 ## Test Approach
 - Docs-only story — no automated test; verified via PR review, consistent with this repo's Definition of Done ("Docs updated").

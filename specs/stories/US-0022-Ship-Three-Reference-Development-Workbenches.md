@@ -1,7 +1,7 @@
 # User Story
 
 - Story ID: US-0022
-- Title: Ship Three Reference Framework Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
+- Title: Ship Three Reference Development Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
 - Status: Draft
 - Priority: Must
 - Owner: Architect
@@ -19,7 +19,7 @@
 - Parent epic: EP-0010.
 - Depends on US-0021 shipping the template mechanism first — these are instances of that contract, not a separate mechanism.
 - iOS is the one stack-specific constraint worth calling out up front: the agent's current Docker-based model is Linux-container-first, so the `kotlin-multiplatform` template should generate iOS-side scaffolding/config but document that actual iOS build/run/debug is host-dependent (macOS + Xcode), not something the workbench container itself can do.
-- Design/technical notes: each template directory lives under `config/workbench-templates/<stack-name>/`, following US-0021's contract.
+- Design/technical notes: each template directory lives under `config/development-workbench-templates/<stack-name>/`, following US-0021's contract.
 
 ## Test Approach
 - Per template: a smoke test that scaffolds a minimal app from the template and runs its test suite inside the resulting workbench image (CI or scripted check).
