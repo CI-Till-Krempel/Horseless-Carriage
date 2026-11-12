@@ -172,6 +172,21 @@ provider you choose (cloud → `.env.example`, local → `.env.local.example`),
 so this axis is only something to know about if you're hand-editing `.env`
 instead of using the wizard.
 
+## Development Workbench templates × network allowlist
+
+`config/development-workbench-templates/<name>/` (e.g. `python-flask`,
+`kotlin-multiplatform`, `react-vite-firebase`) bundles a toolchain install
+script, an optional MCP config fragment, and a declared
+`additional_allowlist_hosts` list per tech stack — selected via
+`propose_framework_change(template_name=...)`, never written directly. When
+a template (or an explicit `additional_allowlist_hosts` argument) declares
+new runtime hosts, the resulting PR is **not** enough by itself: a human
+must still add those hosts to `NET_PROXY_EXTRA_ALLOWLIST_HOSTS` in this
+(Horseless Carriage's own) `.env` and run `docker compose up` (container
+recreate, not `restart`) before the agent container can actually reach
+them. See [Development Workbench Templates](WORKBENCHES.md) for the full
+contract and the human-approval flow this interacts with.
+
 ## Known-safe no-ops (not bugs, listed here so they don't look like one)
 
 - Cloud API keys left in `.env` for a provider you're not currently using.
