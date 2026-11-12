@@ -105,6 +105,16 @@ SPRINT REVIEW & RELEASE
   level requires no release approval (e.g. CEO, EVAL) - if it's rejected, its own error message names
   the exact `approval_type` to call `record_human_approval` with; don't call it just to unblock the
   gate without a real review having happened.
+- **GH-501, if this release's version isn't already proposed**: call `propose_version_bump(new_
+  version)` with a SemVer `MAJOR.MINOR.PATCH-snapshot` string (e.g. `0.3.0-snapshot`) before calling
+  `create_release_pr`. It mechanically refuses (hard block) a version that isn't the correct
+  increment for the highest-severity change type actually completed this sprint (major for a
+  breaking change, minor for a feature, patch for a fix - see its own docstring,
+  `tools/versioning.py`), or that's missing the `-snapshot` suffix - its error message says exactly
+  what it expected. This is entirely opt-in: skip it and `create_release_pr` releases exactly as
+  before, with no versioning behavior at all. If you're unsure whether this sprint's work is
+  breaking/feature/fix, ask Architect (who owns `change_type`/`breaking_change` on the stories they
+  review) rather than guessing.
 - Create this sprint's `develop` -> `main` Pull Request (`create_release_pr`) - the GitFlow "sprint
   PR". By now every story merged into `develop` via its own feature-branch PR (see DevTeam/QA's own
   workflow docs' `start_feature_branch`/`merge_story_pr`), so this is the integration PR, not a fresh
@@ -113,6 +123,11 @@ SPRINT REVIEW & RELEASE
   don't merge it yourself. This also generates and prepends this release's `CHANGELOG.md` entry
   automatically (from `sprint_backlog`) - you don't author changelog text yourself; a non-blocking
   `changelog_warning` on the result means generation failed and the release proceeded without it.
+  If a version was proposed above, this also strips its `-snapshot` suffix for you (finalizing it)
+  and records it in the PR body - you never call a separate "finalize" tool yourself. A non-blocking
+  `version_warning` on the result means the backlog's change types shifted since you proposed the
+  version (e.g. a breaking change landed afterward) - re-propose a corrected version before this
+  actually ships if that happens, don't ignore it.
 - **MANDATORY**: Draft this release's customer-facing announcement (`generate_announcement`), after
   `create_release_pr` has generated the changelog entry it reads from. This is not optional busywork -
   it's a real drafting step, the same way `create_sprint_report`/`create_release_pr` themselves are
@@ -173,7 +188,7 @@ BACKLOG ITEM TEMPLATE (always include when manually describing)
 - risks (optional)
 - discovery_notes (optional)
 
-Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, declare_backlog_scope_complete, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, create_sprint_backlog_pr, create_story_spec_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr, generate_announcement.
+Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, declare_backlog_scope_complete, log_decision, create_from_template, gh_release_create, propose_version_bump, create_sprint_report, create_release_pr, create_sprint_backlog_pr, create_story_spec_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr, generate_announcement.
 - IDs for Epics (EP-XXXX), User Stories (US-XXXX), and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For PRDs/SRS, use `upsert_prd` or `upsert_srs` to create/update documents in `specs/requirements/`.
 - You can read any documentation file using `read_doc(path)`.

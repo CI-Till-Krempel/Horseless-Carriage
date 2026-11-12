@@ -1982,6 +1982,32 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
                 "push": land_res,
             }
 
+    # GH-501: SemVer + snapshot-suffix enforcement for the target product's
+    # own version (tools/versioning.py) - entirely opt-in, same as changelog_
+    # warning above: a project that never calls propose_version_bump sees no
+    # behavior change here at all. release_version_advisory re-checks the
+    # increment against whatever the backlog's change types call for *right
+    # now* (advisory only - see that function's own docstring for why this,
+    # not a hard block, is this check's enforcement point); finalize_release_
+    # version then strips product_version's '-snapshot' suffix and advances
+    # product_released_version, the actual release/tag-time moment GH-501
+    # requires the suffix come off.
+    from .versioning import finalize_release_version, release_version_advisory
+    version_warning = release_version_advisory(tool_context=tool_context)
+    finalize_res = finalize_release_version(tool_context=tool_context)
+    if finalize_res.get("status") != "ok":
+        # Only reachable if product_version was set to something finalize_
+        # release_version can't even parse - propose_version_bump's own
+        # validation should already prevent that, so this is a defensive
+        # hard-stop against a malformed value set some other way, not the
+        # normal "convention violated" path (that's version_warning above).
+        return {
+            "status": "error",
+            "message": f"Cannot create a release PR - {finalize_res.get('message')}",
+        }
+    if finalize_res.get("finalized"):
+        body = body.rstrip("\n") + f"\n\n---\n**Release version:** v{finalize_res['version']}\n"
+
     fetch_res = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
 
     # base/head are both already fully-resolved branch names (an eval run
@@ -2049,6 +2075,8 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     }
     if changelog_warning:
         result["changelog_warning"] = changelog_warning
+    if version_warning:
+        result["version_warning"] = version_warning
     return result
 
 def _record_pr_review_call(tool_context) -> None:
