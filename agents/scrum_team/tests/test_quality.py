@@ -982,6 +982,87 @@ class TestPromptContextUsage(unittest.TestCase):
         self.assertEqual(set(kpis["prompt_context_usage"].keys()), set(ROLE_NAMES))
 
 
+class TestPromptModuleBreakdown(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #513, context-window optimizations):
+    calculate_prompt_context_usage reports one combined token total per
+    role - this breaks that total down per prompt_modules/*.md (or
+    spec-templates/DOD.md/DOR.md) file, so a reviewer can see which piece
+    is actually driving a role's prompt size.
+    """
+
+    def test_every_role_present_with_guardrails_and_workflow_entries(self):
+        from agents.scrum_team.tools.quality import calculate_prompt_module_breakdown
+        from agents.scrum_team.prompts import ROLE_NAMES
+
+        breakdown = calculate_prompt_module_breakdown()
+
+        self.assertEqual(set(breakdown.keys()), set(ROLE_NAMES))
+        for role, entries in breakdown.items():
+            with self.subTest(role=role):
+                files = [entry["file"] for entry in entries]
+                self.assertIn(f"{role}-guardrails.md", files)
+                self.assertIn(f"{role}-workflow.md", files)
+                for entry in entries:
+                    self.assertGreater(entry["lines"], 0)
+                    self.assertGreater(entry["tokens"], 0)
+
+    def test_dod_and_dor_roles_include_the_checklist_pieces(self):
+        from agents.scrum_team.tools.quality import calculate_prompt_module_breakdown
+        from agents.scrum_team.prompts import DOD_ROLES, DOR_ROLES
+
+        breakdown = calculate_prompt_module_breakdown()
+
+        for role in DOD_ROLES:
+            files = [entry["file"] for entry in breakdown[role]]
+            self.assertIn("spec-templates/DOD.md", files)
+        for role in DOR_ROLES:
+            files = [entry["file"] for entry in breakdown[role]]
+            self.assertIn("spec-templates/DOR.md", files)
+
+        # ScrumMaster/ScrumOrchestrator are in neither - they facilitate/
+        # route rather than implement, review, test, specify, or accept.
+        sm_files = [entry["file"] for entry in breakdown["ScrumMaster"]]
+        self.assertNotIn("spec-templates/DOD.md", sm_files)
+        self.assertNotIn("spec-templates/DOR.md", sm_files)
+
+    def test_per_piece_token_sum_roughly_matches_the_role_total(self):
+        """
+        Not an exact equality (calculate_prompt_context_usage's own token
+        count is computed over the "\n\n"-joined whole; this sums each
+        piece's own token count independently), but the two must stay in
+        the same ballpark - a large discrepancy would mean the pieces
+        returned here don't actually correspond to what
+        calculate_prompt_context_usage measured.
+        """
+        from agents.scrum_team.tools.quality import (
+            calculate_prompt_module_breakdown,
+            calculate_prompt_context_usage,
+        )
+
+        breakdown = calculate_prompt_module_breakdown()
+        with patch.dict(os.environ, {}, clear=True):
+            usage = calculate_prompt_context_usage()
+
+        for role, entries in breakdown.items():
+            with self.subTest(role=role):
+                piece_sum = sum(entry["tokens"] for entry in entries)
+                total = usage[role]["prompt_tokens"]
+                self.assertLess(abs(piece_sum - total) / total, 0.05)
+
+    def test_calculate_kpis_includes_prompt_module_breakdown_for_every_role(self):
+        from agents.scrum_team.prompts import ROLE_NAMES
+
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        with patch("agents.scrum_team.tools.quality._run", return_value=_TOOL_NOT_INSTALLED), \
+             patch("agents.scrum_team.tools.quality._detect_primary_language", return_value="python"), \
+             patch("agents.scrum_team.tools.quality._fetch_model_context_windows", return_value={}):
+            kpis = calculate_kpis(tool_context=tool_context)
+
+        self.assertEqual(set(kpis["prompt_module_breakdown"].keys()), set(ROLE_NAMES))
+
+
 class TestDetectStubbedTests(unittest.TestCase):
     """
     Acceptance Criteria (GH issue #370): check_build/the Tested gate

@@ -325,6 +325,63 @@ class TestWarningsDoNotBlock:
         assert code == 0
 
 
+class TestPromptModuleLineCountCheck:
+    """
+    Acceptance Criteria (GH issue #513, context-window optimizations): the
+    issue's own text states "the steering documents should be less than
+    250 lines" - doctor.py should mechanically flag any
+    agents/scrum_team/prompt_modules/*.md file over that, against THIS
+    project's own checkout (repo_root), independent of whether a state
+    repo/STATE_REPO_PATH is configured at all.
+    """
+
+    def _write_prompt_module(self, repo_root, filename, line_count):
+        prompt_modules_dir = repo_root / "agents" / "scrum_team" / "prompt_modules"
+        prompt_modules_dir.mkdir(parents=True, exist_ok=True)
+        (prompt_modules_dir / filename).write_text("line\n" * line_count)
+
+    def test_file_over_the_limit_warns_with_the_real_line_count(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        self._write_prompt_module(valid_repo, "ScrumMaster-workflow.md", 270)
+
+        code = doctor.run(valid_repo)
+
+        out = capsys.readouterr().out
+        assert "ScrumMaster-workflow.md is 270 lines" in out
+        assert "250-line guideline" in out
+        assert "GH issue #513" in out
+        assert code == 0  # a warning, never an error - this never blocks running the agent
+
+    def test_file_at_or_under_the_limit_does_not_warn(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        self._write_prompt_module(valid_repo, "QA-guardrails.md", 61)
+
+        doctor.run(valid_repo)
+
+        out = capsys.readouterr().out
+        assert "QA-guardrails.md" not in out
+
+    def test_missing_prompt_modules_directory_is_silently_skipped(self, valid_repo, monkeypatch, capsys):
+        """valid_repo's tmp_path isn't a real Horseless Carriage checkout -
+        no agents/scrum_team/prompt_modules/ directory exists at all.
+        Nothing to flag, and definitely not an error."""
+        _patch_proxy_unreachable(monkeypatch)
+        code = doctor.run(valid_repo)
+        assert "250-line guideline" not in capsys.readouterr().out
+        assert code == 0
+
+    def test_multiple_oversized_files_are_all_reported(self, valid_repo, monkeypatch, capsys):
+        _patch_proxy_unreachable(monkeypatch)
+        self._write_prompt_module(valid_repo, "ScrumMaster-workflow.md", 270)
+        self._write_prompt_module(valid_repo, "ScrumOrchestrator-workflow.md", 361)
+
+        doctor.run(valid_repo)
+
+        out = capsys.readouterr().out
+        assert "ScrumMaster-workflow.md is 270 lines" in out
+        assert "ScrumOrchestrator-workflow.md is 361 lines" in out
+
+
 class TestComposeProjectNamePrefixMigration:
     """SPEC-ISSUE-0063 follow-up: new_project.py now keeps 'horseless-carriage_'
     on the front of an auto-derived COMPOSE_PROJECT_NAME_PREFIX, but an

@@ -1100,6 +1100,40 @@ class TestBudgetTools(unittest.TestCase):
 
     @patch("os.getenv")
     @patch("agents.scrum_team.tools.docs.write_file")
+    def test_create_sprint_report_renders_per_agent_prompt_module_breakdown(self, mock_write_file, mock_getenv):
+        """
+        GH issue #513 (context-window optimizations): calculate_prompt_context_usage
+        only reports one combined token total per role - this section
+        breaks that total down per prompt_modules/*.md (or spec-templates/
+        DOD.md/DOR.md) file, at full detail only, same gating as the two
+        sections immediately above.
+        """
+        mock_getenv.return_value = "15.0"
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [{"action": "test", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+        tool_context.state["sprint_report_kpis"] = {
+            "team_effectiveness": {"say_do_ratio": 0.8, "commitment_reliability": 1.0},
+            "result_quality": {"defect_escape_rate": 0.05, "customer_satisfaction": 4.5},
+            "maintainability": {"test_coverage_available": False},
+            "security": {"vulnerability_scan_available": False},
+            "prompt_module_breakdown": {
+                "ProductOwner": [
+                    {"file": "ProductOwner-guardrails.md", "lines": 55, "tokens": 900},
+                    {"file": "ProductOwner-workflow.md", "lines": 192, "tokens": 3200},
+                ],
+            },
+        }
+
+        report = create_sprint_report("summary", ["accomplishment"], tool_context=tool_context)["report"]
+
+        self.assertIn("### Per-Agent Prompt Module Breakdown", report)
+        self.assertIn("ProductOwner-guardrails.md: 55 lines, 900 tokens", report)
+        self.assertIn("ProductOwner-workflow.md: 192 lines, 3,200 tokens", report)
+
+    @patch("os.getenv")
+    @patch("agents.scrum_team.tools.docs.write_file")
     def test_create_sprint_report_accepts_impediment_alone(self, mock_write_file, mock_getenv):
         """
         Acceptance Criteria: an impediment (not just a retro action)

@@ -36,6 +36,7 @@ that callback's fallback/seed content when the product repo has none of
 its own yet - never read by this module.
 """
 from pathlib import Path
+from typing import List, Tuple
 
 _PROMPT_MODULES_DIR = Path(__file__).resolve().parent / "prompt_modules"
 _SPEC_TEMPLATES_DIR = Path(__file__).resolve().parents[2] / "spec-templates"
@@ -122,6 +123,42 @@ def _load_role_prompt(role: str) -> str:
         )
 
     return "\n\n" + "\n\n".join(parts) + "\n"
+
+
+def prompt_module_pieces(role: str) -> List[Tuple[str, str]]:
+    """
+    Returns the ordered (label, text) pieces that make up `role`'s static
+    system prompt - the same files/order _load_role_prompt concatenates
+    (guardrails, workflow, then DOD/DOR if applicable), each already
+    stripped, but kept SEPARATE rather than pre-joined into one string.
+
+    GH issue #513 (context-window optimizations): calculate_prompt_context_usage
+    (tools/quality.py) already measures each role's TOTAL static prompt in
+    tokens against that role's configured model's context window; this is
+    the per-piece source data a caller needs to see which individual
+    prompt_modules/*.md file (or spec-templates/DOD.md/DOR.md) is actually
+    driving that total - see calculate_prompt_module_breakdown, same
+    module, the first consumer.
+
+    Deliberately kept independent of _load_role_prompt's own file reads (a
+    little duplication) rather than refactored to share code, so this
+    purely-additive measurement helper can never change what
+    ROLE_PROMPT_TEXT/_load_role_prompt actually produce for a running
+    agent.
+    """
+    pieces: List[Tuple[str, str]] = []
+    for suffix in ("guardrails", "workflow"):
+        path = _PROMPT_MODULES_DIR / f"{role}-{suffix}.md"
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Missing required prompt module for role {role!r}: {path}."
+            )
+        pieces.append((f"{role}-{suffix}.md", path.read_text(encoding="utf-8").strip()))
+    if role in DOD_ROLES:
+        pieces.append(("spec-templates/DOD.md", _load_checklist("DOD")))
+    if role in DOR_ROLES:
+        pieces.append(("spec-templates/DOR.md", _load_checklist("DOR")))
+    return pieces
 
 
 def load_role_identity_default(role: str) -> str:
