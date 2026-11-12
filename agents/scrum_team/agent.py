@@ -385,6 +385,7 @@ from .tools.workflow import (
 from .tools.workbench_templates import (
     list_workbench_templates,
     get_workbench_template,
+    check_workbench_tooling,
 )
 from .tools.budget import (
     calculate_cost_breakdown,
@@ -2989,6 +2990,7 @@ architect = LlmAgent(
         propose_framework_change,
         list_workbench_templates,
         get_workbench_template,
+        check_workbench_tooling,
         recheck_test_suite,
     ],
     **COMMON_AGENT_CALLBACKS,

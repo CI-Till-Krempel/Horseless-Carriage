@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional
 from .base import _configured_repo_root, _develop_branch_name, _run
 from .github import _checkout_develop_or_recover, git_push, gh_pr_create
 from .notifications import record_blocking_interaction
-from .workbench_templates import resolve_workbench_template
+from .workbench_templates import resolve_workbench_template, WORKBENCH_SCRIPT_RELATIVE_PATH
 from ..prompts import ROLE_NAMES
 
 
@@ -294,7 +294,10 @@ def propose_steering_change(
     }
 
 
-_WORKBENCH_SCRIPT_PATH = ".hc/workbench-setup.sh"
+# GH-456: now defined in tools/workbench_templates.py (check_workbench_tooling
+# needs this same path) - imported above as WORKBENCH_SCRIPT_RELATIVE_PATH,
+# aliased back to this module's original name so nothing below has to change.
+_WORKBENCH_SCRIPT_PATH = WORKBENCH_SCRIPT_RELATIVE_PATH
 _WORKBENCH_MCP_CONFIG_PATH = ".hc/workbench-mcp.json"
 _NEW_ISSUE_URL_FOR_ALLOWLIST = (
     "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new"
