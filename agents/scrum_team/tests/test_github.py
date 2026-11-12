@@ -1812,8 +1812,9 @@ class TestReleasePrStillOpen(unittest.TestCase):
 class TestIntegrateOpenChanges(unittest.TestCase):
     """
     Acceptance Criteria: integrate_open_changes commits dangling writes
-    scoped to specs/ and .hc/ only (never a caller's own unrelated
-    uncommitted work), and no-ops cleanly when there's nothing to do.
+    scoped to specs/, .hc/, and CHANGELOG.md only (never a caller's own
+    unrelated uncommitted work), and no-ops cleanly when there's nothing to
+    do.
     """
 
     @patch("agents.scrum_team.tools.github._configured_repo_root")
@@ -1840,7 +1841,28 @@ class TestIntegrateOpenChanges(unittest.TestCase):
         self.assertTrue(result["integrated"])
         self.assertEqual(result["files"], ["specs/ROADMAP.md"])
         add_call = mock_run.call_args_list[1]
-        self.assertEqual(add_call.args[0], ["git", "add", "--", "specs", ".hc"])
+        self.assertEqual(add_call.args[0], ["git", "add", "--", "specs", ".hc", "CHANGELOG.md"])
+
+    @patch("agents.scrum_team.tools.github._configured_repo_root")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_commits_a_dirty_changelog_md(self, mock_run, mock_root):
+        """SPEC-ISSUE-0088: 0.2.0-run90 burned its entire sprint-2 budget
+        because create_release_pr's own generate_changelog call left
+        CHANGELOG.md dirty, and nothing committed it before a later
+        re-checkout of develop tripped over the dirty file every single
+        retry. generate_changelog is CHANGELOG.md's only writer - never
+        DevTeam - so it's safe to sweep here alongside specs/.hc."""
+        mock_root.return_value = MagicMock(__truediv__=lambda self, other: MagicMock(exists=lambda: True))
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M CHANGELOG.md"},  # git status --porcelain
+            {"status": "ok"},  # git add
+            {"status": "ok", "stdout": "CHANGELOG.md"},  # git diff --cached --name-only
+            {"status": "ok"},  # git commit
+        ]
+        result = integrate_open_changes(tool_context=MagicMock())
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["integrated"])
+        self.assertEqual(result["files"], ["CHANGELOG.md"])
 
     @patch("agents.scrum_team.tools.github._configured_repo_root")
     @patch("agents.scrum_team.tools.github._run")
