@@ -30,8 +30,76 @@ phase, not covered by this doc. See also
 [GH-456](https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/456)
 ("document the list of supported tech stacks... check regularly whether
 tooling is set up") — this doc, plus the per-template `manifest.json`
-descriptions below, *is* that list; GH-456 was moved into v0.3 precisely
-because it falls out of this epic shipping.
+descriptions below, *is* that list of supported tech stacks; GH-456 was
+moved into v0.3 precisely because it falls out of this epic shipping. The
+"check regularly whether tooling is set up" half of GH-456 is
+`check_workbench_tooling` — see "Checking whether a project's workbench is
+actually set up" below.
+
+## Supported tech stacks
+
+Every project gets **one** Development Workbench. These are the tech
+stacks with a ready-made, named template under
+`config/development-workbench-templates/` today — pick one by name
+(`propose_framework_change(template_name=...)`) instead of hand-writing
+`workbench-setup.sh` from scratch. A stack with no entry here isn't
+unsupported, it just has no pre-built starting point yet — US-0021's
+original fully-custom-script path (`workbench_setup_script`, no
+`template_name`) keeps working unchanged for any stack, and "Adding a new
+template" below covers contributing one.
+
+| Template name | Tech stack | Additional runtime allowlist hosts |
+|---|---|---|
+| `python-flask` | Python + Flask: scaffold, install, test (pytest/pytest-flask), run, debug (debugpy), and exploratory-test (HTTPie/`flask shell`) a Flask application. | `pypi.org`, `files.pythonhosted.org` |
+| `kotlin-multiplatform` | Kotlin Multiplatform (KMP) targeting Android & iOS: shared-module scaffold, JDK 17 + Android SDK + Gradle, Gradle test tasks for both targets, Android run/debug. iOS *test* tasks run here; iOS *build/run/debug* needs a real macOS host with Xcode and is explicitly out of scope for this container-based workbench. | `services.gradle.org`, `plugins.gradle.org`, `repo.maven.apache.org`, `repo1.maven.org`, `dl.google.com` |
+| `react-vite-firebase` | Vite + React frontend with Firebase Functions + Firestore backend: scaffold, install, test (Vitest), run the Vite dev server and the Firebase emulator suite, debug via Node's inspector. | `registry.npmjs.org`, `firebase.googleapis.com`, `firestore.googleapis.com`, `cloudfunctions.googleapis.com`, `www.googleapis.com` |
+
+This table is a convenience, hand-kept in sync with each template's own
+`manifest.json` — `list_workbench_templates()`/`get_workbench_template(name)`
+are the live, agent-callable, always-current source of truth (what the
+Architect actually sees at runtime), should this table ever drift.
+
+## Checking whether a project's workbench is actually set up (GH-456)
+
+Shipping templates doesn't help if nobody ever calls
+`propose_framework_change` for a given project — `check_workbench_tooling`
+(`agents/scrum_team/tools/workbench_templates.py`) is the mechanical check
+that catches that, at the two points GH-456 names:
+
+- **At startup**: folded into `init_scrum_state`'s own return value, as a
+  `workbench_check` field.
+- **Every sprint**: folded into `start_sprint`'s own return value, the same
+  shape — ScrumMaster reads it there and hands any action item to Architect
+  (see `ScrumMaster-workflow.md`'s "Development Workbench tooling check").
+- **On demand**: Architect can also call `check_workbench_tooling()`
+  directly as its own tool, any time.
+
+It returns `{"status": "ok", "workbench_configured": bool,
+"detected_tech_stack": str | None, "action_needed": bool, "recommendation":
+str | None}`:
+- `workbench_configured` is `False` only when `.hc/workbench-setup.sh` is
+  missing entirely or still exactly the harmless auto-created placeholder
+  (`check_state_repo.py`'s `ensure_workbench_script_default`/
+  `is_workbench_script_placeholder`) — any other content (including a
+  workbench that no longer matches whatever template it started from) is
+  treated as configured; this check never second-guesses a deliberate
+  customization.
+- `detected_tech_stack` is a best-effort sniff of manifest files already in
+  the project (a `requirements.txt` mentioning Flask, a `build.gradle.kts`
+  mentioning `multiplatform`, a `package.json` with both `vite` and
+  `react`/`firebase`, …) against the three templates above — `None` if
+  nothing recognized.
+- When `action_needed` is `True`, `recommendation` is ready-to-act text:
+  `propose_framework_change(template_name=<detected_tech_stack>, ...)` when
+  a stack was recognized, or the original `workbench_setup_script=...`
+  fully-custom path when it wasn't — an unrecognized stack degrades
+  gracefully to that free-form path rather than ever erroring out or
+  guessing at a template that doesn't fit.
+
+This check only ever *recommends* — it never calls `propose_framework_change`
+itself and never writes anything. Every actual workbench change, templated
+or hand-written, still goes through that one human-reviewed PR path, exactly
+as described below.
 
 ## The template contract
 
@@ -312,3 +380,6 @@ To add support for a new stack (e.g. `go-gin`):
   `US-0021-Introduce-the-Development-Workbench-Template-Mechanism.md`,
   `US-0022-Ship-Three-Reference-Development-Workbenches.md` — the stories
   that introduced this mechanism and its three reference templates.
+- `specs/stories/US-0024-Architect-Checks-and-Bootstraps-Workbench-Tooling.md`
+  (GH-456) — the "list of supported tech stacks" plus the periodic
+  `check_workbench_tooling` check this doc's two sections above describe.

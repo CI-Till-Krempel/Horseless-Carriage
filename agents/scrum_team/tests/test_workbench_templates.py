@@ -23,6 +23,10 @@ from agents.scrum_team.tools.workbench_templates import (
     get_workbench_template,
     list_workbench_templates,
     resolve_workbench_template,
+    check_workbench_tooling,
+    detect_recommended_workbench_template,
+    _WORKBENCH_SCRIPT_PLACEHOLDER,
+    WORKBENCH_SCRIPT_RELATIVE_PATH,
 )
 
 
@@ -154,6 +158,197 @@ class TestRealFixtureEchoTemplateOnDisk(unittest.TestCase):
         result = list_workbench_templates()
         names = [t["name"] for t in result["templates"]]
         self.assertIn("fixture-echo", names)
+
+
+class TestDetectRecommendedWorkbenchTemplate(unittest.TestCase):
+    """GH-456: the manifest-sniffing heuristics behind check_workbench_tooling's
+    `detected_tech_stack` - one per shipped reference template (US-0022)."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo_root = Path(self._tmp.name)
+
+    def test_no_recognizable_manifest_returns_none(self):
+        self.assertIsNone(detect_recommended_workbench_template(self.repo_root))
+
+    def test_requirements_txt_mentioning_flask_is_python_flask(self):
+        (self.repo_root / "requirements.txt").write_text("Flask==3.0.0\npytest\n", encoding="utf-8")
+        self.assertEqual(detect_recommended_workbench_template(self.repo_root), "python-flask")
+
+    def test_requirements_txt_without_flask_is_not_python_flask(self):
+        (self.repo_root / "requirements.txt").write_text("django==5.0\n", encoding="utf-8")
+        self.assertIsNone(detect_recommended_workbench_template(self.repo_root))
+
+    def test_gradle_kts_mentioning_multiplatform_is_kotlin_multiplatform(self):
+        (self.repo_root / "build.gradle.kts").write_text(
+            'plugins {\n    kotlin("multiplatform")\n}\n', encoding="utf-8",
+        )
+        self.assertEqual(detect_recommended_workbench_template(self.repo_root), "kotlin-multiplatform")
+
+    def test_commonmain_source_set_layout_is_kotlin_multiplatform_even_without_the_keyword(self):
+        (self.repo_root / "shared" / "src" / "commonMain" / "kotlin").mkdir(parents=True)
+        self.assertEqual(detect_recommended_workbench_template(self.repo_root), "kotlin-multiplatform")
+
+    def test_plain_gradle_project_without_multiplatform_signal_is_not_kotlin_multiplatform(self):
+        (self.repo_root / "build.gradle").write_text("plugins { id 'java' }\n", encoding="utf-8")
+        self.assertIsNone(detect_recommended_workbench_template(self.repo_root))
+
+    def test_package_json_with_vite_and_react_is_react_vite_firebase(self):
+        (self.repo_root / "package.json").write_text(
+            json.dumps({"dependencies": {"react": "^18.0.0"}, "devDependencies": {"vite": "^5.0.0"}}),
+            encoding="utf-8",
+        )
+        self.assertEqual(detect_recommended_workbench_template(self.repo_root), "react-vite-firebase")
+
+    def test_package_json_with_vite_and_firebase_but_no_react_is_still_react_vite_firebase(self):
+        (self.repo_root / "package.json").write_text(
+            json.dumps({"dependencies": {"firebase": "^10.0.0"}, "devDependencies": {"vite": "^5.0.0"}}),
+            encoding="utf-8",
+        )
+        self.assertEqual(detect_recommended_workbench_template(self.repo_root), "react-vite-firebase")
+
+    def test_package_json_with_vite_alone_is_not_react_vite_firebase(self):
+        """Vite alone (no React, no Firebase) is a real but different stack
+        (e.g. vanilla-JS Vite, Vue+Vite) - not this specific template."""
+        (self.repo_root / "package.json").write_text(
+            json.dumps({"devDependencies": {"vite": "^5.0.0"}}), encoding="utf-8",
+        )
+        self.assertIsNone(detect_recommended_workbench_template(self.repo_root))
+
+
+class TestCheckWorkbenchTooling(unittest.TestCase):
+    """GH-456: "check regularly (at startup / each sprint) whether the
+    tooling (test frameworks) is set up" - check_workbench_tooling is the
+    mechanical check itself, wired into init_scrum_state/start_sprint
+    (see test_scrum.py) and directly callable by the Architect."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.repo_root = Path(self._tmp.name)
+
+        self._repo_patcher = patch(
+            "agents.scrum_team.tools.workbench_templates._configured_repo_root",
+            return_value=self.repo_root,
+        )
+        self._repo_patcher.start()
+        self.addCleanup(self._repo_patcher.stop)
+
+        # Real shipped templates (python-flask, kotlin-multiplatform,
+        # react-vite-firebase, fixture-echo) - exercised against the
+        # actual on-disk config/development-workbench-templates/, so a
+        # detected name is only ever recommended if it genuinely still
+        # exists there (no _templates_root patch in this class).
+
+    def test_unconfigured_workbench_with_recognized_stack_recommends_its_template(self):
+        (self.repo_root / "requirements.txt").write_text("Flask==3.0.0\n", encoding="utf-8")
+        result = check_workbench_tooling(tool_context=None)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["workbench_configured"])
+        self.assertEqual(result["detected_tech_stack"], "python-flask")
+        self.assertTrue(result["action_needed"])
+        self.assertIn("propose_framework_change", result["recommendation"])
+        self.assertIn("template_name='python-flask'", result["recommendation"])
+
+    def test_unconfigured_workbench_with_unrecognized_stack_falls_back_to_custom_script_path(self):
+        """An unsupported/unrecognized tech stack must degrade gracefully -
+        no crash, and a recommendation that still points at a real path
+        forward (the fully-custom workbench_setup_script option from
+        US-0021), not a template that doesn't fit."""
+        (self.repo_root / "go.mod").write_text("module example.com/foo\n", encoding="utf-8")
+        result = check_workbench_tooling(tool_context=None)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["workbench_configured"])
+        self.assertIsNone(result["detected_tech_stack"])
+        self.assertTrue(result["action_needed"])
+        self.assertIn("workbench_setup_script", result["recommendation"])
+        self.assertNotIn("template_name", result["recommendation"])
+
+    def test_missing_hc_directory_entirely_is_also_unconfigured_not_a_crash(self):
+        result = check_workbench_tooling(tool_context=None)
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["workbench_configured"])
+        self.assertTrue(result["action_needed"])
+
+    def test_already_configured_workbench_is_a_no_op(self):
+        hc_dir = self.repo_root / ".hc"
+        hc_dir.mkdir(parents=True)
+        (hc_dir / "workbench-setup.sh").write_text("#!/bin/sh\napt-get install -y default-jdk\n", encoding="utf-8")
+        result = check_workbench_tooling(tool_context=None)
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["workbench_configured"])
+        self.assertFalse(result["action_needed"])
+        self.assertIsNone(result["recommendation"])
+
+    def test_already_configured_workbench_is_a_no_op_even_when_detected_stack_disagrees(self):
+        """A real customization is never second-guessed just because a
+        cheap manifest sniff would have recommended something else."""
+        (self.repo_root / "requirements.txt").write_text("Flask==3.0.0\n", encoding="utf-8")
+        hc_dir = self.repo_root / ".hc"
+        hc_dir.mkdir(parents=True)
+        (hc_dir / "workbench-setup.sh").write_text("#!/bin/sh\necho custom\n", encoding="utf-8")
+        result = check_workbench_tooling(tool_context=None)
+        self.assertTrue(result["workbench_configured"])
+        self.assertFalse(result["action_needed"])
+
+    def test_untouched_placeholder_content_is_treated_as_unconfigured(self):
+        hc_dir = self.repo_root / ".hc"
+        hc_dir.mkdir(parents=True)
+        (hc_dir / "workbench-setup.sh").write_text(_WORKBENCH_SCRIPT_PLACEHOLDER, encoding="utf-8")
+        result = check_workbench_tooling(tool_context=None)
+        self.assertFalse(result["workbench_configured"])
+        self.assertTrue(result["action_needed"])
+
+    def test_stale_detector_match_against_a_removed_template_is_not_recommended(self):
+        """detect_recommended_workbench_template's own match is cross-checked
+        against what list_workbench_templates() still actually has - a
+        template that no longer exists is never recommended, even if its
+        detector would otherwise have matched."""
+        (self.repo_root / "requirements.txt").write_text("Flask==3.0.0\n", encoding="utf-8")
+        with patch(
+            "agents.scrum_team.tools.workbench_templates.list_workbench_templates",
+            return_value={"status": "ok", "templates": []},
+        ):
+            result = check_workbench_tooling(tool_context=None)
+        self.assertIsNone(result["detected_tech_stack"])
+        self.assertIn("workbench_setup_script", result["recommendation"])
+
+
+class TestWorkbenchPlaceholderMatchesHostSideConstant(unittest.TestCase):
+    """GH-456: _WORKBENCH_SCRIPT_PLACEHOLDER is a deliberate duplicate of
+    check_state_repo.py's own identically-named constant (that module is
+    host-side only, never copied into the agent image - see
+    agent.Dockerfile - so it can't just be imported from in-container code).
+    This test is what keeps the two from silently drifting apart when run on
+    the host (python3 run_tests.py's own "host-script tests" phase, or a
+    bare `pytest agents/scrum_team/tests` from a host checkout) - both of
+    which have check_state_repo.py sitting right there at the repo root.
+    This project's *official* agents/scrum_team/tests run (run_tests.py's
+    own "agent test suite" phase) runs this same file a second time, inside
+    the agent container, which deliberately never ships check_state_repo.py
+    (see agent.Dockerfile/docker-compose.yaml's agent service - only
+    ./agents, ./spec-templates, ./eval, and
+    ./config/development-workbench-templates are copied/mounted in) - so
+    this skips there instead of failing, the same "degrade gracefully
+    rather than assume an environment that isn't guaranteed" shape
+    check_workbench_tooling itself follows for an unrecognized tech stack."""
+
+    def test_placeholder_constant_matches_check_state_repo_byte_for_byte(self):
+        try:
+            import check_state_repo
+        except ModuleNotFoundError:
+            self.skipTest(
+                "check_state_repo.py is host-only (never copied into the agent image/container) - "
+                "this cross-check only runs where it's actually importable, e.g. the host-script "
+                "test phase of python3 run_tests.py."
+            )
+        self.assertEqual(_WORKBENCH_SCRIPT_PLACEHOLDER, check_state_repo._WORKBENCH_SCRIPT_PLACEHOLDER)
+
+    def test_relative_path_matches_check_state_repo_convention(self):
+        self.assertEqual(WORKBENCH_SCRIPT_RELATIVE_PATH, ".hc/workbench-setup.sh")
 
 
 if __name__ == "__main__":
