@@ -32,6 +32,17 @@
 # file without you needing to pass -f by hand) - see docs/SETUP.md's "GPU
 # Support" section for the full picture, including the NVIDIA/Docker GPU
 # path this replaces.
+#
+# GH issue #502: this same file (and the "no dockerized `ollama` service"
+# topology it provides) is also reused for setup_llm.py's "remote LAN
+# Ollama server" option - pointing at an Ollama instance running on a
+# DIFFERENT machine on your local network instead of either a container
+# here or a native install on THIS host. setup_llm.py writes
+# OLLAMA_REMOTE_ENABLED=true (alongside OLLAMA_REMOTE_HOST/OLLAMA_REMOTE_PORT)
+# for that case - functionally identical compose requirements to host mode
+# (no local `ollama` service to provision either way), just a different
+# api_base written into litellm.local-ollama.yaml. See
+# docs/CONFIGURATION.md's "Remote LAN Ollama server" section.
 services:
   db:
     image: postgres:16-alpine
