@@ -112,6 +112,15 @@ services:
       - ./agents:/app/agents:ro
       - ./spec-templates:/app/spec-templates:ro
       - ./eval:/app/eval:ro
+      # US-0021: Development Workbench templates (tools/workbench_templates.py
+      # resolves these via _project_root()/config/development-workbench-
+      # templates - i.e. THIS repo, read at propose_framework_change time by
+      # the running Architect role, not the product/state repo). Read-only,
+      # same as the other source-ish mounts above; also COPY'd into the
+      # image itself (agent.Dockerfile's final stage) so a real production
+      # build (no dev bind mounts) still ships whatever templates exist at
+      # build time.
+      - ./config/development-workbench-templates:/app/config/development-workbench-templates:ro
       # GH issue #156: `adk eval` writes its own local run-history bookkeeping
       # to <agents_dir>/<app_name>/.adk/eval_history (google/adk/evaluation/
       # local_eval_set_results_manager.py) - here, eval/adk/agent/scrum_team/

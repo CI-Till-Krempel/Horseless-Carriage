@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "Horseless Carriage branch/ref to evaluate"
+        description: "Horseless Carriage branch/ref to evaluate (blank = whatever branch this run was dispatched against, via the 'Use workflow from' selector)"
         required: false
-        default: "main"
+        default: ""
       sprints:
         description: "Number of sprints to run"
         required: false

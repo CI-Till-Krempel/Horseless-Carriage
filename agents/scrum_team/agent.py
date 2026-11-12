@@ -363,6 +363,7 @@ from .tools import (
     upsert_architecture_vision,
     upsert_user_doc,
     generate_announcement,
+    propose_version_bump,
 )
 # Not re-exported from .tools (agent-facing tools only) - this internal
 # variant is only for _sync_and_commit_roadmap_on_exhaustion below, which
@@ -381,6 +382,11 @@ from .tools.workflow import (
     gather_workflow_improvement_proposals,
     propose_steering_change,
     propose_framework_change,
+)
+from .tools.workbench_templates import (
+    list_workbench_templates,
+    get_workbench_template,
+    check_workbench_tooling,
 )
 from .tools.budget import (
     calculate_cost_breakdown,
@@ -2854,6 +2860,7 @@ product_owner = LlmAgent(
         log_decision,
         create_from_template,
         gh_release_create,
+        propose_version_bump,
         create_release_pr,
         create_sprint_backlog_pr,
         create_story_spec_pr,
@@ -2984,6 +2991,9 @@ architect = LlmAgent(
         raise_story_blocker,
         resolve_story_blocker,
         propose_framework_change,
+        list_workbench_templates,
+        get_workbench_template,
+        check_workbench_tooling,
         recheck_test_suite,
     ],
     **COMMON_AGENT_CALLBACKS,

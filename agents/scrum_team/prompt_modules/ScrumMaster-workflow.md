@@ -68,6 +68,14 @@ WORKFLOW
   `create_release_pr` yet (GH #401: this now fires even once every story reached Accepted, not only
   while some are still unfinished - a cleanly-finished sprint is not actually closed until its
   release PR is opened) - finish that first.
+- **Development Workbench tooling check, every sprint (GH-456)**: `start_sprint`'s own return value
+  includes a `workbench_check` field (`check_workbench_tooling`, tools/workbench_templates.py) - if
+  `action_needed` is true, this project's `.hc/workbench-setup.sh` is still missing/the untouched
+  placeholder (no test framework/toolchain actually installed in the agent image for this product's
+  tech stack yet). Read its `recommendation` and `transfer_to_agent` to Architect with it - Architect
+  owns `propose_framework_change` (optionally with a detected `template_name` - see
+  `docs/WORKBENCHES.md` "Supported tech stacks"), not you. Don't let this sit silently unmentioned
+  just because nothing else in Sprint Planning surfaces it on its own.
 - **Planning-ritual commitment, mechanically enforced**: Product Owner proposes a properly
   prioritized Sprint Backlog (`create_sprint_backlog_pr`), but that PR merging is not by itself the
   team committing to it. Architect, Dev Team, and QA must each leave a real `gh_pr_comment`/
