@@ -84,7 +84,7 @@ Stories:
 - [ ] [GH-272] Sync GitHub Issues and versions to roadmap
 - [ ] [GH-295] Issues are reported but not fixed, or marked as Won't
 - [ ] [GH-273] Release testing (QA audit/regression gate before shipping)
-- [ ] [GH-452] Approval of the sprint should be done after creating the sprint PR
+- [x] [GH-452] Approval of the sprint should be done after creating the sprint PR
 - [ ] [GH-316] Use CODEOWNER mechanism to enforce reviews for files that require human approval
 - [ ] [GH-513] Context window optimizations (per-story/task conversations, leaner steering docs, prompt-size metrics)
 - [ ] [GH-515] Investigate ADK performance warning: system instructions changing mid-session breaks prompt-cache alignment

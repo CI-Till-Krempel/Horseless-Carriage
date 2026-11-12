@@ -678,11 +678,13 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext, reaso
         # enough - every budget-exhausted sprint (4 of 5) still had NO
         # release PR at all, because nothing after this point ever calls
         # create_release_pr for it; Product Owner simply never got a turn
-        # to. Best-effort, same as everything else here: if this interaction
-        # level requires a fresh pre-release human approval that isn't
-        # available mechanically, or develop/main are already in sync,
-        # create_release_pr just errors and sprint_report_pending_release
-        # stays set for a future sprint to clear, exactly like today.
+        # to. Best-effort, same as everything else here: create_release_pr
+        # opens the PR unconditionally (GH-452) - if this interaction level
+        # requires a fresh pre-release human approval that isn't available
+        # mechanically yet, it still opens the PR, records a blocking
+        # interaction pointing at it, and leaves sprint_report_pending_release
+        # set for a future sprint to clear once that approval lands; if
+        # develop/main are already in sync there's simply nothing to open.
         create_release_pr(
             title=f"Sprint {callback_context.state.get('sprint_number', '?')}: {reason_label} close-out",
             body=(
