@@ -476,6 +476,193 @@ def check_build(tool_context=None) -> Dict[str, Any]:
     }
 
 
+def _file_release_audit_findings(advisory_findings: List[Dict[str, Any]], tool_context=None) -> List[Dict[str, Any]]:
+    """
+    Files each release-audit advisory finding (GH-273) the same way
+    _file_retro_findings_as_issues (tools/budget.py) already files a
+    "technical" retro finding: via upsert_issue, so it lands in
+    specs/requirements/ (that function's own write-through) AND the
+    product_backlog (plannable/prioritizable, not a side list nobody
+    grooms) - re-running the audit against an already-tracked finding
+    updates that same Issue in place (upsert_issue's own title-match)
+    rather than filing a duplicate.
+
+    At any interaction level with no human backlog-grooming step
+    (non-"Product"), a newly-filed finding is also auto-prioritized "Must"
+    - same rationale _file_retro_findings_as_issues already applies: a
+    release-blocking-adjacent quality gap can't be silently left
+    unprioritized forever at a level where no human will ever groom it in.
+
+    Best-effort, ONLY for a genuinely NEW finding (not a re-confirmed
+    existing one), real GitHub issue filing via gh_issue_create - GH-273's
+    "ideally as GitHub issues as well." A GitHub-side failure (no `gh` CLI,
+    no token, offline sandbox) is captured in the per-finding result, never
+    raised - specs/requirements + the backlog above already captured the
+    finding regardless of whether the GitHub mirror succeeded.
+    """
+    if not tool_context or not getattr(tool_context, "state", None) or not advisory_findings:
+        return []
+
+    from .requirements import upsert_issue, set_priority
+    from ..helpers import get_interaction_level
+
+    filed: List[Dict[str, Any]] = []
+    for finding in advisory_findings:
+        res = upsert_issue(
+            {"title": finding["title"], "overview": finding["detail"]},
+            tool_context=tool_context,
+        )
+        if res.get("status") != "ok":
+            filed.append({"title": finding["title"], "status": "error", "message": res.get("message")})
+            continue
+
+        issue_id = res["item"].get("id")
+        is_new = not res.get("updated")
+        if is_new and get_interaction_level() != "Product":
+            set_priority(issue_id, "Must", tool_context=tool_context)
+
+        gh_issue_result = None
+        if is_new:
+            try:
+                from .github import gh_issue_create
+                gh_issue_result = gh_issue_create(
+                    title=f"[{issue_id}] {finding['title']}",
+                    body=finding["detail"],
+                    tool_context=tool_context,
+                )
+            except Exception as e:
+                gh_issue_result = {"status": "error", "message": f"gh_issue_create raised: {e}"}
+
+        filed.append({
+            "title": finding["title"],
+            "issue_id": issue_id,
+            "status": "ok",
+            "new": is_new,
+            "gh_issue": gh_issue_result,
+        })
+    return filed
+
+
+def run_release_audit(tool_context=None) -> Dict[str, Any]:
+    """
+    GH-273: QA-owned, whole-increment release audit - the final
+    regression/gap pass across the ENTIRE release immediately before
+    create_release_pr, not a one-story snapshot. Distinct from the
+    per-story Definition-of-Done testing advance_story_stage's Tested gate
+    already requires (EP-0002: check_build/a real test run/coverage for
+    THAT story's PR alone) - this re-runs the same kind of real, mechanical
+    checks across everything merged into the release, one more time, right
+    before it ships:
+      - _execute_test_suite_coverage: the full test suite, one more time.
+      - check_build: the dependency install, one more time.
+      - _scan_security_vulnerabilities: a fresh security scan.
+      - detect_stubbed_tests: the same trivial/stub-test heuristic the
+        Tested gate already nudges on per-story, now swept across every
+        test file in the repo.
+
+    create_release_pr mechanically requires a FRESH call to this (see
+    required_pre_release_audit, helpers.py) before it will open the
+    release PR, at interaction levels with a human release-review step.
+
+    Findings are split two ways - see create_release_pr's own gate for how
+    each is actually treated:
+      - blocking_defects: deterministic, unambiguous facts (the full test
+        suite genuinely failing, the build genuinely broken) - these
+        refuse create_release_pr unconditionally, at EVERY interaction
+        level, never silently waved through as "shipped clean."
+      - advisory_findings: judgment calls (a security-scan hit, a stubbed
+        test) where deciding "is this bad enough to block the release" is
+        inherently a judgment call, not a fixed, deterministic threshold -
+        see this module's own docstring precedent (detect_stubbed_tests is
+        already a non-blocking nudge at the per-story Tested gate for
+        exactly this reason). Never hard-blocked here either, but
+        create_release_pr surfaces EVERY one of these directly in the
+        release PR body (a visible "Known Issues (Release Audit)"
+        section) - a release never goes out silently clean when it
+        wasn't - and each one is filed via upsert_issue (see
+        _file_release_audit_findings above) so it's tracked in
+        specs/requirements/ + the roadmap/backlog, and best-effort as a
+        real GitHub issue too.
+
+    Persists release_audit_run_count/last_release_audit_result to state on
+    EVERY call (even a clean one with nothing to report) - same "every
+    call is equally real evidence" pattern _execute_test_suite_coverage
+    already uses for test_suite_run_count, so create_release_pr's
+    freshness check has a mechanical signal a real audit ran THIS cycle,
+    not a stale one left over from before an earlier release.
+    """
+    coverage_result = _execute_test_suite_coverage(tool_context)
+    build_result = check_build(tool_context)
+    security_result = _scan_security_vulnerabilities(tool_context)
+    repo_root = _configured_repo_root(tool_context)
+    stub_findings = detect_stubbed_tests(repo_root)
+
+    blocking_defects: List[Dict[str, Any]] = []
+    if coverage_result.get("tests_available") and coverage_result.get("tests_failed", 0) > 0:
+        detail = (
+            f"{coverage_result['tests_failed']} of {coverage_result.get('tests_run', 0)} test(s) "
+            "failed on a full release-level test suite run."
+        )
+        if coverage_result.get("note"):
+            detail += f" {coverage_result['note']}"
+        blocking_defects.append({"type": "test_failure", "detail": detail})
+    if build_result.get("passing") is False:
+        blocking_defects.append({
+            "type": "build_failure",
+            "detail": (
+                f"check_build reported the dependency install is broken "
+                f"({build_result.get('checked')})."
+            ),
+        })
+
+    advisory_findings: List[Dict[str, Any]] = []
+    vuln = security_result.get("vulnerability_scan_results")
+    if security_result.get("available") and vuln and sum(vuln.values()) > 0:
+        advisory_findings.append({
+            "type": "security_scan",
+            "title": "Release audit: security scan findings need triage",
+            "detail": (
+                f"bandit found {vuln.get('critical', 0)} critical / {vuln.get('high', 0)} high / "
+                f"{vuln.get('medium', 0)} medium / {vuln.get('low', 0)} low severity finding(s) "
+                "across the release - triage and either fix or explicitly accept before shipping."
+            ),
+        })
+    if stub_findings:
+        named = ", ".join(f"{f['file']}::{f['function']}" for f in stub_findings[:5])
+        more = f" (+{len(stub_findings) - 5} more)" if len(stub_findings) > 5 else ""
+        advisory_findings.append({
+            "type": "stubbed_tests",
+            "title": "Release audit: trivial/stubbed test functions found",
+            "detail": (
+                f"{len(stub_findings)} test function(s) look like trivial stubs ({named}{more}) - a "
+                "body of just 'assert True'/'pass' with no other assertions that verifies nothing."
+            ),
+        })
+
+    issues_filed = _file_release_audit_findings(advisory_findings, tool_context)
+
+    result = {
+        "status": "blocked" if blocking_defects else "ok",
+        "blocking_defects": blocking_defects,
+        "advisory_findings": advisory_findings,
+        "issues_filed": issues_filed,
+        "checked": {
+            "tests_available": coverage_result.get("tests_available"),
+            "tests_run": coverage_result.get("tests_run"),
+            "tests_failed": coverage_result.get("tests_failed"),
+            "build_checked": build_result.get("checked"),
+            "build_passing": build_result.get("passing"),
+            "security_scan_available": security_result.get("available"),
+            "stubbed_test_count": len(stub_findings),
+        },
+    }
+    if tool_context and getattr(tool_context, "state", None):
+        s = tool_context.state
+        s["release_audit_run_count"] = s.get("release_audit_run_count", 0) + 1
+        s["last_release_audit_result"] = result
+    return result
+
+
 def recheck_test_suite(tool_context=None) -> Dict[str, Any]:
     """
     Runs the target repo's real test suite and reports pass/fail counts -

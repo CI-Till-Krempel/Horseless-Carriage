@@ -289,6 +289,29 @@ _PRE_RELEASE_APPROVAL_BY_LEVEL = {
     "EVAL": None,
 }
 
+# GH-273: whether create_release_pr requires a FRESH run_release_audit()
+# call (QA's whole-increment release audit, tools/quality.py) since the
+# last release, at this interaction level - same "must be NEW" baseline
+# pattern release_approval_baseline already uses for
+# required_pre_release_approval above, and deliberately scoped the same
+# way: only where a human already reviews each release individually
+# (today: "Product") is a mandatory, sequenced extra step before
+# create_release_pr realistic - forcing it unconditionally onto the
+# CEO/EVAL auto-merge paths (nothing drives that sequencing there; EVAL in
+# particular has no human in the loop at all, see run_eval.py) risks
+# exactly the kind of abrupt, noisy-check stall GH-273's own discussion
+# flagged as the real cost of a careless hard gate on something inherently
+# judgment-based. This does NOT weaken what the audit actually catches:
+# any blocking_defects a run_release_audit call DID find (a real failing
+# test, a genuinely broken build - deterministic facts, not judgment
+# calls) still refuse create_release_pr unconditionally, at every
+# interaction level - see that function's own gate in tools/github.py.
+_PRE_RELEASE_AUDIT_REQUIRED_BY_LEVEL = {
+    "Product": True,
+    "CEO": False,
+    "EVAL": False,
+}
+
 
 def get_interaction_level() -> str:
     """
@@ -312,6 +335,11 @@ def required_pre_implementation_approval(level: str | None = None) -> str | None
 def required_pre_release_approval(level: str | None = None) -> str | None:
     """Same as required_pre_implementation_approval, for create_release_pr."""
     return _PRE_RELEASE_APPROVAL_BY_LEVEL.get(level or get_interaction_level())
+
+
+def required_pre_release_audit(level: str | None = None) -> bool:
+    """Whether create_release_pr requires a fresh run_release_audit() call this release cycle (GH-273) - see _PRE_RELEASE_AUDIT_REQUIRED_BY_LEVEL above for the rationale."""
+    return _PRE_RELEASE_AUDIT_REQUIRED_BY_LEVEL.get(level or get_interaction_level(), False)
 
 
 # How much detail create_sprint_report actually renders for the human at

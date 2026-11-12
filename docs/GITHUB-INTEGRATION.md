@@ -128,6 +128,18 @@ the loop at all), the harness auto-merges this one PR itself, standing in for th
 isolates each run's own `main`/`develop` pair so runs never contaminate each other or your real
 branches.
 
+Before that, at those same levels, QA must also have called `run_release_audit()` fresh this
+cycle - a whole-increment regression/gap pass (full test suite, build, security scan,
+stubbed-test sweep) distinct from each story's own per-story Tested-stage check. A real defect
+it finds (`blocking_defects`) refuses `create_release_pr` unconditionally, at **every**
+interaction level including CEO/EVAL - a genuinely broken build or failing test suite is never
+shipped "clean" regardless of who's driving the release. A judgment-call finding
+(`advisory_findings` - e.g. a security-scan hit, a stubbed test) is never hard-blocked, but
+`create_release_pr` appends every one of these to the PR body itself under "Known Issues
+(Release Audit)", and each is filed as a tracked Issue (`specs/requirements/`, the backlog) and
+best-effort as a real GitHub issue too (`gh_issue_create`) - see `run_release_audit`
+(`agents/scrum_team/tools/quality.py`).
+
 # This repo's own GitHub scaffolding
 
 Separate from the GitHub *integration* above (how the agents authenticate against

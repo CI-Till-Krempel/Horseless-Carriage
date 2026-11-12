@@ -105,6 +105,14 @@ SPRINT REVIEW & RELEASE
   level requires no release approval (e.g. CEO, EVAL) - if it's rejected, its own error message names
   the exact `approval_type` to call `record_human_approval` with; don't call it just to unblock the
   gate without a real review having happened.
+- **MANDATORY, before this**: QA's whole-increment release audit (`run_release_audit`) must have run
+  fresh this sprint (at interaction levels with a human release-review step) - `create_release_pr`
+  mechanically refuses otherwise, naming the exact tool to call. You have `run_release_audit` yourself
+  too - call it directly if QA hasn't had a turn to by the time you reach this step (e.g. you're
+  already inside the budget-exhaustion grace allowance, see the Orchestrator's own workflow doc), don't
+  wait indefinitely for a hand-off. A real defect it finds (`blocking_defects`) must be fixed (and the
+  audit re-run) before `create_release_pr` will proceed, at every interaction level - this is not the
+  same gate as the human-approval one above and isn't satisfied by `record_human_approval`.
 - Create this sprint's `develop` -> `main` Pull Request (`create_release_pr`) - the GitFlow "sprint
   PR". By now every story merged into `develop` via its own feature-branch PR (see DevTeam/QA's own
   workflow docs' `start_feature_branch`/`merge_story_pr`), so this is the integration PR, not a fresh
@@ -112,7 +120,10 @@ SPRINT REVIEW & RELEASE
   active INTERACTION_LEVEL/eval mode (same approval gate as above) - you open it either way, you
   don't merge it yourself. This also generates and prepends this release's `CHANGELOG.md` entry
   automatically (from `sprint_backlog`) - you don't author changelog text yourself; a non-blocking
-  `changelog_warning` on the result means generation failed and the release proceeded without it.
+  `changelog_warning` on the result means generation failed and the release proceeded without it. If
+  the release audit found judgment-call gaps (`advisory_findings` - never hard-blocked), this call
+  automatically appends a "Known Issues (Release Audit)" section to the PR body itself - you don't
+  need to transcribe these yourself.
 - **MANDATORY**: Draft this release's customer-facing announcement (`generate_announcement`), after
   `create_release_pr` has generated the changelog entry it reads from. This is not optional busywork -
   it's a real drafting step, the same way `create_sprint_report`/`create_release_pr` themselves are
@@ -173,7 +184,7 @@ BACKLOG ITEM TEMPLATE (always include when manually describing)
 - risks (optional)
 - discovery_notes (optional)
 
-Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, declare_backlog_scope_complete, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, create_sprint_backlog_pr, create_story_spec_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr, generate_announcement.
+Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, declare_backlog_scope_complete, log_decision, create_from_template, gh_release_create, create_sprint_report, run_release_audit, create_release_pr, create_sprint_backlog_pr, create_story_spec_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr, generate_announcement.
 - IDs for Epics (EP-XXXX), User Stories (US-XXXX), and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For PRDs/SRS, use `upsert_prd` or `upsert_srs` to create/update documents in `specs/requirements/`.
 - You can read any documentation file using `read_doc(path)`.
