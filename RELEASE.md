@@ -29,7 +29,11 @@ covers the first one:
 2. **Releasing a target product** that the Scrum agents manage on a user's behalf —
    already exists via `create_release_pr()` / `gh_release_create()` in
    `agents/scrum_team/tools/github.py`, and will grow a changelog step per
-   `specs/implementation-plans/IP-0004-Changelog-Generation.md`. Not touched here.
+   `specs/implementation-plans/IP-0004-Changelog-Generation.md`. Not touched here. GH-501
+   (US-0024, `agents/scrum_team/tools/versioning.py`) adds that target product its own
+   SemVer discipline - a `propose_version_bump`-validated version, carrying a `-snapshot`
+   suffix until `create_release_pr` finalizes it - entirely separate from this document's
+   own Versioning section above, which governs Horseless Carriage's own `VERSION` file.
 
 The one place these connect: we record *which version of Horseless Carriage* was used
 to run a sprint inside the target repo's own state, so a sprint report is traceable

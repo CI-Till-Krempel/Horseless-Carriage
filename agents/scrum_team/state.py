@@ -51,6 +51,20 @@ class ScrumState(BaseModel):
     sprint_files_touched: List[str] = Field(default_factory=list)
     source_content_change_count: int = 0
     hc_version: str = "unknown"
+    # GH-501: the *target* product's own semver string - "" until
+    # propose_version_bump is first called (tools/versioning.py). Carries a
+    # "-snapshot" suffix while in development; create_release_pr strips it
+    # (via finalize_release_version) at actual release time, at which point
+    # this and product_released_version converge.
+    product_version: str = ""
+    # The last version actually released (always suffix-free) - the baseline
+    # propose_version_bump/finalize_release_version validate the next bump
+    # against. "" means no release has gone out yet (treated as "0.0.0").
+    product_released_version: str = ""
+    # The change_type ("breaking"/"feature"/"fix") propose_version_bump
+    # validated product_version against - re-derived (not re-used) at
+    # finalize/advisory time from the current sprint_backlog.
+    product_version_change_type: str = ""
     retro_baseline: int = 0
     human_approvals: List[Dict[str, Any]] = Field(default_factory=list)
     sprint_approval_baseline: int = 0
