@@ -13,6 +13,7 @@ from agents.scrum_team.scripts.run_eval import (
     _run_one_sprint,
     _sprint_should_abort_run,
     _abort_run_stop_reason,
+    _abort_log_text,
     _blocked_stories,
     _sprint_needs_human_this_harness_cannot_provide,
     _unresolved_high_priority_general_blocker,
@@ -451,6 +452,34 @@ def test_abort_run_stop_reason_is_sprint_closeout_stalled_without_a_critical_hal
     })
     assert reason == "sprint_closeout_stalled"
     assert reason != "budget_critical_halt"
+
+
+def test_abort_log_text_names_the_real_limiter_instead_of_a_retry_ceiling():
+    """0.2.0-run92: sprint 3 hit max_events_reached (the flat per-sprint
+    event cap) with its nudge-retry budget barely touched, but the old
+    unconditional wording claimed "exhausted this harness's own retry
+    ceiling" regardless. Must name the actual stop_reason instead."""
+    text = _abort_log_text(
+        {"critical_halt": False, "stop_reason": "max_events_reached"},
+        "sprint_closeout_stalled",
+    )
+    assert "retry ceiling" not in text
+    assert "max_events_reached" in text
+
+
+def test_abort_log_text_still_says_retry_ceiling_when_nudges_actually_ran_out():
+    """The one case where "retry ceiling" is actually true - must not lose
+    this wording for the genuine max_nudges_exhausted case."""
+    text = _abort_log_text(
+        {"critical_halt": False, "stop_reason": "max_nudges_exhausted"},
+        "sprint_closeout_stalled",
+    )
+    assert "retry ceiling" in text
+
+
+def test_abort_log_text_budget_critical_halt_unaffected():
+    text = _abort_log_text({"critical_halt": True, "stop_reason": "max_nudges_exhausted"}, "budget_critical_halt")
+    assert text == "hit a critical budget halt with no clean sprint close-out"
 
 
 def _story(story_id, blocked=None):

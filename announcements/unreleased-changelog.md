@@ -134,3 +134,22 @@ was *also* manually retyped into the custom field.
 Fixed by changing the `branch` input's default from `"main"` to `""` - a blank custom field now
 correctly falls through to the real dispatch-selected branch. New regression test
 (`tests/test_eval_workflow.py`) asserts the input's default is not hardcoded to a branch name.
+
+### `sprint_closeout_stalled` always claimed a "retry ceiling" was exhausted, even when the real limiter was the per-sprint event cap (0.2.0-run92, SPEC-ISSUE-0089)
+
+The validation run above (`0.2.0-run92`, confirming SPEC-ISSUE-0088's fix) stopped after 3 of 5
+sprints with `report.md` claiming "a sprint exhausted this harness's own retry ceiling before its
+close-out... could finish." False: `manifest.json`'s sprint 3 entry shows `stop_reason:
+"max_events_reached"` (the flat 300-event-per-sprint cap), not `max_nudges_exhausted` - the nudge-retry
+budget was barely touched. Both the abort-log print (`run_eval.py`) and the report's explanation text
+(`run_eval_analysis.py`) hardcoded "retry ceiling" unconditionally for every `sprint_closeout_stalled`
+abort, regardless of which distinct per-sprint stop condition actually caused it - a narrower sibling of
+the wording defect SPEC-ISSUE-0086 already fixed one level up.
+
+Separately, the report's only self-tuning suggestion (`_sprint_length_feedback`'s "raise the token
+budget") runs inside the agent session with no visibility into the event cap at all, so in a case like
+this one it's a useless recommendation with nothing flagging the mismatch.
+
+Fixed as SPEC-ISSUE-0089: both the log text and the report explanation now name the real underlying
+`stop_reason` (only `max_nudges_exhausted` still says "retry ceiling"), and the report explicitly notes
+when raising the token budget won't help because the real limiter was the event/duration cap instead.
