@@ -117,3 +117,20 @@ Fixed as SPEC-ISSUE-0088: `_OPEN_CHANGES_PATHS` now includes `CHANGELOG.md` alon
 safe because `generate_changelog` is its only writer anywhere in this codebase, never DevTeam's
 uncommitted source work. A dirty `CHANGELOG.md` is now committed out of the way by
 `integrate_open_changes` before any later checkout can ever see it dirty.
+
+### `workflow_dispatch`'s "Use workflow from" branch selector was silently ignored by the eval harness
+
+Manually re-running the eval workflow against a stabilization branch (to verify the SPEC-ISSUE-0088
+fix above) kept evaluating `main` instead, even after picking the other branch from the Actions
+"Run workflow" dialog's top-level "Use workflow from" selector. `.github/workflows/eval.yml`'s
+checkout step already resolved `${{ github.event.inputs.branch || github.ref }}`, correctly meant to
+fall through to the dispatch-selected branch (`github.ref`) whenever the workflow's own custom
+`branch` text input is left blank - but that input's own default was hardcoded to the literal string
+`"main"`. GitHub Actions always sends a workflow_dispatch input's default value when the field is left
+blank in the dispatch form, so `inputs.branch` was never actually falsy and always won the `||`,
+silently discarding whatever branch had been picked via "Use workflow from" unless that branch name
+was *also* manually retyped into the custom field.
+
+Fixed by changing the `branch` input's default from `"main"` to `""` - a blank custom field now
+correctly falls through to the real dispatch-selected branch. New regression test
+(`tests/test_eval_workflow.py`) asserts the input's default is not hardcoded to a branch name.

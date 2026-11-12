@@ -59,6 +59,18 @@ gap, but only for `.gitignore`-matched files) - this is a *fourth*, still-uncove
 tracked, non-ignored file that `create_release_pr` itself dirties mid-flight, in the gap between its
 own `generate_changelog` write and its own later re-checkout.
 
+**Unconfirmed secondary observation:** both `0.2.0-run90`'s and `0.2.0-run91`'s transcripts show the
+exact same `_untrack_gitignored_dirty_files` response shape with `"dirty_tracked_files":
+["HANGELOG.md"]` - missing the leading "C" from "CHANGELOG.md" - identically in two independent runs
+(e.g. `0.2.0-run91` transcript, Event 122's `auto_integrated` sub-result). This is consistent, real
+evidence of a truncation somewhere, but reading `_untrack_gitignored_dirty_files`
+(`github.py:147-230`) and hand-tracing its `code, path = line[:2], line[3:]` porcelain-line slicing
+against a real `git status --porcelain` line for a dirty `CHANGELOG.md` does not reproduce it (both
+unstaged `" M CHANGELOG.md"` and staged `"M  CHANGELOG.md"` forms slice correctly to
+`"CHANGELOG.md"`). Flagging for whoever investigates the next run where this recurs - worth capturing
+a raw, untruncated `git status --porcelain` line from inside a live container next time, since neither
+this investigation's static read of the code nor a local hand-trace explains the exact byte dropped.
+
 ## Acceptance Criteria
 - A dirty `CHANGELOG.md` (or any other root-level file `generate_changelog` writes) no longer blocks
   the re-checkout inside `_git_push_impl`'s protected-branch path when `create_release_pr` calls it -
