@@ -11,6 +11,13 @@ Use this living roadmap to plan releases and track user stories across states. I
 - When a release is cut, freeze the section by adding the actual tag (e.g., `v0.1.0`) and dates.
 - Every open GitHub issue should carry a milestone matching one of the versions below (or the `Research backlog` wave) — see "Sync GitHub issues and versions to roadmap" below.
 
+### Sync GitHub issues and versions to roadmap
+- This file stays the source of truth for which release a story/issue targets. This repo's real GitHub milestones (named `v0.1.0`...`v0.8.0`, one per version section below) are the GitHub-side mirror of that — not the other way around.
+- When you assign or change a GitHub issue's milestone, add or move its `[GH-NNN]` reference into the matching version section here in the same change (or as an immediate follow-up). Don't let the two silently drift apart — this already happened in practice (GH-513/GH-515 carried the `v0.3.0` milestone on GitHub before anyone added them here; GH-456 was milestoned `v0.3.0` but stayed listed under v0.5 until someone noticed by hand).
+- `python3 check_roadmap_sync.py` automates catching that drift: it fetches every open GitHub issue's milestone via `gh` and compares it against where (if anywhere) this file lists that issue, reporting any mismatch and exiting non-zero if one is found. It runs in CI (`.github/workflows/roadmap-sync.yml`) on PRs that touch this file, and on a daily schedule plus manual dispatch — the schedule/dispatch triggers exist specifically because most real drift is introduced purely on the GitHub side (a milestone changed with no accompanying PR here at all), which a PR-only trigger would never catch. Run it locally any time with `python3 check_roadmap_sync.py`.
+- Research-backlog / unplanned-backlog entries are exempt from this check (there's no single "expected" milestone for exploratory work not yet committed to a release).
+- The checker only detects drift — it never writes to GitHub or edits this file. Whichever side is correct, a human still fixes the other by hand.
+
 Legend
 - `[ID] Title` — a user story or epic reference and its short title
 - `[GH-NNN] Title` — an un-storied GitHub issue reference and its title
@@ -81,7 +88,7 @@ Stories:
 - [x] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling (moved from v0.5 — largely a consequence of EP-0010 shipping)
 - [x] [US-0025] Enforce Semantic Versioning and Snapshot Suffix (GH-501)
 - [x] [GH-502] Support pointing Horseless Carriage at a local-network Ollama server (LAN IP/hostname)
-- [ ] [GH-272] Sync GitHub Issues and versions to roadmap
+- [x] [GH-272] Sync GitHub Issues and versions to roadmap
 - [ ] [GH-295] Issues are reported but not fixed, or marked as Won't
 - [ ] [GH-273] Release testing (QA audit/regression gate before shipping)
 - [ ] [GH-452] Approval of the sprint should be done after creating the sprint PR
