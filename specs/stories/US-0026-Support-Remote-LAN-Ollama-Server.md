@@ -1,6 +1,6 @@
 # User Story
 
-- Story ID: US-0024
+- Story ID: US-0026
 - Title: Support Pointing Horseless Carriage at a Local-Network Ollama Server
 - Status: Done
 - Priority: Must
