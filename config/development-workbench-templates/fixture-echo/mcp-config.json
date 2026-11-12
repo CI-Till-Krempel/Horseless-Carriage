@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "fixture-tool": {
+      "command": "echo",
+      "args": ["fixture-mcp-server"]
+    }
+  }
+}

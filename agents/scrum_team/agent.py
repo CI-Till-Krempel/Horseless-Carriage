@@ -382,6 +382,10 @@ from .tools.workflow import (
     propose_steering_change,
     propose_framework_change,
 )
+from .tools.workbench_templates import (
+    list_workbench_templates,
+    get_workbench_template,
+)
 from .tools.budget import (
     calculate_cost_breakdown,
     recommend_sprint_budget,
@@ -2983,6 +2987,8 @@ architect = LlmAgent(
         raise_story_blocker,
         resolve_story_blocker,
         propose_framework_change,
+        list_workbench_templates,
+        get_workbench_template,
         recheck_test_suite,
     ],
     **COMMON_AGENT_CALLBACKS,

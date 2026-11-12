@@ -76,6 +76,13 @@ COPY --from=base /app /app
 COPY ./agents ./agents
 COPY ./spec-templates ./spec-templates
 COPY ./eval ./eval
+# US-0021: Development Workbench templates (resolved at runtime by the
+# Architect role via agents/scrum_team/tools/workbench_templates.py,
+# _project_root()/config/development-workbench-templates) - baked into a
+# real production image at build time, same as ./agents/./spec-templates
+# above; docker-compose.yaml's dev stack additionally bind-mounts this same
+# path read-only so a new/edited template doesn't need an image rebuild.
+COPY ./config/development-workbench-templates ./config/development-workbench-templates
 COPY auth_github.py .
 COPY entrypoint.sh .
 COPY VERSION .
