@@ -520,6 +520,33 @@ class TestRenderStoppedEarlyCallout:
         assert "sprint_closeout_stalled" in rendered
         assert "budget" not in rendered.lower()
 
+    def test_sprint_closeout_stalled_names_the_event_cap_not_a_retry_ceiling(self):
+        """0.2.0-run92: the real sprint that triggered the abort hit
+        max_events_reached with its nudge-retry budget barely touched - the
+        explanation must not claim a "retry ceiling" was exhausted, and must
+        separately warn that raising the token budget will not help."""
+        manifest = {
+            "stopped_early": True,
+            "stop_reason": "sprint_closeout_stalled",
+            "sprints_requested": 5,
+            "sprints": [{"stop_reason": "sprint_report_produced"}, {"stop_reason": "max_events_reached"}],
+        }
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "retry ceiling" not in rendered
+        assert "event cap" in rendered
+        assert "SPRINT_TOKEN_BUDGET" in rendered
+
+    def test_sprint_closeout_stalled_still_names_retry_ceiling_when_that_is_the_real_cause(self):
+        manifest = {
+            "stopped_early": True,
+            "stop_reason": "sprint_closeout_stalled",
+            "sprints_requested": 5,
+            "sprints": [{"stop_reason": "max_nudges_exhausted"}],
+        }
+        rendered = "\n".join(_render_stopped_early_callout(manifest))
+        assert "retry ceiling" in rendered
+        assert "event cap" not in rendered
+
     def test_surfaces_the_blocked_story_when_present(self):
         manifest = {
             "stopped_early": True,
