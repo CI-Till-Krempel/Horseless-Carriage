@@ -11,6 +11,8 @@ from ..helpers import (
     required_pre_implementation_approval,
     sprint_backlog_pr_missing,
     ready_backlog_shortfall,
+    stale_ungroomed_issues,
+    stale_issue_sprint_threshold,
 )
 
 # GH #415: the version a newly-committed sprint story defaults to if it has
@@ -1118,6 +1120,36 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
                 "it's genuinely resolved, so there is nothing further for you to schedule yourself. Or "
                 "call set_priority(id_or_title, ...) to something other than 'Must' if it turns out not "
                 "to actually warrant that, before retrying."
+            ),
+        }
+
+    # GH issue #295 ("Issues are reported but not fixed, or marked as
+    # Won't"): the check above only ever catches an Issue sitting
+    # unaddressed at "Must" priority - exactly the auto-filed, auto-"Must"
+    # path SPEC-ISSUE-0076/0078/0081/0084 already made genuinely work. At
+    # the "Product" interaction level (a real, human-driven sprint),
+    # _file_retro_items_as_issues deliberately leaves priority for the
+    # human Product Owner to set via their own grooming - so an Issue
+    # filed there (or anywhere, via a direct upsert_issue call) that never
+    # gets prioritized/planned, and never gets an explicit "Won't" either,
+    # falls through every existing gate and just sits at Draft forever.
+    # stale_ungroomed_issues (helpers.py) is the backstop: an Issue open
+    # `STALE_ISSUE_SPRINT_THRESHOLD`+ sprints with no "Ready" and no honest
+    # "Won't" decision blocks this same publish gate, forcing one or the
+    # other before Sprint Planning can close.
+    stale_issues = stale_ungroomed_issues(state.get("product_backlog", []) or [], sprint_number)
+    if stale_issues:
+        ids = ", ".join(sorted(i.get("id") or i.get("title") or "(no id)" for i in stale_issues))
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot create the Sprint Backlog PR yet - {len(stale_issues)} Issue(s) have sat "
+                f"unplanned for {stale_issue_sprint_threshold()}+ sprints with no explicit decision made "
+                f"either way: {ids}. For each one, either plan it in - "
+                "advance_story_stage(id_or_title, 'Ready') - or make the call explicit and honest - "
+                "set_priority(id_or_title, \"Won't\", justification=\"...\") - before retrying. An Issue "
+                "that's reported but never fixed AND never explicitly declined is the exact silent-"
+                "failure mode GH #295 found; this refuses to let one sit forever either way."
             ),
         }
 

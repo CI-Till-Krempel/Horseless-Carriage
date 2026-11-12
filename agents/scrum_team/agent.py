@@ -2841,6 +2841,7 @@ product_owner = LlmAgent(
         upsert_story,
         upsert_epic,
         upsert_issue,
+        list_open_issues,
         update_roadmap,
         plan_backlog_item,
         advance_story_stage,
