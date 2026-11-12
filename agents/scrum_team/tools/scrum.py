@@ -51,6 +51,9 @@ REPO_STATE_KEYS = [
     "repo",
     "messages",
     "hc_version",
+    "product_version",
+    "product_released_version",
+    "product_version_change_type",
     "retro_baseline",
     "human_approvals",
     "sprint_approval_baseline",
@@ -409,6 +412,18 @@ def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # GH-456: "check regularly (at startup / each sprint) whether the
+    # tooling is set up" - init_scrum_state is the "at startup" half (the
+    # other, "each sprint", is start_sprint below). Best-effort: a workbench
+    # check must never make init_scrum_state itself fail.
+    workbench_check = {"status": "ok", "workbench_configured": True, "detected_tech_stack": None,
+                        "action_needed": False, "recommendation": None}
+    try:
+        from .workbench_templates import check_workbench_tooling
+        workbench_check = check_workbench_tooling(tool_context)
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "initialized": True,
@@ -419,6 +434,12 @@ def init_scrum_state(tool_context=None, force: bool = False) -> Dict[str, Any]:
         # because this session was already initialized.
         "reloaded_from_disk": reloaded_from_disk,
         "already_initialized": already_initialized,
+        # GH-456: see check_workbench_tooling (tools/workbench_templates.py)
+        # for the full shape - surfaced here so a role calling
+        # init_scrum_state() directly (not just the silent, discarded
+        # auto-call in agent.py's ensure_state_initialized_callback) sees
+        # it without a separate round-trip.
+        "workbench_check": workbench_check,
     }
 
 def _write_state_atomically(state_path: Path, snapshot: dict) -> None:
@@ -1163,7 +1184,28 @@ def start_sprint(goal: str, tool_context=None) -> Dict[str, Any]:
         integrate_open_changes(tool_context)
     except Exception:
         pass
-    return {"status": "ok", "sprint_goal": s["sprint_goal"], "sprint_number": s["sprint_number"]}
+
+    # GH-456: "check regularly (at startup / each sprint) whether the
+    # tooling is set up" - this is the "each sprint" half (init_scrum_state
+    # above covers "at startup"). ScrumMaster owns start_sprint, not
+    # Architect - the recommendation surfaces here so ScrumMaster can hand
+    # it to Architect (propose_framework_change is Architect's own tool)
+    # rather than this silently never reaching anyone. Best-effort: must
+    # never block a sprint from starting over this check's own failure.
+    workbench_check = {"status": "ok", "workbench_configured": True, "detected_tech_stack": None,
+                        "action_needed": False, "recommendation": None}
+    try:
+        from .workbench_templates import check_workbench_tooling
+        workbench_check = check_workbench_tooling(tool_context)
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "sprint_goal": s["sprint_goal"],
+        "sprint_number": s["sprint_number"],
+        "workbench_check": workbench_check,
+    }
 
 
 def plan_sprint_backlog_item(title_or_id: str, plan: Dict[str, Any], tool_context=None) -> Dict[str, Any]:

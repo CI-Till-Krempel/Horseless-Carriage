@@ -281,5 +281,184 @@ class TestProposeFrameworkChange(unittest.TestCase):
         self.assertIn("push", result["message"].lower())
 
 
+_A_TEMPLATE_BUNDLE = {
+    "status": "ok",
+    "name": "python-flask",
+    "script": "#!/bin/sh\npip install flask\n",
+    "mcp_config": {"mcpServers": {"flask-docs": {"command": "flask-mcp"}}},
+    "additional_allowlist_hosts": ["pypi.org", "files.pythonhosted.org"],
+    "description": "Flask stack (test double)",
+}
+
+
+def _patch_template(bundle=None, **overrides):
+    """Patches workflow.py's own bound name for resolve_workbench_template
+    (same pattern _patched above uses for the git/gh boundary) so these
+    tests exercise propose_framework_change's template-folding logic
+    without depending on real template files on disk."""
+    result = dict(bundle or _A_TEMPLATE_BUNDLE)
+    result.update(overrides)
+    return patch("agents.scrum_team.tools.workflow.resolve_workbench_template", return_value=result)
+
+
+class TestProposeFrameworkChangeTemplates(unittest.TestCase):
+    """US-0021: template_name selects a named Development Workbench
+    template (script + MCP config + allowlist hosts) instead of requiring
+    a fully hand-written workbench_setup_script every time - see
+    tools/workbench_templates.py for the resolution mechanism itself."""
+
+    def _run_with_patches(self, fn, **overrides):
+        patchers = _patched(**overrides)
+        for p in patchers:
+            p.start()
+        try:
+            return fn()
+        finally:
+            for p in patchers:
+                p.stop()
+
+    def test_template_alone_supplies_script_mcp_config_and_allowlist_hosts(self):
+        from agents.scrum_team.tools import base
+
+        tc = _make_tool_context()
+        pr_calls = []
+
+        def recording_gh_pr_create(title, body="", base=None, head=None, draft=False, head_is_resolved=False, tool_context=None):
+            pr_calls.append(body)
+            return _fake_gh_pr_create(title, body, base, head, draft, head_is_resolved, tool_context)
+
+        with _patch_template():
+            result = self._run_with_patches(
+                lambda: propose_framework_change(
+                    rationale="Adopt the python-flask reference workbench for this project.",
+                    template_name="python-flask",
+                    tool_context=tc,
+                ),
+                gh_pr_create=recording_gh_pr_create,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["proposed"])
+        self.assertEqual(result["additional_allowlist_hosts"], ["pypi.org", "files.pythonhosted.org"])
+        self.assertEqual(result["mcp_config"], {"mcpServers": {"flask-docs": {"command": "flask-mcp"}}})
+
+        repo_root = base._configured_repo_root(tc)
+        self.assertEqual((repo_root / ".hc" / "workbench-setup.sh").read_text(encoding="utf-8"), "#!/bin/sh\npip install flask\n")
+        mcp_written = (repo_root / ".hc" / "workbench-mcp.json").read_text(encoding="utf-8")
+        self.assertIn("flask-mcp", mcp_written)
+
+        self.assertEqual(len(pr_calls), 1)
+        self.assertIn("python-flask", pr_calls[0])
+        self.assertIn("Flask stack (test double)", pr_calls[0])
+        self.assertIn("pip install flask", pr_calls[0])
+        self.assertIn("flask-mcp", pr_calls[0])
+        self.assertIn("HUMAN OPERATOR ACTION REQUIRED", pr_calls[0])
+        self.assertIn("pypi.org", pr_calls[0])
+
+    def test_customized_template_script_and_mcp_config_land_only_in_the_pr_not_a_direct_write(self):
+        """AC: customizing a template (extra package in the script, an
+        extra MCP server) is folded into the same human-reviewed PR - this
+        function never calls write_file/delete_file (docs.py's .hc/
+        guardrail), it only ever writes inside the branch this same call
+        creates and pushes for PR review."""
+        from agents.scrum_team.tools import base
+
+        tc = _make_tool_context()
+        customized_script = "#!/bin/sh\npip install flask\npip install flask-sqlalchemy  # customization\n"
+        pr_calls = []
+
+        def recording_gh_pr_create(title, body="", base=None, head=None, draft=False, head_is_resolved=False, tool_context=None):
+            pr_calls.append(body)
+            return _fake_gh_pr_create(title, body, base, head, draft, head_is_resolved, tool_context)
+
+        with _patch_template():
+            result = self._run_with_patches(
+                lambda: propose_framework_change(
+                    workbench_setup_script=customized_script,
+                    additional_allowlist_hosts=["custom-extra.example.com"],
+                    rationale="Flask app also needs flask-sqlalchemy for this project.",
+                    template_name="python-flask",
+                    additional_mcp_config={"mcpServers": {"flask-docs": {"command": "overridden"}, "extra-tool": {"command": "extra"}}},
+                    tool_context=tc,
+                ),
+                gh_pr_create=recording_gh_pr_create,
+            )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            sorted(result["additional_allowlist_hosts"]),
+            sorted(["pypi.org", "files.pythonhosted.org", "custom-extra.example.com"]),
+        )
+        # additional_mcp_config's "flask-docs" entry wins over the template's own.
+        self.assertEqual(
+            result["mcp_config"]["mcpServers"],
+            {"flask-docs": {"command": "overridden"}, "extra-tool": {"command": "extra"}},
+        )
+
+        repo_root = base._configured_repo_root(tc)
+        self.assertEqual((repo_root / ".hc" / "workbench-setup.sh").read_text(encoding="utf-8"), customized_script)
+        self.assertIn("flask-sqlalchemy", pr_calls[0])
+        self.assertIn("overridden", pr_calls[0])
+        self.assertIn("extra-tool", pr_calls[0])
+
+    def test_unknown_template_name_is_refused_before_any_git_or_pr_activity(self):
+        tc = _make_tool_context()
+        push_calls = []
+
+        def recording_git_push(branch, commit_message="chore: update", add_all=True, tool_context=None):
+            push_calls.append(branch)
+            return _fake_git_push(branch, commit_message, add_all, tool_context)
+
+        error_bundle = {"status": "error", "message": "Unknown Development Workbench template 'nope'. Available templates: []"}
+        with patch("agents.scrum_team.tools.workflow.resolve_workbench_template", return_value=error_bundle):
+            result = self._run_with_patches(
+                lambda: propose_framework_change(rationale=_A_RATIONALE, template_name="nope", tool_context=tc),
+                git_push=recording_git_push,
+            )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("Unknown Development Workbench template", result["message"])
+        self.assertEqual(push_calls, [])
+        self.assertEqual(tc.state.get("framework_change_proposal_count", 0), 0)
+
+    def test_neither_script_nor_template_is_an_error(self):
+        tc = _make_tool_context()
+        result = self._run_with_patches(
+            lambda: propose_framework_change(rationale=_A_RATIONALE, tool_context=tc)
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("nothing to propose", result["message"])
+
+    def test_fully_custom_script_path_without_any_template_still_works_unchanged(self):
+        """Templates are additive - the pre-US-0021 fully-custom path (no
+        template_name at all) keeps working exactly as before."""
+        tc = _make_tool_context()
+        script = _script("fully_custom_script_path_without_any_template_still_works_unchanged")
+        result = self._run_with_patches(
+            lambda: propose_framework_change(script, [], _A_RATIONALE, tool_context=tc)
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["proposed"])
+        self.assertIsNone(result["template_name"])
+        self.assertEqual(result["mcp_config"], {})
+
+    def test_real_fixture_echo_template_resolves_through_the_real_mechanism(self):
+        """No mocking of resolve_workbench_template here - exercises the
+        real config/development-workbench-templates/fixture-echo/ files on
+        disk end to end through propose_framework_change."""
+        tc = _make_tool_context()
+        result = self._run_with_patches(
+            lambda: propose_framework_change(
+                rationale="Exercise the real fixture-echo template end to end.",
+                template_name="fixture-echo",
+                tool_context=tc,
+            )
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["proposed"])
+        self.assertIn("fixture.example.test", result["additional_allowlist_hosts"])
+        self.assertIn("fixture-tool", result["mcp_config"]["mcpServers"])
+
+
 if __name__ == "__main__":
     unittest.main()

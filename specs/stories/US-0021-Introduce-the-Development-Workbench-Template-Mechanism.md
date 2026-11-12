@@ -2,7 +2,7 @@
 
 - Story ID: US-0021
 - Title: Introduce the Development Workbench Template Mechanism
-- Status: Draft
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-11-11
@@ -22,9 +22,19 @@
 - Depends on resolving how `additional_allowlist_hosts` is tracked going forward — see `specs/architecture/ADR-0002-Per-Project-Workbench-Network-Allowlist-Proposals.md` (Status: Proposed, not yet implemented). This story should either implement that ADR or explicitly scope itself as building on top of today's PR-body-only behavior and note the gap.
 - Feeds US-0022 (reference templates need this mechanism to exist first) and US-0023 (doc describes this contract).
 
+## Implementation Notes (as built)
+- Added `agents/scrum_team/tools/workbench_templates.py`: `resolve_workbench_template(name)` loads a named template's bundle (script/mcp_config/additional_allowlist_hosts/description) from `config/development-workbench-templates/<name>/` (required `workbench-setup.sh`, optional `mcp-config.json` and `manifest.json`); `list_workbench_templates()`/`get_workbench_template()` are exposed as new Architect-callable tools (`agents/scrum_team/agent.py`) for discovery/preview before proposing. `template_name` is validated against a strict lowercase-alnum-and-hyphen pattern so it can never escape the templates directory.
+- Extended `propose_framework_change` (`agents/scrum_team/tools/workflow.py`) with optional `template_name` and `additional_mcp_config` parameters, added *after* the existing `rationale` parameter so every pre-existing positional call keeps working unchanged. With no `template_name`, behavior is byte-for-byte identical to before (the fully-custom-script path). With a `template_name`, the template's script is used unless `workbench_setup_script` is also supplied (full-replacement customization, same "not a diff" convention as `propose_steering_change`); `additional_mcp_config`'s `mcpServers` entries are merged on top of (and win over) the template's own; `additional_allowlist_hosts` is unioned with the template's own declared hosts. The merged MCP config is written to a new `.hc/workbench-mcp.json` in the product/state repo, in the same branch/commit/PR as `.hc/workbench-setup.sh` — never via `write_file` (docs.py's `.hc/` write-block already refuses any path under `.hc/`, including this new one, with no code change needed there).
+- **Allowlist design decision**: this story builds on top of today's PR-body-only `additional_allowlist_hosts` behavior (the "HUMAN OPERATOR ACTION REQUIRED" PR-body section + `record_blocking_interaction`) — it deliberately does **not** implement ADR-0002's tracked `.hc/allowlist.filter` file design. ADR-0002's own Status remains "Proposed", not accepted, and implementing it is independent, nontrivial scope (a new tracked file format, a human-invoked sync helper) orthogonal to the template mechanism itself. This keeps the human-approval guarantee intact (same draft-PR + blocking-interaction flow as before) without expanding this story's scope; ADR-0002 remains open for a future story to pick up.
+- MCP-config role application is specified, not fully wired: `.hc/workbench-mcp.json`'s `mcpServers` entries are what the technical roles (architect, dev_team, qa_agent, quality_guardian — GH-291 Phase 1 scope) are meant to start with once a workbench is customized; full per-role ADK `MCPToolset` session wiring is net-new surface (no such mechanism existed anywhere before this story) and can land incrementally without changing this file's format.
+- Docker wiring: `config/development-workbench-templates/` is now also bind-mounted read-only into the `agent` container (`docker-compose.yaml`, `docker-compose.local.yaml`, `docker-compose.local-hostollama.yaml`) and `COPY`'d into `agent.Dockerfile`'s production stage — without this, templates added to the host repo were invisible to the running Architect role (the container previously had no access to `config/` at all).
+- One deliberately minimal fixture template ships at `config/development-workbench-templates/fixture-echo/` for tests only — explicitly documented as not a real reference workbench. The three real reference templates (python-flask, kotlin-multiplatform, react-vite-firebase) are US-0022's scope.
+
 ## Test Approach
-- Unit tests for template resolution: given a template name, the correct script/MCP-config/allowlist bundle is loaded.
-- Unit test asserting a customized template's content ends up only in the proposal PR, never written directly to the repo.
-- Regression test confirming `write_file`/`delete_file` still refuse any `.hc/` path after this change (extend `agents/scrum_team/tests/test_docs.py`'s existing coverage).
-- Test for the "no template selected, fully custom script" fallback path, matching today's `propose_framework_change` behavior.
-- Test for `additional_allowlist_hosts` handling (PR-body section and/or `.hc/allowlist.filter`, per whichever design this story lands).
+- Unit tests for template resolution: given a template name, the correct script/MCP-config/allowlist bundle is loaded. — `agents/scrum_team/tests/test_workbench_templates.py`.
+- Unit test asserting a customized template's content ends up only in the proposal PR, never written directly to the repo. — `agents/scrum_team/tests/test_framework_change.py::TestProposeFrameworkChangeTemplates::test_customized_template_script_and_mcp_config_land_only_in_the_pr_not_a_direct_write`.
+- Regression test confirming `write_file`/`delete_file` still refuse any `.hc/` path after this change (extend `agents/scrum_team/tests/test_docs.py`'s existing coverage). — added coverage for `.hc/workbench-mcp.json` and `.hc/allowlist.filter` (ADR-0002, defensive) alongside the existing `workbench-setup.sh`/nested-path cases.
+- Test for the "no template selected, fully custom script" fallback path, matching today's `propose_framework_change` behavior. — `test_fully_custom_script_path_without_any_template_still_works_unchanged`, plus all of the pre-existing `TestProposeFrameworkChange` tests (unchanged, still passing).
+- Test for `additional_allowlist_hosts` handling (PR-body section and/or `.hc/allowlist.filter`, per whichever design this story lands). — `test_template_alone_supplies_script_mcp_config_and_allowlist_hosts` (template-declared hosts) and `test_customized_template_script_and_mcp_config_land_only_in_the_pr_not_a_direct_write` (template + extra hosts unioned/deduped), both asserting the PR-body "HUMAN OPERATOR ACTION REQUIRED" section.
+
+All 1286 tests in `agents/scrum_team/tests` plus all 798 host-script tests in `tests/` pass (`run_tests.py`'s two suites), run via Docker Compose and pytest respectively.
