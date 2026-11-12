@@ -30,7 +30,7 @@ covers the first one:
    already exists via `create_release_pr()` / `gh_release_create()` in
    `agents/scrum_team/tools/github.py`, and will grow a changelog step per
    `specs/implementation-plans/IP-0004-Changelog-Generation.md`. Not touched here. GH-501
-   (US-0024, `agents/scrum_team/tools/versioning.py`) adds that target product its own
+   (US-0025, `agents/scrum_team/tools/versioning.py`) adds that target product its own
    SemVer discipline - a `propose_version_bump`-validated version, carrying a `-snapshot`
    suffix until `create_release_pr` finalizes it - entirely separate from this document's
    own Versioning section above, which governs Horseless Carriage's own `VERSION` file.

@@ -1,6 +1,6 @@
 # User Story
 
-- Story ID: US-0024
+- Story ID: US-0025
 - Title: Enforce Semantic Versioning and Snapshot Suffix
 - Status: Accepted
 - Priority: Should
@@ -72,5 +72,5 @@
   version).
 - Integration tests (`agents/scrum_team/tests/test_github.py`): `create_release_pr` finalizes and
   includes the version in the PR body when one was proposed; surfaces `version_warning` without
-  blocking when the backlog's change type shifted; behaves identically to pre-US-0024 when no
+  blocking when the backlog's change type shifted; behaves identically to pre-US-0025 when no
   version was ever proposed.

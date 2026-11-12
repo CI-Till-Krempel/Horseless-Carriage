@@ -1,6 +1,6 @@
 # agents/scrum_team/tests/test_versioning.py
 """
-Unit tests for GH-501 (US-0024): SemVer increment enforcement and the
+Unit tests for GH-501 (US-0025): SemVer increment enforcement and the
 '-snapshot' development-suffix convention for the target product's own
 version (agents/scrum_team/tools/versioning.py).
 """
