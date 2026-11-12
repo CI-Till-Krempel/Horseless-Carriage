@@ -526,6 +526,34 @@ def _abort_run_stop_reason(sprint_result: dict) -> str:
     return "budget_critical_halt" if sprint_result["critical_halt"] else "sprint_closeout_stalled"
 
 
+def _abort_log_text(sprint_result: dict, abort_reason: str) -> str:
+    """
+    Human-facing stderr description of why _sprint_should_abort_run fired,
+    printed right before the run-level loop breaks.
+
+    0.2.0-run92: this used to unconditionally say "exhausted this harness's
+    own retry ceiling" for every non-budget-halt abort, regardless of which
+    of the per-sprint loop's several distinct stop conditions
+    (max_nudges_exhausted/max_events_reached/max_duration_exceeded/
+    adk_self_transfer_error) actually ended the sprint. Sprint 3 of that run
+    hit the flat 300-event cap with its nudge-retry budget barely touched -
+    "retry ceiling" was simply false. Only the genuine max_nudges_exhausted
+    case still says "retry ceiling"; every other stop_reason is named
+    directly instead of being folded into that same claim.
+    """
+    if abort_reason == "budget_critical_halt":
+        return "hit a critical budget halt with no clean sprint close-out"
+    if sprint_result["stop_reason"] == "max_nudges_exhausted":
+        return (
+            "exhausted this harness's own retry ceiling with the sprint close-out "
+            "(report produced, release PR) still stalled"
+        )
+    return (
+        f"hit its own {sprint_result['stop_reason']} with the sprint close-out "
+        "(report produced, release PR) still stalled"
+    )
+
+
 def _blocked_stories(sprint_result: dict) -> dict:
     """{story_id_or_title: blocked_dict} for every story currently BLOCKED
     (raise_story_blocker, agents/scrum_team/tools/requirements.py) at the
@@ -1161,12 +1189,7 @@ async def _main_async(args: argparse.Namespace) -> dict:
 
         if _sprint_should_abort_run(sprint_result):
             abort_reason = _abort_run_stop_reason(sprint_result)
-            abort_log_text = (
-                "hit a critical budget halt with no clean sprint close-out"
-                if abort_reason == "budget_critical_halt"
-                else "exhausted this harness's own retry ceiling with the sprint close-out "
-                "(report produced, release PR) still stalled"
-            )
+            abort_log_text = _abort_log_text(sprint_result, abort_reason)
             print(
                 f"--- sprint {sprint_number}/{args.sprints} {abort_log_text} - stopping run ---",
                 file=sys.stderr,

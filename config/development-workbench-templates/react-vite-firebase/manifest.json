@@ -1,0 +1,10 @@
+{
+  "description": "Vite + React frontend with Firebase Functions + Firestore backend: scaffold, install, test (Vitest), run the Vite dev server and the Firebase emulator suite for exploratory testing, and debug via Node's inspector.",
+  "additional_allowlist_hosts": [
+    "registry.npmjs.org",
+    "firebase.googleapis.com",
+    "firestore.googleapis.com",
+    "cloudfunctions.googleapis.com",
+    "www.googleapis.com"
+  ]
+}
