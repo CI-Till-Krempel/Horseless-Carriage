@@ -1,6 +1,6 @@
 # User Story
 
-- Story ID: US-0024
+- Story ID: US-0027
 - Title: Check Roadmap/GitHub Milestone Sync
 - Status: Done
 - Priority: Should
