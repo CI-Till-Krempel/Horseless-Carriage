@@ -1763,6 +1763,11 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
         test_a_preceding_issue_still_blocks_but_names_the_escape_hatch above
         already proves works correctly once an Issue is positioned ahead;
         this proves the auto-filing path now actually puts it there.
+
+        SPEC-ISSUE-0091 narrowed this to genuine blockers only - the
+        retro_action entry below is flagged priority="high" to exercise
+        that path; see test_budget.py's sibling test for the (now common)
+        priority="normal" case, which deliberately does NOT jump the queue.
         """
         from agents.scrum_team.tools.budget import _file_retro_items_as_issues
 
@@ -1772,7 +1777,10 @@ class TestStartFeatureBranchOrderingGate(unittest.TestCase):
             {"id": "US-0003", "title": "Delete task", "stages_completed": ["Draft", "Ready"]},
         ])
         tool_context.state["retro_actions"] = [
-            {"action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA", "status": "open"}
+            {
+                "action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA",
+                "status": "open", "priority": "high",
+            }
         ]
         tool_context.state["kpi_update_count"] = 1
 

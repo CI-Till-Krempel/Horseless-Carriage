@@ -894,6 +894,19 @@ def add_impediment(
     immediately raised as a general_blockers entry, escalated to the human
     if `priority="high"`). See _RETRO_CATEGORIES' own comment above.
 
+    `priority` (SPEC-ISSUE-0091): for category="human", "high" means
+    escalating to the human immediately would otherwise waste real further
+    work (see above). For category="technical", "high" means this is a
+    genuine blocker to the REST of this sprint's work right now (e.g. the
+    build/test suite is broken, or another story can't proceed without it)
+    - _file_retro_items_as_issues (tools/budget.py) only auto-prioritizes
+    the resulting Issue "Must" and moves it to the front of the one-story-
+    at-a-time queue when this is "high". The default "normal" still gets
+    filed as a real, trackable Issue (GH issue #164), just at "Should"
+    priority with no queue-jump, so a routine process/tooling finding no
+    longer displaces this sprint's already-planned stories the way every
+    finding used to, regardless of whether it actually warranted that.
+
     `duplicate_of`/`confirmed_distinct` (SPEC-ISSUE-0084, only meaningful for
     category="technical"): call list_open_issues first - if this impediment
     is substantively the same finding as an already-open Issue, pass its id
@@ -930,7 +943,7 @@ def add_impediment(
     sprint_number = s.get("sprint_number", 0)
     imp = {
         "description": description.strip(), "owner": owner.strip(), "status": "open", "category": category,
-        "sprint_number": sprint_number,
+        "priority": priority, "sprint_number": sprint_number,
     }
     warning = None
     if category == "technical":
@@ -965,6 +978,19 @@ def add_retro_action(
     can close), or "human" (genuinely outside the team's own authority -
     immediately raised as a general_blockers entry, escalated to the human
     if `priority="high"`). See _RETRO_CATEGORIES' own comment above.
+
+    `priority` (SPEC-ISSUE-0091): for category="human", "high" means
+    escalating to the human immediately would otherwise waste real further
+    work (see above). For category="technical", "high" means this is a
+    genuine blocker to the REST of this sprint's work right now (e.g. the
+    build/test suite is broken, or another story can't proceed without it)
+    - _file_retro_items_as_issues (tools/budget.py) only auto-prioritizes
+    the resulting Issue "Must" and moves it to the front of the one-story-
+    at-a-time queue when this is "high". The default "normal" still gets
+    filed as a real, trackable Issue (GH issue #164), just at "Should"
+    priority with no queue-jump, so a routine process/tooling finding no
+    longer displaces this sprint's already-planned stories the way every
+    finding used to, regardless of whether it actually warranted that.
 
     `duplicate_of`/`confirmed_distinct` (SPEC-ISSUE-0084, only meaningful for
     category="technical"): call list_open_issues first - if this action is
@@ -1007,6 +1033,7 @@ def add_retro_action(
         "success_metric": success_metric.strip(),
         "status": "open",
         "category": category,
+        "priority": priority,
         "sprint_number": sprint_number,
     }
     warning = None
