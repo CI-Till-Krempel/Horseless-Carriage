@@ -89,7 +89,7 @@ Stories:
 - [x] [US-0025] Enforce Semantic Versioning and Snapshot Suffix (GH-501)
 - [x] [GH-502] Support pointing Horseless Carriage at a local-network Ollama server (LAN IP/hostname)
 - [x] [GH-272] Sync GitHub Issues and versions to roadmap
-- [ ] [GH-295] Issues are reported but not fixed, or marked as Won't
+- [x] [GH-295] Issues are reported but not fixed, or marked as Won't
 - [ ] [GH-273] Release testing (QA audit/regression gate before shipping)
 - [ ] [GH-452] Approval of the sprint should be done after creating the sprint PR
 - [ ] [GH-316] Use CODEOWNER mechanism to enforce reviews for files that require human approval
