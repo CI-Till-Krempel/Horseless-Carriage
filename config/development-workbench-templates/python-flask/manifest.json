@@ -1,0 +1,7 @@
+{
+  "description": "Python + Flask: scaffold, install, test (pytest/pytest-flask), run, debug (debugpy), and exploratory-test (HTTPie/`flask shell`) a Flask application.",
+  "additional_allowlist_hosts": [
+    "pypi.org",
+    "files.pythonhosted.org"
+  ]
+}

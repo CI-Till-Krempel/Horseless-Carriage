@@ -23,13 +23,16 @@ This script will:
    loudly if it's actually running on CPU (see lib_docker.ollama_gpu_status)
    - a driver/WSL2 misconfiguration otherwise fails silently. If
    OLLAMA_HOST_MODE=true instead (GH issue #93: Ollama running natively on
-   the host, e.g. for macOS GPU/Metal support), checks host reachability
-   directly instead (see lib_docker.host_ollama_reachable). See also
-   print_ollama_gpu_confirmation() below (GH issue #235): a standalone
+   the host, e.g. for macOS GPU/Metal support) or OLLAMA_REMOTE_ENABLED=true
+   (GH issue #502: Ollama running on a separate machine elsewhere on the
+   local network instead), checks reachability directly instead (see
+   lib_docker.host_ollama_reachable) - against localhost for host mode, or
+   the configured OLLAMA_REMOTE_HOST/OLLAMA_REMOTE_PORT for remote mode. See
+   also print_ollama_gpu_confirmation() below (GH issue #235): a standalone
    version of this same check that run.py calls right after the stack it
-   actually started comes up, so a GPU/host-Ollama fallback is surfaced
-   proactively even on a plain `python3 run.py` (which gates on check()
-   with skip_llm_probe=True, before any container exists to check).
+   actually started comes up, so a GPU/host-Ollama/remote-Ollama fallback is
+   surfaced proactively even on a plain `python3 run.py` (which gates on
+   check() with skip_llm_probe=True, before any container exists to check).
 
 Every problem found is collected into a punch list of ActionableItems (see
 check()) instead of stopping at the first one - a user fixing configuration
@@ -526,6 +529,13 @@ def check(
     print(f"Active provider ({active_config_path.relative_to(repo_root)}): {active_provider}")
 
     host_ollama_mode = active_provider == "local" and env.get("OLLAMA_HOST_MODE") == "true"
+    # GH issue #502: Ollama running on a separate LAN machine instead of the
+    # dockerized `ollama` service - same "no container to inspect" situation
+    # as host mode, just a different (user-supplied) address to probe.
+    remote_ollama_mode = active_provider == "local" and env.get("OLLAMA_REMOTE_ENABLED") == "true"
+    remote_ollama_host = env.get("OLLAMA_REMOTE_HOST", "")
+    remote_ollama_port = env.get("OLLAMA_REMOTE_PORT") or "11434"
+    remote_ollama_url = f"http://{remote_ollama_host}:{remote_ollama_port}"
 
     key_var = lib_llm_test.llm_provider_key_var(active_provider)
     if key_var:
@@ -533,7 +543,12 @@ def check(
         if lib_env.is_placeholder(key_value):
             warn(f"{key_var} is not set (or still a placeholder) in .env. Run python3 setup_llm.py to configure it.")
     elif active_provider == "local" and not env.get("OLLAMA_MODEL"):
-        where = "your host's Ollama install" if host_ollama_mode else "the ollama container"
+        if host_ollama_mode:
+            where = "your host's Ollama install"
+        elif remote_ollama_mode:
+            where = "the configured remote Ollama server"
+        else:
+            where = "the ollama container"
         print(f"NOTE: OLLAMA_MODEL is not set in .env - {where} will default to llama3.1:8b.")
 
     if not skip_llm_probe and host_ollama_mode:
@@ -542,6 +557,12 @@ def check(
         else:
             warn("Host Ollama (GH issue #93 host mode) is not reachable at http://localhost:11434. "
                  "Run `ollama serve` on this machine before starting the stack.")
+    elif not skip_llm_probe and remote_ollama_mode:
+        if lib_docker.host_ollama_reachable(remote_ollama_url):
+            print(f"Remote Ollama: reachable at {remote_ollama_url}.")
+        else:
+            warn(f"Remote Ollama (GH issue #502 remote mode) is not reachable at {remote_ollama_url}. "
+                 "Make sure it's running and reachable from this machine before starting the stack.")
     elif not skip_llm_probe and active_provider == "local" and env.get("OLLAMA_GPU_ENABLED") == "true":
         # GH issue #169: query under the same project name run.py's dev
         # stack actually starts under, so this sees the right containers.
@@ -581,8 +602,8 @@ def check(
         # GH issue #169: match run.py's own dev-stack project name, so a
         # copy-pasted manual start stays recognizable as the same stack.
         project_flag = " ".join(lib_docker.compose_project_args("dev", repo_root))
-        if host_ollama_mode:
-            print(f"  Start it with: docker compose -f docker-compose.local.yaml -f docker-compose.local-hostollama.yaml {project_flag} up -d db litellm")
+        if host_ollama_mode or remote_ollama_mode:
+            print(f"  Start it with: docker compose -f docker-compose.local-hostollama.yaml {project_flag} up -d db litellm")
         elif active_provider == "local":
             print(f"  Start it with: docker compose -f docker-compose.local.yaml {project_flag} up -d db litellm ollama")
         else:
@@ -634,6 +655,15 @@ def print_ollama_gpu_confirmation(repo_root: Path) -> None:
         else:
             print("⚠ Host Ollama (GH issue #93 host mode) is not reachable at http://localhost:11434 - "
                   "run `ollama serve` on this machine, then re-check with: python3 doctor.py")
+        return
+
+    if env.get("OLLAMA_REMOTE_ENABLED") == "true":
+        remote_url = f"http://{env.get('OLLAMA_REMOTE_HOST', '')}:{env.get('OLLAMA_REMOTE_PORT') or '11434'}"
+        if lib_docker.host_ollama_reachable(remote_url):
+            print(f"✓ Remote Ollama reachable at {remote_url}.")
+        else:
+            print(f"⚠ Remote Ollama (GH issue #502 remote mode) is not reachable at {remote_url} - "
+                  "make sure it's running and reachable from this machine, then re-check with: python3 doctor.py")
         return
 
     if env.get("OLLAMA_GPU_ENABLED") != "true":

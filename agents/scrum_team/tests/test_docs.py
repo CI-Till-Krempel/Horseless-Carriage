@@ -274,6 +274,36 @@ class TestSprintFilesTouched(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("propose_framework_change", result["message"])
 
+    def test_write_file_refuses_the_workbench_mcp_config_path_under_hc(self):
+        """US-0021: propose_framework_change now also writes
+        .hc/workbench-mcp.json (a per-template MCP config fragment) - same
+        .hc/ guardrail as workbench-setup.sh, direct write_file must still
+        refuse it just as it would any other .hc/ path."""
+        result = write_file(".hc/workbench-mcp.json", '{"mcpServers": {}}', tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_framework_change", result["message"])
+        self.assertFalse((self.repo_root / ".hc" / "workbench-mcp.json").exists())
+
+    def test_write_file_refuses_the_adr_0002_allowlist_file_path_under_hc(self):
+        """US-0021 deliberately does NOT implement ADR-0002's tracked
+        .hc/allowlist.filter design (still PR-body-only allowlist
+        handling - see propose_framework_change's own docstring) - but even
+        if a future story does, this path must already be refused the same
+        way every other .hc/ path is, with no extra code needed (ADR-0002
+        decision item #3 notes this explicitly)."""
+        result = write_file(".hc/allowlist.filter", "^example\\.com$\n", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("propose_framework_change", result["message"])
+        self.assertFalse((self.repo_root / ".hc" / "allowlist.filter").exists())
+
+    def test_delete_file_refuses_the_workbench_mcp_config_path_under_hc(self):
+        (self.repo_root / ".hc").mkdir(parents=True, exist_ok=True)
+        (self.repo_root / ".hc" / "workbench-mcp.json").write_text("{}", encoding="utf-8")
+        result = delete_file(".hc/workbench-mcp.json", tool_context=self.tool_context)
+        self.assertEqual(result["status"], "error")
+        self.assertIn(".hc/", result["message"])
+        self.assertTrue((self.repo_root / ".hc" / "workbench-mcp.json").exists())
+
     def test_write_file_allows_paths_that_merely_start_with_hc(self):
         """A real sibling directory/file that happens to share .hc's prefix
         (e.g. '.hc-notes/foo.md') must not be caught by the .hc/ guardrail -

@@ -117,6 +117,20 @@ class TestHostOllamaReachable:
         monkeypatch.setattr(lib_docker.urllib.request, "urlopen", raise_url_error)
         assert lib_docker.host_ollama_reachable() is False
 
+    def test_probes_a_custom_base_url(self, monkeypatch):
+        """GH issue #502: doctor.py reuses this same check for a remote LAN
+        Ollama server, passing the user-configured host/port instead of the
+        localhost default - it must actually probe that URL, not the
+        hardcoded one."""
+        requested = []
+
+        def fake_urlopen(url, timeout=None):
+            requested.append(url)
+            return _FakeResponse(200)
+        monkeypatch.setattr(lib_docker.urllib.request, "urlopen", fake_urlopen)
+        assert lib_docker.host_ollama_reachable("http://192.168.1.50:11434") is True
+        assert requested == ["http://192.168.1.50:11434"]
+
 
 class TestComposeRunningServices:
     def test_returns_service_names_from_json_lines(self, monkeypatch):

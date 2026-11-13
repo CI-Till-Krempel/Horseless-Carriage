@@ -1,0 +1,6 @@
+{
+  "description": "Minimal fixture template for automated tests only - not a real reference workbench. See US-0022 for the actual python-flask/kotlin-multiplatform/react-vite-firebase templates.",
+  "additional_allowlist_hosts": [
+    "fixture.example.test"
+  ]
+}

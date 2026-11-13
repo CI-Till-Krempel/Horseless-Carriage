@@ -11,6 +11,8 @@ from ..helpers import (
     required_pre_implementation_approval,
     sprint_backlog_pr_missing,
     ready_backlog_shortfall,
+    stale_ungroomed_issues,
+    stale_issue_sprint_threshold,
 )
 
 # GH #415: the version a newly-committed sprint story defaults to if it has
@@ -1130,6 +1132,36 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
             ),
         }
 
+    # GH issue #295 ("Issues are reported but not fixed, or marked as
+    # Won't"): the check above only ever catches an Issue sitting
+    # unaddressed at "Must" priority - exactly the auto-filed, auto-"Must"
+    # path SPEC-ISSUE-0076/0078/0081/0084 already made genuinely work. At
+    # the "Product" interaction level (a real, human-driven sprint),
+    # _file_retro_items_as_issues deliberately leaves priority for the
+    # human Product Owner to set via their own grooming - so an Issue
+    # filed there (or anywhere, via a direct upsert_issue call) that never
+    # gets prioritized/planned, and never gets an explicit "Won't" either,
+    # falls through every existing gate and just sits at Draft forever.
+    # stale_ungroomed_issues (helpers.py) is the backstop: an Issue open
+    # `STALE_ISSUE_SPRINT_THRESHOLD`+ sprints with no "Ready" and no honest
+    # "Won't" decision blocks this same publish gate, forcing one or the
+    # other before Sprint Planning can close.
+    stale_issues = stale_ungroomed_issues(state.get("product_backlog", []) or [], sprint_number)
+    if stale_issues:
+        ids = ", ".join(sorted(i.get("id") or i.get("title") or "(no id)" for i in stale_issues))
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot create the Sprint Backlog PR yet - {len(stale_issues)} Issue(s) have sat "
+                f"unplanned for {stale_issue_sprint_threshold()}+ sprints with no explicit decision made "
+                f"either way: {ids}. For each one, either plan it in - "
+                "advance_story_stage(id_or_title, 'Ready') - or make the call explicit and honest - "
+                "set_priority(id_or_title, \"Won't\", justification=\"...\") - before retrying. An Issue "
+                "that's reported but never fixed AND never explicitly declined is the exact silent-"
+                "failure mode GH #295 found; this refuses to let one sit forever either way."
+            ),
+        }
+
     # A real eval run showed "start implementing" was only ever a prompt
     # instruction away from "the backlog barely has any Ready work at all" -
     # this is the single choke point (Dev Team can't start until this PR
@@ -1982,6 +2014,32 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
                 "push": land_res,
             }
 
+    # GH-501: SemVer + snapshot-suffix enforcement for the target product's
+    # own version (tools/versioning.py) - entirely opt-in, same as changelog_
+    # warning above: a project that never calls propose_version_bump sees no
+    # behavior change here at all. release_version_advisory re-checks the
+    # increment against whatever the backlog's change types call for *right
+    # now* (advisory only - see that function's own docstring for why this,
+    # not a hard block, is this check's enforcement point); finalize_release_
+    # version then strips product_version's '-snapshot' suffix and advances
+    # product_released_version, the actual release/tag-time moment GH-501
+    # requires the suffix come off.
+    from .versioning import finalize_release_version, release_version_advisory
+    version_warning = release_version_advisory(tool_context=tool_context)
+    finalize_res = finalize_release_version(tool_context=tool_context)
+    if finalize_res.get("status") != "ok":
+        # Only reachable if product_version was set to something finalize_
+        # release_version can't even parse - propose_version_bump's own
+        # validation should already prevent that, so this is a defensive
+        # hard-stop against a malformed value set some other way, not the
+        # normal "convention violated" path (that's version_warning above).
+        return {
+            "status": "error",
+            "message": f"Cannot create a release PR - {finalize_res.get('message')}",
+        }
+    if finalize_res.get("finalized"):
+        body = body.rstrip("\n") + f"\n\n---\n**Release version:** v{finalize_res['version']}\n"
+
     fetch_res = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
 
     # base/head are both already fully-resolved branch names (an eval run
@@ -2049,6 +2107,8 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     }
     if changelog_warning:
         result["changelog_warning"] = changelog_warning
+    if version_warning:
+        result["version_warning"] = version_warning
     return result
 
 def _record_pr_review_call(tool_context) -> None:
