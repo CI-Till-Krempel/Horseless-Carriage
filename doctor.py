@@ -23,13 +23,20 @@ This script will:
    loudly if it's actually running on CPU (see lib_docker.ollama_gpu_status)
    - a driver/WSL2 misconfiguration otherwise fails silently. If
    OLLAMA_HOST_MODE=true instead (GH issue #93: Ollama running natively on
-   the host, e.g. for macOS GPU/Metal support), checks host reachability
-   directly instead (see lib_docker.host_ollama_reachable). See also
-   print_ollama_gpu_confirmation() below (GH issue #235): a standalone
+   the host, e.g. for macOS GPU/Metal support) or OLLAMA_REMOTE_ENABLED=true
+   (GH issue #502: Ollama running on a separate machine elsewhere on the
+   local network instead), checks reachability directly instead (see
+   lib_docker.host_ollama_reachable) - against localhost for host mode, or
+   the configured OLLAMA_REMOTE_HOST/OLLAMA_REMOTE_PORT for remote mode. See
+   also print_ollama_gpu_confirmation() below (GH issue #235): a standalone
    version of this same check that run.py calls right after the stack it
-   actually started comes up, so a GPU/host-Ollama fallback is surfaced
-   proactively even on a plain `python3 run.py` (which gates on check()
-   with skip_llm_probe=True, before any container exists to check).
+   actually started comes up, so a GPU/host-Ollama/remote-Ollama fallback is
+   surfaced proactively even on a plain `python3 run.py` (which gates on
+   check() with skip_llm_probe=True, before any container exists to check).
+7. Flag any `agents/scrum_team/prompt_modules/*.md` steering document over
+   250 lines (GH issue #513 - context-window optimizations) - checked
+   against this project's own checkout (repo_root), not a target project's
+   STATE_REPO_PATH.
 
 Every problem found is collected into a punch list of ActionableItems (see
 check()) instead of stopping at the first one - a user fixing configuration
@@ -72,6 +79,14 @@ _UNSUPPORTED_ECOSYSTEM_MANIFESTS = (
     ("*.sln", ".NET"),
 )
 _NEW_ISSUE_URL = "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new"
+
+# GH issue #513 (context-window optimizations): the issue's own text states
+# the constraint directly - "the steering documents should be less than 250
+# lines" - so a role's STATIC system prompt (prompts.py's own
+# guardrails.md + workflow.md concatenation) doesn't itself eat into the
+# ~150k-token "sweet spot" conversation budget the issue also cites, before
+# any dynamic session content (transcript, tool results) is even added.
+_PROMPT_MODULE_MAX_LINES = 250
 
 
 def _detect_unsupported_ecosystem(state_repo_path: Path) -> str | None:
@@ -138,6 +153,39 @@ class DoctorResult:
             print(f"[{item.severity.upper()}] {item.message}")
 
 
+def _check_prompt_module_line_counts(repo_root: Path, warn) -> None:
+    """
+    GH issue #513 (context-window optimizations): mechanically flags every
+    `agents/scrum_team/prompt_modules/*.md` steering document currently
+    over `_PROMPT_MODULE_MAX_LINES` - this project's own framework-level
+    files, not anything in a target project's STATE_REPO_PATH, so this
+    runs unconditionally against repo_root regardless of whether a state
+    repo is configured at all.
+
+    Non-blocking (warning, not error): flagging a file that's grown past
+    the guideline is valuable on its own even when safely trimming it is a
+    separate, more careful piece of work - this never forces a rewrite.
+
+    Silently does nothing if the directory doesn't exist (e.g. a
+    repo_root that isn't a real Horseless Carriage checkout, as in several
+    existing doctor.py tests' bare tmp_path fixtures) - this check has
+    nothing to do with a specific installation's configuration, so there's
+    no actionable error to raise either way.
+    """
+    prompt_modules_dir = repo_root / "agents" / "scrum_team" / "prompt_modules"
+    if not prompt_modules_dir.is_dir():
+        return
+    for path in sorted(prompt_modules_dir.glob("*.md")):
+        line_count = sum(1 for _ in path.open("r", encoding="utf-8", errors="replace"))
+        if line_count > _PROMPT_MODULE_MAX_LINES:
+            warn(
+                f"Steering document {path.relative_to(repo_root)} is {line_count} lines, over this "
+                f"project's own {_PROMPT_MODULE_MAX_LINES}-line guideline for prompt modules (GH issue "
+                "#513) - a role's static system prompt this large leaves less headroom in the model's "
+                "context window before any dynamic session content is even added. Consider trimming it."
+            )
+
+
 def check(
     repo_root: Path,
     proxy_base_url: str = "http://localhost:4000",
@@ -181,6 +229,10 @@ def check(
         items.append(ActionableItem("warning", msg))
 
     print("--- Running Horseless Carriage Doctor ---")
+
+    # 0. Check this project's own steering-document (prompt_modules/) line
+    # counts - GH issue #513, see _check_prompt_module_line_counts.
+    _check_prompt_module_line_counts(repo_root, warn)
 
     # 1. Check for Docker and Docker Compose
     docker_ok = shutil.which("docker") is not None
@@ -526,6 +578,13 @@ def check(
     print(f"Active provider ({active_config_path.relative_to(repo_root)}): {active_provider}")
 
     host_ollama_mode = active_provider == "local" and env.get("OLLAMA_HOST_MODE") == "true"
+    # GH issue #502: Ollama running on a separate LAN machine instead of the
+    # dockerized `ollama` service - same "no container to inspect" situation
+    # as host mode, just a different (user-supplied) address to probe.
+    remote_ollama_mode = active_provider == "local" and env.get("OLLAMA_REMOTE_ENABLED") == "true"
+    remote_ollama_host = env.get("OLLAMA_REMOTE_HOST", "")
+    remote_ollama_port = env.get("OLLAMA_REMOTE_PORT") or "11434"
+    remote_ollama_url = f"http://{remote_ollama_host}:{remote_ollama_port}"
 
     key_var = lib_llm_test.llm_provider_key_var(active_provider)
     if key_var:
@@ -533,7 +592,12 @@ def check(
         if lib_env.is_placeholder(key_value):
             warn(f"{key_var} is not set (or still a placeholder) in .env. Run python3 setup_llm.py to configure it.")
     elif active_provider == "local" and not env.get("OLLAMA_MODEL"):
-        where = "your host's Ollama install" if host_ollama_mode else "the ollama container"
+        if host_ollama_mode:
+            where = "your host's Ollama install"
+        elif remote_ollama_mode:
+            where = "the configured remote Ollama server"
+        else:
+            where = "the ollama container"
         print(f"NOTE: OLLAMA_MODEL is not set in .env - {where} will default to llama3.1:8b.")
 
     if not skip_llm_probe and host_ollama_mode:
@@ -542,6 +606,12 @@ def check(
         else:
             warn("Host Ollama (GH issue #93 host mode) is not reachable at http://localhost:11434. "
                  "Run `ollama serve` on this machine before starting the stack.")
+    elif not skip_llm_probe and remote_ollama_mode:
+        if lib_docker.host_ollama_reachable(remote_ollama_url):
+            print(f"Remote Ollama: reachable at {remote_ollama_url}.")
+        else:
+            warn(f"Remote Ollama (GH issue #502 remote mode) is not reachable at {remote_ollama_url}. "
+                 "Make sure it's running and reachable from this machine before starting the stack.")
     elif not skip_llm_probe and active_provider == "local" and env.get("OLLAMA_GPU_ENABLED") == "true":
         # GH issue #169: query under the same project name run.py's dev
         # stack actually starts under, so this sees the right containers.
@@ -581,8 +651,8 @@ def check(
         # GH issue #169: match run.py's own dev-stack project name, so a
         # copy-pasted manual start stays recognizable as the same stack.
         project_flag = " ".join(lib_docker.compose_project_args("dev", repo_root))
-        if host_ollama_mode:
-            print(f"  Start it with: docker compose -f docker-compose.local.yaml -f docker-compose.local-hostollama.yaml {project_flag} up -d db litellm")
+        if host_ollama_mode or remote_ollama_mode:
+            print(f"  Start it with: docker compose -f docker-compose.local-hostollama.yaml {project_flag} up -d db litellm")
         elif active_provider == "local":
             print(f"  Start it with: docker compose -f docker-compose.local.yaml {project_flag} up -d db litellm ollama")
         else:
@@ -634,6 +704,15 @@ def print_ollama_gpu_confirmation(repo_root: Path) -> None:
         else:
             print("⚠ Host Ollama (GH issue #93 host mode) is not reachable at http://localhost:11434 - "
                   "run `ollama serve` on this machine, then re-check with: python3 doctor.py")
+        return
+
+    if env.get("OLLAMA_REMOTE_ENABLED") == "true":
+        remote_url = f"http://{env.get('OLLAMA_REMOTE_HOST', '')}:{env.get('OLLAMA_REMOTE_PORT') or '11434'}"
+        if lib_docker.host_ollama_reachable(remote_url):
+            print(f"✓ Remote Ollama reachable at {remote_url}.")
+        else:
+            print(f"⚠ Remote Ollama (GH issue #502 remote mode) is not reachable at {remote_url} - "
+                  "make sure it's running and reachable from this machine, then re-check with: python3 doctor.py")
         return
 
     if env.get("OLLAMA_GPU_ENABLED") != "true":

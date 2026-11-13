@@ -41,6 +41,7 @@ from .github import (
     gh_pr_status,
     gh_pr_checks,
     gh_release_create,
+    gh_issue_create,
     create_release_pr,
     gh_pr_comment,
     gh_pr_comments,
@@ -69,6 +70,7 @@ from .docs import (
     seed_repository,
 )
 from .announcements import generate_announcement
+from .versioning import propose_version_bump
 from .budget import (
     update_budgets,
     get_budget_status,

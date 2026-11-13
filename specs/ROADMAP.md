@@ -11,6 +11,13 @@ Use this living roadmap to plan releases and track user stories across states. I
 - When a release is cut, freeze the section by adding the actual tag (e.g., `v0.1.0`) and dates.
 - Every open GitHub issue should carry a milestone matching one of the versions below (or the `Research backlog` wave) — see "Sync GitHub issues and versions to roadmap" below.
 
+### Sync GitHub issues and versions to roadmap
+- This file stays the source of truth for which release a story/issue targets. This repo's real GitHub milestones (named `v0.1.0`...`v0.8.0`, one per version section below) are the GitHub-side mirror of that — not the other way around.
+- When you assign or change a GitHub issue's milestone, add or move its `[GH-NNN]` reference into the matching version section here in the same change (or as an immediate follow-up). Don't let the two silently drift apart — this already happened in practice (GH-513/GH-515 carried the `v0.3.0` milestone on GitHub before anyone added them here; GH-456 was milestoned `v0.3.0` but stayed listed under v0.5 until someone noticed by hand).
+- `python3 check_roadmap_sync.py` automates catching that drift: it fetches every open GitHub issue's milestone via `gh` and compares it against where (if anywhere) this file lists that issue, reporting any mismatch and exiting non-zero if one is found. It runs in CI (`.github/workflows/roadmap-sync.yml`) on PRs that touch this file, and on a daily schedule plus manual dispatch — the schedule/dispatch triggers exist specifically because most real drift is introduced purely on the GitHub side (a milestone changed with no accompanying PR here at all), which a PR-only trigger would never catch. Run it locally any time with `python3 check_roadmap_sync.py`.
+- Research-backlog / unplanned-backlog entries are exempt from this check (there's no single "expected" milestone for exploratory work not yet committed to a release).
+- The checker only detects drift — it never writes to GitHub or edits this file. Whichever side is correct, a human still fixes the other by hand.
+
 Legend
 - `[ID] Title` — a user story or epic reference and its short title
 - `[GH-NNN] Title` — an un-storied GitHub issue reference and its title
@@ -74,19 +81,19 @@ Goals
 - Investigate agent context-window/prompt-cache health (ADK cache-miss warning, conversation token budget).
 
 Stories:
-- [ ] [EP-0010] Pluggable Development Workbench Templates
-  - [ ] [US-0021] Introduce the Development Workbench Template Mechanism
-  - [ ] [US-0022] Ship Three Reference Development Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
-  - [ ] [US-0023] Document How to Contribute a New Development Workbench
-- [ ] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling (moved from v0.5 — largely a consequence of EP-0010 shipping)
-- [ ] [GH-501] Enforce semantic versioning and a development "snapshot" suffix
-- [ ] [GH-502] Support pointing Horseless Carriage at a local-network Ollama server (LAN IP/hostname)
-- [ ] [GH-272] Sync GitHub Issues and versions to roadmap
-- [ ] [GH-295] Issues are reported but not fixed, or marked as Won't
-- [ ] [GH-273] Release testing (QA audit/regression gate before shipping)
+- [x] [EP-0010] Pluggable Development Workbench Templates
+  - [x] [US-0021] Introduce the Development Workbench Template Mechanism
+  - [x] [US-0022] Ship Three Reference Development Workbenches (Flask, Kotlin Multiplatform, React+Firebase)
+  - [x] [US-0023] Document How to Contribute a New Development Workbench
+- [x] [GH-456] Document the list of supported tech stacks and let the architect set up the necessary bootstrapping and tooling (moved from v0.5 — largely a consequence of EP-0010 shipping)
+- [x] [US-0025] Enforce Semantic Versioning and Snapshot Suffix (GH-501)
+- [x] [GH-502] Support pointing Horseless Carriage at a local-network Ollama server (LAN IP/hostname)
+- [x] [GH-272] Sync GitHub Issues and versions to roadmap
+- [x] [GH-295] Issues are reported but not fixed, or marked as Won't
+- [x] [GH-273] Release testing (QA audit/regression gate before shipping) - see [US-0029]
 - [ ] [GH-452] Approval of the sprint should be done after creating the sprint PR
-- [ ] [GH-316] Use CODEOWNER mechanism to enforce reviews for files that require human approval
-- [ ] [GH-513] Context window optimizations (per-story/task conversations, leaner steering docs, prompt-size metrics)
+- [x] [GH-316] Use CODEOWNER mechanism to enforce reviews for files that require human approval
+- [x] [GH-513] Context window optimizations (per-story/task conversations, leaner steering docs, prompt-size metrics) — see [US-0033]: delivered the metrics/steering-doc-size pieces; "new conversation per story/subtask instead of per sprint" is explicitly deferred future work (major session-lifecycle change), not done by this story
 - [x] [GH-515] Investigate ADK performance warning: system instructions changing mid-session breaks prompt-cache alignment
 
 ### v0.4 — Security & Platform Hardening (planned)
@@ -198,7 +205,7 @@ Notes
 
 - v0.1: EP-0001, US-0001, US-0002, US-0003, US-0004, EP-0002, US-0005, US-0006, US-0007, US-0008, EP-0003, US-0009, US-0010, US-0011
 - v0.2: EP-0004, US-0012, US-0013, US-0014, EP-0005, US-0015, US-0016, US-0017, EP-0006, US-0018, US-0019, US-0020
-- v0.3: EP-0010, US-0021, US-0022, US-0023, GH-456, GH-501, GH-502, GH-272, GH-295, GH-273, GH-452, GH-316, GH-513, GH-515, US-0032
+- v0.3: EP-0010, US-0021, US-0022, US-0023, GH-456, US-0025, GH-502 (US-0026), GH-272, GH-295, GH-273 (US-0029), GH-452, GH-316 (US-0031), GH-513 (US-0033), GH-515 (US-0032)
 - v0.4: GH-503, GH-179, GH-180, GH-300, GH-304, GH-286
 - v0.5: GH-453, GH-278, GH-312, GH-188, GH-293
 - v0.6: GH-284, GH-285, GH-297, GH-299

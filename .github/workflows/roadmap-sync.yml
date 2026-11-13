@@ -1,0 +1,42 @@
+name: Roadmap/Milestone Sync Check
+
+# GH issue #272: catches drift between specs/ROADMAP.md's per-version
+# [GH-NNN] lists and each open GitHub issue's actual milestone (see
+# check_roadmap_sync.py's own docstring for the concrete, already-observed
+# drift this exists to catch - #513/#515/#456).
+#
+# Runs on PRs that touch the roadmap (or the checker itself) so a change
+# to ROADMAP.md is validated immediately, AND on a daily schedule plus
+# manual dispatch - most real drift is introduced purely on the GitHub
+# side (someone assigns/changes a milestone with no accompanying PR at
+# all), which a PR-only trigger would never catch.
+on:
+  pull_request:
+    paths:
+      - 'specs/ROADMAP.md'
+      - 'check_roadmap_sync.py'
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  check:
+    name: Check roadmap/GitHub milestone sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run roadmap/milestone sync check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 check_roadmap_sync.py

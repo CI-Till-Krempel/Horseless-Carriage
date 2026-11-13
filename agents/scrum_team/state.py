@@ -51,6 +51,20 @@ class ScrumState(BaseModel):
     sprint_files_touched: List[str] = Field(default_factory=list)
     source_content_change_count: int = 0
     hc_version: str = "unknown"
+    # GH-501: the *target* product's own semver string - "" until
+    # propose_version_bump is first called (tools/versioning.py). Carries a
+    # "-snapshot" suffix while in development; create_release_pr strips it
+    # (via finalize_release_version) at actual release time, at which point
+    # this and product_released_version converge.
+    product_version: str = ""
+    # The last version actually released (always suffix-free) - the baseline
+    # propose_version_bump/finalize_release_version validate the next bump
+    # against. "" means no release has gone out yet (treated as "0.0.0").
+    product_released_version: str = ""
+    # The change_type ("breaking"/"feature"/"fix") propose_version_bump
+    # validated product_version against - re-derived (not re-used) at
+    # finalize/advisory time from the current sprint_backlog.
+    product_version_change_type: str = ""
     retro_baseline: int = 0
     human_approvals: List[Dict[str, Any]] = Field(default_factory=list)
     sprint_approval_baseline: int = 0
@@ -156,3 +170,18 @@ class ScrumState(BaseModel):
     # comment for why this isn't a hard gate like the specific-story-ID
     # overclaim check right above it.
     accepted_count_baseline: int = 0
+    # GH-273: whole-increment QA release audit (run_release_audit,
+    # tools/quality.py) - distinct from test_suite_run_count/kpi_update_count
+    # above (per-story/per-sprint signals). Bumped on EVERY run_release_audit
+    # call (same "every call is equally real evidence" pattern those already
+    # use); release_audit_baseline is the snapshot create_release_pr takes on
+    # its own success, so a FRESH audit (run_count > baseline) is required
+    # again for the NEXT release - same "must be NEW since last release"
+    # pattern release_approval_baseline already uses just above.
+    release_audit_run_count: int = 0
+    release_audit_baseline: int = 0
+    # Full result of the most recent run_release_audit call - create_release_pr
+    # reads blocking_defects from this (hard-blocks at every interaction
+    # level, regardless of release_audit_baseline) and advisory_findings
+    # (surfaced in the release PR body, never silently dropped).
+    last_release_audit_result: Optional[Dict[str, Any]] = None

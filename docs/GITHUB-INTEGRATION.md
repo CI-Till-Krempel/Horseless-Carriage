@@ -128,6 +128,18 @@ the loop at all), the harness auto-merges this one PR itself, standing in for th
 isolates each run's own `main`/`develop` pair so runs never contaminate each other or your real
 branches.
 
+Before that, at those same levels, QA must also have called `run_release_audit()` fresh this
+cycle - a whole-increment regression/gap pass (full test suite, build, security scan,
+stubbed-test sweep) distinct from each story's own per-story Tested-stage check. A real defect
+it finds (`blocking_defects`) refuses `create_release_pr` unconditionally, at **every**
+interaction level including CEO/EVAL - a genuinely broken build or failing test suite is never
+shipped "clean" regardless of who's driving the release. A judgment-call finding
+(`advisory_findings` - e.g. a security-scan hit, a stubbed test) is never hard-blocked, but
+`create_release_pr` appends every one of these to the PR body itself under "Known Issues
+(Release Audit)", and each is filed as a tracked Issue (`specs/requirements/`, the backlog) and
+best-effort as a real GitHub issue too (`gh_issue_create`) - see `run_release_audit`
+(`agents/scrum_team/tools/quality.py`).
+
 # This repo's own GitHub scaffolding
 
 Separate from the GitHub *integration* above (how the agents authenticate against
@@ -147,8 +159,26 @@ project:
   (see `eval/adk/README.md`).
 - `.github/ISSUE_TEMPLATE/` — bug report and feature request templates.
 - `.github/PULL_REQUEST_TEMPLATE.md` — PR checklist emphasizing documentation updates.
-- `.github/CODEOWNERS` — edit to your team.
+- `.github/CODEOWNERS` (GH-316) — designates `@CI-Till-Krempel` as required reviewer for
+  sensitive paths: `.github/workflows/` (CI/release automation), the CODEOWNERS file itself,
+  `config/github_config.yaml` (repo-policy notes), `config/net-proxy/` (sandboxed dev/eval
+  network allowlist), the `.env*.example`/`.env.test` templates, and `RELEASE.md`/`SECURITY.md`
+  (process docs). Each entry carries a one-line comment in the file explaining why that path
+  needs a human look.
 - `config/github_config.yaml` — declarative notes on intended repo policy (branch protection, etc.) for humans setting up the GitHub repo's settings by hand; nothing in the codebase applies it automatically.
+
+**CODEOWNERS is inert until a human flips one more switch.** Having a `.github/CODEOWNERS` file
+does **not**, by itself, block anything — GitHub only *enforces* the listed reviewers once
+"Require review from Code Owners" is **also** turned on as a branch protection rule for `main`
+(GitHub web UI: **Settings → Branches → branch protection rule for `main` → check "Require
+review from Code Owners"**). That is a one-time, repo-admin-only, UI/API action with repo-wide
+blast radius — flipping it immediately changes merge requirements for *every* currently open PR
+against `main`, not just future ones. For that reason, nothing in this codebase (and no
+automation shipped by GH-316) ever calls the GitHub branch-protection API to turn it on; that
+toggle is deliberately left as a manual step for whoever administers the real repo to decide when
+to flip. Until it's flipped, `.github/CODEOWNERS` only documents *intended* reviewer assignments
+(useful on its own as living documentation of "who should look at this"), with no merge-blocking
+effect.
 
 For how the *agents themselves* authenticate to GitHub, see
 [GitHub Integration](#github-integration) above — that's the real, live

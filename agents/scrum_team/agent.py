@@ -327,6 +327,7 @@ from .tools import (
     gh_pr_comments,
     gh_pr_review,
     gh_release_create,
+    gh_issue_create,
     write_file,
     delete_file,
     create_from_template,
@@ -363,6 +364,7 @@ from .tools import (
     upsert_architecture_vision,
     upsert_user_doc,
     generate_announcement,
+    propose_version_bump,
 )
 # Not re-exported from .tools (agent-facing tools only) - this internal
 # variant is only for _sync_and_commit_roadmap_on_exhaustion below, which
@@ -375,12 +377,18 @@ from .tools.quality import (
     update_sprint_report as update_sprint_report_with_kpis,
     check_build,
     recheck_test_suite,
+    run_release_audit,
 )
 from .tools.workflow import (
     generate_workflow_diagram,
     gather_workflow_improvement_proposals,
     propose_steering_change,
     propose_framework_change,
+)
+from .tools.workbench_templates import (
+    list_workbench_templates,
+    get_workbench_template,
+    check_workbench_tooling,
 )
 from .tools.budget import (
     calculate_cost_breakdown,
@@ -2878,6 +2886,7 @@ product_owner = LlmAgent(
         upsert_story,
         upsert_epic,
         upsert_issue,
+        list_open_issues,
         update_roadmap,
         plan_backlog_item,
         advance_story_stage,
@@ -2890,6 +2899,14 @@ product_owner = LlmAgent(
         log_decision,
         create_from_template,
         gh_release_create,
+        propose_version_bump,
+        # GH-273: an escape valve, same reachability fix SPEC-ISSUE-0068
+        # already established for recheck_test_suite/Architect - Product
+        # Owner is the one who actually hits create_release_pr's
+        # release-audit gate, so it must have a direct way to satisfy it
+        # itself if QA hasn't had a turn yet, rather than being stuck
+        # unable to make progress.
+        run_release_audit,
         create_release_pr,
         create_sprint_backlog_pr,
         create_story_spec_pr,
@@ -2993,6 +3010,8 @@ qa_agent = LlmAgent(
         gh_pr_comments,
         gh_pr_review,
         check_build,
+        run_release_audit,
+        gh_issue_create,
         advance_story_stage,
         deny_review,
         raise_story_blocker,
@@ -3020,6 +3039,9 @@ architect = LlmAgent(
         raise_story_blocker,
         resolve_story_blocker,
         propose_framework_change,
+        list_workbench_templates,
+        get_workbench_template,
+        check_workbench_tooling,
         recheck_test_suite,
     ],
     **COMMON_AGENT_CALLBACKS,

@@ -195,6 +195,35 @@ class TestWriteLitellmYaml:
         setup_llm.write_litellm_yaml("openai", "gpt-4o", "gpt-4o-mini", out_file)
         assert out_file.is_file()
 
+    def test_local_ollama_remote_mode_uses_lan_host_and_port(self, tmp_path):
+        """GH issue #502: a remote LAN Ollama server is specified by a
+        user-supplied host/IP and port - every role's api_base must point
+        at that address instead of the dockerized or host-mode defaults."""
+        out_file = tmp_path / "litellm.yaml"
+        setup_llm.write_litellm_yaml(
+            "local", "llama3.1:8b", "llama3.1:8b", out_file,
+            ollama_api_base="http://192.168.1.50:11434",
+        )
+        data = yaml.safe_load(out_file.read_text())
+        for role in ("scrum-po", "scrum-eval-cheap"):
+            entry = next(e for e in data["model_list"] if e["model_name"] == role)
+            assert entry["litellm_params"]["api_base"] == "http://192.168.1.50:11434"
+
+    def test_local_ollama_remote_mode_adds_keep_alive_request_param(self, tmp_path):
+        """Same reasoning as host mode's keep_alive test - a remote server
+        has no dockerized `ollama` service for OLLAMA_KEEP_ALIVE to reach
+        either, so it must be passed as a per-request field instead."""
+        out_file = tmp_path / "litellm.yaml"
+        setup_llm.write_litellm_yaml(
+            "local", "llama3.1:8b", "llama3.1:8b", out_file,
+            ollama_api_base="http://ollama-box.lan:11434",
+            ollama_keep_alive="-1",
+        )
+        data = yaml.safe_load(out_file.read_text())
+        po_entry = next(e for e in data["model_list"] if e["model_name"] == "scrum-po")
+        assert po_entry["litellm_params"]["api_base"] == "http://ollama-box.lan:11434"
+        assert po_entry["litellm_params"]["keep_alive"] == -1
+
 
 class TestCurrentModelForRole:
     """
@@ -578,6 +607,74 @@ class TestRunConfigurationTest:
         setup_llm.run_configuration_test("local", "llama3.1:8b", env_path, dev=True)
 
         assert rebuild_calls == []
+
+    def test_remote_mode_adds_hostollama_compose_file_and_skips_ollama_service(self, tmp_path, monkeypatch):
+        """GH issue #502: a remote LAN Ollama server must reuse the same
+        no-dockerized-`ollama`-service compose topology as host mode -
+        there's no local `ollama` to start/provision either way."""
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        up_calls = []
+
+        def fake_run(cmd, **k):
+            if len(cmd) > 2 and cmd[2] == "version":
+                return subprocess.CompletedProcess(cmd, 0)
+            if "up" in cmd:
+                up_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr(setup_llm.subprocess, "run", fake_run)
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_ENABLED", "true")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_HOST", "192.168.1.50")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_PORT", "11434")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path)
+
+        assert len(up_calls) == 1
+        cmd = up_calls[0]
+        assert "docker-compose.local-hostollama.yaml" in cmd
+        assert "docker-compose.local.yaml" not in cmd
+        assert "ollama" not in cmd
+
+    def test_remote_mode_skips_ollama_image_rebuild_in_dev_mode(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+
+        rebuild_calls = []
+        monkeypatch.setattr(setup_llm.rebuild_images, "rebuild", lambda compose_args: rebuild_calls.append(compose_args) or 0)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_ENABLED", "true")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_HOST", "192.168.1.50")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path, dev=True)
+
+        assert rebuild_calls == []
+
+    def test_remote_mode_prints_configured_address_not_localhost_instructions(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(setup_llm.shutil, "which", lambda cmd: "/usr/bin/docker")
+        monkeypatch.setattr(setup_llm.subprocess, "run", lambda cmd, **k: subprocess.CompletedProcess(cmd, 0))
+        monkeypatch.setattr(setup_llm.lib_docker, "maybe_stop_existing_stack", lambda compose_args: None)
+        monkeypatch.setattr(setup_llm.lib_llm_test, "llm_wait_for_proxy", lambda *a, **k: False)
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_ENABLED", "true")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_HOST", "192.168.1.50")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_PORT", "11434")
+
+        setup_llm.run_configuration_test("local", "llama3.1:8b", env_path)
+
+        out = capsys.readouterr().out
+        assert "http://192.168.1.50:11434" in out
+        assert "`ollama serve` is running on this machine" not in out
 
     def test_dev_mode_rebuilds_ollama_before_starting_it_for_local_provider(self, tmp_path, monkeypatch):
         """
@@ -1250,12 +1347,13 @@ class TestRunLocalProviderOrdering:
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".env.local.example").write_text("")
         calls = []
-        # Model choice, "run natively on host?" (declined), "enable GPU?"
-        # (declined) - declining host mode is what makes the GPU question
-        # get asked at all (see run_local_provider: skipped entirely in
-        # host mode). Fixed to non-macOS so this doesn't depend on which
-        # OS actually runs the test.
-        answers = iter(["1", "n", "n"])
+        # Model choice, "run natively on host?" (declined), "use a remote
+        # LAN Ollama server?" (declined), "enable GPU?" (declined) -
+        # declining both host mode and remote mode is what makes the GPU
+        # question get asked at all (see run_local_provider: skipped
+        # entirely in either mode). Fixed to non-macOS so this doesn't
+        # depend on which OS actually runs the test.
+        answers = iter(["1", "n", "n", "n"])
 
         monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
         monkeypatch.setattr(setup_llm.sys, "platform", "linux")
@@ -1268,3 +1366,116 @@ class TestRunLocalProviderOrdering:
         setup_llm.run_local_provider(dev=False)
 
         assert calls == ["write_yaml", "project_settings", "run_test"]
+
+
+class TestRunLocalProviderRemoteMode:
+    """
+    Acceptance Criteria (GH issue #502): choosing the new "remote LAN Ollama
+    server" option prompts for a host/IP and (optionally) a port, writes
+    them to .env, generates litellm.local-ollama.yaml with every role's
+    api_base pointing at that address, and skips both host-native mode and
+    dockerized GPU acceleration entirely.
+    """
+
+    def _run(self, monkeypatch, tmp_path, answers, dev=False):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.local.example").write_text("")
+        it = iter(answers)
+        monkeypatch.setattr("builtins.input", lambda _prompt="": next(it))
+        monkeypatch.setattr(setup_llm.sys, "platform", "linux")
+        monkeypatch.setattr(setup_llm, "detect_nvidia_gpu", lambda: False)
+        monkeypatch.setattr(setup_llm, "prompt_project_settings", lambda *a, **k: None)
+        monkeypatch.setattr(setup_llm, "run_configuration_test", lambda *a, **k: None)
+        monkeypatch.setattr(setup_llm.lib_docker, "postgres_volume_exists", lambda *a, **k: None)
+        setup_llm.run_local_provider(dev=dev)
+        return tmp_path / ".env"
+
+    def test_remote_mode_prompts_for_host_and_port_and_writes_env(self, monkeypatch, tmp_path):
+        # Model choice, "run natively on host?" (declined), "use a remote
+        # LAN Ollama server?" (accepted), host, port.
+        answers = ["1", "n", "y", "192.168.1.50", "11500"]
+        env_path = self._run(monkeypatch, tmp_path, answers)
+
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_ENABLED") == "true"
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_HOST") == "192.168.1.50"
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_PORT") == "11500"
+        assert lib_env.read_env_var(env_path, "OLLAMA_HOST_MODE") == "false"
+        assert lib_env.read_env_var(env_path, "OLLAMA_GPU_ENABLED") == "false"
+
+    def test_remote_mode_port_defaults_to_11434_on_empty_input(self, monkeypatch, tmp_path):
+        answers = ["1", "n", "y", "my-gpu-box.lan", ""]
+        env_path = self._run(monkeypatch, tmp_path, answers)
+
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_HOST") == "my-gpu-box.lan"
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_PORT") == "11434"
+
+    def test_remote_mode_generates_litellm_yaml_pointing_at_configured_address(self, monkeypatch, tmp_path):
+        answers = ["1", "n", "y", "192.168.1.50", "11434"]
+        self._run(monkeypatch, tmp_path, answers)
+
+        out_file = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        data = yaml.safe_load(out_file.read_text())
+        po_entry = next(e for e in data["model_list"] if e["model_name"] == "scrum-po")
+        assert po_entry["litellm_params"]["api_base"] == "http://192.168.1.50:11434"
+
+    def test_declining_remote_mode_does_not_prompt_for_host_or_port(self, monkeypatch, tmp_path):
+        # Model choice, "run natively on host?" (declined), "use a remote
+        # LAN Ollama server?" (declined), "enable GPU?" (declined) - only 4
+        # answers; a 5th/6th consumed here would mean host/port were asked
+        # for despite declining remote mode.
+        answers = ["1", "n", "n", "n"]
+        env_path = self._run(monkeypatch, tmp_path, answers)
+
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_ENABLED") == "false"
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_HOST") == ""
+
+    def test_remote_mode_not_offered_once_host_native_mode_accepted(self, monkeypatch, tmp_path):
+        """Host-native and remote mode are mutually exclusive - accepting
+        host-native mode must not also prompt for a remote host/port."""
+        # Model choice, "run natively on host?" (accepted) - only 2 answers;
+        # a 3rd consumed here would mean the remote prompt fired anyway.
+        answers = ["1", "y"]
+        env_path = self._run(monkeypatch, tmp_path, answers)
+
+        assert lib_env.read_env_var(env_path, "OLLAMA_HOST_MODE") == "true"
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_ENABLED") == "false"
+
+    def test_rerun_prefills_previously_configured_remote_host_and_port(self, monkeypatch, tmp_path):
+        """Re-running the wizard and accepting every default (empty input)
+        must keep whatever remote host/port was already configured, not
+        reset to the generic placeholder default."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.local.example").write_text("")
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_ENABLED", "true")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_HOST", "10.0.0.9")
+        lib_env.update_env_var(env_path, "OLLAMA_REMOTE_PORT", "11999")
+
+        # Model choice (keep default), "run natively on host?" (keep
+        # default - declined), "use a remote LAN server?" (keep default -
+        # already true), host (keep default), port (keep default).
+        answers = ["", "", "", "", ""]
+        self._run(monkeypatch, tmp_path, answers)
+
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_ENABLED") == "true"
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_HOST") == "10.0.0.9"
+        assert lib_env.read_env_var(env_path, "OLLAMA_REMOTE_PORT") == "11999"
+
+    def test_remote_mode_keep_alive_passed_through_as_request_param(self, monkeypatch, tmp_path):
+        """Same reasoning as host mode - a remote server has no dockerized
+        `ollama` service for OLLAMA_KEEP_ALIVE to reach, so it must be
+        passed as a per-request litellm_params field instead."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".env.local.example").write_text("")
+        env_path = tmp_path / ".env"
+        env_path.write_text("")
+        lib_env.update_env_var(env_path, "OLLAMA_KEEP_ALIVE", "-1")
+
+        answers = ["1", "n", "y", "192.168.1.50", "11434"]
+        self._run(monkeypatch, tmp_path, answers)
+
+        out_file = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        data = yaml.safe_load(out_file.read_text())
+        po_entry = next(e for e in data["model_list"] if e["model_name"] == "scrum-po")
+        assert po_entry["litellm_params"]["keep_alive"] == -1

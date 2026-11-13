@@ -1,0 +1,10 @@
+{
+  "description": "Kotlin Multiplatform (KMP) targeting Android & iOS: scaffold the shared module, install JDK 17 + Android SDK + the Kotlin/Gradle toolchain, run Gradle test tasks for both targets, and run/debug the Android target. IMPORTANT - iOS LIMITATION: this workbench runs in a Linux container, so iOS build/run/debug (Xcode, the iOS Simulator, xcodebuild) is NOT something it can do - that genuinely requires a macOS host with Xcode installed. Kotlin/Native iOS *test* tasks (e.g. `iosX64Test`) do run here; iOS *build/run/debug* does not. See workbench-setup.sh's own top-of-file comment for the exact boundary.",
+  "additional_allowlist_hosts": [
+    "services.gradle.org",
+    "plugins.gradle.org",
+    "repo.maven.apache.org",
+    "repo1.maven.org",
+    "dl.google.com"
+  ]
+}

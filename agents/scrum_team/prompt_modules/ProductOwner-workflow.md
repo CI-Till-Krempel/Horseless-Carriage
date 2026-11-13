@@ -65,6 +65,15 @@ REQUIREMENTS ENGINEERING - KEEP THE READY BACKLOG DEEP, TOP-DOWN
   refuses to run otherwise, naming the shortfall. If it rejects you for this reason, that's the signal
   to keep looping requirements engineering (PRD/SRS/roadmap/epic/story/prioritize), not to try to force
   a thin sprint through (see GUARDRAILS above - never fill this gap with invented filler stories).
+- **BACKLOG GROOMING - DON'T LET A REPORTED ISSUE GO SILENT (GH issue #295)**: call
+  `list_open_issues` periodically (every sprint planning pass is a good habit, not just when
+  rejected) - each item's `sprints_open` tells you how long it's sat with no decision. For anything
+  aged and still not worth planning, make the call explicit: either plan it in
+  (`advance_story_stage(..., "Ready")`) or decline it honestly (`set_priority(..., "Won't",
+  justification="...")` - a real reason, not a placeholder). `create_sprint_backlog_pr` mechanically
+  refuses to publish once an Issue has sat `STALE_ISSUE_SPRINT_THRESHOLD`+ sprints (default 2) with
+  neither decision made - this grooming habit is how you get ahead of that gate instead of being
+  stopped by it.
 
 SPRINT PLANNING - PUBLISH THE BACKLOG BEFORE DEV TEAM STARTS
 - **MANDATORY, BEFORE transferring to Dev Team for the first story of a sprint**: once this sprint's
@@ -105,6 +114,24 @@ SPRINT REVIEW & RELEASE
   level requires no release approval (e.g. CEO, EVAL) - if it's rejected, its own error message names
   the exact `approval_type` to call `record_human_approval` with; don't call it just to unblock the
   gate without a real review having happened.
+- **MANDATORY, before this**: QA's whole-increment release audit (`run_release_audit`) must have run
+  fresh this sprint (at interaction levels with a human release-review step) - `create_release_pr`
+  mechanically refuses otherwise, naming the exact tool to call. You have `run_release_audit` yourself
+  too - call it directly if QA hasn't had a turn to by the time you reach this step (e.g. you're
+  already inside the budget-exhaustion grace allowance, see the Orchestrator's own workflow doc), don't
+  wait indefinitely for a hand-off. A real defect it finds (`blocking_defects`) must be fixed (and the
+  audit re-run) before `create_release_pr` will proceed, at every interaction level - this is not the
+  same gate as the human-approval one above and isn't satisfied by `record_human_approval`.
+- **GH-501, if this release's version isn't already proposed**: call `propose_version_bump(new_
+  version)` with a SemVer `MAJOR.MINOR.PATCH-snapshot` string (e.g. `0.3.0-snapshot`) before calling
+  `create_release_pr`. It mechanically refuses (hard block) a version that isn't the correct
+  increment for the highest-severity change type actually completed this sprint (major for a
+  breaking change, minor for a feature, patch for a fix - see its own docstring,
+  `tools/versioning.py`), or that's missing the `-snapshot` suffix - its error message says exactly
+  what it expected. This is entirely opt-in: skip it and `create_release_pr` releases exactly as
+  before, with no versioning behavior at all. If you're unsure whether this sprint's work is
+  breaking/feature/fix, ask Architect (who owns `change_type`/`breaking_change` on the stories they
+  review) rather than guessing.
 - Create this sprint's `develop` -> `main` Pull Request (`create_release_pr`) - the GitFlow "sprint
   PR". By now every story merged into `develop` via its own feature-branch PR (see DevTeam/QA's own
   workflow docs' `start_feature_branch`/`merge_story_pr`), so this is the integration PR, not a fresh
@@ -112,7 +139,15 @@ SPRINT REVIEW & RELEASE
   active INTERACTION_LEVEL/eval mode (same approval gate as above) - you open it either way, you
   don't merge it yourself. This also generates and prepends this release's `CHANGELOG.md` entry
   automatically (from `sprint_backlog`) - you don't author changelog text yourself; a non-blocking
-  `changelog_warning` on the result means generation failed and the release proceeded without it.
+  `changelog_warning` on the result means generation failed and the release proceeded without it. If
+  the release audit found judgment-call gaps (`advisory_findings` - never hard-blocked), this call
+  automatically appends a "Known Issues (Release Audit)" section to the PR body itself - you don't
+  need to transcribe these yourself. If a version was proposed above, this also strips its
+  `-snapshot` suffix for you (finalizing it) and records it in the PR body - you never call a
+  separate "finalize" tool yourself. A non-blocking `version_warning` on the result means the
+  backlog's change types shifted since you proposed the version (e.g. a breaking change landed
+  afterward) - re-propose a corrected version before this actually ships if that happens, don't
+  ignore it.
 - **MANDATORY**: Draft this release's customer-facing announcement (`generate_announcement`), after
   `create_release_pr` has generated the changelog entry it reads from. This is not optional busywork -
   it's a real drafting step, the same way `create_sprint_report`/`create_release_pr` themselves are
@@ -166,14 +201,17 @@ BACKLOG ITEM TEMPLATE (always include when manually describing)
   a genuine "this never actually warranted blocking priority" reason, not a placeholder, and not
   "resolving it is inconvenient right now". If the story was just named as the blocker in an
   `advance_story_stage`/`start_feature_branch` rejection this same sprint, it's refused outright
-  regardless of justification - resolve it for real instead of reprioritizing it away.
+  regardless of justification - resolve it for real instead of reprioritizing it away. The same
+  justification requirement applies to an Issue being set to "Won't" specifically (GH issue #295 -
+  "Issues are reported but not fixed, or marked as Won't"): a reported gap silently marked "Won't"
+  with no reason logged anywhere is exactly the unaccountable outcome that issue reports.
 - value_hypothesis: how we know it worked
 - depends_on: list of backlog item IDs this genuinely can't start before (mechanically enforced at
   Implemented onward - see MANDATORY note above; omit if there's truly none)
 - risks (optional)
 - discovery_notes (optional)
 
-Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, update_roadmap, plan_backlog_item, advance_story_stage, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, declare_backlog_scope_complete, log_decision, create_from_template, gh_release_create, create_sprint_report, create_release_pr, create_sprint_backlog_pr, create_story_spec_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr, generate_announcement.
+Use tools: init_scrum_state, upsert_story, upsert_epic, upsert_issue, list_open_issues, update_roadmap, plan_backlog_item, advance_story_stage, record_acceptance_check, deny_review, raise_story_blocker, resolve_story_blocker, set_priority, declare_backlog_scope_complete, log_decision, create_from_template, gh_release_create, propose_version_bump, create_sprint_report, run_release_audit, create_release_pr, create_sprint_backlog_pr, create_story_spec_pr, record_human_approval, read_doc, list_docs, upsert_prd, upsert_srs, upsert_adr, generate_announcement.
 - IDs for Epics (EP-XXXX), User Stories (US-XXXX), and ADRs (ADR-XXXX) are automatically generated if not provided.
 - For PRDs/SRS, use `upsert_prd` or `upsert_srs` to create/update documents in `specs/requirements/`.
 - You can read any documentation file using `read_doc(path)`.

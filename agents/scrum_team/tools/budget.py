@@ -1622,6 +1622,28 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
                         report += f"  - {role} ({entry.get('model')}): not available ({entry.get('note', 'unknown')})\n"
             elif prompt_context_usage:
                 omitted_sections.append("Per-Agent Prompt Context Usage")
+
+            # GH issue #513 (context-window optimizations): same "full
+            # detail only" gating as the two sections immediately above -
+            # per-file granularity, not something the team-level summary
+            # needs.
+            prompt_module_breakdown = kpis.get("prompt_module_breakdown")
+            prompt_module_breakdown = prompt_module_breakdown if isinstance(prompt_module_breakdown, dict) else {}
+            if prompt_module_breakdown and detail == "full":
+                report += "\n### Per-Agent Prompt Module Breakdown\n"
+                for role, entries in prompt_module_breakdown.items():
+                    if not isinstance(entries, list):
+                        continue
+                    report += f"  - {role}:\n"
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        report += (
+                            f"    - {entry.get('file')}: {entry.get('lines')} lines, "
+                            f"{entry.get('tokens'):,} tokens\n"
+                        )
+            elif prompt_module_breakdown:
+                omitted_sections.append("Per-Agent Prompt Module Breakdown")
         else:
             report += "No KPI data recorded for this sprint.\n"
     else:

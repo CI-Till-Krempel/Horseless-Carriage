@@ -209,6 +209,31 @@ class TestLocalSetupDetection:
         (tmp_path / ".env").write_text("OLLAMA_HOST_MODE='true'\nOLLAMA_GPU_ENABLED='true'\n")
         assert run.compose_file_args(tmp_path) == ["-f", "docker-compose.local-hostollama.yaml"]
 
+    def test_local_setup_with_remote_mode_uses_hostollama_compose_file(self, tmp_path):
+        """GH issue #502: OLLAMA_REMOTE_ENABLED=true (pointing at an Ollama
+        server on a different LAN machine) must use the same no-dockerized-
+        `ollama`-service compose file as host mode - there's no local
+        `ollama` to provision either way."""
+        local_yaml = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_yaml.parent.mkdir(parents=True)
+        local_yaml.write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: ollama/llama3.1:8b\n"
+        )
+        (tmp_path / ".env").write_text("OLLAMA_REMOTE_ENABLED='true'\n")
+        assert run.compose_file_args(tmp_path) == ["-f", "docker-compose.local-hostollama.yaml"]
+
+    def test_local_setup_with_remote_mode_wins_over_gpu(self, tmp_path):
+        """Mutually exclusive with OLLAMA_GPU_ENABLED - that only applies to
+        the dockerized `ollama` service, which remote mode bypasses
+        entirely (setup_llm.py itself never writes both true)."""
+        local_yaml = tmp_path / "config" / "model-templates" / "litellm.local-ollama.yaml"
+        local_yaml.parent.mkdir(parents=True)
+        local_yaml.write_text(
+            "model_list:\n  - model_name: scrum-po\n    litellm_params:\n      model: ollama/llama3.1:8b\n"
+        )
+        (tmp_path / ".env").write_text("OLLAMA_REMOTE_ENABLED='true'\nOLLAMA_GPU_ENABLED='true'\n")
+        assert run.compose_file_args(tmp_path) == ["-f", "docker-compose.local-hostollama.yaml"]
+
 
 class TestWaitForHttp:
     def test_reachable_returns_true_immediately(self, ok_server):
