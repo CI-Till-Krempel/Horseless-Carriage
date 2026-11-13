@@ -240,3 +240,4 @@ contract and the human-approval flow this interacts with.
 - `TOTAL_USD_BUDGET` set to any value while `LLM_LOCAL_PROVIDER=true`.
 - `OLLAMA_MODEL`/`OLLAMA_KEEP_ALIVE`/`OLLAMA_GPU_ENABLED`/`OLLAMA_HOST_MODE`/`OLLAMA_REMOTE_ENABLED`/`OLLAMA_REMOTE_HOST`/`OLLAMA_REMOTE_PORT` set while using a cloud provider — never read by any cloud compose path.
 - `WATCH_POLL_INTERVAL_SECONDS` — only read by the opt-in `watch_roadmap.py`, itself never invoked automatically.
+- `.github/CODEOWNERS` entries with no effect on merges — GitHub only enforces them once "Require review from Code Owners" is also turned on as a branch protection rule for `main` (a manual, repo-admin-only step); see [GitHub Integration](GITHUB-INTEGRATION.md) for exactly which Settings toggle to flip (GH-316).
