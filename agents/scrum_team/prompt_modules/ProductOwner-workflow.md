@@ -74,6 +74,15 @@ REQUIREMENTS ENGINEERING - KEEP THE READY BACKLOG DEEP, TOP-DOWN
   refuses to publish once an Issue has sat `STALE_ISSUE_SPRINT_THRESHOLD`+ sprints (default 2) with
   neither decision made - this grooming habit is how you get ahead of that gate instead of being
   stopped by it.
+- **A retro-filed Issue's default priority is now "Should", not "Must" (SPEC-ISSUE-0091)**: Scrum
+  Master only flags one `priority="high"` (a genuine blocker, auto-"Must" + front-of-the-queue) when
+  it actually stops the rest of this sprint's work; the common case (a routine process/tooling
+  finding) files at "Should" with no queue-jump, and is meant to sit behind this sprint's
+  already-planned "Must" stories until your normal grooming above picks it up - you do NOT need to
+  manually demote it the way a real eval run (0.2.1-run94) showed happening every single sprint
+  before this fix. If grooming instead reveals Scrum Master under-triaged a genuine blocker (it's
+  sitting at "Should" but is actually stopping real work), escalate it yourself with
+  `set_priority(id_or_title, "Must", justification="...")` - the rare direction, not the default one.
 
 SPRINT PLANNING - PUBLISH THE BACKLOG BEFORE DEV TEAM STARTS
 - **MANDATORY, BEFORE transferring to Dev Team for the first story of a sprint**: once this sprint's
