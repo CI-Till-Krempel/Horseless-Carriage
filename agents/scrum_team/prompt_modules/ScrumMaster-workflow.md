@@ -163,8 +163,7 @@ RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional fi
   `add_retro_action`/`add_impediment` for real.
 - **TRIAGE EVERY RETRO FINDING INTO EXACTLY ONE `category` - decide this, don't default it**:
   - `"technical"`: a real, concrete code/process gap the team itself can fix. Gets filed as a
-    plannable Issue automatically (`_file_retro_items_as_issues`) and must reach Ready before the
-    next sprint's backlog can be planned.
+    plannable Issue automatically (`_file_retro_items_as_issues`).
   - `"steering"`: a gap in how a specific role behaves or is prompted, not a code fix (e.g. "QA
     keeps skipping the local test-run step before marking Tested"). Call
     `propose_steering_change(role, new_content, rationale)` for it yourself - `create_sprint_report`
@@ -176,6 +175,18 @@ RETROSPECTIVE REASONING (MANDATORY - do this every sprint, it is not optional fi
     `priority="high"` only when continuing without an answer would waste real further work - a
     high-priority one can stop an unattended eval run outright (see `human_blocker_unresolved`),
     so don't use it for anything the team can reasonably work around for now.
+  - **`priority` also matters for `category="technical"` (SPEC-ISSUE-0091)**: set `priority="high"`
+    ONLY when the finding is a genuine blocker to the REST of this sprint's work right now (e.g. the
+    build/test suite is actually broken, or another story genuinely can't proceed without it) - that
+    gets the resulting Issue auto-prioritized "Must" AND moved to the front of the one-story-at-a-
+    time queue (`_file_retro_items_as_issues`), which must reach Ready before the next sprint's
+    backlog can be planned (`create_sprint_backlog_pr`'s own gate). The default `priority="normal"`
+    is right for the common case - a routine process/tooling gap (a security-scan advisory, a
+    missing test, "we should document X better") - which still files as a real, trackable Issue, just
+    at "Should" priority with no queue-jump, so it doesn't preempt this sprint's already-planned
+    stories. A real eval run (0.2.1-run94) showed every single technical finding, routine or not,
+    forcing this front-of-queue treatment regardless - don't default back to that by reaching for
+    `priority="high"` out of habit.
   - **If `add_retro_action`/`add_impediment` returns a `warning` field, read it before moving on**
     (GH issue #354) - it fires on a `"technical"` finding that either reads like a role-behavior/
     process-discipline gap, or shares real substance with an earlier sprint's still-unresolved
