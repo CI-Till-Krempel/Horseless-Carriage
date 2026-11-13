@@ -3699,3 +3699,184 @@ class TestDetectPhaseViolation(unittest.TestCase):
         result = log_tool_invocation_callback(tool, {"path": "app.py", "content": "x"}, tool_context)
 
         self.assertIsNone(result)
+
+class TestSystemInstructionCacheStability(unittest.TestCase):
+    """
+    Acceptance Criteria (GH-515): `adk web`'s performance alert - "System
+    instructions were modified between consecutive turns in this session.
+    This change breaks context cache alignment" - traces to ADK recomputing
+    a plain-string `instruction=` through google.adk.utils.
+    instructions_utils.inject_session_state on EVERY model call
+    (LlmAgent.canonical_instruction's bypass_state_injection is only True
+    for a callable InstructionProvider, never a plain str - see
+    google/adk/flows/llm_flows/instructions.py:_process_agent_instruction).
+    That function regex-scans the instruction text for `{identifier}`-
+    shaped substrings and live-substitutes them from session.state - so any
+    prompt text containing even one bare `{word}` matching a real state key
+    would silently produce a DIFFERENT system_instruction on every turn as
+    that state value changes, breaking the model provider's implicit
+    prompt cache. Our role prompts already contain incidental
+    `{"status": "error", ...}`/`{"spike": true}` JSON examples (prompt_
+    modules/*-guardrails.md, DevTeam-workflow.md) that happen not to parse
+    as valid state names today - a fragile accident, not a guarantee.
+
+    The fix (agents/scrum_team/agent.py) passes every role's PROMPT
+    constant as `static_instruction=` instead of `instruction=` - ADK's own
+    documented mechanism for content that "never changes and doesn't
+    contain placeholders... sent directly to the model without any
+    processing or variable substitution" (LlmAgent.static_instruction's own
+    docstring) - which structurally bypasses inject_session_state entirely,
+    regardless of what any future prompt edit contains.
+    """
+
+    ALL_AGENTS_AND_PROMPT_NAMES = [
+        ("ProductOwner", "PO_PROMPT"),
+        ("ScrumMaster", "SM_PROMPT"),
+        ("DevTeam", "DEV_PROMPT"),
+        ("QA", "QA_PROMPT"),
+        ("Architect", "ARCH_PROMPT"),
+        ("ScrumOrchestrator", "ORCHESTRATOR_PROMPT"),
+    ]
+
+    def _agents_by_name(self):
+        return {
+            "ProductOwner": product_owner,
+            "ScrumMaster": scrum_master,
+            "DevTeam": dev_team,
+            "QA": qa_agent,
+            "Architect": architect,
+            "ScrumOrchestrator": root_agent,
+        }
+
+    def test_every_role_uses_static_instruction_not_dynamic_instruction(self):
+        """Direct, structural proof of the fix: every shipped role agent
+        routes its static guardrails/workflow/DOD/DOR text through
+        `static_instruction` (bypasses inject_session_state entirely), and
+        leaves ADK's own `instruction` field unset - so ADK never has a
+        reason to run the state-templating regex over it at all."""
+        from agents.scrum_team.prompts import (
+            PO_PROMPT, SM_PROMPT, DEV_PROMPT, QA_PROMPT, ARCH_PROMPT, ORCHESTRATOR_PROMPT,
+        )
+        prompts_by_name = {
+            "PO_PROMPT": PO_PROMPT, "SM_PROMPT": SM_PROMPT, "DEV_PROMPT": DEV_PROMPT,
+            "QA_PROMPT": QA_PROMPT, "ARCH_PROMPT": ARCH_PROMPT, "ORCHESTRATOR_PROMPT": ORCHESTRATOR_PROMPT,
+        }
+        agents_by_name = self._agents_by_name()
+        for agent_name, prompt_name in self.ALL_AGENTS_AND_PROMPT_NAMES:
+            with self.subTest(agent=agent_name):
+                agent = agents_by_name[agent_name]
+                self.assertEqual(agent.static_instruction, prompts_by_name[prompt_name])
+                self.assertFalse(
+                    agent.instruction,
+                    "instruction= must be unset - any plain string here is live-templated by "
+                    "ADK's inject_session_state on every single model call (see this test "
+                    "class's own docstring)",
+                )
+
+    @staticmethod
+    def _build_system_instruction(agent, state):
+        """Runs the REAL ADK instruction-building pipeline
+        (google.adk.flows.llm_flows.instructions._build_instructions) for
+        `agent` against a session whose state dict is `state`, and returns
+        the resulting llm_request.config.system_instruction - exactly what
+        `adk web` diffs between consecutive turns to decide whether to show
+        the cache-alignment performance alert."""
+        import asyncio
+        from google.adk.sessions.in_memory_session_service import InMemorySessionService
+        from google.adk.sessions.session import Session
+        from google.adk.agents.invocation_context import InvocationContext
+        from google.adk.models.llm_request import LlmRequest
+        from google.adk.flows.llm_flows.instructions import _build_instructions
+
+        async def _build():
+            session = Session(app_name="test-app", user_id="test-user", id="test-session", state=state)
+            ctx = InvocationContext(
+                session_service=InMemorySessionService(),
+                invocation_id="test-invocation",
+                agent=agent,
+                session=session,
+            )
+            req = LlmRequest()
+            await _build_instructions(ctx, req)
+            return req.config.system_instruction
+
+        return asyncio.run(_build())
+
+    def test_production_agents_produce_identical_system_instruction_across_turns_with_different_state(self):
+        """The actual regression test for GH-515: build each shipped role's
+        system instruction twice, via two sessions whose state differs in
+        every field sprint_status_injection_callback/phase_awareness_
+        injection_callback surface (sprint number/goal, budgets, token
+        usage) - exactly what changes turn to turn within one real sprint
+        conversation. The resulting system_instruction must be byte-
+        identical both times for every role, or `adk web`'s cache-alignment
+        warning would be justified."""
+        state_turn_1 = {
+            "sprint_number": 1,
+            "sprint_goal": "Ship the first increment",
+            "budgets": {"total": 100000, "total_usd": 10.0},
+            "token_usage": {"total": 500, "agents": {"DevTeam": 500}},
+        }
+        state_turn_2 = {
+            "sprint_number": 7,
+            "sprint_goal": "A completely different later sprint goal",
+            "budgets": {"total": 5000000, "total_usd": 250.0},
+            "token_usage": {"total": 4999999, "agents": {"DevTeam": 4999999}},
+        }
+        agents_by_name = self._agents_by_name()
+        for agent_name, _ in self.ALL_AGENTS_AND_PROMPT_NAMES:
+            with self.subTest(agent=agent_name):
+                agent = agents_by_name[agent_name]
+                si_turn_1 = self._build_system_instruction(agent, dict(state_turn_1))
+                si_turn_2 = self._build_system_instruction(agent, dict(state_turn_2))
+                self.assertTrue(si_turn_1, "must genuinely produce a non-empty system instruction")
+                self.assertEqual(
+                    si_turn_1, si_turn_2,
+                    f"{agent_name}'s system_instruction differed between two turns with "
+                    "different session state - this is exactly the adk web "
+                    "'System instructions were modified between consecutive turns' cache-"
+                    "alignment break GH-515 reports.",
+                )
+
+    def test_a_bare_state_placeholder_in_a_dynamic_instruction_would_have_broken_cache_alignment(self):
+        """Demonstrates the actual bug mechanism this fix closes, isolated
+        from the real prompts (which today happen to contain only JSON-
+        shaped `{...}` examples that don't parse as valid state names - see
+        inject_session_state's own _is_valid_state_name) - proves this
+        isn't hypothetical. A throwaway LlmAgent using the OLD `instruction=`
+        field with a prompt containing one bare, real state-key placeholder
+        produces a DIFFERENT system_instruction per turn as that state
+        value changes; the identical text passed via `static_instruction=`
+        instead is immune - exactly the difference agent.py's fix relies on."""
+        from google.adk.agents.llm_agent import LlmAgent
+        from google.adk.models.lite_llm import LiteLlm
+
+        unstable_text = "You are a test agent. Current sprint goal: {sprint_goal}"
+
+        unstable_agent = LlmAgent(
+            name="UnstableTestAgent",
+            model=LiteLlm("scrum-test"),
+            instruction=unstable_text,
+        )
+        stable_agent = LlmAgent(
+            name="StableTestAgent",
+            model=LiteLlm("scrum-test"),
+            static_instruction=unstable_text,
+        )
+
+        si_unstable_turn_1 = self._build_system_instruction(unstable_agent, {"sprint_goal": "alpha"})
+        si_unstable_turn_2 = self._build_system_instruction(
+            unstable_agent, {"sprint_goal": "a totally different later goal"}
+        )
+        self.assertNotEqual(
+            si_unstable_turn_1, si_unstable_turn_2,
+            "sanity check on the bug mechanism itself - if this ever starts passing, ADK itself "
+            "changed inject_session_state's behavior and the rest of this fix's reasoning should "
+            "be re-examined",
+        )
+
+        si_stable_turn_1 = self._build_system_instruction(stable_agent, {"sprint_goal": "alpha"})
+        si_stable_turn_2 = self._build_system_instruction(
+            stable_agent, {"sprint_goal": "a totally different later goal"}
+        )
+        self.assertEqual(si_stable_turn_1, si_stable_turn_2)

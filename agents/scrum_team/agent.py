@@ -2840,11 +2840,48 @@ COMMON_AGENT_CALLBACKS = {
 }
 
 # --- Sub agents (role specialists) ---
+# GH issue #515: every role's PROMPT constant below (prompts.py) is passed
+# as `static_instruction=`, not ADK's own `instruction=` field, deliberately.
+# `instruction=` is ADK's "dynamic instructions" field - LlmAgent.
+# canonical_instruction always runs a PLAIN STRING instruction through
+# google.adk.utils.instructions_utils.inject_session_state (see
+# agents/base_agent.py / llm_flows/instructions.py:_process_agent_instruction
+# - bypass_state_injection is only ever True for a callable InstructionProvider,
+# never for a plain str), which regex-scans the text for `{identifier}`-shaped
+# substrings and substitutes them with the CURRENT session.state value, live,
+# on EVERY model call. Our *_PROMPT text already contains incidental
+# `{"status": "error", ...}` / `{"spike": true}` JSON examples (see e.g.
+# prompt_modules/*-guardrails.md) that happen not to parse as valid state
+# names today (inject_session_state's own _is_valid_state_name rejects
+# anything containing quotes/colons/commas) - but that's a fragile accident,
+# not a guarantee: a future prompt edit adding any single bare `{word}` that
+# happens to match a real session.state key (e.g. documenting `{sprint_number}`
+# in prose) would silently start baking live, per-turn-varying state directly
+# into the system instruction - precisely the "System instructions were
+# modified between consecutive turns" cache-alignment break `adk web` warns
+# about, and exactly what a real Horseless Carriage user hit (GH-515). These
+# prompts are genuinely static for a session's whole lifetime by design (see
+# prompts.py's own module docstring - guardrails/workflow/DOD/DOR never
+# change at runtime; only identity.md does, and that's deliberately NOT part
+# of this text - see role_identity_injection_callback). `static_instruction=`
+# is ADK's own documented mechanism for exactly this case (LlmAgent.
+# static_instruction's docstring: "for content that never changes and
+# doesn't contain placeholders... sent directly to the model without any
+# processing or variable substitution... primarily for context caching
+# optimization") - it goes straight to system_instruction via
+# llm_request.append_instructions(), with NO call to canonical_instruction/
+# inject_session_state at all, so it is now structurally impossible for any
+# of these prompts to vary between turns within one session, regardless of
+# what text future prompt edits contain. Any genuinely dynamic/live content
+# (sprint status, phase, budget, role identity) already flows through the
+# ADK-idiomatic before_model_callback-injected `contents` path instead (see
+# sprint_status_injection_callback, phase_awareness_injection_callback,
+# role_identity_injection_callback below) - never through system_instruction.
 product_owner = LlmAgent(
     name="ProductOwner",
     model=LiteLlm(get_model_name("po")),
     description="Owns product vision/goals and maximizes product value through backlog ordering, acceptance criteria, and scope tradeoffs.",
-    instruction=PO_PROMPT,
+    static_instruction=PO_PROMPT,
     tools=[
         upsert_story,
         upsert_epic,
@@ -2889,7 +2926,7 @@ scrum_master = LlmAgent(
     name="ScrumMaster",
     model=LiteLlm(get_model_name("sm")),
     description="Increases team effectiveness by facilitating Scrum events, removing impediments, improving process, and tracking actions.",
-    instruction=SM_PROMPT,
+    static_instruction=SM_PROMPT,
     tools=[
         start_sprint,
         add_impediment,
@@ -2928,7 +2965,7 @@ dev_team = LlmAgent(
     name="DevTeam",
     model=LiteLlm(get_model_name("dev")),
     description="Plans/estimates/implements stories and owns technical decisions, delivering a potentially releasable Increment each Sprint; for stories with user-visible behavior, that means real working code, not just a plan.",
-    instruction=DEV_PROMPT,
+    static_instruction=DEV_PROMPT,
     tools=[
         plan_sprint_backlog_item,
         log_story_tokens,
@@ -2964,7 +3001,7 @@ qa_agent = LlmAgent(
     name="QA",
     model=LiteLlm(get_model_name("qa")),
     description="Improves test strategy and quality signals without rubber-stamping Dev Team's work or becoming the team's sole quality bottleneck; proposes test cases and automation.",
-    instruction=QA_PROMPT,
+    static_instruction=QA_PROMPT,
     tools=[
         add_impediment,
         list_open_issues,
@@ -2987,7 +3024,7 @@ architect = LlmAgent(
     name="Architect",
     model=LiteLlm(get_model_name("arch")),
     description="Protects long-term technical health while enabling near-term delivery; identifies architectural risks, proposes tradeoffs, writes ADR-like notes.",
-    instruction=ARCH_PROMPT,
+    static_instruction=ARCH_PROMPT,
     tools=[
         log_decision,
         gh_pr_comment,
@@ -3015,7 +3052,7 @@ root_agent = LlmAgent(
     name="ScrumOrchestrator",
     model=LiteLlm(get_model_name("orchestrator")),
     description="Routes requests within Scrum team and maintains shared artifacts in session.state and the configured GitHub repo.",
-    instruction=ORCHESTRATOR_PROMPT,
+    static_instruction=ORCHESTRATOR_PROMPT,
     tools=[
         # General state, setup, and high-level management tools
         log_decision,
