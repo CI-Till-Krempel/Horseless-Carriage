@@ -1341,6 +1341,87 @@ class TestHostOllamaModeCheck:
         doctor.check(repo, skip_llm_probe=True)
 
 
+class TestRemoteOllamaModeCheck:
+    """
+    Acceptance Criteria (GH issue #502): a remote LAN Ollama server has no
+    `ollama` container for the GPU check to inspect either (same situation
+    as host mode) - doctor.py must probe the user-configured
+    OLLAMA_REMOTE_HOST/OLLAMA_REMOTE_PORT address directly instead of
+    localhost, and never run the container-based GPU check for this mode.
+    """
+
+    def _local_remote_mode_repo(self, valid_repo, host="192.168.1.50", port="11434"):
+        env = valid_repo / ".env"
+        env.write_text(
+            env.read_text()
+            + f'OLLAMA_REMOTE_ENABLED="true"\nOLLAMA_REMOTE_HOST="{host}"\nOLLAMA_REMOTE_PORT="{port}"\n'
+        )
+        (valid_repo / "config" / "model-templates").mkdir(parents=True, exist_ok=True)
+        (valid_repo / "config" / "model-templates" / "litellm.local-ollama.yaml").write_text(
+            "model_list:\n"
+            "  - model_name: scrum-po\n"
+            "    litellm_params:\n"
+            "      model: ollama/llama3.1:8b\n"
+            f"      api_base: http://{host}:{port}\n"
+        )
+        return valid_repo
+
+    def test_warns_when_remote_ollama_unreachable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_remote_mode_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda url: False)
+
+        result = doctor.check(repo)
+        out = capsys.readouterr().out
+
+        assert "not reachable at http://192.168.1.50:11434" in out
+        assert any("not reachable" in w.message for w in result.warnings())
+
+    def test_confirms_when_remote_ollama_reachable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_remote_mode_repo(valid_repo)
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda url: True)
+
+        result = doctor.check(repo)
+        out = capsys.readouterr().out
+
+        assert "Remote Ollama: reachable at http://192.168.1.50:11434" in out
+        assert not any("not reachable" in w.message for w in result.warnings())
+
+    def test_probes_the_configured_address_not_localhost(self, valid_repo, monkeypatch):
+        repo = self._local_remote_mode_repo(valid_repo, host="ollama-box.lan", port="11999")
+        _patch_proxy_unreachable(monkeypatch)
+        probed = []
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda url: probed.append(url) or True)
+
+        doctor.check(repo)
+
+        assert probed == ["http://ollama-box.lan:11999"]
+
+    def test_gpu_container_check_not_run_in_remote_mode(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_remote_mode_repo(valid_repo)
+        env = repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_GPU_ENABLED="true"\n')
+        _patch_proxy_unreachable(monkeypatch)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda url: True)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("the dockerized-ollama GPU check should not run in remote mode")
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", fail_if_called)
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.check(repo)
+
+    def test_skip_llm_probe_skips_remote_check_too(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_remote_mode_repo(valid_repo)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("host_ollama_reachable should not run when skip_llm_probe=True")
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", fail_if_called)
+
+        doctor.check(repo, skip_llm_probe=True)
+
+
 class TestPrintOllamaGpuConfirmation:
     """Acceptance Criteria (GH issue #235): a caller like run.py that just
     brought the local/Ollama stack up (rather than running the whole
@@ -1446,6 +1527,51 @@ class TestPrintOllamaGpuConfirmation:
 
         def fail_if_called(*a, **k):
             raise AssertionError("the dockerized-ollama GPU check should not run in host mode")
+        monkeypatch.setattr(doctor.lib_docker, "compose_running_services", fail_if_called)
+        monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+    def _local_remote_mode_repo(self, valid_repo, host="192.168.1.50", port="11434"):
+        env = valid_repo / ".env"
+        env.write_text(
+            env.read_text()
+            + f'OLLAMA_REMOTE_ENABLED="true"\nOLLAMA_REMOTE_HOST="{host}"\nOLLAMA_REMOTE_PORT="{port}"\n'
+        )
+        (valid_repo / "config" / "model-templates").mkdir(parents=True, exist_ok=True)
+        (valid_repo / "config" / "model-templates" / "litellm.local-ollama.yaml").write_text(
+            "model_list:\n"
+            "  - model_name: scrum-po\n"
+            "    litellm_params:\n"
+            "      model: ollama/llama3.1:8b\n"
+            f"      api_base: http://{host}:{port}\n"
+        )
+        return valid_repo
+
+    def test_confirms_remote_ollama_when_reachable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_remote_mode_repo(valid_repo)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda url: True)
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+        assert "Remote Ollama reachable at http://192.168.1.50:11434" in capsys.readouterr().out
+
+    def test_warns_when_remote_ollama_unreachable(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_remote_mode_repo(valid_repo)
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda url: False)
+
+        doctor.print_ollama_gpu_confirmation(repo)
+
+        assert "not reachable at http://192.168.1.50:11434" in capsys.readouterr().out
+
+    def test_remote_mode_never_runs_container_gpu_check(self, valid_repo, monkeypatch, capsys):
+        repo = self._local_remote_mode_repo(valid_repo)
+        env = repo / ".env"
+        env.write_text(env.read_text() + 'OLLAMA_GPU_ENABLED="true"\n')
+        monkeypatch.setattr(doctor.lib_docker, "host_ollama_reachable", lambda url: True)
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("the dockerized-ollama GPU check should not run in remote mode")
         monkeypatch.setattr(doctor.lib_docker, "compose_running_services", fail_if_called)
         monkeypatch.setattr(doctor.lib_docker, "ollama_gpu_status", fail_if_called)
 

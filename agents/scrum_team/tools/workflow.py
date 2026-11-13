@@ -1,11 +1,13 @@
 # agents/scrum_team/tools/workflow.py
 from __future__ import annotations
+import json
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from .base import _configured_repo_root, _develop_branch_name, _run
 from .github import _checkout_develop_or_recover, git_push, gh_pr_create
 from .notifications import record_blocking_interaction
+from .workbench_templates import resolve_workbench_template, WORKBENCH_SCRIPT_RELATIVE_PATH
 from ..prompts import ROLE_NAMES
 
 
@@ -292,7 +294,11 @@ def propose_steering_change(
     }
 
 
-_WORKBENCH_SCRIPT_PATH = ".hc/workbench-setup.sh"
+# GH-456: now defined in tools/workbench_templates.py (check_workbench_tooling
+# needs this same path) - imported above as WORKBENCH_SCRIPT_RELATIVE_PATH,
+# aliased back to this module's original name so nothing below has to change.
+_WORKBENCH_SCRIPT_PATH = WORKBENCH_SCRIPT_RELATIVE_PATH
+_WORKBENCH_MCP_CONFIG_PATH = ".hc/workbench-mcp.json"
 _NEW_ISSUE_URL_FOR_ALLOWLIST = (
     "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new"
     "?title=Allowlist+request&labels=network-allowlist"
@@ -300,17 +306,20 @@ _NEW_ISSUE_URL_FOR_ALLOWLIST = (
 
 
 def propose_framework_change(
-    workbench_setup_script: str,
-    additional_allowlist_hosts: List[str],
-    rationale: str,
+    workbench_setup_script: Optional[str] = None,
+    additional_allowlist_hosts: Optional[List[str]] = None,
+    rationale: str = "",
+    template_name: Optional[str] = None,
+    additional_mcp_config: Optional[Dict[str, Any]] = None,
     tool_context=None,
 ) -> Dict[str, Any]:
     """
     Propose a change to this project's "workbench" - the toolchain (JDK,
     Node, Go, ...) the agent image needs to scaffold/build/test THIS
-    product's actual tech stack - as a Pull Request, for human review.
-    Never a direct write (see docs.py's write_file, which refuses any path
-    under `.hc/` and points here instead).
+    product's actual tech stack, plus (US-0021) an optional MCP config
+    fragment for that stack and its network allowlist - as a Pull Request,
+    for human review. Never a direct write (see docs.py's write_file,
+    which refuses any path under `.hc/` and points here instead).
 
     SPEC-ISSUE-0064: a per-language build-arg flag doesn't generalize - every new
     stack would need its own flag and a Horseless-Carriage code change
@@ -323,29 +332,65 @@ def propose_framework_change(
     a target and is never modified by any tool, same structural separation
     `propose_steering_change` already relies on for identity.md.
 
-    - workbench_setup_script: the FULL replacement content for
-      `.hc/workbench-setup.sh` (like `propose_steering_change`'s
-      new_content - not a diff).
+    US-0021 (EP-0010): rather than always hand-writing workbench_setup_script
+    from scratch, pass template_name to start from a named, reusable
+    Development Workbench template under
+    `config/development-workbench-templates/<template_name>/` (see
+    tools/workbench_templates.py for the on-disk contract; list_workbench_
+    templates/get_workbench_template let the Architect discover/preview one
+    first). A template bundles a toolchain script, an MCP config fragment,
+    and its own declared additional_allowlist_hosts - all three are folded
+    into this same human-reviewed PR:
+      - workbench_setup_script (optional when template_name is given): the
+        FULL replacement content for `.hc/workbench-setup.sh` (like
+        `propose_steering_change`'s new_content - not a diff). Omit to use
+        the template's own script unchanged; pass the template's script
+        back with edits (e.g. one extra `apt-get install` line) to
+        customize it - either way, only this PR ever sees the result, never
+        a direct write.
+      - additional_mcp_config (optional): `{"mcpServers": {...}}` merged on
+        top of the template's own mcp-config.json (this dict's entries win
+        on a key collision), written to `.hc/workbench-mcp.json` in the
+        same commit. With no template_name, this is the whole MCP config.
+        Role application of `.hc/workbench-mcp.json` is intentionally
+        specified, not yet wired for every role: it's a new, versioned,
+        human-reviewed artifact the technical roles (architect, dev_team,
+        qa_agent, quality_guardian - GH-291 Phase 1's "Development
+        Workbench" scope) are meant to be started with the MCP servers it
+        lists; full per-role session wiring can land incrementally without
+        changing this file's format or how it's proposed.
+      - additional_allowlist_hosts (below) is unioned with whatever hosts
+        the template itself declares.
+    No template_name at all keeps today's fully-custom-script path working
+    completely unchanged - templates are additive, never a replacement.
+
     - additional_allowlist_hosts: hostnames this workbench's toolchain needs
       to reach at RUNTIME (e.g. "repo.maven.apache.org" for Gradle,
       "registry.npmjs.org" for npm) that the agent's network sandbox
       (agent-net + net-proxy's allowlist) doesn't already permit. Pass []
-      if the workbench needs no new runtime network access (build-time
-      `apt-get`/`curl` inside the script itself already has the Docker
-      build's own unrestricted network, same as every other line in any
-      Dockerfile - this list is specifically about what the agent container
-      can reach once it's running, a completely separate, much more
-      restricted network path).
+      (or omit) if the workbench needs no new runtime network access beyond
+      whatever its template already declares (build-time `apt-get`/`curl`
+      inside the script itself already has the Docker build's own
+      unrestricted network, same as every other line in any Dockerfile -
+      this list is specifically about what the agent container can reach
+      once it's running, a completely separate, much more restricted
+      network path).
     - rationale: why this change is needed, concretely (same ≥15-character
       rule as `propose_steering_change`) - not a placeholder.
 
-    Mechanically CANNOT apply an allowlist change itself: `config/net-proxy/
-    allowlist.filter` lives in Horseless-Carriage's own repo, which this
-    tool has no filesystem access to and no git credentials for (only
-    GITHUB_REPO_URL/GITHUB_TOKEN for the PRODUCT repo) - this is a genuine,
-    structural boundary, not a policy choice that could be loosened later.
-    When additional_allowlist_hosts is non-empty, the opened PR's body says
-    so explicitly and a blocking interaction is also raised (see
+    Allowlist design note (EP-0010/ADR-0002): this still builds on top of
+    today's PR-body-only allowlist behavior, deliberately NOT ADR-0002's
+    tracked `.hc/allowlist.filter` file design (that ADR's own Status
+    remains "Proposed", not implemented) - scoped this way so US-0021 stays
+    about the template mechanism itself; ADR-0002 remains a legitimate,
+    separate follow-up. Mechanically this tool still CANNOT apply an
+    allowlist change itself: `config/net-proxy/allowlist.filter` lives in
+    Horseless-Carriage's own repo, which this tool has no filesystem access
+    to and no git credentials for (only GITHUB_REPO_URL/GITHUB_TOKEN for
+    the PRODUCT repo) - a genuine, structural boundary, not a policy choice
+    that could be loosened later. When the effective (template + extra)
+    additional_allowlist_hosts is non-empty, the opened PR's body says so
+    explicitly and a blocking interaction is also raised (see
     record_blocking_interaction) so a human operator sees it as an
     immediate "ACTION NEEDED" item, not just another PR waiting in a queue -
     the Tested gate stays blocked until that operator-side step actually
@@ -353,10 +398,12 @@ def propose_framework_change(
     JVM incident that led to this tool needed a human for in the first
     place.
 
-    Refuses a missing/too-short rationale, or a no-op (workbench_setup_script
-    already matches what's there). Always opens a draft PR against the
-    product/state repo's develop branch and leaves it unmerged for human
-    review, regardless of interaction level - same as propose_steering_change.
+    Refuses a missing/too-short rationale, an unknown/invalid template_name,
+    neither workbench_setup_script nor template_name given, or a no-op
+    (effective script and MCP config both already match what's there).
+    Always opens a draft PR against the product/state repo's develop branch
+    and leaves it unmerged for human review, regardless of interaction
+    level - same as propose_steering_change.
     """
     if not rationale or len(rationale.strip()) < 15:
         return {
@@ -372,6 +419,31 @@ def propose_framework_change(
 
     additional_allowlist_hosts = list(additional_allowlist_hosts or [])
 
+    template = None
+    if template_name:
+        template = resolve_workbench_template(template_name)
+        if template.get("status") != "ok":
+            return template
+
+    effective_script = workbench_setup_script if workbench_setup_script else (template["script"] if template else None)
+    if not effective_script:
+        return {
+            "status": "error",
+            "message": (
+                "Provide workbench_setup_script, template_name, or both - nothing to propose."
+            ),
+        }
+
+    effective_allowlist_hosts = list(dict.fromkeys(
+        (template["additional_allowlist_hosts"] if template else []) + additional_allowlist_hosts
+    ))
+
+    template_mcp_servers = (template["mcp_config"].get("mcpServers", {}) if template else {}) or {}
+    extra_mcp_servers = (additional_mcp_config or {}).get("mcpServers", {}) or {}
+    merged_mcp_servers = {**template_mcp_servers, **extra_mcp_servers}
+    effective_mcp_config = {"mcpServers": merged_mcp_servers} if merged_mcp_servers else {}
+    effective_mcp_content = (json.dumps(effective_mcp_config, indent=2, sort_keys=True) + "\n") if effective_mcp_config else ""
+
     repo_root_path = _configured_repo_root(tool_context)
     repo_root = str(repo_root_path)
     develop = _develop_branch_name(tool_context)
@@ -386,10 +458,27 @@ def propose_framework_change(
             "auto_integrated": recovery["auto_integrated"],
         }
 
-    target_path = repo_root_path / _WORKBENCH_SCRIPT_PATH
-    current_content = target_path.read_text(encoding="utf-8", errors="replace") if target_path.exists() else ""
-    if workbench_setup_script == current_content:
-        return {"status": "ok", "proposed": False, "message": f"workbench_setup_script is identical to the current {_WORKBENCH_SCRIPT_PATH} - nothing to propose."}
+    script_target_path = repo_root_path / _WORKBENCH_SCRIPT_PATH
+    current_script_content = script_target_path.read_text(encoding="utf-8", errors="replace") if script_target_path.exists() else ""
+    mcp_target_path = repo_root_path / _WORKBENCH_MCP_CONFIG_PATH
+    current_mcp_content = mcp_target_path.read_text(encoding="utf-8", errors="replace") if mcp_target_path.exists() else ""
+
+    script_unchanged = effective_script == current_script_content
+    # Only a non-empty effective_mcp_config is ever actually written (see
+    # below) - so "nothing requested" (no template, no additional_mcp_config)
+    # is never itself treated as a change, regardless of whatever may
+    # already sit in .hc/workbench-mcp.json from an earlier proposal.
+    mcp_unchanged = (not effective_mcp_config) or (effective_mcp_content == current_mcp_content)
+    if script_unchanged and mcp_unchanged:
+        return {
+            "status": "ok",
+            "proposed": False,
+            "message": (
+                f"workbench_setup_script (and MCP config, if any) already match what's in "
+                f"{_WORKBENCH_SCRIPT_PATH}" + (f"/{_WORKBENCH_MCP_CONFIG_PATH}" if effective_mcp_config else "") +
+                " - nothing to propose."
+            ),
+        }
 
     agent_name = getattr(tool_context, "agent_name", None) if tool_context else None
     branch = f"framework/workbench-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -398,8 +487,11 @@ def propose_framework_change(
     if checkout_branch.get("status") == "error":
         return {"status": "error", "message": f"Could not create branch '{branch}': {checkout_branch.get('stderr') or checkout_branch.get('message')}"}
 
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(workbench_setup_script, encoding="utf-8")
+    script_target_path.parent.mkdir(parents=True, exist_ok=True)
+    script_target_path.write_text(effective_script, encoding="utf-8")
+    if effective_mcp_config:
+        mcp_target_path.parent.mkdir(parents=True, exist_ok=True)
+        mcp_target_path.write_text(effective_mcp_content, encoding="utf-8")
 
     push_res = git_push(branch=branch, commit_message=f"build: propose {_WORKBENCH_SCRIPT_PATH} change", add_all=True, tool_context=tool_context)
     if push_res.get("status") != "ok":
@@ -409,13 +501,24 @@ def propose_framework_change(
     pr_body = (
         f"Proposed by {agent_name or 'an agent'} via `propose_framework_change`.\n\n"
         f"### Rationale\n{rationale.strip()}\n\n"
-        f"### Workbench script (`{_WORKBENCH_SCRIPT_PATH}`)\n```sh\n{workbench_setup_script}\n```\n\n"
+    )
+    if template:
+        pr_body += f"### Template\nBased on Development Workbench template `{template['name']}`"
+        if template.get("description"):
+            pr_body += f" - {template['description']}"
+        pr_body += ".\n\n"
+    pr_body += (
+        f"### Workbench script (`{_WORKBENCH_SCRIPT_PATH}`)\n```sh\n{effective_script}\n```\n\n"
+    )
+    if effective_mcp_config:
+        pr_body += f"### MCP configuration (`{_WORKBENCH_MCP_CONFIG_PATH}`)\n```json\n{effective_mcp_content}```\n\n"
+    pr_body += (
         "This is a proposed change to this project's agent-image toolchain, opened for human "
         "review. It has not been merged automatically, and it cannot change Horseless Carriage's "
         "own network sandbox (agent-net/net-proxy) - that lives outside this repository entirely."
     )
-    if additional_allowlist_hosts:
-        hosts_list = "\n".join(f"- `{host}`" for host in additional_allowlist_hosts)
+    if effective_allowlist_hosts:
+        hosts_list = "\n".join(f"- `{host}`" for host in effective_allowlist_hosts)
         pr_body += (
             "\n\n### ⚠️ HUMAN OPERATOR ACTION REQUIRED (outside this repo)\n"
             "This workbench needs outbound network access this project's agent container doesn't "
@@ -444,15 +547,17 @@ def propose_framework_change(
         tool_context.state["framework_change_proposals"] = list(tool_context.state.get("framework_change_proposals", [])) + [{
             "proposed_by": agent_name or "an agent",
             "rationale": rationale.strip(),
-            "workbench_setup_script": workbench_setup_script,
-            "additional_allowlist_hosts": additional_allowlist_hosts,
+            "template_name": template_name,
+            "workbench_setup_script": effective_script,
+            "mcp_config": effective_mcp_config,
+            "additional_allowlist_hosts": effective_allowlist_hosts,
             "pr_url": (pr_res.get("stdout") or "").strip(),
             "branch": actual_branch,
         }]
-        if additional_allowlist_hosts:
+        if effective_allowlist_hosts:
             record_blocking_interaction(
                 "framework_change",
-                f"Workbench change needs new network access: {', '.join(additional_allowlist_hosts)}",
+                f"Workbench change needs new network access: {', '.join(effective_allowlist_hosts)}",
                 detail=(
                     f"Draft PR opened by {agent_name or 'an agent'}: {(pr_res.get('stdout') or '').strip()}. "
                     "A human operator must add the listed host(s) to NET_PROXY_EXTRA_ALLOWLIST_HOSTS "
@@ -465,7 +570,9 @@ def propose_framework_change(
         "status": "ok" if ok else "error",
         "proposed": True,
         "branch": actual_branch,
-        "additional_allowlist_hosts": additional_allowlist_hosts,
+        "template_name": template_name,
+        "mcp_config": effective_mcp_config,
+        "additional_allowlist_hosts": effective_allowlist_hosts,
         "push": push_res,
         "pr": pr_res,
     }

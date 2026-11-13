@@ -20,6 +20,8 @@ from agents.scrum_team.helpers import (
     SPRINT_PHASE_GUIDANCE,
     new_sprint_item_blocked,
     ritual_hard_ceiling,
+    stale_issue_sprint_threshold,
+    stale_ungroomed_issues,
 )
 from agents.scrum_team.state import ScrumState
 
@@ -531,6 +533,125 @@ class TestRitualHardCeiling(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(ritual_hard_ceiling(0), 0.0)
             self.assertEqual(ritual_hard_ceiling(-5), 0.0)
+
+
+class TestStaleIssueSprintThreshold(unittest.TestCase):
+    """GH issue #295: configurable via STALE_ISSUE_SPRINT_THRESHOLD, default 2."""
+
+    def test_defaults_to_two(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(stale_issue_sprint_threshold(), 2)
+
+    def test_configurable_via_env_var(self):
+        with patch.dict("os.environ", {"STALE_ISSUE_SPRINT_THRESHOLD": "4"}, clear=True):
+            self.assertEqual(stale_issue_sprint_threshold(), 4)
+
+    def test_invalid_value_falls_back_to_default(self):
+        with patch.dict("os.environ", {"STALE_ISSUE_SPRINT_THRESHOLD": "not-a-number"}, clear=True):
+            self.assertEqual(stale_issue_sprint_threshold(), 2)
+
+
+class TestStaleUngroomedIssues(unittest.TestCase):
+    """
+    GH issue #295 ("Issues are reported but not fixed, or marked as
+    Won't"): SPEC-ISSUE-0076/0078/0081/0084 fixed the auto-filed,
+    auto-"Must"-prioritized retro-Issue path; this is the backstop for
+    everything else - an Issue filed any other way (e.g. a real,
+    human-driven "Product"-level sprint, where priority is deliberately
+    left for Product Owner's own grooming) that never gets planned AND
+    never gets an explicit "Won't" just sits forever with nothing noticing.
+    """
+
+    def _issue(self, **overrides):
+        item = {
+            "id": "SPEC-ISSUE-0099",
+            "title": "A reported but never-groomed issue",
+            "type": "Issue",
+            "status": "Draft",
+            "priority": "Should",
+            "stages_completed": [],
+            "filed_sprint": 1,
+        }
+        item.update(overrides)
+        return item
+
+    def test_an_open_issue_with_no_decision_past_the_threshold_is_flagged(self):
+        backlog = [self._issue(filed_sprint=1)]
+        stale = stale_ungroomed_issues(backlog, sprint_number=3, threshold=2)
+        self.assertEqual([i["id"] for i in stale], ["SPEC-ISSUE-0099"])
+
+    def test_an_open_issue_not_yet_past_the_threshold_is_not_flagged(self):
+        backlog = [self._issue(filed_sprint=2)]
+        stale = stale_ungroomed_issues(backlog, sprint_number=3, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_an_issue_explicitly_marked_wont_is_not_flagged(self):
+        """An honest, explicit decision (now requiring justification - see
+        set_priority's own GH #295 fix) clears the gate - this is the
+        'fixed, or marked as Won't' half of #295's title actually working."""
+        backlog = [self._issue(filed_sprint=1, priority="Won't")]
+        stale = stale_ungroomed_issues(backlog, sprint_number=5, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_an_issue_already_planned_into_ready_is_not_flagged(self):
+        """Already present/progressing in the backlog - not silently sitting."""
+        backlog = [self._issue(filed_sprint=1, stages_completed=["Draft", "Ready"])]
+        stale = stale_ungroomed_issues(backlog, sprint_number=5, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_an_issue_already_accepted_is_not_flagged(self):
+        backlog = [self._issue(filed_sprint=1, stages_completed=["Draft", "Ready", "Accepted"])]
+        stale = stale_ungroomed_issues(backlog, sprint_number=5, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_a_must_priority_issue_is_not_flagged_here(self):
+        """Already covered by create_sprint_backlog_pr's own
+        unaddressed_must_issues check (SPEC-ISSUE-0076/0078) - don't
+        double-gate the same item through two different messages."""
+        backlog = [self._issue(filed_sprint=1, priority="Must")]
+        stale = stale_ungroomed_issues(backlog, sprint_number=5, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_a_blocked_issue_is_not_flagged(self):
+        backlog = [self._issue(filed_sprint=1, blocked=True)]
+        stale = stale_ungroomed_issues(backlog, sprint_number=5, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_an_issue_superseded_by_steering_is_not_flagged(self):
+        backlog = [self._issue(filed_sprint=1, superseded_by_steering={"pr_url": "x"})]
+        stale = stale_ungroomed_issues(backlog, sprint_number=5, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_an_issue_with_no_filed_sprint_recorded_is_not_flagged(self):
+        """Pre-existing state from before this fix - no honest age to
+        measure it against, so don't guess a false 'stale'."""
+        item = self._issue()
+        item.pop("filed_sprint")
+        stale = stale_ungroomed_issues([item], sprint_number=10, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_a_story_is_never_flagged_regardless_of_age(self):
+        backlog = [{
+            "id": "US-0001", "title": "A real story", "type": "User Story",
+            "status": "Draft", "priority": "Should", "stages_completed": [],
+            "filed_sprint": 1,
+        }]
+        stale = stale_ungroomed_issues(backlog, sprint_number=10, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_an_already_done_issue_is_not_flagged(self):
+        backlog = [self._issue(filed_sprint=1, status="Accepted")]
+        stale = stale_ungroomed_issues(backlog, sprint_number=10, threshold=2)
+        self.assertEqual(stale, [])
+
+    def test_uses_the_configurable_threshold_when_not_passed_explicitly(self):
+        with patch.dict("os.environ", {"STALE_ISSUE_SPRINT_THRESHOLD": "5"}, clear=True):
+            backlog = [self._issue(filed_sprint=1)]
+            self.assertEqual(stale_ungroomed_issues(backlog, sprint_number=4), [])
+            self.assertEqual(
+                [i["id"] for i in stale_ungroomed_issues(backlog, sprint_number=6)],
+                ["SPEC-ISSUE-0099"],
+            )
 
 
 if __name__ == "__main__":

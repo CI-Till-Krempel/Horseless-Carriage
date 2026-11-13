@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "firebase": {
+      "command": "firebase",
+      "args": ["experimental:mcp"]
+    }
+  }
+}

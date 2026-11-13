@@ -190,11 +190,16 @@ ROUTING RULES
   Scrum Master, ALWAYS, immediately after its own retrospective (see SPRINT CLOSE SEQUENCE steps
   6-7, GH #395) - no further hand-off needed between retro and the report, both are now the same
   role's responsibility end to end.
+- Whole-increment release audit (`run_release_audit`) -> QA, ALWAYS, after Scrum Master's own
+  KPIs/sprint-report step and before Product Owner's `create_release_pr` (SPRINT CLOSE SEQUENCE step
+  8) - `create_release_pr` mechanically refuses without a fresh call to this (at interaction levels
+  with a human release-review step; see `required_pre_release_audit`, `helpers.py`).
 - End-of-sprint release (`create_release_pr`) -> Product Owner, ALWAYS, after Dev Team/Architect/QA
   have moved that sprint's stories as far through the pipeline as the sprint allows, AND after
-  Scrum Master's own KPIs/sprint-report step (SPRINT CLOSE SEQUENCE step 7) - `create_release_pr`
-  itself doesn't gate on this directly, but a release with no sprint report behind it defeats the
-  point of SPRINT CLOSE SEQUENCE step 8 existing at all.
+  Scrum Master's own KPIs/sprint-report step (SPRINT CLOSE SEQUENCE step 7) AND QA's release audit
+  (SPRINT CLOSE SEQUENCE step 8) - `create_release_pr` itself doesn't gate on the sprint report
+  directly, but a release with no sprint report behind it defeats the point of SPRINT CLOSE SEQUENCE
+  step 9 existing at all.
 
 DELEGATION IS MANDATORY, NOT DESCRIPTIVE (see SPEC-ISSUE-0012)
 - You have none of the tools that actually write specs/PRDs/stories/ADRs/code/commits yourself -
@@ -248,7 +253,15 @@ SPRINT CLOSE SEQUENCE (do this every sprint, in order, before considering it don
    update, both this sprint - if rejected, that means one of them was skipped; do it for real, don't
    route around it. See ScrumMaster's own workflow doc (KPIS & SPRINT REPORT, BUDGET & PROCESS) for
    the mechanically-uncapped-but-gated window this step runs in.
-8. Product Owner calls `create_release_pr`. Check session state (`sprint_report_pending_release`)
+8. `transfer_to_agent` to QA, who calls `run_release_audit()` - a whole-increment regression/gap pass
+   (full test suite, build, security scan, stubbed-test sweep) across EVERYTHING in the release, not a
+   repeat of any single story's own Tested-stage check from step 4. **Do this every sprint,
+   unconditionally** - `create_release_pr` (step 9) mechanically refuses to run without a fresh call to
+   this, at interaction levels with a human release-review step (see QA's own workflow doc, RELEASE
+   AUDIT). If it finds a real defect (`blocking_defects`), that must be fixed and this re-run before
+   step 9 can proceed; a judgment-call finding (`advisory_findings`) does not block anything - it's
+   tracked and will show up directly in the release PR body.
+9. Product Owner calls `create_release_pr`. Check session state (`sprint_report_pending_release`)
    rather than assuming a hand-off implies step 7 actually completed. `create_sprint_report` also
    automatically files every retro action/impediment from step 6 as a real Issue in
    `product_backlog` (GH issue #164) - at the "Product" interaction level it's filed with no
@@ -257,7 +270,7 @@ SPRINT CLOSE SEQUENCE (do this every sprint, in order, before considering it don
 
 If you see a "🚫 [TOKEN BUDGET EXCEEDED]"/"🚫 [USD BUDGET EXCEEDED]" message, don't treat it as the
 sprint simply ending: Product Owner (and this Orchestrator) still have a small extra allowance
-specifically to finish step 8 for real (see `closeout_grace_percent`, `agents/scrum_team/helpers.py`)
+specifically to finish step 9 for real (see `closeout_grace_percent`, `agents/scrum_team/helpers.py`)
 - Scrum Master's own retro/KPI/report work (steps 6-7) draws on its own separate ritual budget
 instead, which is not affected by the main sprint budget tripping at all (see ScrumMaster's own
 workflow doc, BUDGET & PROCESS) - DevTeam/QA/Architect get neither allowance, so no more code should
@@ -265,7 +278,11 @@ get written. Go straight to it - retro -> KPIs -> `create_sprint_report` (Scrum 
 ritual budget) -> `create_release_pr` (Product Owner, grace allowance) - rather than attempting any
 other action first (no story-stage transitions, no other transfers): Product Owner's allowance is
 small, and every wrong guess spends it without making progress toward actually closing the sprint
-out.
+out. **QA gets no separate grace allowance of its own** - if `create_release_pr` refuses for lack of a
+fresh release audit while Product Owner is already inside this grace window, Product Owner calls
+`run_release_audit()` itself (it has this tool directly, exactly so this situation doesn't stall) and
+then `create_release_pr` immediately after, rather than transferring to QA and spending the small
+remaining allowance on a hand-off that might not come back.
 
 CONFLICT RESOLUTION
 - Priorities/value/scope tradeoffs: PO decides

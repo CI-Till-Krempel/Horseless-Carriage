@@ -289,6 +289,29 @@ _PRE_RELEASE_APPROVAL_BY_LEVEL = {
     "EVAL": None,
 }
 
+# GH-273: whether create_release_pr requires a FRESH run_release_audit()
+# call (QA's whole-increment release audit, tools/quality.py) since the
+# last release, at this interaction level - same "must be NEW" baseline
+# pattern release_approval_baseline already uses for
+# required_pre_release_approval above, and deliberately scoped the same
+# way: only where a human already reviews each release individually
+# (today: "Product") is a mandatory, sequenced extra step before
+# create_release_pr realistic - forcing it unconditionally onto the
+# CEO/EVAL auto-merge paths (nothing drives that sequencing there; EVAL in
+# particular has no human in the loop at all, see run_eval.py) risks
+# exactly the kind of abrupt, noisy-check stall GH-273's own discussion
+# flagged as the real cost of a careless hard gate on something inherently
+# judgment-based. This does NOT weaken what the audit actually catches:
+# any blocking_defects a run_release_audit call DID find (a real failing
+# test, a genuinely broken build - deterministic facts, not judgment
+# calls) still refuse create_release_pr unconditionally, at every
+# interaction level - see that function's own gate in tools/github.py.
+_PRE_RELEASE_AUDIT_REQUIRED_BY_LEVEL = {
+    "Product": True,
+    "CEO": False,
+    "EVAL": False,
+}
+
 
 def get_interaction_level() -> str:
     """
@@ -312,6 +335,11 @@ def required_pre_implementation_approval(level: str | None = None) -> str | None
 def required_pre_release_approval(level: str | None = None) -> str | None:
     """Same as required_pre_implementation_approval, for create_release_pr."""
     return _PRE_RELEASE_APPROVAL_BY_LEVEL.get(level or get_interaction_level())
+
+
+def required_pre_release_audit(level: str | None = None) -> bool:
+    """Whether create_release_pr requires a fresh run_release_audit() call this release cycle (GH-273) - see _PRE_RELEASE_AUDIT_REQUIRED_BY_LEVEL above for the rationale."""
+    return _PRE_RELEASE_AUDIT_REQUIRED_BY_LEVEL.get(level or get_interaction_level(), False)
 
 
 # How much detail create_sprint_report actually renders for the human at
@@ -574,6 +602,77 @@ def find_recurring_open_issue(existing_entries, product_backlog, new_text: str, 
                 best_sprint = entry_sprint
                 best_issue_id = issue_id
     return best_issue_id
+
+
+def stale_issue_sprint_threshold() -> int:
+    """How many sprints an open, non-Must, non-"Won't" Issue may sit
+    unplanned (never reaching "Ready") before `create_sprint_backlog_pr`
+    (GH issue #295) refuses to publish until Product Owner makes an
+    explicit call on it. Configurable via STALE_ISSUE_SPRINT_THRESHOLD;
+    defaults to 2 - matches this codebase's existing "2 is already a real
+    pattern, not bad luck" threshold (_MAX_CONSECUTIVE_DISPLACEMENTS,
+    SPEC-ISSUE-0084)."""
+    try:
+        return max(1, int(os.getenv("STALE_ISSUE_SPRINT_THRESHOLD", "2")))
+    except (ValueError, TypeError):
+        return 2
+
+
+def stale_ungroomed_issues(product_backlog, sprint_number, threshold: int | None = None) -> list:
+    """
+    GH issue #295 ("Issues are reported but not fixed, or marked as Won't"):
+    SPEC-ISSUE-0076/0078/0081/0084 all fixed real bugs in how an
+    auto-filed, auto-"Must"-prioritized retro Issue gets positioned/
+    reconciled/kept from livelocking the real backlog - but that whole
+    machinery only ever engages on the auto-filing path
+    (_file_retro_items_as_issues, tools/budget.py), which explicitly skips
+    auto-prioritization at the "Product" interaction level (a real,
+    human-driven sprint) so the human Product Owner can groom priority
+    themselves. Nothing before this ever came back around to check whether
+    that grooming actually happened - an Issue filed via upsert_issue
+    (by any role, or transcribed from a real human-filed report) that
+    never gets prioritized/planned AND never gets an explicit "Won't"
+    decision just sits at Draft forever: neither "fixed" nor "marked as
+    Won't", the exact silent-failure mode #295 reports.
+
+    Returns the `product_backlog` Issue items that:
+    - have sat at least `threshold` sprints since filed (`filed_sprint`,
+      stamped once at creation by `upsert_backlog_item`) without reaching
+      "Ready" (i.e. never actually planned/queued), AND
+    - were never explicitly, honestly declined - `priority != "Won't"`
+      (that decision now requires a real justification, logged to
+      `decision_log` - see `set_priority`'s own GH #295 fix - so it's a
+      real, auditable "no", not silence wearing a different label), AND
+    - aren't already covered by one of the narrower gates SPEC-ISSUE-0076/
+      0078 already fixed: `priority == "Must"` (create_sprint_backlog_pr's
+      own `unaddressed_must_issues` check already forces these forward),
+      `blocked`, or `superseded_by_steering` (already resolved a
+      different, correct way).
+
+    An Issue with no `filed_sprint` at all (pre-existing state from before
+    this fix, or hand-authored without going through upsert_backlog_item)
+    is deliberately not flagged - there's no honest age to measure it
+    against, and guessing one would risk a false "stale" the very first
+    time this check runs against real history.
+    """
+    threshold = stale_issue_sprint_threshold() if threshold is None else threshold
+    stale = []
+    for item in product_backlog or []:
+        if not is_issue_open(item):
+            continue
+        if item.get("priority") in ("Must", "Won't"):
+            continue
+        if item.get("blocked") or item.get("superseded_by_steering"):
+            continue
+        stages_completed = item.get("stages_completed") or []
+        if "Ready" in stages_completed or "Accepted" in stages_completed:
+            continue
+        filed_sprint = item.get("filed_sprint")
+        if filed_sprint is None:
+            continue
+        if (sprint_number or 0) - filed_sprint >= threshold:
+            stale.append(item)
+    return stale
 
 
 # --- BLOCKED stories (agents stuck on an unresolved question or loop) ---

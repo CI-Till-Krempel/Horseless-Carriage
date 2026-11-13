@@ -11,6 +11,7 @@ from agents.scrum_team.tools.quality import (
     update_sprint_report,
     check_build,
     recheck_test_suite,
+    run_release_audit,
     _execute_test_suite_coverage,
     _compute_code_complexity,
     _scan_security_vulnerabilities,
@@ -1139,6 +1140,208 @@ class TestDetectStubbedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             findings = detect_stubbed_tests(tmp)
         self.assertEqual(findings, [])
+
+
+class TestRunReleaseAudit(unittest.TestCase):
+    """
+    Acceptance Criteria (GH-273): run_release_audit is QA's whole-increment
+    release audit, distinct from each story's own Tested-stage check. See
+    create_release_pr's own tests (test_github.py,
+    TestCreateReleasePrReleaseAuditGate) for how its result actually gates
+    the release.
+    """
+
+    def _tool_context(self):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        return tool_context
+
+    def _patch_checks(self, *, tests_failed=0, tests_available=True, build_passing=True,
+                       vuln=None, stub_findings=None):
+        return (
+            patch(
+                "agents.scrum_team.tools.quality._execute_test_suite_coverage",
+                return_value={
+                    "tests_available": tests_available, "tests_run": 10,
+                    "tests_failed": tests_failed, "note": None,
+                },
+            ),
+            patch(
+                "agents.scrum_team.tools.quality.check_build",
+                return_value={"status": "ok" if build_passing else "error", "checked": "requirements.txt", "passing": build_passing},
+            ),
+            patch(
+                "agents.scrum_team.tools.quality._scan_security_vulnerabilities",
+                return_value={
+                    "available": vuln is not None,
+                    "vulnerability_scan_results": vuln,
+                    "note": None if vuln is not None else "security scan not available for language: unknown",
+                },
+            ),
+            patch("agents.scrum_team.tools.quality._configured_repo_root", return_value="/tmp/fake-repo"),
+            patch("agents.scrum_team.tools.quality.detect_stubbed_tests", return_value=stub_findings or []),
+        )
+
+    def test_clean_release_proceeds_with_no_findings_at_all(self):
+        patches = self._patch_checks(vuln={"critical": 0, "high": 0, "medium": 0, "low": 0})
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["blocking_defects"], [])
+        self.assertEqual(result["advisory_findings"], [])
+        self.assertEqual(result["issues_filed"], [])
+
+    def test_a_real_failing_test_suite_is_a_blocking_defect(self):
+        patches = self._patch_checks(tests_failed=3)
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(len(result["blocking_defects"]), 1)
+        self.assertEqual(result["blocking_defects"][0]["type"], "test_failure")
+        self.assertIn("3", result["blocking_defects"][0]["detail"])
+
+    def test_a_broken_build_is_a_blocking_defect(self):
+        patches = self._patch_checks(build_passing=False)
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(len(result["blocking_defects"]), 1)
+        self.assertEqual(result["blocking_defects"][0]["type"], "build_failure")
+
+    @patch("agents.scrum_team.tools.requirements.set_priority")
+    @patch("agents.scrum_team.tools.github.gh_issue_create", return_value={"status": "ok"})
+    @patch(
+        "agents.scrum_team.tools.requirements.upsert_issue",
+        return_value={"status": "ok", "item": {"id": "SPEC-ISSUE-0099"}, "updated": False},
+    )
+    def test_security_scan_findings_are_advisory_not_blocking(self, mock_upsert, mock_gh_issue, mock_priority):
+        patches = self._patch_checks(vuln={"critical": 0, "high": 1, "medium": 0, "low": 0})
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["blocking_defects"], [])
+        self.assertEqual(len(result["advisory_findings"]), 1)
+        self.assertEqual(result["advisory_findings"][0]["type"], "security_scan")
+        mock_upsert.assert_called_once()
+
+    @patch("agents.scrum_team.tools.requirements.set_priority")
+    @patch("agents.scrum_team.tools.github.gh_issue_create", return_value={"status": "ok"})
+    @patch(
+        "agents.scrum_team.tools.requirements.upsert_issue",
+        return_value={"status": "ok", "item": {"id": "SPEC-ISSUE-0099"}, "updated": False},
+    )
+    def test_stubbed_tests_are_advisory_not_blocking(self, mock_upsert, mock_gh_issue, mock_priority):
+        patches = self._patch_checks(stub_findings=[{"file": "test_app.py", "function": "test_dummy"}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["blocking_defects"], [])
+        self.assertEqual(len(result["advisory_findings"]), 1)
+        self.assertEqual(result["advisory_findings"][0]["type"], "stubbed_tests")
+
+    def test_persists_run_count_and_last_result_on_every_call(self):
+        patches = self._patch_checks()
+        tool_context = self._tool_context()
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            run_release_audit(tool_context=tool_context)
+            run_release_audit(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["release_audit_run_count"], 2)
+        self.assertEqual(tool_context.state["last_release_audit_result"]["status"], "ok")
+
+    @patch("agents.scrum_team.tools.requirements.set_priority")
+    @patch("agents.scrum_team.tools.github.gh_issue_create", return_value={"status": "ok"})
+    @patch(
+        "agents.scrum_team.tools.requirements.upsert_issue",
+        return_value={"status": "ok", "item": {"id": "SPEC-ISSUE-0099"}, "updated": False},
+    )
+    def test_a_newly_filed_finding_also_attempts_a_real_github_issue(self, mock_upsert, mock_gh_issue, mock_priority):
+        patches = self._patch_checks(vuln={"critical": 0, "high": 1, "medium": 0, "low": 0})
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(len(result["issues_filed"]), 1)
+        self.assertTrue(result["issues_filed"][0]["new"])
+        mock_gh_issue.assert_called_once()
+        self.assertEqual(result["issues_filed"][0]["issue_id"], "SPEC-ISSUE-0099")
+
+    @patch("agents.scrum_team.tools.requirements.set_priority")
+    @patch("agents.scrum_team.tools.github.gh_issue_create")
+    @patch(
+        "agents.scrum_team.tools.requirements.upsert_issue",
+        # updated=True: re-running the audit hit an ALREADY-tracked finding.
+        return_value={"status": "ok", "item": {"id": "SPEC-ISSUE-0099"}, "updated": True},
+    )
+    def test_re_confirming_an_already_tracked_finding_does_not_refile_a_github_issue(
+        self, mock_upsert, mock_gh_issue, mock_priority,
+    ):
+        patches = self._patch_checks(vuln={"critical": 0, "high": 1, "medium": 0, "low": 0})
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertFalse(result["issues_filed"][0]["new"])
+        mock_gh_issue.assert_not_called()
+
+    @patch("agents.scrum_team.tools.requirements.set_priority")
+    @patch("agents.scrum_team.tools.github.gh_issue_create", side_effect=RuntimeError("no network"))
+    @patch(
+        "agents.scrum_team.tools.requirements.upsert_issue",
+        return_value={"status": "ok", "item": {"id": "SPEC-ISSUE-0099"}, "updated": False},
+    )
+    def test_a_github_issue_filing_failure_does_not_crash_the_audit(self, mock_upsert, mock_gh_issue, mock_priority):
+        """
+        Acceptance Criteria: the audit tool itself degrading safely - a
+        best-effort GitHub mirror failing (no network/no gh CLI/no token)
+        must never crash the audit or silently let a broken release
+        through by raising past this check.
+        """
+        patches = self._patch_checks(vuln={"critical": 0, "high": 1, "medium": 0, "low": 0})
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["issues_filed"][0]["gh_issue"]["status"], "error")
+
+    @patch(
+        "agents.scrum_team.tools.requirements.upsert_issue",
+        return_value={"status": "error", "message": "bad title"},
+    )
+    def test_an_issue_filing_failure_itself_does_not_crash_the_audit(self, mock_upsert):
+        patches = self._patch_checks(stub_findings=[{"file": "test_app.py", "function": "test_dummy"}])
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["issues_filed"][0]["status"], "error")
+
+    def test_degrades_safely_when_security_scan_tooling_is_unavailable(self):
+        """A check that can't run (e.g. bandit not installed) reports
+        unavailable, never a fabricated finding and never a crash."""
+        patches = self._patch_checks(vuln=None)
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["advisory_findings"], [])
+        self.assertFalse(result["checked"]["security_scan_available"])
+
+    def test_tests_unavailable_is_not_itself_treated_as_a_blocking_defect(self):
+        """
+        tests_available False (e.g. no recognized test runner in this repo)
+        is a different, pre-existing gap (see test_runners.py) - not
+        something run_release_audit fabricates a defect for.
+        """
+        patches = self._patch_checks(tests_available=False, tests_failed=0)
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+            result = run_release_audit(tool_context=self._tool_context())
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["blocking_defects"], [])
 
 
 if __name__ == "__main__":

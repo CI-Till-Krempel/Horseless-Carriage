@@ -594,10 +594,23 @@ def list_open_issues(tool_context=None) -> Dict[str, Any]:
     anyone see the open-issue list at all. Call this before add_retro_action/
     add_impediment with category="technical", then pass the matching id as
     duplicate_of if one of these is substantively the same finding.
+
+    GH issue #295 ("Issues are reported but not fixed, or marked as
+    Won't"): also a Product Owner's own backlog-grooming entry point - each
+    item's `sprints_open` (current sprint_number minus `filed_sprint`, the
+    sprint it was actually created - see upsert_backlog_item) surfaces how
+    long it's sat with no decision, so a periodic grooming pass can spot
+    one worth planning (advance_story_stage(..., 'Ready')) or explicitly
+    declining (set_priority(..., "Won't", justification=...)) before
+    create_sprint_backlog_pr's own stale_ungroomed_issues check forces the
+    question. `sprints_open` is None when `filed_sprint` isn't recorded
+    (pre-existing state from before this fix).
     """
     if not tool_context or not getattr(tool_context, "state", None):
         return {"status": "error", "message": "list_open_issues requires an active session (tool_context.state)."}
-    backlog = tool_context.state.get("product_backlog", []) or []
+    state = tool_context.state
+    sprint_number = state.get("sprint_number", 0)
+    backlog = state.get("product_backlog", []) or []
     issues = [
         {
             "id": item.get("id"),
@@ -605,6 +618,11 @@ def list_open_issues(tool_context=None) -> Dict[str, Any]:
             "status": item.get("status"),
             "priority": item.get("priority"),
             "recurrence_count": item.get("recurrence_count", 0),
+            "filed_sprint": item.get("filed_sprint"),
+            "sprints_open": (
+                (sprint_number - item["filed_sprint"])
+                if item.get("filed_sprint") is not None else None
+            ),
         }
         for item in backlog
         if is_issue_open(item)
@@ -998,6 +1016,15 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
             updated_item = backlog[i]
             break
     if not updated_item:
+        # GH issue #295: stamp when an Issue was actually filed (once, at
+        # real creation - never on a later update to an existing item,
+        # which would silently reset the clock) so stale_ungroomed_issues
+        # (helpers.py, create_sprint_backlog_pr) can tell "just filed" from
+        # "has sat ungroomed for N sprints with no explicit decision" -
+        # the gap SPEC-ISSUE-0076/0078/0081/0084 never covered, since all
+        # of those operate on the auto-filed, auto-"Must" path only.
+        if item.get("type") == "Issue" and "filed_sprint" not in item:
+            item["filed_sprint"] = s.get("sprint_number", 0)
         backlog.append(item)
         s["product_backlog"] = backlog
         updated_item = item
@@ -1081,18 +1108,29 @@ def set_priority(title_or_id: str, priority: str, justification: str = None, too
     else outright rather than silently misranking it.
 
     `justification`: SPEC-ISSUE-0082 - required when demoting a real story
-    (not an auto-filed Issue - see SPEC-ISSUE-0081's own recurrence
-    handling for that case) away from "Must" priority, logged to
-    decision_log (same honest-escape-hatch pattern as
-    implemented_via_earlier_work/content_loss_acknowledgment). A real eval
-    run (0.1.0-run80) showed Product Owner respond to a correct
-    one-story-at-a-time ordering rejection by reprioritizing the named
-    blocking stories to "Won't" instead of implementing them, discarding
-    committed PRD scope with no justification or audit trail at all. If
-    this exact story was named as the blocking precedent in an
-    advance_story_stage/start_feature_branch rejection this same sprint,
-    the call is refused outright regardless of justification - resolve it
-    for real instead.
+    away from "Must" priority, logged to decision_log (same honest-escape-
+    hatch pattern as implemented_via_earlier_work/
+    content_loss_acknowledgment). A real eval run (0.1.0-run80) showed
+    Product Owner respond to a correct one-story-at-a-time ordering
+    rejection by reprioritizing the named blocking stories to "Won't"
+    instead of implementing them, discarding committed PRD scope with no
+    justification or audit trail at all. If this exact story was named as
+    the blocking precedent in an advance_story_stage/start_feature_branch
+    rejection this same sprint, the call is refused outright regardless of
+    justification - resolve it for real instead.
+
+    GH issue #295 ("Issues are reported but not fixed, or marked as
+    Won't"): the same requirement now also applies to an Issue-type item
+    specifically being set to "Won't" (from any prior priority, not just
+    Must) - SPEC-ISSUE-0082 deliberately scoped its own fix to real
+    stories only, since SPEC-ISSUE-0081's recurrence handling covered the
+    auto-filed, auto-"Must" path's equivalent concern. But an Issue
+    reprioritized to "Won't" outside that path (e.g. by a human Product
+    Owner grooming the backlog at the "Product" interaction level, where
+    auto-prioritization never runs at all - see
+    _file_retro_items_as_issues) had zero accountability gap closed for it
+    at all: it could be silently marked "Won't" with no reason logged
+    anywhere, which is exactly the unaudited half of what #295 reports.
     """
     error = _validate_priority(priority)
     if error:
@@ -1105,33 +1143,36 @@ def set_priority(title_or_id: str, priority: str, justification: str = None, too
         if x.get("id") == title_or_id or x.get("title") == title_or_id:
             item_id = x.get("id") or x.get("title")
             is_story = x.get("type", "User Story") != "Issue"
-            demoting_from_must = x.get("priority") == "Must" and priority != "Must"
-            if is_story and demoting_from_must:
+            demoting_from_must = is_story and x.get("priority") == "Must" and priority != "Must"
+            demoting_issue_to_wont = (not is_story) and priority == "Won't" and x.get("priority") != "Won't"
+            if demoting_from_must or demoting_issue_to_wont:
                 precedents = s.get("priority_block_precedents", {}) or {}
                 if precedents.get(item_id) == s.get("sprint_number"):
                     return {
                         "status": "error",
                         "message": (
-                            f"Cannot reprioritize '{item_id}' away from 'Must' - it was just named as "
-                            "the blocking precedent in an ordering-gate rejection this sprint. Resolve "
-                            "it for real (advance it through Implemented -> Reviewed -> Tested -> "
-                            "Accepted) instead of reprioritizing it away now that it's inconvenient."
+                            f"Cannot reprioritize '{item_id}' away from '{x.get('priority')}' - it was "
+                            "just named as the blocking precedent in an ordering-gate rejection this "
+                            "sprint. Resolve it for real (advance it through Implemented -> Reviewed -> "
+                            "Tested -> Accepted) instead of reprioritizing it away now that it's "
+                            "inconvenient."
                         ),
                     }
                 cleaned = (justification or "").strip()
                 if not cleaned or is_low_quality_retro_text(cleaned):
+                    target_desc = "away from 'Must'" if demoting_from_must else "to \"Won't\""
                     return {
                         "status": "error",
                         "message": (
-                            f"Cannot reprioritize '{item_id}' away from 'Must' - pass a real, specific "
+                            f"Cannot reprioritize '{item_id}' {target_desc} - pass a real, specific "
                             "justification explaining why this genuinely never warranted blocking "
                             "priority, not a placeholder, and not because resolving it is inconvenient "
                             "right now."
                         ),
                     }
                 s["decision_log"] = list(s.get("decision_log", [])) + [{
-                    "title": f"{item_id} reprioritized away from Must",
-                    "decision": f"priority changed from 'Must' to '{priority}'",
+                    "title": f"{item_id} reprioritized {'away from Must' if demoting_from_must else 'to Wont'}",
+                    "decision": f"priority changed from '{x.get('priority')}' to '{priority}'",
                     "rationale": cleaned,
                     "owner": getattr(tool_context, "agent_name", None) or "ProductOwner",
                 }]

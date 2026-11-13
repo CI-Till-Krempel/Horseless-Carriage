@@ -1,1 +1,51 @@
-* @your-org/your-team
+# CODEOWNERS - GH-316
+#
+# Designates required reviewers for paths that need a human in the loop
+# before merging, per this repo's existing "human-reviewed PR" conventions
+# (see docs/GITHUB-INTEGRATION.md, SECURITY.md, ADR-0002).
+#
+# IMPORTANT - this file alone does NOT block merges. GitHub only enforces
+# these required reviews once "Require review from Code Owners" is ALSO
+# turned on as a branch protection rule for `main`
+# (Settings -> Branches -> branch protection rule for `main` -> check
+# "Require review from Code Owners"). That toggle is a manual, repo-admin
+# step this story deliberately does NOT flip for you - see
+# docs/GITHUB-INTEGRATION.md for why. Until a human turns it on, this file
+# is inert documentation of reviewer intent, not an enforced gate.
+#
+# Syntax: last matching pattern in the file wins, so keep broad patterns
+# first and narrower/more sensitive ones below them.
+
+# CI/release automation: a careless or compromised workflow edit can
+# exfiltrate secrets, change what auto-merges, or alter what gets published
+# as a release - always wants a human look.
+/.github/workflows/ @CI-Till-Krempel
+
+# This file itself: changing who's required to review should itself
+# require the current owner's review (standard CODEOWNERS self-protection).
+/.github/CODEOWNERS @CI-Till-Krempel
+
+# Declarative repo-policy notes (intended branch protection / CODEOWNERS
+# enforcement state for humans to apply by hand) - see
+# docs/GITHUB-INTEGRATION.md and docs/CONFIGURATION.md ("GitHub auth axis").
+/config/github_config.yaml @CI-Till-Krempel
+
+# Network egress allowlist for the sandboxed dev/eval containers - widening
+# what hosts agents can reach is a security decision, not a routine edit
+# (see docs/SETUP.md and ADR-0002).
+/config/net-proxy/ @CI-Till-Krempel
+
+# .env templates: shape the defaults every new project copies in; a bad
+# default here (wrong provider, unsafe default, leaked-looking placeholder)
+# propagates to every setup that follows the wizard. (Real, populated
+# `.env` files are gitignored and never reach this repo, so only the
+# templates below are in scope.)
+/.env.example @CI-Till-Krempel
+/.env.local.example @CI-Till-Krempel
+/.env.test @CI-Till-Krempel
+
+# Release process and security-disclosure docs: changes here redefine how
+# this project ships releases or handles vulnerability reports - process
+# documents, not just prose.
+/RELEASE.md @CI-Till-Krempel
+/SECURITY.md @CI-Till-Krempel

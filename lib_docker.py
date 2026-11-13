@@ -22,25 +22,35 @@ def compose_file_args(repo_root: Path) -> list:
     if OLLAMA_GPU_ENABLED=true - see setup_llm.py's GPU prompt), or ["-f",
     "docker-compose.local-hostollama.yaml"] instead of both if
     OLLAMA_HOST_MODE=true (GH issue #93: Ollama running natively on the host
-    machine instead of in a container - see setup_llm.py's macOS prompt) -
-    for a Local/Ollama setup, else [] (default docker-compose.yaml). A
-    Local/Ollama setup (see setup_llm.py's run_local_provider) only ever
-    writes config/model-templates/litellm.local-ollama.yaml, never the root
-    litellm.yaml docker-compose.yaml's litellm service mounts - it needs
-    docker-compose.local.yaml (which mounts that file directly, and adds
-    the ollama service) instead, or the agent comes up pointed at whichever
-    cloud provider was last configured (or the repo's shipped default),
-    with no matching API key set (GH issue #36).
+    machine instead of in a container - see setup_llm.py's macOS prompt) or
+    OLLAMA_REMOTE_ENABLED=true (GH issue #502: Ollama running on a separate
+    machine elsewhere on the local network instead - see setup_llm.py's
+    "Remote LAN Ollama server" prompt) - for a Local/Ollama setup, else []
+    (default docker-compose.yaml). A Local/Ollama setup (see setup_llm.py's
+    run_local_provider) only ever writes config/model-templates/litellm.
+    local-ollama.yaml, never the root litellm.yaml docker-compose.yaml's
+    litellm service mounts - it needs docker-compose.local.yaml (which
+    mounts that file directly, and adds the ollama service) instead, or the
+    agent comes up pointed at whichever cloud provider was last configured
+    (or the repo's shipped default), with no matching API key set (GH issue
+    #36).
 
-    Host mode uses a wholly separate compose file, not docker-compose.local
-    .yaml plus an overlay like the GPU case: Compose merges (rather than
-    replaces) `depends_on` across `-f` files, so an overlay can't actually
-    remove litellm's dependency on the dockerized `ollama` service - see
-    docker-compose.local-hostollama.yaml's own header comment. The two are
-    mutually exclusive (host mode bypasses the dockerized `ollama` service -
-    and therefore its GPU override - entirely; setup_llm.py never writes
-    both flags true), but host mode still wins here if it somehow did,
-    since it's the more fundamental of the two.
+    Host mode and remote mode both use the same wholly separate compose
+    file, not docker-compose.local.yaml plus an overlay like the GPU case:
+    Compose merges (rather than replaces) `depends_on` across `-f` files, so
+    an overlay can't actually remove litellm's dependency on the dockerized
+    `ollama` service - see docker-compose.local-hostollama.yaml's own header
+    comment. Host mode and remote mode share this same compose topology (no
+    dockerized `ollama` service at all - the only difference is which
+    api_base ends up in litellm.local-ollama.yaml, written by setup_llm.py),
+    so either flag alone is enough to select it; GH issue #502's remote mode
+    reuses this same file rather than adding a new one, since "skip the
+    dockerized ollama service" is exactly what it already does. Both are
+    mutually exclusive with OLLAMA_GPU_ENABLED (that setting only applies to
+    the dockerized `ollama` service, which either mode bypasses entirely;
+    setup_llm.py never writes OLLAMA_GPU_ENABLED=true alongside either), but
+    either still wins here over the GPU flag if it somehow did, since both
+    are more fundamental.
 
     Lives here (rather than in run.py, where it originated) so both run.py
     and rebuild_images.py can call it without one importing the other -
@@ -51,7 +61,8 @@ def compose_file_args(repo_root: Path) -> list:
     if active_provider != "local":
         return []
     env_path = repo_root / ".env"
-    if lib_env.read_env_var(env_path, "OLLAMA_HOST_MODE") == "true":
+    if (lib_env.read_env_var(env_path, "OLLAMA_HOST_MODE") == "true"
+            or lib_env.read_env_var(env_path, "OLLAMA_REMOTE_ENABLED") == "true"):
         return ["-f", "docker-compose.local-hostollama.yaml"]
     args = ["-f", "docker-compose.local.yaml"]
     if lib_env.read_env_var(env_path, "OLLAMA_GPU_ENABLED") == "true":
