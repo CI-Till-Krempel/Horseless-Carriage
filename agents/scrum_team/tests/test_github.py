@@ -14,6 +14,7 @@ from agents.scrum_team.tools.github import (
     gh_pr_comments,
     gh_pr_review,
     gh_release_create,
+    gh_issue_create,
     git_push,
     _git_push_impl,
     repo_status,
@@ -867,6 +868,10 @@ class TestGitHubTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
+        # GH-273's release-audit-freshness gate runs before this one -
+        # satisfy it (release_audit_run_count > release_audit_baseline) so
+        # this test exercises the approval gate it's actually about.
+        tool_context.state["release_audit_run_count"] = 1
 
         result = create_release_pr(title="Release", body="body", tool_context=tool_context)
 
@@ -889,6 +894,10 @@ class TestGitHubTools(unittest.TestCase):
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
+        # GH-273's release-audit-freshness gate runs before this one -
+        # satisfy it (release_audit_run_count > release_audit_baseline) so
+        # this test exercises the approval gate it's actually about.
+        tool_context.state["release_audit_run_count"] = 1
 
         create_release_pr(title="Release", body="body", tool_context=tool_context)
 
@@ -916,6 +925,10 @@ class TestGitHubTools(unittest.TestCase):
         tool_context.state["sprint_report_pending_release"] = True
         tool_context.state["sprint_backlog_pr_sprint"] = 3
         tool_context.state["sprint_number"] = 3
+        # GH-273's release-audit-freshness gate runs before this one -
+        # satisfy it (release_audit_run_count > release_audit_baseline) so
+        # this test exercises the approval gate it's actually about.
+        tool_context.state["release_audit_run_count"] = 1
 
         result = create_release_pr(title="Release", body="body", tool_context=tool_context)
 
@@ -946,6 +959,11 @@ class TestGitHubTools(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed PR #42"}]
+        # GH-273's release-audit-freshness gate runs before this one -
+        # satisfy it (release_audit_run_count > release_audit_baseline) so
+        # this test exercises the approval/idempotent-recall gate it's
+        # actually about.
+        tool_context.state["release_audit_run_count"] = 1
 
         result = create_release_pr(title="Release", body="body", tool_context=tool_context)
 
@@ -986,6 +1004,10 @@ class TestGitHubTools(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        # GH-273: a fresh release audit is also required at this (default,
+        # "Product") interaction level - same baseline pattern as the
+        # approval above (release_audit_run_count > release_audit_baseline).
+        tool_context.state["release_audit_run_count"] = 1
         tool_context.state["repo"] = {"default_branch": "main", "develop_branch": "develop"}
 
         result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
@@ -1018,6 +1040,10 @@ class TestGitHubTools(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        # GH-273: a fresh release audit is also required at this (default,
+        # "Product") interaction level - same baseline pattern as the
+        # approval above (release_audit_run_count > release_audit_baseline).
+        tool_context.state["release_audit_run_count"] = 1
         tool_context.state["repo"] = {"default_branch": "main", "develop_branch": "develop"}
         tool_context.state["sprint_number"] = 1
         tool_context.state["sprint_backlog_pr_sprint"] = 1
@@ -1040,6 +1066,10 @@ class TestGitHubTools(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        # GH-273: a fresh release audit is also required at this (default,
+        # "Product") interaction level - same baseline pattern as the
+        # approval above (release_audit_run_count > release_audit_baseline).
+        tool_context.state["release_audit_run_count"] = 1
 
         result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
 
@@ -1064,6 +1094,10 @@ class TestCreateReleasePrLandsSprintReport(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        # GH-273: a fresh release audit is also required at this (default,
+        # "Product") interaction level - same baseline pattern as the
+        # approval above (release_audit_run_count > release_audit_baseline).
+        tool_context.state["release_audit_run_count"] = 1
         tool_context.state["sprint_report"] = sprint_report
         return tool_context
 
@@ -1164,6 +1198,10 @@ class TestCreateReleasePrChangelog(unittest.TestCase):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        # GH-273: a fresh release audit is also required at this (default,
+        # "Product") interaction level - same baseline pattern as the
+        # approval above (release_audit_run_count > release_audit_baseline).
+        tool_context.state["release_audit_run_count"] = 1
         tool_context.state["sprint_report"] = "real report content"
         return tool_context
 
@@ -1225,6 +1263,215 @@ class TestCreateReleasePrChangelog(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertIn("disk full", result["changelog_warning"])
+
+
+class TestGhIssueCreate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH-273): gh_issue_create is the first real-GitHub-
+    Issues tool in this codebase - a thin `gh issue create` wrapper, same
+    shape as gh_release_create right above it in tools/github.py.
+    """
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_issue_create_wraps_gh_cli(self, mock_run):
+        mock_run.return_value = {"status": "ok", "returncode": 0, "stdout": "https://github.com/x/y/issues/42", "stderr": ""}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = gh_issue_create(title="Found a gap", body="Some detail", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        called_cmd = mock_run.call_args[0][0]
+        self.assertEqual(called_cmd[:3], ["gh", "issue", "create"])
+        self.assertIn("--title", called_cmd)
+        self.assertIn("Found a gap", called_cmd)
+        self.assertIn("--body", called_cmd)
+        self.assertIn("Some detail", called_cmd)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_issue_create_includes_labels_when_given(self, mock_run):
+        mock_run.return_value = {"status": "ok", "returncode": 0, "stdout": "", "stderr": ""}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        gh_issue_create(title="t", body="b", labels=["bug", "release-audit"], tool_context=tool_context)
+
+        called_cmd = mock_run.call_args[0][0]
+        self.assertIn("--label", called_cmd)
+        self.assertIn("bug", called_cmd)
+        self.assertIn("release-audit", called_cmd)
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_gh_issue_create_surfaces_cli_failure_without_raising(self, mock_run):
+        mock_run.return_value = {"status": "error", "message": "gh: command not found"}
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+
+        result = gh_issue_create(title="t", body="b", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+
+
+class TestCreateReleasePrReleaseAuditGate(unittest.TestCase):
+    """
+    Acceptance Criteria (GH-273): create_release_pr's whole-increment
+    release-audit gate - distinct from the human release-approval gate
+    tested in TestGitHubTools above. See run_release_audit's own tests
+    (test_quality.py) for how blocking_defects/advisory_findings are
+    actually produced; these tests only cover how create_release_pr reacts
+    to a given last_release_audit_result.
+    """
+
+    def _tool_context(self, interaction_level="Product"):
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        tool_context.state["repo"] = {"default_branch": "main", "develop_branch": "develop"}
+        self._env_patcher = patch.dict(os.environ, {"INTERACTION_LEVEL": interaction_level})
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+        return tool_context
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    def test_blocks_at_product_level_with_no_audit_ever_run(self, mock_gh_pr_create):
+        tool_context = self._tool_context("Product")
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("run_release_audit", result["message"])
+        mock_gh_pr_create.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    def test_blocking_defect_refuses_the_release_at_product_level(self, mock_gh_pr_create):
+        tool_context = self._tool_context("Product")
+        tool_context.state["release_audit_run_count"] = 1
+        tool_context.state["last_release_audit_result"] = {
+            "status": "blocked",
+            "blocking_defects": [{"type": "test_failure", "detail": "3 of 10 tests failed."}],
+            "advisory_findings": [],
+        }
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("3 of 10 tests failed", result["message"])
+        mock_gh_pr_create.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    def test_blocking_defect_refuses_the_release_even_at_eval_level(self, mock_gh_pr_create):
+        """
+        A genuinely failing test suite/broken build is a deterministic fact,
+        never a judgment call - it must refuse the release at EVERY
+        interaction level, including EVAL/CEO where the freshness
+        requirement itself does not apply (see the two tests right below).
+        """
+        tool_context = self._tool_context("EVAL")
+        tool_context.state["last_release_audit_result"] = {
+            "status": "blocked",
+            "blocking_defects": [{"type": "build_failure", "detail": "dependency install is broken."}],
+            "advisory_findings": [],
+        }
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        mock_gh_pr_create.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_does_not_require_a_fresh_audit_at_ceo_and_eval_levels(self, mock_run, mock_gh_pr_create):
+        """
+        Mirrors required_pre_release_approval's own level scoping (see GH-273
+        design rationale, helpers.py) - no audit ever run, but neither CEO
+        nor EVAL requires the freshness check, only the Product level does.
+        """
+        for level in ("CEO", "EVAL"):
+            with self.subTest(level=level):
+                tool_context = self._tool_context(level)
+                result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+                self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_succeeds_at_product_level_with_a_fresh_clean_audit(self, mock_run, mock_gh_pr_create):
+        tool_context = self._tool_context("Product")
+        tool_context.state["release_audit_run_count"] = 1
+        tool_context.state["last_release_audit_result"] = {"status": "ok", "blocking_defects": [], "advisory_findings": []}
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_a_stale_audit_from_before_the_last_release_does_not_satisfy_the_gate(self, mock_run, mock_gh_pr_create):
+        """release_audit_baseline already caught up to release_audit_run_count
+        (e.g. a prior release already consumed this audit) - must require a
+        NEW one, same "must be NEW since last release" pattern as
+        release_approval_baseline."""
+        tool_context = self._tool_context("Product")
+        tool_context.state["release_audit_run_count"] = 1
+        tool_context.state["release_audit_baseline"] = 1
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("run_release_audit", result["message"])
+        mock_gh_pr_create.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_appends_known_issues_section_for_advisory_findings(self, mock_run, mock_gh_pr_create):
+        tool_context = self._tool_context("Product")
+        tool_context.state["release_audit_run_count"] = 1
+        tool_context.state["last_release_audit_result"] = {
+            "status": "ok",
+            "blocking_defects": [],
+            "advisory_findings": [
+                {"type": "stubbed_tests", "title": "Release audit: trivial/stubbed test functions found", "detail": "2 stub(s) found."},
+            ],
+        }
+
+        result = create_release_pr(title="Sprint 1", body="original body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        sent_body = mock_gh_pr_create.call_args.kwargs["body"]
+        self.assertIn("original body", sent_body)
+        self.assertIn("Known Issues (Release Audit)", sent_body)
+        self.assertIn("2 stub(s) found.", sent_body)
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_does_not_duplicate_known_issues_section_if_caller_body_already_has_it(self, mock_run, mock_gh_pr_create):
+        tool_context = self._tool_context("Product")
+        tool_context.state["release_audit_run_count"] = 1
+        tool_context.state["last_release_audit_result"] = {
+            "status": "ok",
+            "blocking_defects": [],
+            "advisory_findings": [{"type": "security_scan", "title": "t", "detail": "d"}],
+        }
+
+        result = create_release_pr(
+            title="Sprint 1",
+            body="body\n\n## Known Issues (Release Audit)\nalready written by someone else",
+            tool_context=tool_context,
+        )
+
+        self.assertEqual(result["status"], "ok")
+        sent_body = mock_gh_pr_create.call_args.kwargs["body"]
+        self.assertEqual(sent_body.count("Known Issues (Release Audit)"), 1)
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_bumps_release_audit_baseline_on_success(self, mock_run, mock_gh_pr_create):
+        tool_context = self._tool_context("Product")
+        tool_context.state["release_audit_run_count"] = 3
+
+        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tool_context.state["release_audit_baseline"], 3)
 
 
 class TestStartFeatureBranch(unittest.TestCase):
@@ -3051,6 +3298,135 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
 
+    @patch("agents.scrum_team.tools.github._run")
+    def test_refuses_while_a_non_must_issue_sits_ungroomed_past_the_threshold(self, mock_run):
+        """
+        GH issue #295 ("Issues are reported but not fixed, or marked as
+        Won't"): the unaddressed_must_issues check above only ever catches
+        an Issue at "Must" priority - exactly the auto-filed path SPEC-
+        ISSUE-0076/0078/0081/0084 already made work. At the "Product"
+        interaction level (or any direct upsert_issue call), priority is
+        left for a human to groom - an Issue that never gets prioritized/
+        planned and never gets an explicit "Won't" falls through that gate
+        entirely and must be caught here instead.
+        """
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Should",
+                    "stages_completed": ["Draft"], "filed_sprint": 1,
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("SPEC-ISSUE-0003", result["message"])
+        self.assertIn("advance_story_stage", result["message"])
+        self.assertIn("Won't", result["message"])
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_does_not_block_on_a_non_must_issue_still_within_the_threshold(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        """A freshly-filed Issue hasn't had a fair chance to be groomed yet -
+        only one that's genuinely sat for STALE_ISSUE_SPRINT_THRESHOLD+
+        sprints with no decision counts."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Should",
+                    "stages_completed": ["Draft"], "filed_sprint": 2,
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_proceeds_once_a_stale_issue_is_planned_into_ready(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/4"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Should",
+                    "stages_completed": ["Draft", "Ready"], "filed_sprint": 1,
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_proceeds_once_a_stale_issue_is_explicitly_declined(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        """The honest escape hatch: set_priority(..., "Won't", justification)
+        - this is the "...or marked as Won't" half of GH #295's own title
+        actually working, not a silent decision."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/4"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Won't",
+                    "stages_completed": ["Draft"], "filed_sprint": 1,
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_does_not_block_on_a_stale_issue_with_no_filed_sprint_recorded(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        """Pre-existing state from before this fix (no filed_sprint stamped)
+        has no honest age to measure - don't guess a false 'stale' the first
+        time this check runs against real history."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/4"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {"id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Should", "stages_completed": ["Draft"]},
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
 
 class TestMarkPrReadyForReview(unittest.TestCase):
     @patch("agents.scrum_team.tools.github._run")
@@ -3477,6 +3853,10 @@ class TestCreateReleasePrPersistsStateToRepo(unittest.TestCase):
         tool_context.state = ScrumState().model_dump()
         tool_context.state["repo"] = {"default_branch": "main", "develop_branch": "develop"}
         tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed"}]
+        # GH-273: a fresh release audit is also required at this (default,
+        # "Product") interaction level - same baseline pattern as the
+        # approval above (release_audit_run_count > release_audit_baseline).
+        tool_context.state["release_audit_run_count"] = 1
         # Simulates a mid-sprint save made while the report was already
         # closed (sprint_report_pending_release=True) but before the
         # release PR went out - exactly the window create_release_pr itself

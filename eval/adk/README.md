@@ -1287,6 +1287,36 @@ irreducible live-model variance, not a fixable fixture/prompt gap.
 Promote back out only if a run of consecutive clean CI passes ever
 confirms this has actually stabilized.
 
+**28. `set_priority_refuses_to_demote_a_committed_blocking_precedent` broke
+exact-arg trajectory matching once GH #295's prompt guidance made the
+live model more consistently supply a `justification` argument - fixed
+the prompt, not the fixture's expected trajectory, matching finding
+#19's own precedent.** GH #295 ("Issues are reported but not fixed, or
+marked as Won't") added prose to `ProductOwner-workflow.md` spelling out
+that `set_priority`'s existing `justification` parameter (SPEC-ISSUE-0082)
+also applies to Issues set to "Won't" - this made the live model notably
+more likely to supply a `justification` kwarg on *any* `set_priority`
+call, including this case's Story-demotion scenario where SPEC-ISSUE-0082
+already required one before GH #295 ever touched the code. Three
+separate CI runs (PRs #531, #533, #534 - none of which touch
+`set_priority`'s own refusal logic) failed this case with the exact
+diff finding #19 already describes: `set_priority(title_or_id='US-0010',
+justification='...', priority="Won't")` (and, on #534's run, a second
+retry call with a reworded justification) against the fixture's scripted
+single call with no `justification` arg at all - `actual: []` /
+`tool_trajectory_avg_score: 0.0` despite the refusal itself firing
+correctly every time. Confirmed directly (not guessed) by calling the
+real, merged `set_priority` with an explicit `justification` against a
+fixture matching this case's `priority_block_precedents` state: it still
+returns the same blocking-precedent error, since that check runs
+unconditionally before the justification/low-quality-text check in
+`agents/scrum_team/tools/requirements.py` - the live model's behavior was
+never a safety regression, only the frozen trajectory's exact-arg match.
+Fixed the same way as finding #19: tightened this case's prompt to state
+explicitly "no justification parameter, no other arguments" and "don't
+retry ... if the first call errors", rather than encoding the model's own
+free-text justification wording into the expected trajectory.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal

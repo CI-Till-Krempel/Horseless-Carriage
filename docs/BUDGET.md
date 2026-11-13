@@ -147,6 +147,14 @@ The system tracks performance indicators to provide visibility into team health:
   shared one. Best-effort: unavailable for a role whose model's context window can't be determined
   (the LiteLLM proxy is unreachable, or the model isn't in litellm's known context-window map) -
   reported as such rather than a guessed number.
+- **Per-Agent Prompt Module Breakdown** (GH #513): breaks that same combined total down per
+  individual `prompt_modules/*.md` file (and `spec-templates/DOD.md`/`DOR.md` where applicable),
+  with each piece's own line count and token count - so a role whose prompt is surprisingly large
+  shows *which file* is actually responsible, not just the combined number. See
+  `tools/quality.py::calculate_prompt_module_breakdown`. `doctor.py` also mechanically flags any
+  `prompt_modules/*.md` file over 250 lines (this project's own steering-document guideline,
+  stated directly in GH #513) as a non-blocking warning - trimming a file that trips it is
+  deliberately left as separate, carefully-reviewed work, never auto-applied.
 
 ### Sprint Report
 At the end of each sprint, the Scrum Master generates a report via `create_sprint_report`
@@ -208,6 +216,12 @@ No impediments logged.
   - ProductOwner (scrum-po): 5,318 / 1,048,576 tokens (0.51%)
   - DevTeam (scrum-dev): 3,598 / 1,048,576 tokens (0.34%)
   - ScrumMaster (scrum-sm): not available (Could not determine this model's context window)
+
+### Per-Agent Prompt Module Breakdown
+  - ProductOwner:
+    - ProductOwner-guardrails.md: 55 lines, 980 tokens
+    - ProductOwner-workflow.md: 192 lines, 3,420 tokens
+    - spec-templates/DOD.md: 38 lines, 918 tokens
 ```
 
 The "Sprint Length Feedback" section is advisory only - see `_sprint_length_feedback` in

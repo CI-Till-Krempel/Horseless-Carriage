@@ -8,9 +8,12 @@ from typing import Any, Dict
 from .base import _configured_repo_root, _run, _default_push_branch, _develop_branch_name, _with_eval_branch_prefix, _with_eval_title_prefix, _state_file_path, _record_priority_block_precedent
 from ..helpers import (
     required_pre_release_approval,
+    required_pre_release_audit,
     required_pre_implementation_approval,
     sprint_backlog_pr_missing,
     ready_backlog_shortfall,
+    stale_ungroomed_issues,
+    stale_issue_sprint_threshold,
 )
 
 # GH #415: the version a newly-committed sprint story defaults to if it has
@@ -1130,6 +1133,36 @@ def create_sprint_backlog_pr(title: str = None, body: str = None, tool_context=N
             ),
         }
 
+    # GH issue #295 ("Issues are reported but not fixed, or marked as
+    # Won't"): the check above only ever catches an Issue sitting
+    # unaddressed at "Must" priority - exactly the auto-filed, auto-"Must"
+    # path SPEC-ISSUE-0076/0078/0081/0084 already made genuinely work. At
+    # the "Product" interaction level (a real, human-driven sprint),
+    # _file_retro_items_as_issues deliberately leaves priority for the
+    # human Product Owner to set via their own grooming - so an Issue
+    # filed there (or anywhere, via a direct upsert_issue call) that never
+    # gets prioritized/planned, and never gets an explicit "Won't" either,
+    # falls through every existing gate and just sits at Draft forever.
+    # stale_ungroomed_issues (helpers.py) is the backstop: an Issue open
+    # `STALE_ISSUE_SPRINT_THRESHOLD`+ sprints with no "Ready" and no honest
+    # "Won't" decision blocks this same publish gate, forcing one or the
+    # other before Sprint Planning can close.
+    stale_issues = stale_ungroomed_issues(state.get("product_backlog", []) or [], sprint_number)
+    if stale_issues:
+        ids = ", ".join(sorted(i.get("id") or i.get("title") or "(no id)" for i in stale_issues))
+        return {
+            "status": "error",
+            "message": (
+                f"Cannot create the Sprint Backlog PR yet - {len(stale_issues)} Issue(s) have sat "
+                f"unplanned for {stale_issue_sprint_threshold()}+ sprints with no explicit decision made "
+                f"either way: {ids}. For each one, either plan it in - "
+                "advance_story_stage(id_or_title, 'Ready') - or make the call explicit and honest - "
+                "set_priority(id_or_title, \"Won't\", justification=\"...\") - before retrying. An Issue "
+                "that's reported but never fixed AND never explicitly declined is the exact silent-"
+                "failure mode GH #295 found; this refuses to let one sit forever either way."
+            ),
+        }
+
     # A real eval run showed "start implementing" was only ever a prompt
     # instruction away from "the backlog barely has any Ready work at all" -
     # this is the single choke point (Dev Team can't start until this PR
@@ -1871,6 +1904,31 @@ def gh_release_create(tag: str, title: str | None = None, notes: str | None = No
     r = _run(cmd, cwd=repo_root, tool_context=tool_context)
     return r
 
+def gh_issue_create(title: str, body: str = "", labels: list[str] | None = None, tool_context=None) -> Dict[str, Any]:
+    """
+    Create a real GitHub issue via `gh issue create` - GH-273's "ideally as
+    GitHub issues as well," the real-GitHub-Issues counterpart to
+    upsert_issue's specs/requirements + backlog tracking (which already
+    exists and isn't replaced by this). No tool like this existed anywhere
+    in this file before - every other `gh_*` tool here wraps a PR/release
+    operation, never a plain Issue. Same thin `_run`-wrapping shape as
+    gh_release_create right below.
+
+    Best-effort by design: a caller that wants "fire and forget, never let
+    this fail the bigger operation it's part of" must wrap this call
+    itself and ignore/log a non-"ok" status - see run_release_audit's own
+    _file_release_audit_findings helper (tools/quality.py) for exactly
+    that pattern. This function itself always reports the real `gh`
+    outcome (via `_run`), it just never raises.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    cmd = ["gh", "issue", "create", "--title", title, "--body", body or "(no description provided)"]
+    if labels:
+        for label in labels:
+            cmd += ["--label", label]
+    return _run(cmd, cwd=repo_root, tool_context=tool_context)
+
+
 def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any]:
     """
     GitFlow sprint PR: develop -> main (see _develop_branch_name/
@@ -1915,6 +1973,79 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     not merely that a PR happens to be open.
     """
     state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
+
+    # GH-273: whole-increment QA release audit (run_release_audit,
+    # tools/quality.py) - a final regression/gap pass across EVERYTHING in
+    # the release, distinct from the per-story Tested-stage checks each
+    # story already went through. Two independent checks, deliberately
+    # NOT the same posture:
+    # - blocking_defects the last audit actually found (a real failing
+    #   test, a genuinely broken build) are deterministic facts, not
+    #   judgment calls - these refuse the release at EVERY interaction
+    #   level, unconditionally, never silently waved through as "shipped
+    #   clean."
+    # - whether a FRESH audit was even run this cycle at all is a
+    #   process/sequencing requirement, scoped by required_pre_release_audit
+    #   the same way required_pre_release_approval above is (see that
+    #   function's own docstring, helpers.py, for why) - a judgment-based
+    #   audit gap/finding (a security-scan hit, a stubbed test) is never
+    #   hard-blocked here; instead it's surfaced directly in the release PR
+    #   body below (the "Known Issues (Release Audit)" section) so the
+    #   release can never go out silently clean when it wasn't.
+    last_audit = state.get("last_release_audit_result") or {}
+    blocking_defects = last_audit.get("blocking_defects") or []
+    if blocking_defects:
+        defect_summary = "; ".join(d.get("detail") or d.get("type", "defect") for d in blocking_defects)
+        message = (
+            f"Cannot create a release PR - the last release-level QA audit (run_release_audit) "
+            f"found {len(blocking_defects)} blocking defect(s) that must be fixed first: "
+            f"{defect_summary}. Fix these and call run_release_audit() again before retrying."
+        )
+        from .notifications import record_blocking_interaction
+        record_blocking_interaction(
+            "quality",
+            f"Release PR '{title}' is blocked by {len(blocking_defects)} release-audit defect(s).",
+            detail=message,
+            tool_context=tool_context,
+        )
+        return {"status": "error", "message": message}
+
+    if required_pre_release_audit():
+        audit_run_count = state.get("release_audit_run_count", 0)
+        audit_baseline = state.get("release_audit_baseline", 0)
+        if audit_run_count <= audit_baseline:
+            message = (
+                "Cannot create a release PR - this interaction level requires a fresh, "
+                "whole-increment release audit for this release - call run_release_audit() "
+                "(QA; Product Owner may call it directly too if QA hasn't had a turn yet) before "
+                "retrying. This is distinct from each story's own Tested-stage check_build()/test "
+                "run - it's a final regression/gap pass across everything in the release."
+            )
+            from .notifications import record_blocking_interaction
+            record_blocking_interaction(
+                "quality",
+                f"Release PR '{title}' is waiting on a fresh release-level QA audit.",
+                detail=message,
+                tool_context=tool_context,
+            )
+            return {"status": "error", "message": message}
+
+    # Judgment-based findings the audit DID surface (not hard-blocked above)
+    # must never ship silently - append them to the PR body itself if the
+    # caller's own body text doesn't already mention them, so a human (or a
+    # judge reviewing the eval transcript) sees "known issues" on the
+    # release PR, not just in session state nobody reads.
+    advisory_findings = last_audit.get("advisory_findings") or []
+    if advisory_findings and "Known Issues (Release Audit)" not in body:
+        findings_md = "\n".join(f"- **{f.get('title')}**: {f.get('detail')}" for f in advisory_findings)
+        body = (
+            f"{body.rstrip()}\n\n## Known Issues (Release Audit)\n"
+            "The pre-release QA audit (`run_release_audit`) found the following non-blocking "
+            "gap(s), tracked as Issues for follow-up - shipping with these known and explicitly "
+            "flagged, not silently:\n\n"
+            f"{findings_md}"
+        )
+
     repo_root = str(_configured_repo_root(tool_context))
     develop = _develop_branch_name(tool_context)
     default_branch = _default_push_branch(tool_context)
@@ -1974,6 +2105,32 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
                 "message": "Failed to land the sprint report/transcript on develop before opening the release PR.",
                 "push": land_res,
             }
+
+    # GH-501: SemVer + snapshot-suffix enforcement for the target product's
+    # own version (tools/versioning.py) - entirely opt-in, same as changelog_
+    # warning above: a project that never calls propose_version_bump sees no
+    # behavior change here at all. release_version_advisory re-checks the
+    # increment against whatever the backlog's change types call for *right
+    # now* (advisory only - see that function's own docstring for why this,
+    # not a hard block, is this check's enforcement point); finalize_release_
+    # version then strips product_version's '-snapshot' suffix and advances
+    # product_released_version, the actual release/tag-time moment GH-501
+    # requires the suffix come off.
+    from .versioning import finalize_release_version, release_version_advisory
+    version_warning = release_version_advisory(tool_context=tool_context)
+    finalize_res = finalize_release_version(tool_context=tool_context)
+    if finalize_res.get("status") != "ok":
+        # Only reachable if product_version was set to something finalize_
+        # release_version can't even parse - propose_version_bump's own
+        # validation should already prevent that, so this is a defensive
+        # hard-stop against a malformed value set some other way, not the
+        # normal "convention violated" path (that's version_warning above).
+        return {
+            "status": "error",
+            "message": f"Cannot create a release PR - {finalize_res.get('message')}",
+        }
+    if finalize_res.get("finalized"):
+        body = body.rstrip("\n") + f"\n\n---\n**Release version:** v{finalize_res['version']}\n"
 
     fetch_res = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
 
@@ -2086,6 +2243,12 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     # and this function's own docstring re: SPEC-ISSUE-0066).
     if required_approval and release_approvals is not None:
         state["release_approval_baseline"] = release_approvals
+    # GH-273: bumped unconditionally on success (not just when
+    # required_pre_release_audit() was true this time) - keeps the
+    # baseline consistent across an interaction-level change, so a
+    # stale audit from before this release can never satisfy the NEXT
+    # one's freshness check either.
+    state["release_audit_baseline"] = state.get("release_audit_run_count", 0)
     state["sprint_report_pending_release"] = False
     # SPEC-ISSUE-0070: once this sprint's release has actually gone out,
     # its own Sprint Backlog PR record must stop satisfying
@@ -2130,6 +2293,8 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     }
     if changelog_warning:
         result["changelog_warning"] = changelog_warning
+    if version_warning:
+        result["version_warning"] = version_warning
     return result
 
 def _record_pr_review_call(tool_context) -> None:

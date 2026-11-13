@@ -75,6 +75,41 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(len(tool_context.state["product_backlog"]), 1)
         self.assertEqual(tool_context.state["product_backlog"][0]["id"], "US-0001")
 
+    def test_init_scrum_state_surfaces_workbench_check_at_startup(self):
+        """GH-456: "check regularly (at startup / each sprint)..." -
+        init_scrum_state is the "at startup" half (start_sprint, tested
+        separately, is the "each sprint" half)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "package.json").write_text(
+                '{"dependencies": {"react": "^18.0.0", "firebase": "^10.0.0"}, '
+                '"devDependencies": {"vite": "^5.0.0"}}',
+                encoding="utf-8",
+            )
+            with patch("agents.scrum_team.tools.workbench_templates._configured_repo_root", return_value=repo_root):
+                tool_context = MagicMock()
+                tool_context.state = {}
+                result = init_scrum_state(tool_context=tool_context)
+
+        self.assertIn("workbench_check", result)
+        self.assertFalse(result["workbench_check"]["workbench_configured"])
+        self.assertTrue(result["workbench_check"]["action_needed"])
+        self.assertEqual(result["workbench_check"]["detected_tech_stack"], "react-vite-firebase")
+
+    def test_init_scrum_state_workbench_check_never_fails_initialization(self):
+        """Best-effort: a workbench check error must never make
+        init_scrum_state itself fail."""
+        with patch(
+            "agents.scrum_team.tools.workbench_templates.check_workbench_tooling",
+            side_effect=RuntimeError("boom"),
+        ):
+            tool_context = MagicMock()
+            tool_context.state = {}
+            result = init_scrum_state(tool_context=tool_context)
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("workbench_check", result)
+
     def test_init_scrum_state_overwrites_stale_persisted_hc_version(self):
         """
         Acceptance Criteria (release process, see RELEASE.md): hc_version
@@ -728,6 +763,43 @@ class TestScrumTools(unittest.TestCase):
 
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tool_context.state["sprint_goal"], "Ship the Heinzelmann control-server MVP")
+
+    def test_start_sprint_surfaces_workbench_check_each_sprint(self):
+        """
+        GH-456: "check regularly (at startup / each sprint) whether the
+        tooling is set up" - start_sprint is the "each sprint" half. A
+        freshly-initialized project (no .hc/workbench-setup.sh at all) must
+        surface a concrete, actionable recommendation, not silence.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            (repo_root / "requirements.txt").write_text("Flask==3.0.0\n", encoding="utf-8")
+            with patch("agents.scrum_team.tools.workbench_templates._configured_repo_root", return_value=repo_root):
+                tool_context = MagicMock()
+                tool_context.state = ScrumState().model_dump()
+                result = start_sprint("Ship the Heinzelmann control-server MVP", tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("workbench_check", result)
+        self.assertFalse(result["workbench_check"]["workbench_configured"])
+        self.assertTrue(result["workbench_check"]["action_needed"])
+        self.assertEqual(result["workbench_check"]["detected_tech_stack"], "python-flask")
+
+    def test_start_sprint_workbench_check_is_a_no_op_once_configured(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            hc_dir = repo_root / ".hc"
+            hc_dir.mkdir(parents=True)
+            (hc_dir / "workbench-setup.sh").write_text("#!/bin/sh\npip install flask\n", encoding="utf-8")
+            with patch("agents.scrum_team.tools.workbench_templates._configured_repo_root", return_value=repo_root):
+                tool_context = MagicMock()
+                tool_context.state = ScrumState().model_dump()
+                result = start_sprint("Ship the Heinzelmann control-server MVP", tool_context=tool_context)
+
+        self.assertTrue(result["workbench_check"]["workbench_configured"])
+        self.assertFalse(result["workbench_check"]["action_needed"])
 
     @patch("agents.scrum_team.tools.github.integrate_open_changes")
     def test_start_sprint_sweeps_dangling_open_changes_before_returning(self, mock_integrate):

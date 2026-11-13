@@ -10,6 +10,13 @@ policy:
     enabled: true
     require_reviews: true
     require_status_checks: false
+    # GH-316: .github/CODEOWNERS lists required reviewers for sensitive paths, but it is inert
+    # until a human also enables this on the `main` branch protection rule in the GitHub UI
+    # (Settings -> Branches -> branch protection rule for `main` -> "Require review from Code
+    # Owners"). Nothing in this codebase flips this automatically - it has repo-wide blast
+    # radius (affects every open PR immediately), so it's a deliberate manual step for whoever
+    # administers the real repo. See docs/GITHUB-INTEGRATION.md.
+    require_code_owner_reviews: true  # intended policy only - not applied by any automation
   signed_commits: false
 metadata:
   description: Multi-agent Scrum team orchestrator

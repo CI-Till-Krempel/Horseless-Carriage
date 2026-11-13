@@ -117,6 +117,25 @@ tool that performs the relevant action, rather than only stated in a prompt? If 
 The prompt instruction is still worth keeping - it's what tells the agent to attempt the action in
 the first place - but it must not be the only thing standing between "mandatory" and "optional".
 
+## Development Workbench templates
+
+Each project's "workbench" — the toolchain (JDK, Node, Go, ...) the agent
+image needs to scaffold/build/test/run/debug that project's actual tech
+stack — is `.hc/workbench-setup.sh` in the product/state repo, proposed as a
+human-reviewed PR via `propose_framework_change`
+(`agents/scrum_team/tools/workflow.py`), never written directly. EP-0010
+adds a library of named, reusable templates under
+`config/development-workbench-templates/<stack-name>/` (e.g.
+`python-flask`, `kotlin-multiplatform`, `react-vite-firebase`) that the
+Architect can select and customize via `propose_framework_change(template_name=...)`
+instead of hand-authoring that script from scratch every time — the same
+"named, swappable config picked at propose/setup time" precedent
+`config/model-templates/` already established for LLM-provider choice,
+applied to tech-stack tooling instead. See
+[Development Workbench Templates](WORKBENCHES.md) for the full
+directory/file contract, a worked example, and how the network-allowlist
+step still requires explicit human approval.
+
 ## Repository documentation structure
 
 This project separates documentation templates from the actual specification artifacts:

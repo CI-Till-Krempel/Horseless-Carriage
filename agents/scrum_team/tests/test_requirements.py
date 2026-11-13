@@ -2146,6 +2146,40 @@ class TestUpsertBacklogItemGuards(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("advance_story_stage", result["message"])
 
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_a_newly_created_issue_is_stamped_with_the_filing_sprint(self, mock_save, mock_md):
+        """GH issue #295: stale_ungroomed_issues (helpers.py) needs an
+        honest "when was this actually filed" signal to measure age against
+        - stamped once, here, at real creation time."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["sprint_number"] = 3
+        result = upsert_backlog_item({"id": "SPEC-ISSUE-0050", "title": "A gap", "type": "Issue"}, tool_context=tc)
+        self.assertEqual(result["item"]["filed_sprint"], 3)
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_updating_an_existing_issue_does_not_reset_its_filed_sprint(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["sprint_number"] = 1
+        upsert_backlog_item({"id": "SPEC-ISSUE-0050", "title": "A gap", "type": "Issue"}, tool_context=tc)
+        tc.state["sprint_number"] = 5
+        result = upsert_backlog_item({"id": "SPEC-ISSUE-0050", "title": "A gap, refined"}, tool_context=tc)
+        self.assertEqual(result["item"]["filed_sprint"], 1)
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_a_newly_created_story_is_not_stamped_with_filed_sprint(self, mock_save, mock_md):
+        """Staleness tracking is scoped to Issues - stories already have
+        their own, separate ordering/Ready-backlog machinery."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        tc.state["sprint_number"] = 3
+        result = upsert_backlog_item({"id": "US-0050", "title": "A real story"}, tool_context=tc)
+        self.assertNotIn("filed_sprint", result["item"])
+
 
 class TestUpsertStoryEpicIssueCoerceJsonStringArg(unittest.TestCase):
     """
@@ -2446,6 +2480,24 @@ class TestListOpenIssues(unittest.TestCase):
         result = list_open_issues(tool_context=None)
         self.assertEqual(result["status"], "error")
 
+    def test_surfaces_sprints_open_for_backlog_grooming(self):
+        """GH issue #295: each open Issue reports how long it's sat with no
+        decision, so a Product Owner grooming the backlog can spot one
+        worth planning or explicitly declining before
+        create_sprint_backlog_pr's own stale_ungroomed_issues gate forces
+        the question."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_number"] = 4
+        tool_context.state["product_backlog"] = [
+            {"id": "SPEC-ISSUE-0001", "type": "Issue", "status": "Ready", "title": "Open one", "filed_sprint": 1},
+            {"id": "SPEC-ISSUE-0002", "type": "Issue", "status": "Draft", "title": "No filed_sprint recorded"},
+        ]
+        result = list_open_issues(tool_context=tool_context)
+        by_id = {i["id"]: i for i in result["issues"]}
+        self.assertEqual(by_id["SPEC-ISSUE-0001"]["sprints_open"], 3)
+        self.assertIsNone(by_id["SPEC-ISSUE-0002"]["sprints_open"])
+
 
 class TestBumpIssueRecurrence(unittest.TestCase):
     def test_increments_recurrence_count_on_an_open_issue(self):
@@ -2550,6 +2602,14 @@ class TestSetPriorityGuardsAgainstDiscardingABlocker(unittest.TestCase):
     justification or audit trail. set_priority must require a real
     justification to demote a real story away from Must, and must refuse
     outright when the target was just named as a same-sprint blocker.
+
+    GH issue #295 ("Issues are reported but not fixed, or marked as
+    Won't"): SPEC-ISSUE-0082 deliberately scoped the above to real stories
+    only - an Issue being set to "Won't" had zero justification/audit-trail
+    requirement at all. The tests below close that gap: the same
+    justification + blocking-precedent guard now also applies whenever an
+    Issue-type item is set to "Won't" specifically (from any prior
+    priority, not just Must).
     """
 
     def _tc(self, priority="Must", item_type="User Story", sprint_number=3):
@@ -2614,13 +2674,63 @@ class TestSetPriorityGuardsAgainstDiscardingABlocker(unittest.TestCase):
         )
         self.assertEqual(result["status"], "ok")
 
-    def test_demoting_an_issue_is_unaffected(self, mock_save, mock_md):
-        """SPEC-ISSUE-0081 already handles Issue-specific recurrence - this
-        guard is scoped to real stories only."""
+    def test_demoting_an_issue_away_from_must_without_wont_is_unaffected(self, mock_save, mock_md):
+        """The story-specific 'demoting away from Must' guard above doesn't
+        apply to Issues (SPEC-ISSUE-0081 handles their recurrence
+        differently) - but GH #295's own 'Won't' guard below still applies
+        once the target priority is specifically "Won't"."""
+        tc = self._tc(item_type="Issue", priority="Must")
+        result = set_priority("US-0006", "Should", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Should")
+
+    def test_setting_an_issue_to_wont_with_no_justification_is_rejected(self, mock_save, mock_md):
+        """GH issue #295 ("Issues are reported but not fixed, or marked as
+        Won't"): an Issue silently marked "Won't" with zero justification or
+        audit trail is exactly the unaccountable half of what #295 reports -
+        require the same honest-escape-hatch justification stories already
+        need for any demotion from Must."""
         tc = self._tc(item_type="Issue")
         result = set_priority("US-0006", "Won't", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("justification", result["message"])
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
+
+    def test_setting_an_issue_to_wont_with_a_placeholder_justification_is_rejected(self, mock_save, mock_md):
+        tc = self._tc(item_type="Issue")
+        result = set_priority("US-0006", "Won't", justification="n/a", tool_context=tc)
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
+
+    def test_setting_an_issue_to_wont_with_a_real_justification_succeeds_and_is_logged(self, mock_save, mock_md):
+        tc = self._tc(item_type="Issue")
+        result = set_priority(
+            "US-0006", "Won't",
+            justification="Investigated and confirmed this was already fixed by SPEC-ISSUE-0081 elsewhere.",
+            tool_context=tc,
+        )
         self.assertEqual(result["status"], "ok")
         self.assertEqual(tc.state["product_backlog"][0]["priority"], "Won't")
+        self.assertEqual(len(tc.state["decision_log"]), 1)
+        self.assertIn("US-0006", tc.state["decision_log"][0]["title"])
+        self.assertIn("SPEC-ISSUE-0081", tc.state["decision_log"][0]["rationale"])
+
+    def test_setting_an_issue_already_at_wont_to_wont_again_is_a_no_op_not_a_regate(self, mock_save, mock_md):
+        tc = self._tc(item_type="Issue", priority="Won't")
+        result = set_priority("US-0006", "Won't", tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+
+    def test_an_issue_just_named_as_a_blocking_precedent_cannot_be_set_to_wont_either(self, mock_save, mock_md):
+        tc = self._tc(item_type="Issue")
+        tc.state["priority_block_precedents"] = {"US-0006": 3}
+        result = set_priority(
+            "US-0006", "Won't",
+            justification="Investigated and confirmed this was already fixed elsewhere.",
+            tool_context=tc,
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("blocking precedent", result["message"])
+        self.assertEqual(tc.state["product_backlog"][0]["priority"], "Must")
 
     def test_promoting_priority_is_unaffected(self, mock_save, mock_md):
         tc = self._tc(priority="Should")
