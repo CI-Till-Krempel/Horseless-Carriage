@@ -2042,8 +2042,9 @@ class TestReleasePrStillOpen(unittest.TestCase):
 class TestIntegrateOpenChanges(unittest.TestCase):
     """
     Acceptance Criteria: integrate_open_changes commits dangling writes
-    scoped to specs/ and .hc/ only (never a caller's own unrelated
-    uncommitted work), and no-ops cleanly when there's nothing to do.
+    scoped to specs/, .hc/, and CHANGELOG.md only (never a caller's own
+    unrelated uncommitted work), and no-ops cleanly when there's nothing to
+    do.
     """
 
     @patch("agents.scrum_team.tools.github._configured_repo_root")
@@ -2070,7 +2071,28 @@ class TestIntegrateOpenChanges(unittest.TestCase):
         self.assertTrue(result["integrated"])
         self.assertEqual(result["files"], ["specs/ROADMAP.md"])
         add_call = mock_run.call_args_list[1]
-        self.assertEqual(add_call.args[0], ["git", "add", "--", "specs", ".hc"])
+        self.assertEqual(add_call.args[0], ["git", "add", "--", "specs", ".hc", "CHANGELOG.md"])
+
+    @patch("agents.scrum_team.tools.github._configured_repo_root")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_commits_a_dirty_changelog_md(self, mock_run, mock_root):
+        """SPEC-ISSUE-0088: 0.2.0-run90 burned its entire sprint-2 budget
+        because create_release_pr's own generate_changelog call left
+        CHANGELOG.md dirty, and nothing committed it before a later
+        re-checkout of develop tripped over the dirty file every single
+        retry. generate_changelog is CHANGELOG.md's only writer - never
+        DevTeam - so it's safe to sweep here alongside specs/.hc."""
+        mock_root.return_value = MagicMock(__truediv__=lambda self, other: MagicMock(exists=lambda: True))
+        mock_run.side_effect = [
+            {"status": "ok", "stdout": " M CHANGELOG.md"},  # git status --porcelain
+            {"status": "ok"},  # git add
+            {"status": "ok", "stdout": "CHANGELOG.md"},  # git diff --cached --name-only
+            {"status": "ok"},  # git commit
+        ]
+        result = integrate_open_changes(tool_context=MagicMock())
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["integrated"])
+        self.assertEqual(result["files"], ["CHANGELOG.md"])
 
     @patch("agents.scrum_team.tools.github._configured_repo_root")
     @patch("agents.scrum_team.tools.github._run")
@@ -3182,6 +3204,135 @@ class TestCreateSprintBacklogPr(unittest.TestCase):
                     "id": "SPEC-ISSUE-0002", "type": "Issue", "priority": "Must", "stages_completed": ["Draft"],
                     "superseded_by_steering": {"pr_url": "https://github.com/owner/repo/pull/50", "role": "QA"},
                 },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github._run")
+    def test_refuses_while_a_non_must_issue_sits_ungroomed_past_the_threshold(self, mock_run):
+        """
+        GH issue #295 ("Issues are reported but not fixed, or marked as
+        Won't"): the unaddressed_must_issues check above only ever catches
+        an Issue at "Must" priority - exactly the auto-filed path SPEC-
+        ISSUE-0076/0078/0081/0084 already made work. At the "Product"
+        interaction level (or any direct upsert_issue call), priority is
+        left for a human to groom - an Issue that never gets prioritized/
+        planned and never gets an explicit "Won't" falls through that gate
+        entirely and must be caught here instead.
+        """
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Should",
+                    "stages_completed": ["Draft"], "filed_sprint": 1,
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("SPEC-ISSUE-0003", result["message"])
+        self.assertIn("advance_story_stage", result["message"])
+        self.assertIn("Won't", result["message"])
+        mock_run.assert_not_called()
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_does_not_block_on_a_non_must_issue_still_within_the_threshold(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        """A freshly-filed Issue hasn't had a fair chance to be groomed yet -
+        only one that's genuinely sat for STALE_ISSUE_SPRINT_THRESHOLD+
+        sprints with no decision counts."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/2"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 2,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Should",
+                    "stages_completed": ["Draft"], "filed_sprint": 2,
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_proceeds_once_a_stale_issue_is_planned_into_ready(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/4"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Should",
+                    "stages_completed": ["Draft", "Ready"], "filed_sprint": 1,
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_proceeds_once_a_stale_issue_is_explicitly_declined(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        """The honest escape hatch: set_priority(..., "Won't", justification)
+        - this is the "...or marked as Won't" half of GH #295's own title
+        actually working, not a silent decision."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/4"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {
+                    "id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Won't",
+                    "stages_completed": ["Draft"], "filed_sprint": 1,
+                },
+            ],
+        }
+
+        result = create_sprint_backlog_pr(tool_context=tool_context)
+
+        self.assertEqual(result["status"], "ok")
+
+    @patch("agents.scrum_team.tools.github.integrate_open_changes", return_value={"status": "ok", "integrated": True, "files": ["specs/ROADMAP.md"]})
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/owner/repo/pull/124"})
+    @patch("agents.scrum_team.tools.github.git_push")
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    @patch.dict(os.environ, _LOW_BACKLOG_TARGET_ENV)
+    def test_does_not_block_on_a_stale_issue_with_no_filed_sprint_recorded(self, mock_run, mock_git_push, mock_gh_pr_create, mock_integrate):
+        """Pre-existing state from before this fix (no filed_sprint stamped)
+        has no honest age to measure - don't guess a false 'stale' the first
+        time this check runs against real history."""
+        mock_git_push.return_value = {"status": "ok", "branch": "sprint-backlog/4"}
+        tool_context = MagicMock()
+        tool_context.state = {
+            "sprint_number": 4,
+            "repo": {"default_branch": "main", "develop_branch": "develop"},
+            "product_backlog": _ONE_READY_STORY + [
+                {"id": "SPEC-ISSUE-0003", "type": "Issue", "priority": "Should", "stages_completed": ["Draft"]},
             ],
         }
 

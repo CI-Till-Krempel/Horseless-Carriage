@@ -70,6 +70,7 @@ from .docs import (
     seed_repository,
 )
 from .announcements import generate_announcement
+from .versioning import propose_version_bump
 from .budget import (
     update_budgets,
     get_budget_status,

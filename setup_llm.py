@@ -825,8 +825,12 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
     compose_args = []
     extra_service = None
     host_ollama_mode = provider == "local" and lib_env.read_env_var(env_path, "OLLAMA_HOST_MODE") == "true"
+    # GH issue #502: remote LAN Ollama server - same compose topology as
+    # host mode (no dockerized `ollama` service at all), just a different
+    # api_base (an arbitrary LAN host/port instead of host.docker.internal).
+    remote_ollama_mode = provider == "local" and lib_env.read_env_var(env_path, "OLLAMA_REMOTE_ENABLED") == "true"
     if provider == "local":
-        if host_ollama_mode:
+        if host_ollama_mode or remote_ollama_mode:
             # A wholly separate compose file, not docker-compose.local.yaml
             # plus an overlay - see docker-compose.local-hostollama.yaml's
             # header comment (Compose merges, rather than replaces,
@@ -848,6 +852,12 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
         info("Ollama host mode: make sure `ollama serve` is running on this machine and the")
         print(f"configured model is pulled (ollama pull {model_label}) - this test talks to it")
         print("directly, no container is started for Ollama itself.")
+    elif remote_ollama_mode:
+        remote_host = lib_env.read_env_var(env_path, "OLLAMA_REMOTE_HOST")
+        remote_port = lib_env.read_env_var(env_path, "OLLAMA_REMOTE_PORT") or "11434"
+        info(f"Remote LAN Ollama mode: make sure Ollama is reachable at http://{remote_host}:{remote_port}")
+        print(f"and the configured model is pulled there (ollama pull {model_label}) - this test")
+        print("talks to it directly, no container is started for Ollama itself.")
 
     # Developer mode must be settled before any container work, not after:
     # "ollama" (the only locally-built image this test ever starts - db is
@@ -856,9 +866,9 @@ def run_configuration_test(provider: str, model_label: str, env_path: Path, dev:
     # this test silently validates a stale image that a later dev-mode
     # rebuild (e.g. via `python3 run.py dev`) replaces anyway, wasting a
     # real model pull and giving a misleading "it works" signal for an
-    # image about to be discarded. Not applicable in host mode - there's no
-    # `ollama` image involved at all.
-    if dev and provider == "local" and not host_ollama_mode:
+    # image about to be discarded. Not applicable in host/remote mode -
+    # there's no `ollama` image involved at all.
+    if dev and provider == "local" and not (host_ollama_mode or remote_ollama_mode):
         info("Developer mode: rebuilding the ollama image fresh before starting it for this test...")
         rebuild_exit_code = rebuild_images.rebuild(compose_args + project_args)
         if rebuild_exit_code != 0:
@@ -1073,12 +1083,50 @@ def run_local_provider(dev: bool = False) -> None:
         print(f"machine and pull the model: ollama pull {model}")
     lib_env.update_env_var(env_path, "OLLAMA_HOST_MODE", "true" if host_mode else "false")
 
+    # --- Remote LAN Ollama server (GH issue #502) ---
+    # Offered only once host-native mode is declined - the two are mutually
+    # exclusive (both bypass the dockerized `ollama` service entirely, so
+    # there's nothing left to choose between them if host mode already won).
+    remote_mode = False
+    remote_host = ""
+    remote_port = "11434"
+    if not host_mode:
+        print()
+        print("--- Remote LAN Ollama server ---")
+        print("Instead of running Ollama on THIS machine at all, you can point Horseless")
+        print("Carriage at an Ollama server already running elsewhere on your local network")
+        print("(e.g. a beefier machine with a GPU) - see docs/CONFIGURATION.md's \"Remote LAN")
+        print("Ollama server\" section.")
+        current_remote_mode = lib_env.read_env_var(env_path, "OLLAMA_REMOTE_ENABLED")
+        default_remote_mode = current_remote_mode == "true"
+        default_label = "Y/n" if default_remote_mode else "y/N"
+        remote_answer = input(
+            f"Use a remote LAN Ollama server instead of the bundled container? [{default_label}]: "
+        ).strip().lower()
+        remote_mode = remote_answer.startswith("y") if remote_answer else default_remote_mode
+        if remote_mode:
+            current_remote_host = lib_env.read_env_var(env_path, "OLLAMA_REMOTE_HOST")
+            remote_host = prompt_text("Remote Ollama host/IP", current_remote_host or "192.168.1.100")
+            current_remote_port = lib_env.read_env_var(env_path, "OLLAMA_REMOTE_PORT")
+            remote_port = prompt_number("Remote Ollama port", current_remote_port or "11434", r"^[0-9]+$")
+            print(f"Remote mode selected - before starting the stack, make sure Ollama is running")
+            print(f"and reachable at http://{remote_host}:{remote_port}, and the model is pulled")
+            print(f"there: ollama pull {model}")
+    lib_env.update_env_var(env_path, "OLLAMA_REMOTE_ENABLED", "true" if remote_mode else "false")
+    lib_env.update_env_var(env_path, "OLLAMA_REMOTE_HOST", remote_host)
+    lib_env.update_env_var(env_path, "OLLAMA_REMOTE_PORT", remote_port)
+
     print()
     print("--- GPU acceleration (dockerized Ollama only) ---")
-    if host_mode:
-        print("Skipped - Ollama is running natively on the host, not in a container, so this")
-        print("dockerized NVIDIA passthrough setting doesn't apply here. Your host's own Ollama")
-        print("install uses whatever GPU acceleration it detects on its own.")
+    if host_mode or remote_mode:
+        if host_mode:
+            print("Skipped - Ollama is running natively on the host, not in a container, so this")
+            print("dockerized NVIDIA passthrough setting doesn't apply here. Your host's own Ollama")
+            print("install uses whatever GPU acceleration it detects on its own.")
+        else:
+            print("Skipped - Ollama is running on a remote LAN server, not in a local container,")
+            print("so this dockerized NVIDIA passthrough setting doesn't apply here. That server")
+            print("uses whatever GPU acceleration it's configured with on its own.")
         gpu_enabled = False
         lib_env.update_env_var(env_path, "OLLAMA_GPU_ENABLED", "false")
     else:
@@ -1100,12 +1148,17 @@ def run_local_provider(dev: bool = False) -> None:
             print("backend on Windows, the NVIDIA Container Toolkit on Linux).")
         lib_env.update_env_var(env_path, "OLLAMA_GPU_ENABLED", "true" if gpu_enabled else "false")
 
-    ollama_api_base = "http://host.docker.internal:11434" if host_mode else "http://ollama:11434"
-    # In host mode there's no dockerized `ollama` service for OLLAMA_KEEP_ALIVE
-    # (docker-compose.local.yaml) to reach - pass it as a per-request
-    # litellm_params.keep_alive instead, which reaches the host's native
-    # Ollama daemon regardless of how it was started.
-    ollama_keep_alive = lib_env.read_env_var(env_path, "OLLAMA_KEEP_ALIVE") if host_mode else ""
+    if remote_mode:
+        ollama_api_base = f"http://{remote_host}:{remote_port}"
+    elif host_mode:
+        ollama_api_base = "http://host.docker.internal:11434"
+    else:
+        ollama_api_base = "http://ollama:11434"
+    # In host mode AND remote mode there's no dockerized `ollama` service for
+    # OLLAMA_KEEP_ALIVE (docker-compose.local.yaml) to reach - pass it as a
+    # per-request litellm_params.keep_alive instead, which reaches the
+    # native/remote Ollama daemon regardless of how it was started.
+    ollama_keep_alive = lib_env.read_env_var(env_path, "OLLAMA_KEEP_ALIVE") if (host_mode or remote_mode) else ""
     write_litellm_yaml("local", model, model, Path("config/model-templates/litellm.local-ollama.yaml"),
                         ollama_api_base, ollama_keep_alive)
 
@@ -1113,7 +1166,13 @@ def run_local_provider(dev: bool = False) -> None:
     print("--- Provider & model ---")
     print("Provider: Local / Ollama")
     print(f"Model (all roles + eval harness): {model}")
-    print(f"Ollama runs: {'natively on the host' if host_mode else 'in its own container'}")
+    if remote_mode:
+        runs_where = f"on a remote LAN server (http://{remote_host}:{remote_port})"
+    elif host_mode:
+        runs_where = "natively on the host"
+    else:
+        runs_where = "in its own container"
+    print(f"Ollama runs: {runs_where}")
     print(f"GPU acceleration: {'enabled' if gpu_enabled else 'disabled'}")
     print("Written to: .env, config/model-templates/litellm.local-ollama.yaml")
 
@@ -1126,7 +1185,7 @@ def run_local_provider(dev: bool = False) -> None:
     # GH issue #169: match run.py's own dev-stack project name, so a
     # copy-pasted manual start stays recognizable as the same stack.
     project_flag = " ".join(lib_docker.compose_project_args("dev"))
-    if host_mode:
+    if host_mode or remote_mode:
         print(f"  docker compose -f docker-compose.local-hostollama.yaml {project_flag} up")
     elif gpu_enabled:
         print(f"  docker compose -f docker-compose.local.yaml -f docker-compose.gpu.yaml {project_flag} up")

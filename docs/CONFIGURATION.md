@@ -49,31 +49,78 @@ checkout-time mtime, so this "active provider" line is undefined until the
 wizard has actually run once — cosmetic only, doctor's real ERROR checks
 (missing `.env`, missing `STATE_REPO_PATH`) still gate correctly regardless.
 
-## The local-provider sub-axis: GPU / host-mode / CPU
+## The local-provider sub-axis: GPU / host-mode / remote / CPU
 
-For the Local/Ollama provider only, three mutually-exclusive execution modes:
+For the Local/Ollama provider only, four mutually-exclusive execution modes:
 
 | Mode | Compose files | When to use |
 |---|---|---|
 | CPU-only (default) | `docker-compose.local.yaml` | No NVIDIA GPU, or macOS (no GPU passthrough into Docker Desktop at all) |
 | Dockerized GPU | `docker-compose.local.yaml -f docker-compose.gpu.yaml` | Linux/Windows with an NVIDIA GPU, drivers, and (Linux) the NVIDIA Container Toolkit / (Windows) the WSL2 backend |
 | Native host Ollama | `docker-compose.local-hostollama.yaml` | macOS, to get Metal acceleration by running Ollama natively on the host instead of in Docker (Docker Desktop for Mac has no GPU passthrough) |
+| Remote LAN Ollama server | `docker-compose.local-hostollama.yaml` | No capable GPU/CPU on the machine running Horseless Carriage itself — point at an Ollama server already running elsewhere on your local network instead (GH issue #502) |
 
 `OLLAMA_HOST_MODE=true` and `OLLAMA_GPU_ENABLED=true` are mutually
 exclusive — host mode bypasses the dockerized `ollama` service (and its GPU
 override) entirely, and `setup_llm.py` never offers GPU acceleration once
-host mode is chosen. **Known-invalid combination** (manual `-f` stacking
-only, not reachable through the wizard): merging `docker-compose.gpu.yaml`
-onto `docker-compose.local-hostollama.yaml` by hand — the GPU file defines
-only a partial `ollama` service fragment (resource reservations, no
-image/build), and `docker-compose.local-hostollama.yaml` has no `ollama`
-service at all by design, so Compose synthesizes an unbuildable service and
-`up` fails outright. Only ever combine `docker-compose.gpu.yaml` with
-plain `docker-compose.local.yaml`.
+host mode (or remote mode, below) is chosen. **Known-invalid combination**
+(manual `-f` stacking only, not reachable through the wizard): merging
+`docker-compose.gpu.yaml` onto `docker-compose.local-hostollama.yaml` by
+hand — the GPU file defines only a partial `ollama` service fragment
+(resource reservations, no image/build), and
+`docker-compose.local-hostollama.yaml` has no `ollama` service at all by
+design, so Compose synthesizes an unbuildable service and `up` fails
+outright. Only ever combine `docker-compose.gpu.yaml` with plain
+`docker-compose.local.yaml`.
 
 `OLLAMA_GPU_ENABLED=true` with no NVIDIA GPU actually present starts but
 runs CPU-only — `doctor.py` scrapes the `ollama` container's own startup
 logs and warns loudly if it reports `library=cpu` despite the flag being on.
+
+### Remote LAN Ollama server
+
+`setup_llm.py`'s Local/Ollama flow offers a third option, after declining
+"run Ollama natively on the host": point the stack at an Ollama server
+already running on a *different* machine on your local network (e.g. a
+beefier machine with a GPU), rather than a container or native install on
+the machine running Horseless Carriage itself. This is for anyone without a
+capable local GPU/CPU who still wants fully local/offline inference.
+
+Answering yes writes:
+
+- `OLLAMA_REMOTE_ENABLED="true"`
+- `OLLAMA_REMOTE_HOST` — the LAN IP/hostname you entered
+- `OLLAMA_REMOTE_PORT` — the port you entered (default `11434`, Ollama's own
+  default)
+
+and generates `config/model-templates/litellm.local-ollama.yaml` with every
+role's `litellm_params.api_base` pointing at
+`http://<OLLAMA_REMOTE_HOST>:<OLLAMA_REMOTE_PORT>` instead of
+`http://ollama:11434` (the dockerized default) or
+`http://host.docker.internal:11434` (host mode).
+
+Remote mode reuses `docker-compose.local-hostollama.yaml` for the same
+reason host mode does: that file already has no dockerized `ollama` service
+to provision — exactly what's needed here too, since the model is served
+by a machine this stack doesn't manage at all. `lib_docker.compose_file_args`
+selects it whenever either `OLLAMA_HOST_MODE=true` or
+`OLLAMA_REMOTE_ENABLED=true`. `OLLAMA_KEEP_ALIVE` is written as a
+per-request `litellm_params.keep_alive` field (same as host mode) rather
+than a container environment variable, since there's no dockerized `ollama`
+service for the latter to reach.
+
+Before starting the stack, make sure Ollama is actually running and
+reachable at that address (`ollama serve` on the remote machine, with its
+firewall allowing the configured port) and the configured model is pulled
+there (`ollama pull <model>`) — `setup_llm.py`'s live end-to-end test and
+`doctor.py` both probe `http://<host>:<port>` directly (see
+`lib_docker.host_ollama_reachable`) and warn if it's unreachable, the same
+way they do for host mode's `http://localhost:11434`.
+
+Mutually exclusive with both `OLLAMA_HOST_MODE=true` and
+`OLLAMA_GPU_ENABLED=true` — `setup_llm.py` never offers either once remote
+mode is chosen, and the bundled `ollama` container/image is skipped
+entirely regardless of `OLLAMA_GPU_ENABLED`'s value.
 
 ## Human interaction level × everything else
 
@@ -164,7 +211,7 @@ auth flows exclusively through the env vars above.
 | File you copy `.env` from | Compose file(s) it pairs with |
 |---|---|
 | `.env.example` | `docker-compose.yaml` (any cloud provider) |
-| `.env.local.example` | `docker-compose.local.yaml` (± `docker-compose.gpu.yaml`) or `docker-compose.local-hostollama.yaml` |
+| `.env.local.example` | `docker-compose.local.yaml` (± `docker-compose.gpu.yaml`) or `docker-compose.local-hostollama.yaml` (host-native or remote-LAN mode) |
 | `.env.test` | `docker-compose.yaml`, via `run_tests.py` only — deliberately exercises the deprecated `SPRINT_USD_BUDGET`/`EVAL_SPRINT_USD_BUDGET` fallback names as a live regression check, not a template to copy by hand |
 
 `setup_llm.py` picks the right starting file for you based on which
@@ -172,9 +219,25 @@ provider you choose (cloud → `.env.example`, local → `.env.local.example`),
 so this axis is only something to know about if you're hand-editing `.env`
 instead of using the wizard.
 
+## Development Workbench templates × network allowlist
+
+`config/development-workbench-templates/<name>/` (e.g. `python-flask`,
+`kotlin-multiplatform`, `react-vite-firebase`) bundles a toolchain install
+script, an optional MCP config fragment, and a declared
+`additional_allowlist_hosts` list per tech stack — selected via
+`propose_framework_change(template_name=...)`, never written directly. When
+a template (or an explicit `additional_allowlist_hosts` argument) declares
+new runtime hosts, the resulting PR is **not** enough by itself: a human
+must still add those hosts to `NET_PROXY_EXTRA_ALLOWLIST_HOSTS` in this
+(Horseless Carriage's own) `.env` and run `docker compose up` (container
+recreate, not `restart`) before the agent container can actually reach
+them. See [Development Workbench Templates](WORKBENCHES.md) for the full
+contract and the human-approval flow this interacts with.
+
 ## Known-safe no-ops (not bugs, listed here so they don't look like one)
 
 - Cloud API keys left in `.env` for a provider you're not currently using.
 - `TOTAL_USD_BUDGET` set to any value while `LLM_LOCAL_PROVIDER=true`.
-- `OLLAMA_MODEL`/`OLLAMA_KEEP_ALIVE`/`OLLAMA_GPU_ENABLED` set while using a cloud provider — never read by any cloud compose path.
+- `OLLAMA_MODEL`/`OLLAMA_KEEP_ALIVE`/`OLLAMA_GPU_ENABLED`/`OLLAMA_HOST_MODE`/`OLLAMA_REMOTE_ENABLED`/`OLLAMA_REMOTE_HOST`/`OLLAMA_REMOTE_PORT` set while using a cloud provider — never read by any cloud compose path.
 - `WATCH_POLL_INTERVAL_SECONDS` — only read by the opt-in `watch_roadmap.py`, itself never invoked automatically.
+- `.github/CODEOWNERS` entries with no effect on merges — GitHub only enforces them once "Require review from Code Owners" is also turned on as a branch protection rule for `main` (a manual, repo-admin-only step); see [GitHub Integration](GITHUB-INTEGRATION.md) for exactly which Settings toggle to flip (GH-316).

@@ -523,6 +523,40 @@ _STOP_REASON_EXPLANATIONS = {
     "human_blocker_unresolved": "a high-priority 'human'-category retro finding is unresolved and this scripted driver has no human to act on it",
 }
 
+# 0.2.0-run92: "sprint_closeout_stalled"'s generic explanation above claims a
+# "retry ceiling" was exhausted - true only when the actual sprint that
+# triggered the abort hit max_nudges_exhausted. That sprint's own
+# stop_reason (manifest["sprints"][-1]["stop_reason"]) is frequently
+# something else entirely - run92 hit max_events_reached, the flat
+# per-sprint event cap, with its nudge-retry budget barely touched. Keying
+# the explanation off the real underlying limiter avoids asserting a
+# retry-ceiling story that didn't happen.
+_SPRINT_CLOSEOUT_STALLED_UNDERLYING_REASONS = {
+    "max_nudges_exhausted": "a sprint exhausted this harness's own retry ceiling before its close-out (sprint report done, release PR) could finish",
+    "max_events_reached": "a sprint hit this harness's own per-sprint event cap before its close-out (sprint report done, release PR) could finish",
+    "max_duration_exceeded": "a sprint hit this harness's own per-sprint duration cap before its close-out (sprint report done, release PR) could finish",
+}
+
+
+def _last_sprint_stop_reason(manifest: dict) -> str | None:
+    """
+    manifest["sprints"][-1]["stop_reason"] - the real per-sprint limiter
+    that ended the sprint which triggered a "sprint_closeout_stalled" run
+    abort. Defensively tolerates a non-dict/missing last entry (some test
+    fixtures use bare placeholder sprint numbers, not real sprint_result
+    dicts) by returning None rather than raising.
+    """
+    sprints = manifest.get("sprints") or []
+    last_sprint = sprints[-1] if sprints else None
+    return last_sprint.get("stop_reason") if isinstance(last_sprint, dict) else None
+
+
+def _sprint_closeout_stalled_explanation(manifest: dict) -> str:
+    underlying = _last_sprint_stop_reason(manifest)
+    return _SPRINT_CLOSEOUT_STALLED_UNDERLYING_REASONS.get(
+        underlying, _STOP_REASON_EXPLANATIONS["sprint_closeout_stalled"]
+    )
+
 
 def _render_stopped_early_callout(manifest: dict) -> list:
     """
@@ -537,7 +571,10 @@ def _render_stopped_early_callout(manifest: dict) -> list:
     if not manifest.get("stopped_early"):
         return []
     stop_reason = manifest.get("stop_reason", "unknown")
-    explanation = _STOP_REASON_EXPLANATIONS.get(stop_reason, "see stop_reason below for the raw code")
+    if stop_reason == "sprint_closeout_stalled":
+        explanation = _sprint_closeout_stalled_explanation(manifest)
+    else:
+        explanation = _STOP_REASON_EXPLANATIONS.get(stop_reason, "see stop_reason below for the raw code")
     lines = [
         "## ⚠️ Evaluation Stopped Early",
         "",
@@ -564,6 +601,23 @@ def _render_stopped_early_callout(manifest: dict) -> list:
             f"- Human-only retro finding: {general_blocker.get('description', '(no description recorded)')} "
             f"(raised by {general_blocker.get('raised_by', 'unknown')})"
         )
+    if stop_reason == "sprint_closeout_stalled":
+        underlying = _last_sprint_stop_reason(manifest)
+        if underlying in ("max_events_reached", "max_duration_exceeded"):
+            # 0.2.0-run92: the only self-tuning suggestion this report ever
+            # generates (budget.py's _sprint_length_feedback, in the
+            # per-sprint "Sprint Length Feedback" section below) is "raise
+            # the token budget" - of no help at all when the actual limiter
+            # was the event/duration cap, not tokens. Flag that explicitly
+            # here so a reader doesn't chase the token-budget suggestion for
+            # a problem it can't fix.
+            cap_name = "per-sprint event cap" if underlying == "max_events_reached" else "per-sprint duration cap"
+            lines.append(
+                f"- The sprint that triggered this was limited by its {cap_name}, not its token budget - "
+                "raising SPRINT_TOKEN_BUDGET/EVAL_SPRINT_TOKEN_BUDGET will not help here; consider "
+                "reducing how much work is planned per sprint, or raising the harness's own "
+                f"{'max-events' if underlying == 'max_events_reached' else 'max-duration'} setting instead."
+            )
     lines.append("")
     return lines
 
