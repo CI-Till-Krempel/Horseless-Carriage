@@ -14,6 +14,7 @@ from agents.scrum_team.prompts import (
     _load_role_prompt,
     _load_checklist,
     load_role_identity_default,
+    prompt_module_pieces,
 )
 
 
@@ -130,6 +131,50 @@ class TestDefinitionOfDoneAndReadyInjection(unittest.TestCase):
             with self.subTest(role=role):
                 self.assertLess(prompt.index("WORKFLOW ("), prompt.index("DEFINITION OF DONE"))
                 self.assertLess(prompt.index("WORKFLOW ("), prompt.index("DEFINITION OF READY"))
+
+
+class TestPromptModulePieces(unittest.TestCase):
+    """
+    Acceptance Criteria (GH issue #513, context-window optimizations):
+    prompt_module_pieces returns the same pieces _load_role_prompt itself
+    concatenates (guardrails, workflow, then DOD/DOR if applicable), kept
+    separate - the source data tools/quality.py's
+    calculate_prompt_module_breakdown measures.
+    """
+
+    def test_every_role_returns_guardrails_then_workflow_first(self):
+        for role in ROLE_NAMES:
+            with self.subTest(role=role):
+                pieces = prompt_module_pieces(role)
+                labels = [label for label, _ in pieces]
+                self.assertEqual(labels[0], f"{role}-guardrails.md")
+                self.assertEqual(labels[1], f"{role}-workflow.md")
+                for _, text in pieces:
+                    self.assertTrue(text.strip())
+
+    def test_dod_dor_roles_get_the_checklist_pieces_appended(self):
+        for role in DOD_ROLES:
+            with self.subTest(role=role, checklist="DOD"):
+                labels = [label for label, _ in prompt_module_pieces(role)]
+                self.assertIn("spec-templates/DOD.md", labels)
+        for role in DOR_ROLES:
+            with self.subTest(role=role, checklist="DOR"):
+                labels = [label for label, _ in prompt_module_pieces(role)]
+                self.assertIn("spec-templates/DOR.md", labels)
+
+    def test_pieces_joined_reproduce_the_role_prompt_content(self):
+        """Every piece's text must actually appear in _load_role_prompt's
+        own output - this is a measurement helper over the same source
+        files, not an independent/divergent read of them."""
+        for role in ROLE_NAMES:
+            with self.subTest(role=role):
+                prompt = _load_role_prompt(role)
+                for _, text in prompt_module_pieces(role):
+                    self.assertIn(text, prompt)
+
+    def test_unknown_role_raises(self):
+        with self.assertRaises(FileNotFoundError):
+            prompt_module_pieces("NotARealRole")
 
 
 class TestSelfTransferWarning(unittest.TestCase):

@@ -88,7 +88,15 @@ Since the model backing each role may vary (`SCRUM_<ROLE>_MODEL` env vars), so d
 window - a role's concatenated, static system prompt (the guardrails + workflow + DoD/DoR pieces
 above, never the dynamically-injected identity content) is measured against that role's own model's
 context window and reported per agent, at full detail, in the sprint report's KPI dashboard - see
-[Budget Management § Quality KPIs](BUDGET.md#quality-kpis).
+[Budget Management § Quality KPIs](BUDGET.md#quality-kpis). A separate, per-file breakdown (which
+individual `<Role>-guardrails.md`/`<Role>-workflow.md`/DoD/DoR piece is actually responsible for
+that total) is reported alongside it (GH #513).
+
+GH #513 also states this project's own guideline directly: steering documents
+(`prompt_modules/*.md`) should stay under 250 lines each, since a role's static prompt eats into
+the ~150k-token "sweet spot" a conversation ideally stays within before quality degrades - before
+a single turn of real session content (transcript, tool results) is even added. `doctor.py` flags
+(non-blocking warning, never an error) any file currently over that limit.
 
 ## Related docs
 

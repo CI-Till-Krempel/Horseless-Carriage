@@ -151,6 +151,52 @@ def calculate_prompt_context_usage() -> Dict[str, Dict[str, Any]]:
         usage[role] = entry
     return usage
 
+def calculate_prompt_module_breakdown() -> Dict[str, List[Dict[str, Any]]]:
+    """
+    GH issue #513 (context-window optimizations): per-role breakdown of
+    calculate_prompt_context_usage's single combined `prompt_tokens` total
+    into the individual pieces prompts.py's own _load_role_prompt
+    concatenates for that role (guardrails, workflow, then DOD/DOR if
+    applicable - see prompts.prompt_module_pieces). Answers the issue's own
+    "and/or each prompt_modules/*.md file's contribution to it" framing
+    directly: calculate_prompt_context_usage tells you a role's prompt
+    costs 8,000 tokens; this tells you which of its 2-4 files is actually
+    responsible for that, so a genuinely oversized file (or a disproportionate
+    DOD/DOR contribution) is visible without manually re-measuring each
+    piece by hand.
+
+    Token-counted with the same litellm.token_counter call
+    calculate_prompt_context_usage uses (that role's resolved model alias -
+    the live LiteLLM proxy's /model/info mapping isn't queried here since
+    an alias resolves to a reasonable tokenizer on its own for this
+    comparative, per-file purpose; context-window percentage itself is
+    still only ever reported by calculate_prompt_context_usage). Line
+    counts use the same plain-newline counting doctor.py's own
+    250-line-per-steering-document check uses, so the two stay comparable.
+
+    Never raises: a role whose prompt_modules files are missing would
+    already have failed at import time (prompts.py's own _load_role_prompt
+    requires them), so this is purely additive observability over data
+    that's already known to exist.
+
+    Returns {role: [{"file": <label>, "lines": int, "tokens": int}, ...]}.
+    """
+    from ..prompts import ROLE_NAMES, prompt_module_pieces
+
+    breakdown: Dict[str, List[Dict[str, Any]]] = {}
+    for role in ROLE_NAMES:
+        alias = _model_alias_for_role(role)
+        entries = []
+        for label, text in prompt_module_pieces(role):
+            entries.append({
+                "file": label,
+                "lines": (text.count("\n") + 1) if text else 0,
+                "tokens": litellm.token_counter(model=alias, text=text),
+            })
+        breakdown[role] = entries
+    return breakdown
+
+
 _AVG_COMPLEXITY_RE = re.compile(r"Average complexity:\s+[A-F]\s+\(([\d.]+)\)")
 _LANGUAGE_SKIP_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__"}
 
@@ -812,6 +858,7 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
         "maintainability": maintainability,
         "security": security,
         "prompt_context_usage": calculate_prompt_context_usage(),
+        "prompt_module_breakdown": calculate_prompt_module_breakdown(),
     }
 
 def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, Any]:

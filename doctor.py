@@ -33,6 +33,10 @@ This script will:
    actually started comes up, so a GPU/host-Ollama/remote-Ollama fallback is
    surfaced proactively even on a plain `python3 run.py` (which gates on
    check() with skip_llm_probe=True, before any container exists to check).
+7. Flag any `agents/scrum_team/prompt_modules/*.md` steering document over
+   250 lines (GH issue #513 - context-window optimizations) - checked
+   against this project's own checkout (repo_root), not a target project's
+   STATE_REPO_PATH.
 
 Every problem found is collected into a punch list of ActionableItems (see
 check()) instead of stopping at the first one - a user fixing configuration
@@ -75,6 +79,14 @@ _UNSUPPORTED_ECOSYSTEM_MANIFESTS = (
     ("*.sln", ".NET"),
 )
 _NEW_ISSUE_URL = "https://github.com/CI-Till-Krempel/Horseless-Carriage/issues/new"
+
+# GH issue #513 (context-window optimizations): the issue's own text states
+# the constraint directly - "the steering documents should be less than 250
+# lines" - so a role's STATIC system prompt (prompts.py's own
+# guardrails.md + workflow.md concatenation) doesn't itself eat into the
+# ~150k-token "sweet spot" conversation budget the issue also cites, before
+# any dynamic session content (transcript, tool results) is even added.
+_PROMPT_MODULE_MAX_LINES = 250
 
 
 def _detect_unsupported_ecosystem(state_repo_path: Path) -> str | None:
@@ -141,6 +153,39 @@ class DoctorResult:
             print(f"[{item.severity.upper()}] {item.message}")
 
 
+def _check_prompt_module_line_counts(repo_root: Path, warn) -> None:
+    """
+    GH issue #513 (context-window optimizations): mechanically flags every
+    `agents/scrum_team/prompt_modules/*.md` steering document currently
+    over `_PROMPT_MODULE_MAX_LINES` - this project's own framework-level
+    files, not anything in a target project's STATE_REPO_PATH, so this
+    runs unconditionally against repo_root regardless of whether a state
+    repo is configured at all.
+
+    Non-blocking (warning, not error): flagging a file that's grown past
+    the guideline is valuable on its own even when safely trimming it is a
+    separate, more careful piece of work - this never forces a rewrite.
+
+    Silently does nothing if the directory doesn't exist (e.g. a
+    repo_root that isn't a real Horseless Carriage checkout, as in several
+    existing doctor.py tests' bare tmp_path fixtures) - this check has
+    nothing to do with a specific installation's configuration, so there's
+    no actionable error to raise either way.
+    """
+    prompt_modules_dir = repo_root / "agents" / "scrum_team" / "prompt_modules"
+    if not prompt_modules_dir.is_dir():
+        return
+    for path in sorted(prompt_modules_dir.glob("*.md")):
+        line_count = sum(1 for _ in path.open("r", encoding="utf-8", errors="replace"))
+        if line_count > _PROMPT_MODULE_MAX_LINES:
+            warn(
+                f"Steering document {path.relative_to(repo_root)} is {line_count} lines, over this "
+                f"project's own {_PROMPT_MODULE_MAX_LINES}-line guideline for prompt modules (GH issue "
+                "#513) - a role's static system prompt this large leaves less headroom in the model's "
+                "context window before any dynamic session content is even added. Consider trimming it."
+            )
+
+
 def check(
     repo_root: Path,
     proxy_base_url: str = "http://localhost:4000",
@@ -184,6 +229,10 @@ def check(
         items.append(ActionableItem("warning", msg))
 
     print("--- Running Horseless Carriage Doctor ---")
+
+    # 0. Check this project's own steering-document (prompt_modules/) line
+    # counts - GH issue #513, see _check_prompt_module_line_counts.
+    _check_prompt_module_line_counts(repo_root, warn)
 
     # 1. Check for Docker and Docker Compose
     docker_ok = shutil.which("docker") is not None
