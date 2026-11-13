@@ -170,3 +170,18 @@ class ScrumState(BaseModel):
     # comment for why this isn't a hard gate like the specific-story-ID
     # overclaim check right above it.
     accepted_count_baseline: int = 0
+    # GH-273: whole-increment QA release audit (run_release_audit,
+    # tools/quality.py) - distinct from test_suite_run_count/kpi_update_count
+    # above (per-story/per-sprint signals). Bumped on EVERY run_release_audit
+    # call (same "every call is equally real evidence" pattern those already
+    # use); release_audit_baseline is the snapshot create_release_pr takes on
+    # its own success, so a FRESH audit (run_count > baseline) is required
+    # again for the NEXT release - same "must be NEW since last release"
+    # pattern release_approval_baseline already uses just above.
+    release_audit_run_count: int = 0
+    release_audit_baseline: int = 0
+    # Full result of the most recent run_release_audit call - create_release_pr
+    # reads blocking_defects from this (hard-blocks at every interaction
+    # level, regardless of release_audit_baseline) and advisory_findings
+    # (surfaced in the release PR body, never silently dropped).
+    last_release_audit_result: Optional[Dict[str, Any]] = None

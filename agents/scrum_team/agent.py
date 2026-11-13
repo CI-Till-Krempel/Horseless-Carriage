@@ -327,6 +327,7 @@ from .tools import (
     gh_pr_comments,
     gh_pr_review,
     gh_release_create,
+    gh_issue_create,
     write_file,
     delete_file,
     create_from_template,
@@ -376,6 +377,7 @@ from .tools.quality import (
     update_sprint_report as update_sprint_report_with_kpis,
     check_build,
     recheck_test_suite,
+    run_release_audit,
 )
 from .tools.workflow import (
     generate_workflow_diagram,
@@ -2861,6 +2863,13 @@ product_owner = LlmAgent(
         create_from_template,
         gh_release_create,
         propose_version_bump,
+        # GH-273: an escape valve, same reachability fix SPEC-ISSUE-0068
+        # already established for recheck_test_suite/Architect - Product
+        # Owner is the one who actually hits create_release_pr's
+        # release-audit gate, so it must have a direct way to satisfy it
+        # itself if QA hasn't had a turn yet, rather than being stuck
+        # unable to make progress.
+        run_release_audit,
         create_release_pr,
         create_sprint_backlog_pr,
         create_story_spec_pr,
@@ -2964,6 +2973,8 @@ qa_agent = LlmAgent(
         gh_pr_comments,
         gh_pr_review,
         check_build,
+        run_release_audit,
+        gh_issue_create,
         advance_story_stage,
         deny_review,
         raise_story_blocker,

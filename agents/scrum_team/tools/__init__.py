@@ -41,6 +41,7 @@ from .github import (
     gh_pr_status,
     gh_pr_checks,
     gh_release_create,
+    gh_issue_create,
     create_release_pr,
     gh_pr_comment,
     gh_pr_comments,
