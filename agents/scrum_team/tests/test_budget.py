@@ -2115,14 +2115,40 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
         item = tool_context.state["product_backlog"][0]
         self.assertIsNone(item.get("priority"))
 
-    def test_non_product_levels_auto_prioritize_must(self):
-        """At every other interaction level, there's no human review step
-        to leave the prioritization decision to, so it's auto-prioritized
-        instead of risking the same silent-starvation failure that was
-        reported."""
+    def test_non_product_levels_auto_prioritize_should_by_default(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0091): a routine finding (the
+        default priority="normal" on the originating retro_action/
+        impediment entry - see add_retro_action/add_impediment) is still
+        auto-prioritized at every non-"Product" level, so it can't be
+        silently starved the way the originally-reported failure was - but
+        at "Should", not "Must", so it doesn't displace this sprint's
+        already-planned stories the way SPEC-ISSUE-0091 showed every
+        finding doing regardless of whether it actually warranted that.
+        """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["retro_actions"] = [{"action": "auto-prioritize me", "owner": "SM", "status": "open"}]
+        tool_context.state["kpi_update_count"] = 1
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            _file_retro_items_as_issues(tool_context)
+
+        item = tool_context.state["product_backlog"][0]
+        self.assertEqual(item.get("priority"), "Should")
+
+    def test_a_blocking_finding_auto_prioritizes_must(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0091): a finding the caller
+        explicitly flagged as a genuine blocker (priority="high" on the
+        add_retro_action/add_impediment call itself) still gets the
+        original SPEC-ISSUE-0076 treatment - auto-prioritized "Must".
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["retro_actions"] = [
+            {"action": "The build is broken for everyone", "owner": "SM", "status": "open", "priority": "high"}
+        ]
         tool_context.state["kpi_update_count"] = 1
 
         with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
@@ -2133,16 +2159,19 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
 
     def test_auto_prioritized_must_issue_jumps_ahead_of_already_queued_same_priority_work(self):
         """
-        Acceptance Criteria (SPEC-ISSUE-0076): a real eval run showed a
-        retro-filed Must Issue, auto-prioritized here, stay stuck BEHIND
-        already-queued Must-priority stories forever -
-        _resort_backlog_by_priority's own stable sort (by design) preserves
-        relative order among same-priority items, so appending the new Issue
-        after them never actually moved it ahead. The one-story-at-a-time
-        ordering gate (_preceding_story) only blocks whatever comes
-        immediately after an unresolved item - this Issue must land ahead of
-        the team's remaining (not-yet-Accepted) work for that gate to ever
-        force attention onto it, matching GH #368's original design intent.
+        Acceptance Criteria (SPEC-ISSUE-0076, narrowed by SPEC-ISSUE-0091 to
+        genuine blockers only): a real eval run showed a retro-filed Must
+        Issue, auto-prioritized here, stay stuck BEHIND already-queued
+        Must-priority stories forever - _resort_backlog_by_priority's own
+        stable sort (by design) preserves relative order among same-priority
+        items, so appending the new Issue after them never actually moved it
+        ahead. The one-story-at-a-time ordering gate (_preceding_story) only
+        blocks whatever comes immediately after an unresolved item - this
+        Issue must land ahead of the team's remaining (not-yet-Accepted)
+        work for that gate to ever force attention onto it, matching GH
+        #368's original design intent. Only applies when the finding is
+        itself flagged priority="high" (a genuine blocker) - see the
+        "normal"-priority sibling test below for the (now common) case.
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
@@ -2151,7 +2180,10 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
             {"id": "US-0003", "type": "User Story", "title": "Delete task", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
         ]
         tool_context.state["retro_actions"] = [
-            {"action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA", "status": "open"}
+            {
+                "action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA",
+                "status": "open", "priority": "high",
+            }
         ]
         tool_context.state["kpi_update_count"] = 1
 
@@ -2162,6 +2194,32 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
         issue_id = filed[0]
         ids = [x["id"] for x in tool_context.state["product_backlog"]]
         self.assertEqual(ids, [issue_id, "US-0002", "US-0003"])
+
+    def test_a_non_blocking_finding_lands_behind_already_queued_stories_instead(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0091): the common case - no
+        priority="high" flag on the finding - must NOT jump ahead of
+        already-queued Must-priority stories the way every finding used to.
+        Filed at "Should", it sorts behind them on its own.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["product_backlog"] = [
+            {"id": "US-0002", "type": "User Story", "title": "Add task", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+            {"id": "US-0003", "type": "User Story", "title": "Delete task", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
+        ]
+        tool_context.state["retro_actions"] = [
+            {"action": "Release audit: security scan findings need triage", "owner": "QA", "status": "open"}
+        ]
+        tool_context.state["kpi_update_count"] = 1
+
+        with patch.dict("os.environ", {"INTERACTION_LEVEL": "EVAL"}, clear=True):
+            filed = _file_retro_items_as_issues(tool_context)
+
+        self.assertEqual(len(filed), 1)
+        issue_id = filed[0]
+        ids = [x["id"] for x in tool_context.state["product_backlog"]]
+        self.assertEqual(ids, ["US-0002", "US-0003", issue_id])
 
     def test_a_confirmed_recurring_finding_does_not_jump_ahead_of_the_real_backlog(self):
         """
@@ -2185,7 +2243,8 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
         tool_context.state["retro_actions"] = [
             {
                 "action": "Ensure stories and issues are planned accurately with realistic estimates and tracked cleanly through the workflow stages.",
-                "owner": "DevTeam", "status": "open", "category": "technical", "recurs_since_sprint": 1,
+                "owner": "DevTeam", "status": "open", "category": "technical", "priority": "high",
+                "recurs_since_sprint": 1,
             }
         ]
         tool_context.state["kpi_update_count"] = 1
@@ -2200,17 +2259,21 @@ class TestFileRetroItemsAsIssues(unittest.TestCase):
         ids = [x["id"] for x in tool_context.state["product_backlog"]]
         self.assertEqual(ids, ["US-0003", "US-0004", issue_id])
 
-    def test_a_non_recurring_finding_still_jumps_ahead_as_before(self):
+    def test_a_non_recurring_blocking_finding_still_jumps_ahead_as_before(self):
         """Sibling/contrast to the test above: with no `recurs_since_sprint`
-        flag at all (the common case - a genuinely new finding), SPEC-
-        ISSUE-0076's original front-queue behavior is unchanged."""
+        flag at all (the common case - a genuinely new finding) and
+        priority="high" (a genuine blocker), SPEC-ISSUE-0076's original
+        front-queue behavior is unchanged."""
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
         tool_context.state["product_backlog"] = [
             {"id": "US-0003", "type": "User Story", "title": "Toggle Task Completion", "priority": "Must", "stages_completed": ["Draft", "Ready"]},
         ]
         tool_context.state["retro_actions"] = [
-            {"action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA", "status": "open", "category": "technical"}
+            {
+                "action": "Ensure QA runs the test suite locally before marking Tested", "owner": "QA",
+                "status": "open", "category": "technical", "priority": "high",
+            }
         ]
         tool_context.state["kpi_update_count"] = 1
 
