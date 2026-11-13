@@ -854,39 +854,126 @@ class TestGitHubTools(unittest.TestCase):
             self.assertIn("env_repo_url_present", res["diagnostics"])
             self.assertEqual(res["env_config"]["url"], "test_url")
 
-    @patch("agents.scrum_team.tools.github.gh_pr_create")
-    def test_create_release_pr_rejects_without_fresh_release_approval(self, mock_gh_pr_create):
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/acme/widgets/pull/42\n"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_create_release_pr_opens_the_pr_even_without_a_fresh_release_approval(self, mock_run, mock_gh_pr_create):
         """
-        Acceptance Criteria (SPEC-ISSUE-0001): create_release_pr refuses without
-        a fresh record_human_approval("release", ...) since the last one.
+        Acceptance Criteria (GH-452): the PR is the thing a human reviews,
+        so create_release_pr must open it unconditionally - approval is
+        checked AFTER the PR exists, not before. Previously (SPEC-ISSUE-0001)
+        this refused to even call gh_pr_create without a fresh
+        record_human_approval("release", ...); that pre-PR gate was the bug
+        GH-452 reports ("the system asks for human approval before creating
+        the release PR... the PR is the item to be reviewed").
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
+        # GH-273's release-audit-freshness gate runs before this one -
+        # satisfy it (release_audit_run_count > release_audit_baseline) so
+        # this test exercises the approval gate it's actually about.
+        tool_context.state["release_audit_run_count"] = 1
 
         result = create_release_pr(title="Release", body="body", tool_context=tool_context)
 
-        self.assertEqual(result["status"], "error")
-        mock_gh_pr_create.assert_not_called()
+        mock_gh_pr_create.assert_called_once()
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["released"])
+        self.assertEqual(result["pr_number"], 42)
 
-    @patch("agents.scrum_team.tools.github.gh_pr_create")
-    def test_create_release_pr_rejection_records_blocking_interaction(self, mock_gh_pr_create):
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/acme/widgets/pull/42\n"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_create_release_pr_rejection_records_blocking_interaction(self, mock_run, mock_gh_pr_create):
         """
-        Acceptance Criteria (GH issue #53): a release PR rejected for lack
-        of a fresh human approval is exactly the "absolutely necessary
-        human feedback" case that must be recorded (and notified on), not
-        just left as a tool error return the calling agent might not
-        relay to the human.
+        Acceptance Criteria (GH issue #53, GH-452): a release still waiting
+        on a fresh human approval - now checked AFTER the PR has actually
+        been opened - is exactly the "absolutely necessary human feedback"
+        case that must be recorded (and notified on), not just left as a
+        tool return the calling agent might not relay to the human. The
+        interaction must point at the real, just-opened PR, not a vague
+        "no PR yet" message.
         """
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
+        # GH-273's release-audit-freshness gate runs before this one -
+        # satisfy it (release_audit_run_count > release_audit_baseline) so
+        # this test exercises the approval gate it's actually about.
+        tool_context.state["release_audit_run_count"] = 1
 
         create_release_pr(title="Release", body="body", tool_context=tool_context)
 
         self.assertEqual(len(tool_context.state["blocking_interactions"]), 1)
         interaction = tool_context.state["blocking_interactions"][0]
         self.assertEqual(interaction["kind"], "approval")
-        self.assertIn("Release", interaction["summary"])
+        self.assertIn("#42", interaction["summary"])
         self.assertFalse(interaction["resolved"])
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok", "stdout": "https://github.com/acme/widgets/pull/42\n"})
+    @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})
+    def test_create_release_pr_without_approval_does_not_mark_the_sprint_closed(self, mock_run, mock_gh_pr_create):
+        """
+        Acceptance Criteria (GH-452, preserving SPEC-ISSUE-0066's invariant):
+        the "sprint cleanly finished" bookkeeping (sprint_report_pending_
+        release/sprint_backlog_pr_sprint) must only flip once the release is
+        actually considered done - PR open AND (if required) approved - not
+        merely because the PR happened to open. Otherwise _run_one_sprint's
+        stop condition (run_eval.py) could again declare a sprint finished
+        one step before a human ever reviewed the release, the exact bug
+        SPEC-ISSUE-0066 fixed, just moved to a new trigger.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["sprint_report_pending_release"] = True
+        tool_context.state["sprint_backlog_pr_sprint"] = 3
+        tool_context.state["sprint_number"] = 3
+        # GH-273's release-audit-freshness gate runs before this one -
+        # satisfy it (release_audit_run_count > release_audit_baseline) so
+        # this test exercises the approval gate it's actually about.
+        tool_context.state["release_audit_run_count"] = 1
+
+        result = create_release_pr(title="Release", body="body", tool_context=tool_context)
+
+        self.assertFalse(result["released"])
+        self.assertTrue(tool_context.state["sprint_report_pending_release"])
+        self.assertEqual(tool_context.state["sprint_backlog_pr_sprint"], 3)
+
+    @patch("agents.scrum_team.tools.github.gh_pr_create")
+    @patch("agents.scrum_team.tools.github._run")
+    def test_create_release_pr_recall_after_approval_does_not_reopen_the_pr(self, mock_run, mock_gh_pr_create):
+        """
+        Acceptance Criteria (GH-452): once a human has reviewed the PR a
+        first call opened and recorded record_human_approval("release",
+        ...), re-calling create_release_pr must notice the PR is already
+        open (via the same existing-PR lookup release_pr_still_open uses)
+        and finish the release WITHOUT trying to open a second PR (`gh pr
+        create` would just error "already exists" for a real duplicate).
+        """
+        def fake_run(cmd, **kwargs):
+            if cmd[:3] == ["gh", "pr", "list"]:
+                return {
+                    "status": "ok",
+                    "stdout": '[{"number": 42, "url": "https://github.com/acme/widgets/pull/42"}]',
+                }
+            return {"status": "ok"}
+
+        mock_run.side_effect = fake_run
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        tool_context.state["human_approvals"] = [{"type": "release", "note": "reviewed PR #42"}]
+        # GH-273's release-audit-freshness gate runs before this one -
+        # satisfy it (release_audit_run_count > release_audit_baseline) so
+        # this test exercises the approval/idempotent-recall gate it's
+        # actually about.
+        tool_context.state["release_audit_run_count"] = 1
+
+        result = create_release_pr(title="Release", body="body", tool_context=tool_context)
+
+        mock_gh_pr_create.assert_not_called()
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["released"])
+        self.assertEqual(result["pr_number"], 42)
+        self.assertTrue(tool_context.state["blocking_interactions"] == [] or all(
+            i.get("resolved") for i in tool_context.state["blocking_interactions"]
+        ))
 
     @patch("agents.scrum_team.tools.github.gh_pr_create", return_value={"status": "ok"})
     @patch("agents.scrum_team.tools.github._run", return_value={"status": "ok"})

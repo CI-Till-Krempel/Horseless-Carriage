@@ -1040,11 +1040,12 @@ def record_human_approval(approval_type: str, note: str = "", tool_context=None)
     `create_release_pr` (see SPEC-ISSUE-0001) actually check for, instead of
     trusting the model's own assertion that a human reviewed something.
     - approval_type: "sprint" (this sprint's goal + backlog), "release"
-      (this increment, before create_release_pr), or "budget" (this
-      sprint's token/USD budget - required instead of "sprint" at the CEO
-      interaction level). Which of these is actually required by the two
-      gates above depends on INTERACTION_LEVEL - see
-      docs/INTERACTION-LEVELS.md and
+      (this increment - reviewed against the actual release PR
+      create_release_pr already opened, GH-452; call this after that PR
+      exists, not before), or "budget" (this sprint's token/USD budget -
+      required instead of "sprint" at the CEO interaction level). Which of
+      these is actually required by the two gates above depends on
+      INTERACTION_LEVEL - see docs/INTERACTION-LEVELS.md and
       agents/scrum_team/helpers.py's required_pre_implementation_approval/
       required_pre_release_approval. A rejected gate's own error message
       names exactly which type to call this with.

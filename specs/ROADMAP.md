@@ -91,7 +91,7 @@ Stories:
 - [x] [GH-272] Sync GitHub Issues and versions to roadmap
 - [x] [GH-295] Issues are reported but not fixed, or marked as Won't
 - [x] [GH-273] Release testing (QA audit/regression gate before shipping) - see [US-0029]
-- [ ] [GH-452] Approval of the sprint should be done after creating the sprint PR
+- [x] [GH-452] Approval of the sprint should be done after creating the sprint PR
 - [x] [GH-316] Use CODEOWNER mechanism to enforce reviews for files that require human approval
 - [x] [GH-513] Context window optimizations (per-story/task conversations, leaner steering docs, prompt-size metrics) — see [US-0033]: delivered the metrics/steering-doc-size pieces; "new conversation per story/subtask instead of per sprint" is explicitly deferred future work (major session-lifecycle change), not done by this story
 - [x] [GH-515] Investigate ADK performance warning: system instructions changing mid-session breaks prompt-cache alignment
@@ -205,7 +205,7 @@ Notes
 
 - v0.1: EP-0001, US-0001, US-0002, US-0003, US-0004, EP-0002, US-0005, US-0006, US-0007, US-0008, EP-0003, US-0009, US-0010, US-0011
 - v0.2: EP-0004, US-0012, US-0013, US-0014, EP-0005, US-0015, US-0016, US-0017, EP-0006, US-0018, US-0019, US-0020
-- v0.3: EP-0010, US-0021, US-0022, US-0023, GH-456, US-0025, GH-502 (US-0026), GH-272, GH-295, GH-273 (US-0029), GH-452, GH-316 (US-0031), GH-513 (US-0033), GH-515 (US-0032)
+- v0.3: EP-0010, US-0021, US-0022, US-0023, GH-456, US-0025, GH-502 (US-0026), GH-272, GH-295, GH-273 (US-0029), GH-452 (US-0030), GH-316 (US-0031), GH-513 (US-0033), GH-515 (US-0032)
 - v0.4: GH-503, GH-179, GH-180, GH-300, GH-304, GH-286
 - v0.5: GH-453, GH-278, GH-312, GH-188, GH-293
 - v0.6: GH-284, GH-285, GH-297, GH-299

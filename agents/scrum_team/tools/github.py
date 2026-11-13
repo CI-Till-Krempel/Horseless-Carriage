@@ -1952,33 +1952,27 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     write from this sprint (a final update_roadmap/upsert_story/upsert_issue/
     generate_workflow_diagram call, via integrate_open_changes) - see the
     checkout+render+integrate+push block below.
+
+    GH-452: the required human approval (required_pre_release_approval -
+    e.g. "Product" level requires a fresh record_human_approval("release",
+    ...)) is checked AFTER the PR has actually been opened, not before -
+    there's nothing concrete for a human to review/approve before the PR
+    (the real diff, sprint report, and changelog) exists. Re-calling this
+    once that approval is recorded is idempotent: it won't try to re-open a
+    PR that's already there (see the existing-PR lookup below), it just
+    notices the approval and finishes. Until approval is recorded, this
+    returns `{"status": "ok", "released": False, ...}` (not "error" - the
+    PR itself opened fine) and records a blocking interaction pointing at
+    that PR - the same "waiting on a human" shape create_sprint_backlog_pr
+    already uses for its own post-open approval gate on the merge.
+    sprint_report_pending_release/sprint_backlog_pr_sprint/
+    release_approval_baseline only update once approval is satisfied (or
+    isn't required) - preserving the existing invariant _run_one_sprint's
+    stop condition and _sprint_should_abort_run rely on (SPEC-ISSUE-0066):
+    "sprint cleanly finished" implies the release was actually approved,
+    not merely that a PR happens to be open.
     """
-    # SPEC-ISSUE-0001: "Ensure Human Review is done for each increment" had no
-    # code backing it - refuse until a fresh approval was recorded via
-    # record_human_approval since the last release PR. Which approval type
-    # (if any) is required depends on INTERACTION_LEVEL (see
-    # docs/INTERACTION-LEVELS.md) - e.g. none at all at the CEO/EVAL levels,
-    # where a human doesn't review each release individually.
     state = tool_context.state if tool_context and getattr(tool_context, "state", None) else {}
-    required_approval = required_pre_release_approval()
-    release_approvals = None
-    if required_approval:
-        release_approvals = sum(1 for a in state.get("human_approvals", []) if a.get("type") == required_approval)
-        if release_approvals <= state.get("release_approval_baseline", 0):
-            message = (
-                f"Cannot create a release PR - this interaction level requires a fresh "
-                f"'{required_approval}' human approval for this increment - call "
-                f"record_human_approval('{required_approval}', ...) first (see "
-                "docs/INTERACTION-LEVELS.md)."
-            )
-            from .notifications import record_blocking_interaction
-            record_blocking_interaction(
-                "approval",
-                f"Release PR '{title}' is waiting on a '{required_approval}' human approval.",
-                detail=message,
-                tool_context=tool_context,
-            )
-            return {"status": "error", "message": message}
 
     # GH-273: whole-increment QA release audit (run_release_audit,
     # tools/quality.py) - a final regression/gap pass across EVERYTHING in
@@ -2140,74 +2134,162 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
 
     fetch_res = _run(["git", "fetch", "origin", develop], cwd=repo_root, tool_context=tool_context)
 
-    # base/head are both already fully-resolved branch names (an eval run
-    # bakes its run id directly into GITHUB_REPO_BRANCH/GITHUB_DEVELOP_BRANCH
-    # rather than via _with_eval_branch_prefix - see _develop_branch_name) -
-    # head_is_resolved=True so gh_pr_create doesn't re-tag it.
-    pr_res = gh_pr_create(
-        title=title,
-        body=body,
-        base=default_branch,
-        head=develop,
-        head_is_resolved=True,
-        tool_context=tool_context,
+    # GH-452 idempotent re-call: if this increment's release PR is already
+    # open (e.g. an earlier call opened it, then stopped short because
+    # approval - checked below, now AFTER the PR exists rather than before
+    # it - wasn't recorded yet), don't try to open a second one; `gh pr
+    # create` would just error "already exists". Reuses the same
+    # open-PR-for-this-increment lookup as release_pr_still_open above,
+    # this time also capturing the PR's own number/url so the
+    # approval-pending message below can point at it.
+    existing = _run(
+        ["gh", "pr", "list", "--base", default_branch, "--head", develop, "--state", "open", "--json", "number,url"],
+        cwd=repo_root, tool_context=tool_context,
     )
-    # Reflect PR-create failures honestly instead of always claiming "ok" -
-    # a caller (agent or the eval harness) that only checks this top-level
-    # status has no other way to notice e.g. `gh pr create` failing because
-    # `base` doesn't exist on the remote yet.
-    ok = pr_res.get("status") == "ok"
-    if ok:
-        # Bumping only on success mirrors retro_baseline: a failed PR
-        # creation shouldn't consume this increment's approval, and
-        # sprint_report_pending_release only clears once the release
-        # actually went out (see SPEC-ISSUE-0010).
-        if required_approval and release_approvals is not None:
-            state["release_approval_baseline"] = release_approvals
-        # GH-273: bumped unconditionally on success (not just when
-        # required_pre_release_audit() was true this time) - keeps the
-        # baseline consistent across an interaction-level change, so a
-        # stale audit from before this release can never satisfy the NEXT
-        # one's freshness check either.
-        state["release_audit_baseline"] = state.get("release_audit_run_count", 0)
-        state["sprint_report_pending_release"] = False
-        # SPEC-ISSUE-0070: once this sprint's release has actually gone out,
-        # its own Sprint Backlog PR record must stop satisfying
-        # sprint_backlog_pr_missing(state) for the current sprint_number -
-        # otherwise current_sprint_phase (helpers.py) has no path back to
-        # "Plan & Start Sprint" at all. sprint_number only ever advances
-        # inside start_sprint, and start_sprint is phase-gated to refuse
-        # running while the phase is still "Review, Retro & Release" - so a
-        # closed sprint whose backlog-PR record still reads as "current"
-        # pins that phase forever, with no natural way out except an agent
-        # proactively invoking the phase gate's own immediate-retry
-        # override (which a real eval run, 0.1.0-run73, showed happening
-        # inconsistently - 1 time in 4 opportunities, stalling sprint_number
-        # at 1-2 across what should have been 5 real sprints). Resetting
-        # this here, the same place sprint_report_pending_release already
-        # clears on release success, lets the very next start_sprint
-        # succeed on its first try instead.
-        state["sprint_backlog_pr_sprint"] = 0
-        # GH issue #397: this (and create_sprint_report's own baseline
-        # bumps) previously only ever landed in the live in-memory session
-        # state - neither function persisted it, unlike nearly every other
-        # state-mutating tool. A stale .hc/state.json left over from a
-        # mid-sprint save (e.g. advance_story_stage, after an earlier
-        # rejected create_sprint_report attempt) could then get reloaded by
-        # a later init_scrum_state() call - it runs unconditionally
-        # whenever the file exists, including at the start of every sprint
-        # - clobbering the correctly-cleared sprint_report_pending_release
-        # with a stale True/False mismatch and resurrecting a false
-        # sprint_report_step_active() condition (helpers.py) that locked
-        # Scrum Master out of every tool but transfer_to_agent, bouncing
-        # with Product Owner until the loop breaker tripped (0.1.0-run50).
-        if tool_context and getattr(tool_context, "state", None):
-            from .scrum import save_state_to_repo
-            save_state_to_repo(tool_context)
+    pr_number = None
+    pr_url = None
+    already_open = False
+    if existing.get("status") == "ok":
+        try:
+            existing_prs = json.loads(existing.get("stdout") or "[]")
+            if existing_prs:
+                already_open = True
+                pr_number = existing_prs[0].get("number")
+                pr_url = existing_prs[0].get("url")
+        except (ValueError, TypeError, IndexError, KeyError, AttributeError):
+            already_open = False
+
+    pr_res = None
+    if already_open:
+        ok = True
+    else:
+        # base/head are both already fully-resolved branch names (an eval run
+        # bakes its run id directly into GITHUB_REPO_BRANCH/GITHUB_DEVELOP_BRANCH
+        # rather than via _with_eval_branch_prefix - see _develop_branch_name) -
+        # head_is_resolved=True so gh_pr_create doesn't re-tag it.
+        pr_res = gh_pr_create(
+            title=title,
+            body=body,
+            base=default_branch,
+            head=develop,
+            head_is_resolved=True,
+            tool_context=tool_context,
+        )
+        # Reflect PR-create failures honestly instead of always claiming "ok" -
+        # a caller (agent or the eval harness) that only checks this top-level
+        # status has no other way to notice e.g. `gh pr create` failing because
+        # `base` doesn't exist on the remote yet.
+        ok = pr_res.get("status") == "ok"
+        if ok:
+            match = re.search(r"/pull/(\d+)", pr_res.get("stdout") or "")
+            if match:
+                pr_number = int(match.group(1))
+            pr_url = (pr_res.get("stdout") or "").strip() or pr_url
+
+    if not ok:
+        return {
+            "status": "error",
+            "fetch": fetch_res,
+            "pr": pr_res,
+        }
+
+    pr_ref = f"#{pr_number}" if pr_number else f"'{develop}' -> '{default_branch}'"
+
+    # GH-452/SPEC-ISSUE-0001: refuse to consider the release actually DONE
+    # until a fresh approval was recorded via record_human_approval since
+    # the last release PR - checked here, after the PR already exists, so
+    # there's something concrete for a human to have reviewed, rather than
+    # before it (see this function's own docstring above). Which approval
+    # type (if any) is required depends on INTERACTION_LEVEL (see
+    # docs/INTERACTION-LEVELS.md) - e.g. none at all at the CEO/EVAL
+    # levels, where a human doesn't review each release individually.
+    required_approval = required_pre_release_approval()
+    release_approvals = None
+    if required_approval:
+        release_approvals = sum(1 for a in state.get("human_approvals", []) if a.get("type") == required_approval)
+        if release_approvals <= state.get("release_approval_baseline", 0):
+            message = (
+                f"Release PR {pr_ref} is open ('{develop}' -> '{default_branch}') but not yet "
+                f"approved - this interaction level requires a fresh '{required_approval}' human "
+                "approval for this increment. Review the PR"
+                + (f" ({pr_url})" if pr_url else "")
+                + f" and call record_human_approval('{required_approval}', ...), then call "
+                "create_release_pr(...) again (it won't try to re-open the PR) to finish the "
+                "release - or just get the PR merged directly, which satisfies start_sprint's own "
+                "separate release_pr_still_open gate regardless (see docs/INTERACTION-LEVELS.md)."
+            )
+            from .notifications import record_blocking_interaction
+            record_blocking_interaction(
+                "approval",
+                f"Release PR {pr_ref} is waiting on a '{required_approval}' human approval.",
+                detail=message,
+                tool_context=tool_context,
+            )
+            return {
+                "status": "ok",
+                "released": False,
+                "fetch": fetch_res,
+                "pr": pr_res,
+                "pr_number": pr_number,
+                "pr_url": pr_url,
+                "message": message,
+            }
+
+    # Bumping only on success mirrors retro_baseline: a failed PR
+    # creation shouldn't consume this increment's approval, and
+    # sprint_report_pending_release only clears once the release is
+    # actually considered done - i.e. once BOTH the PR is open AND (if
+    # required) a fresh approval of it has been recorded (see SPEC-ISSUE-0010
+    # and this function's own docstring re: SPEC-ISSUE-0066).
+    if required_approval and release_approvals is not None:
+        state["release_approval_baseline"] = release_approvals
+    # GH-273: bumped unconditionally on success (not just when
+    # required_pre_release_audit() was true this time) - keeps the
+    # baseline consistent across an interaction-level change, so a
+    # stale audit from before this release can never satisfy the NEXT
+    # one's freshness check either.
+    state["release_audit_baseline"] = state.get("release_audit_run_count", 0)
+    state["sprint_report_pending_release"] = False
+    # SPEC-ISSUE-0070: once this sprint's release has actually gone out,
+    # its own Sprint Backlog PR record must stop satisfying
+    # sprint_backlog_pr_missing(state) for the current sprint_number -
+    # otherwise current_sprint_phase (helpers.py) has no path back to
+    # "Plan & Start Sprint" at all. sprint_number only ever advances
+    # inside start_sprint, and start_sprint is phase-gated to refuse
+    # running while the phase is still "Review, Retro & Release" - so a
+    # closed sprint whose backlog-PR record still reads as "current"
+    # pins that phase forever, with no natural way out except an agent
+    # proactively invoking the phase gate's own immediate-retry
+    # override (which a real eval run, 0.1.0-run73, showed happening
+    # inconsistently - 1 time in 4 opportunities, stalling sprint_number
+    # at 1-2 across what should have been 5 real sprints). Resetting
+    # this here, the same place sprint_report_pending_release already
+    # clears on release success, lets the very next start_sprint
+    # succeed on its first try instead.
+    state["sprint_backlog_pr_sprint"] = 0
+    # GH issue #397: this (and create_sprint_report's own baseline
+    # bumps) previously only ever landed in the live in-memory session
+    # state - neither function persisted it, unlike nearly every other
+    # state-mutating tool. A stale .hc/state.json left over from a
+    # mid-sprint save (e.g. advance_story_stage, after an earlier
+    # rejected create_sprint_report attempt) could then get reloaded by
+    # a later init_scrum_state() call - it runs unconditionally
+    # whenever the file exists, including at the start of every sprint
+    # - clobbering the correctly-cleared sprint_report_pending_release
+    # with a stale True/False mismatch and resurrecting a false
+    # sprint_report_step_active() condition (helpers.py) that locked
+    # Scrum Master out of every tool but transfer_to_agent, bouncing
+    # with Product Owner until the loop breaker tripped (0.1.0-run50).
+    if tool_context and getattr(tool_context, "state", None):
+        from .scrum import save_state_to_repo
+        save_state_to_repo(tool_context)
     result = {
-        "status": "ok" if ok else "error",
+        "status": "ok",
+        "released": True,
         "fetch": fetch_res,
         "pr": pr_res,
+        "pr_number": pr_number,
+        "pr_url": pr_url,
     }
     if changelog_warning:
         result["changelog_warning"] = changelog_warning

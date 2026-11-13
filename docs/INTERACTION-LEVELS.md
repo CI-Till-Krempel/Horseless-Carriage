@@ -33,15 +33,19 @@ Two tool-level gates already exist to stop the team from skipping human review e
 
 - `advance_story_stage(title_or_id, "Implemented")` - refuses unless a fresh approval was recorded
   for this sprint via `record_human_approval(approval_type, note)`.
-- `create_release_pr(...)` - refuses unless a fresh approval was recorded for this increment.
+- `create_release_pr(...)` - opens the release PR (develop -> main) unconditionally, then refuses to
+  consider the release done unless a fresh approval was recorded for this increment (GH-452: checked
+  AFTER the PR exists, not before it - a human has nothing concrete to review/approve before the real
+  diff, sprint report, and changelog are actually there). Re-calling it once that approval is recorded
+  is idempotent - it notices the PR is already open and doesn't try to re-create it.
 
 `INTERACTION_LEVEL` controls *which* `approval_type` (if any) each of these gates actually
 requires - see `_PRE_IMPLEMENTATION_APPROVAL_BY_LEVEL` / `_PRE_RELEASE_APPROVAL_BY_LEVEL` in
 `agents/scrum_team/helpers.py`:
 
-| Level | Before implementing (`advance_story_stage(..., "Implemented")`) | Before releasing (`create_release_pr`) |
+| Level | Before implementing (`advance_story_stage(..., "Implemented")`) | Before the release is done (`create_release_pr`) |
 |---|---|---|
-| Product | `record_human_approval("sprint", ...)` required | `record_human_approval("release", ...)` required |
+| Product | `record_human_approval("sprint", ...)` required | `record_human_approval("release", ...)` required (checked after the PR opens - see above) |
 | CEO | `record_human_approval("budget", ...)` required | none - the team releases on its own judgment |
 | EVAL | none | none |
 

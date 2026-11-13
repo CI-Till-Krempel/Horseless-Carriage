@@ -107,21 +107,15 @@ SPRINT REVIEW & RELEASE
   it mechanically refuses to run unless Scrum Master has logged at least one new `add_retro_action`
   or `add_impediment` since the last sprint report. If it's rejected with that message, it means
   Scrum Master's retrospective was skipped this sprint - go get it, don't retry blindly.
-- **MANDATORY**: Ensure Human Review is done for each increment, if the configured interaction level
-  (see docs/INTERACTION-LEVELS.md, `INTERACTION_LEVEL` env var) requires it - call
-  `record_human_approval("release", note)` once a human has actually reviewed it. `create_release_pr`
-  mechanically refuses to run without a fresh one recorded since the last release PR, UNLESS this
-  level requires no release approval (e.g. CEO, EVAL) - if it's rejected, its own error message names
-  the exact `approval_type` to call `record_human_approval` with; don't call it just to unblock the
-  gate without a real review having happened.
-- **MANDATORY, before this**: QA's whole-increment release audit (`run_release_audit`) must have run
-  fresh this sprint (at interaction levels with a human release-review step) - `create_release_pr`
-  mechanically refuses otherwise, naming the exact tool to call. You have `run_release_audit` yourself
-  too - call it directly if QA hasn't had a turn to by the time you reach this step (e.g. you're
-  already inside the budget-exhaustion grace allowance, see the Orchestrator's own workflow doc), don't
-  wait indefinitely for a hand-off. A real defect it finds (`blocking_defects`) must be fixed (and the
-  audit re-run) before `create_release_pr` will proceed, at every interaction level - this is not the
-  same gate as the human-approval one above and isn't satisfied by `record_human_approval`.
+- **MANDATORY, before calling `create_release_pr`**: QA's whole-increment release audit
+  (`run_release_audit`) must have run fresh this sprint (at interaction levels with a human
+  release-review step) - `create_release_pr` mechanically refuses otherwise, naming the exact tool to
+  call. You have `run_release_audit` yourself too - call it directly if QA hasn't had a turn to by the
+  time you reach this step (e.g. you're already inside the budget-exhaustion grace allowance, see the
+  Orchestrator's own workflow doc), don't wait indefinitely for a hand-off. A real defect it finds
+  (`blocking_defects`) must be fixed (and the audit re-run) before `create_release_pr` will proceed, at
+  every interaction level - this is not the same gate as the human-approval one below (which is
+  checked after the PR opens, see GH-452) and isn't satisfied by `record_human_approval`.
 - **GH-501, if this release's version isn't already proposed**: call `propose_version_bump(new_
   version)` with a SemVer `MAJOR.MINOR.PATCH-snapshot` string (e.g. `0.3.0-snapshot`) before calling
   `create_release_pr`. It mechanically refuses (hard block) a version that isn't the correct
@@ -135,8 +129,19 @@ SPRINT REVIEW & RELEASE
 - Create this sprint's `develop` -> `main` Pull Request (`create_release_pr`) - the GitFlow "sprint
   PR". By now every story merged into `develop` via its own feature-branch PR (see DevTeam/QA's own
   workflow docs' `start_feature_branch`/`merge_story_pr`), so this is the integration PR, not a fresh
-  diff to assemble yourself. Whether it merges immediately or waits for a human depends on the
-  active INTERACTION_LEVEL/eval mode (same approval gate as above) - you open it either way, you
+  diff to assemble yourself. `create_release_pr` always opens this PR - it's the thing a human
+  actually reviews, so there's nothing to gate before it exists (GH-452).
+- **MANDATORY**: Ensure Human Review is done for each increment, if the configured interaction level
+  (see docs/INTERACTION-LEVELS.md, `INTERACTION_LEVEL` env var) requires it - call
+  `record_human_approval("release", note)` once a human has actually reviewed the PR `create_release_pr`
+  just opened. `create_release_pr` mechanically refuses to consider the release DONE (it returns
+  `"released": false` and leaves the PR open, unmerged) without a fresh approval recorded since the
+  last release PR, UNLESS this level requires no release approval (e.g. CEO, EVAL) - if it's still
+  pending, its own message names the exact `approval_type` to call `record_human_approval` with, then
+  call `create_release_pr(...)` again (it won't try to re-open the PR) to finish. Don't call
+  `record_human_approval` just to unblock the gate without a real review having happened. Whether the
+  PR then merges immediately or waits for a human depends on the active INTERACTION_LEVEL/eval mode -
+  either way, you open it, you
   don't merge it yourself. This also generates and prepends this release's `CHANGELOG.md` entry
   automatically (from `sprint_backlog`) - you don't author changelog text yourself; a non-blocking
   `changelog_warning` on the result means generation failed and the release proceeded without it. If
