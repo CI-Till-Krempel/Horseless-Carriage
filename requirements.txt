@@ -1,7 +1,7 @@
 google-adk==2.4.0
-litellm==1.90.2
+litellm==1.109.0.dev1
 python-dotenv==1.2.2
-PyJWT==2.13.0
+PyJWT==2.15.0
 orjson==3.11.9
 pytest==9.1.1
 pytest-cov==7.1.0
@@ -27,7 +27,7 @@ bandit==1.9.4
 # do NOT install the "evaluation" extra (`google-cloud-aiplatform
 # [evaluation]`, e.g. via google-adk[eval]) - that extra's own
 # `litellm<1.86.0` pin is unresolvable against this file's own
-# litellm==1.90.2 (confirmed via `pip install`: ResolutionImpossible). The
+# litellm==1.109.0.dev1 (confirmed via `pip install`: ResolutionImpossible). The
 # bare package (no extras) provides the `vertexai` module without that
 # constraint. gepa/jinja2 (the other google-adk[eval] extra members) are
 # for GEPA prompt optimization, which nothing here uses - left out.
