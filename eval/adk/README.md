@@ -124,10 +124,11 @@ machines and runs, so it never depends on that shared, driftable config:
   dockerized db/litellm - only Ollama itself is native). Force either way
   regardless of platform with `--host-ollama` / `--docker-ollama`.
 - **`--ci`**: `eval/adk/litellm.ci.yaml`, every role pointed at the same
-  cheap Gemini model (`gemini-flash-lite-latest`) - `GOOGLE_API_KEY` is
-  injected as a GitHub Actions repository secret (the same one `eval.yml`
-  already uses - see `RELEASE.md`'s "Required secrets"). Runs against the
-  cloud `docker-compose.yaml` (no Ollama). Used by
+  cheap Claude model (`claude-haiku-4-5-20251001`) - `ANTHROPIC_API_KEY` is
+  injected as a secret on the `adk-eval` GitHub Environment (see
+  `RELEASE.md`'s "Required secrets" - configured separately from `eval.yml`'s
+  own `eval-approval` environment, even though both use the same secret
+  name). Runs against the cloud `docker-compose.yaml` (no Ollama). Used by
   `.github/workflows/adk-eval.yml` on every release tag.
 
 None of these three files are ever touched by `setup_llm.py`. All three

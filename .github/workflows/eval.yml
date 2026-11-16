@@ -58,7 +58,7 @@ jobs:
 
       - name: Write eval environment file
         env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
           EVAL_GITHUB_APP_ID: ${{ secrets.EVAL_GITHUB_APP_ID }}
           EVAL_GITHUB_APP_PRIVATE_KEY: ${{ secrets.EVAL_GITHUB_APP_PRIVATE_KEY }}
@@ -81,7 +81,12 @@ jobs:
           # idempotent if the secret was already stored with escaped \n.
           PRIVATE_KEY_SINGLE_LINE=$(printf '%s' "$EVAL_GITHUB_APP_PRIVATE_KEY" | sed ':a;N;$!ba;s/\n/\\n/g')
           {
-            echo "GOOGLE_API_KEY=$GOOGLE_API_KEY"
+            echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
+            # Points docker-compose.yaml's litellm service at the Anthropic
+            # provider template (config/model-templates/) instead of the
+            # root litellm.yaml (Gemini) it defaults to - see that file's
+            # LITELLM_CONFIG_PATH comment.
+            echo "LITELLM_CONFIG_PATH=./config/model-templates/litellm.cloud-anthropic.yaml"
             echo "LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY"
             # ScrumOrchestrator is deliberately never given a per-agent
             # virtual key (see run_eval.py's _SPECIALIST_AGENT_NAMES) - its
