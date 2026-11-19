@@ -453,11 +453,13 @@ of only being noticed anecdotally.
 
 ### Required secrets (you must configure these — I can't provision repo secrets)
 
-`eval.yml` needs, as GitHub Actions repository secrets:
-- `GOOGLE_API_KEY`, `LITELLM_MASTER_KEY` — same as local `.env`, for the LiteLLM
-  proxy the eval run stands up. `adk-eval.yml` (the smaller, cheap ADK gate-
-  enforcement eval set — see `eval/adk/README.md`'s "Reproducible model config")
-  reuses these same two secrets, no separate provisioning needed.
+`eval.yml` needs, as secrets on the `eval-approval` GitHub Environment:
+- `ANTHROPIC_API_KEY`, `LITELLM_MASTER_KEY` — same as local `.env`, for the LiteLLM
+  proxy the eval run stands up (config/model-templates/litellm.cloud-anthropic.yaml).
+  `adk-eval.yml` (the smaller, cheap ADK gate-enforcement eval set — see
+  `eval/adk/README.md`'s "Reproducible model config") needs the same two secrets
+  configured separately on its own `adk-eval` Environment — GitHub Environment
+  secrets aren't shared across environments, even within the same repo.
 - `EVAL_GITHUB_APP_ID`, `EVAL_GITHUB_APP_PRIVATE_KEY`, `EVAL_GITHUB_APP_INSTALLATION_ID`
   — a GitHub App installed on the eval repo (**not** necessarily the same App used
   for real target repos) with `Contents` + `Pull requests: Read & write`. The
@@ -469,11 +471,6 @@ of only being noticed anecdotally.
 
 ### Known limitations (found via real testing, not fixed here — out of scope)
 
-- `litellm.yaml`'s production model aliases (`scrum-po`, `scrum-dev`, etc.) all
-  point at `gemini-1.5-pro`, which 404s as a retired model against a live Gemini
-  API key today. `scrum-eval-cheap` was deliberately pointed at a model confirmed
-  working (`gemini-flash-lite-latest`) instead of reusing a production alias —
-  the production aliases need their own follow-up fix.
 - `create_litellm_virtual_key()` doesn't handle "key alias already exists"
   gracefully (a real LiteLLM 400 if the same agent name's key was already
   created in that LiteLLM database) — harmless for a fresh eval run's fresh `db`/

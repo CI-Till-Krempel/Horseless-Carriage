@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # requirements.txt (root) - google-adk, litellm, pytest, bandit, etc.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # agent.Dockerfile, net-proxy.Dockerfile, ollama.Dockerfile, test.Dockerfile
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # docker-compose.yaml, .local.yaml, .local-hostollama.yaml, .gpu.yaml, .eval.yml
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
