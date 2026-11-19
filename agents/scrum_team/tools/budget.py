@@ -776,10 +776,22 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
     upsert_issue - the same backlog pipeline a real Product Owner works
     from, so it's plannable/prioritizable, not a separate list nobody
     grooms. At the "Product" interaction level, priority is left for the
-    human Product Owner to set via their own backlog grooming; at every
-    other level (no human review step in that loop), it's auto-prioritized
-    "Must" so it can't be silently starved the way the reported failure
-    was.
+    human Product Owner to set via their own backlog grooming.
+
+    SPEC-ISSUE-0091: at every other level (no human review step in that
+    loop), the resulting Issue is auto-prioritized "Must" and moved to the
+    front of the one-story-at-a-time queue ONLY when the originating entry
+    was itself filed with `priority="high"` (add_retro_action/
+    add_impediment - see those docstrings) - a genuine blocker to the rest
+    of this sprint's work, not just a routine finding. A real eval run
+    (0.2.1-run94) showed every single retro-filed Issue doing this
+    regardless, forcing Product Owner to manually demote one back to
+    "Should" just to get create_sprint_backlog_pr unblocked
+    ("Demoting from Must to Should as it is an advisory retro finding/issue
+    rather than a blocker to the sprint functional roadmap.") - the default
+    `priority="normal"` now files a real, trackable Issue at "Should"
+    instead, so it sorts behind this sprint's already-planned "Must" work
+    without that manual fight.
 
     GH issue #342: only files entries categorized "technical" (see
     add_retro_action/add_impediment's own `category` param) - a
@@ -792,9 +804,10 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
 
     SPEC-ISSUE-0081: an entry flagged `recurs_since_sprint` (a confirmed
     restatement of an earlier sprint's still-unresolved "technical" finding
-    - see _technical_category_nudge) still gets filed and Must-prioritized
-    below, but does NOT get moved to the front of the queue - see the inline
-    comment at that call for why always doing so turned into a livelock.
+    - see _technical_category_nudge) that is also "high"-priority (blocking)
+    still gets filed and Must-prioritized below, but does NOT get moved to
+    the front of the queue - see the inline comment at that call for why
+    always doing so turned into a livelock.
     """
     from .requirements import upsert_issue, set_priority, _move_item_to_front_of_remaining_work
 
@@ -819,7 +832,15 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
             entry["issue_id"] = issue_id
             filed_ids.append(issue_id)
             if get_interaction_level() != "Product":
-                set_priority(issue_id, "Must", tool_context=tool_context)
+                # SPEC-ISSUE-0091: only a finding the caller flagged as a
+                # genuine blocker (priority="high" on the retro_action/
+                # impediment entry itself) earns "Must" + the front-of-queue
+                # jump below - everything else (the common case) files as a
+                # real, trackable Issue at "Should", which sorts behind
+                # already-queued "Must" stories on its own (_resort_backlog_
+                # by_priority) with no further intervention needed.
+                is_blocking = entry.get("priority") == "high"
+                set_priority(issue_id, "Must" if is_blocking else "Should", tool_context=tool_context)
                 # SPEC-ISSUE-0076: set_priority's own resort is stable, so a
                 # brand-new Must Issue appended after already-queued Must
                 # stories would otherwise stay behind them forever - move it
@@ -846,7 +867,7 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
                 # it just no longer gets to cut in front of the real backlog
                 # work it keeps recurring about - stable-sort ordering alone
                 # (set_priority above) is enough for that.
-                if entry.get("recurs_since_sprint") is None:
+                if is_blocking and entry.get("recurs_since_sprint") is None:
                     _move_item_to_front_of_remaining_work(tool_context.state, issue_id)
         tool_context.state[collection_name] = collection
     return filed_ids
