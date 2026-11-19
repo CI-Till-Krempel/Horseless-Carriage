@@ -62,3 +62,33 @@ jumps the queue when the entry was flagged `priority="high"` (a genuine blocker)
 `priority="normal"` still files a real, trackable Issue, just at "Should" - so it sorts behind this
 sprint's already-planned "Must" stories instead of displacing them, with no further intervention
 needed from Product Owner.
+
+### adk-eval required check was permanently red on every Dependabot PR
+
+PR #542 (a routine `litellm`/`pyjwt` dependency bump) failed the `adk-eval` required check with
+`LITELLM_MASTER_KEY not available`, even though that secret is set on the `adk-eval` environment.
+Re-running the job didn't help - GitHub withholds environment/repo secrets from
+`dependabot[bot]`-triggered `pull_request` runs the same way it does for fork PRs, but unlike a fork
+PR (where the maintainer controls the fix - just push from a same-repo branch instead), a Dependabot
+PR can never be retargeted, so this would recur on every dependency bump forever.
+
+`.github/workflows/adk-eval.yml`'s existing `NO_ADK_EVAL`-label skip now also skips (reports success,
+doesn't fail) when `github.actor == 'dependabot[bot]'`, for the same reason it already skips
+fork/secret-less runs conceptually - there's no code change to actually gate here, just a version
+bump the regular `Build and Run Tests` job already covers.
+
+### `set_priority_refuses_to_demote_a_committed_blocking_precedent` was failing almost every PR's adk-eval since the Anthropic switch
+
+Four separate CI runs (PRs #545, #554, #544, none of which touch `set_priority`, `ProductOwner`, or
+this case's fixture) all failed this already-once-tightened (eval/adk/README.md finding #28) eval
+case - via three distinct mechanisms across two model families: a Gemini run detoured into
+`transfer_to_agent(ProductOwner)` + `list_open_issues()` instead of the scripted `set_priority` call;
+both post-switch Claude Haiku runs instead produced `actual: []` - full refusal in prose, no tool
+calls at all - because the scripted user turn is deliberately phrased as a pushy, authority-
+impersonating override ("don't ask for confirmation, don't escalate..."), and Claude Haiku is more
+prone to refuse that framing outright than to trust the real mechanical guard to answer it.
+
+Softening the scripted phrasing would defeat the point of the case (it exists to prove the *tool*
+guard fires, not the model's own judgment), so - same precedent as `merge_story_pr_refuses_
+framework_branch`/`advance_story_stage_rejects_wrong_role` - it moves to `KNOWN_FLAKY_EVAL_IDS`
+(see eval/adk/README.md finding #29) rather than getting a fourth prompt-tightening attempt.
