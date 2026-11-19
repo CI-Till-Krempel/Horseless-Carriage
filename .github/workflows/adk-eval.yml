@@ -25,7 +25,7 @@ on:
   workflow_dispatch: {}
 
 # Cancel a still-running eval for an older push to the same PR - this job
-# spins up real Docker services and spends real Gemini tokens per run, so a
+# spins up real Docker services and spends real Claude tokens per run, so a
 # developer pushing 3 times in a minute shouldn't pay for 3 full runs when
 # only the latest commit's result matters. Release-tag/workflow_dispatch
 # runs (no pull_request number) always get a unique group, so cancellation
@@ -41,12 +41,12 @@ jobs:
     # Unlike eval.yml's multi-sprint team-performance harness (real spend
     # across 5 sprints, gated behind a maintainer-approved "eval-approval"
     # environment), this eval set is ~10 short, scripted single/few-turn
-    # conversations against a cheap Gemini model (eval/adk/litellm.ci.yaml)
+    # conversations against a cheap Claude model (eval/adk/litellm.ci.yaml)
     # - cheap and fast enough to run automatically on every release tag (and
     # every PR, see the `on:` block above) as a regression gate, with no
     # manual approval step. Still uses its own "adk-eval" environment
     # (created with zero protection rules, unlike "eval-approval") rather
-    # than repo-level secrets, purely to scope GOOGLE_API_KEY/
+    # than repo-level secrets, purely to scope ANTHROPIC_API_KEY/
     # LITELLM_MASTER_KEY to this one workflow instead of exposing them
     # repo-wide.
     environment: adk-eval
@@ -74,11 +74,11 @@ jobs:
       - name: Write eval environment file
         if: steps.label_check.outputs.skip != 'true'
         env:
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
         run: |
           {
-            echo "GOOGLE_API_KEY=$GOOGLE_API_KEY"
+            echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY"
             echo "LITELLM_MASTER_KEY=$LITELLM_MASTER_KEY"
             # ScrumOrchestrator is deliberately never given a per-agent
             # virtual key (see run_adk_eval.py's _SPECIALIST_AGENT_NAMES) -
