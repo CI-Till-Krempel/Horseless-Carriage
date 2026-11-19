@@ -34,3 +34,17 @@ sitting in `specs/requirements/` side by side by sprint 3, byte-identical titles
 
 Filed as SPEC-ISSUE-0090 (Ready, not yet implemented) - the fix is to only generate a new ID for
 `upsert_backlog_item` once no existing item matches by title, never unconditionally up front.
+
+### adk-eval required check was permanently red on every Dependabot PR
+
+PR #542 (a routine `litellm`/`pyjwt` dependency bump) failed the `adk-eval` required check with
+`LITELLM_MASTER_KEY not available`, even though that secret is set on the `adk-eval` environment.
+Re-running the job didn't help - GitHub withholds environment/repo secrets from
+`dependabot[bot]`-triggered `pull_request` runs the same way it does for fork PRs, but unlike a fork
+PR (where the maintainer controls the fix - just push from a same-repo branch instead), a Dependabot
+PR can never be retargeted, so this would recur on every dependency bump forever.
+
+`.github/workflows/adk-eval.yml`'s existing `NO_ADK_EVAL`-label skip now also skips (reports success,
+doesn't fail) when `github.actor == 'dependabot[bot]'`, for the same reason it already skips
+fork/secret-less runs conceptually - there's no code change to actually gate here, just a version
+bump the regular `Build and Run Tests` job already covers.
