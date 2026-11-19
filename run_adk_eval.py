@@ -201,6 +201,15 @@ KNOWN_FLAKY_EVAL_IDS = {
     # no tool calls at all) - irreducible live-model variance, not a
     # fixture/prompt gap.
     "set_priority_refuses_to_demote_a_committed_blocking_precedent",
+    # eval/adk/README.md finding #30: the same "detour into a status/state
+    # check instead of the scripted action" class finding #15 already
+    # diagnosed and prompt-fixed for this case, recurring yet again across
+    # three more CI runs - a different detour call sequence each time
+    # (full refusal with no tool calls; load_state_from_repo() alone;
+    # repo_status() + load_state_from_repo()) - under Claude Haiku. Same
+    # "already fixed once, still flakes a new way" pattern as the other
+    # entries here.
+    "git_push_allows_feature_branch",
 }
 
 LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"

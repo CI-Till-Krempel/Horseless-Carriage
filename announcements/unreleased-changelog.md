@@ -66,3 +66,13 @@ Softening the scripted phrasing would defeat the point of the case (it exists to
 guard fires, not the model's own judgment), so - same precedent as `merge_story_pr_refuses_
 framework_branch`/`advance_story_stage_rejects_wrong_role` - it moves to `KNOWN_FLAKY_EVAL_IDS`
 (see eval/adk/README.md finding #29) rather than getting a fourth prompt-tightening attempt.
+
+### `git_push_allows_feature_branch` kept recurring via the same status-check detour already diagnosed once
+
+With `set_priority`'s case excluded (above), `git_push_allows_feature_branch` became the next
+dominant adk-eval failure: three more CI runs (PRs #554, #544, #545) all failed it, each via a
+different exact call sequence (full refusal with no tool calls; `load_state_from_repo()` alone;
+`repo_status()` + `load_state_from_repo()`) but the same root class eval/adk/README.md finding #15
+already diagnosed and prompt-fixed once - the model checking status/state proactively instead of the
+scripted action directly. Moved to `KNOWN_FLAKY_EVAL_IDS` (finding #30) rather than chasing each new
+exact call the model happens to reach for next.
