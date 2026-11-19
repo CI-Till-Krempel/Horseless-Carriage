@@ -1350,6 +1350,26 @@ getting a fourth prompt-tightening attempt; promote back out only if a run
 of consecutive clean CI passes ever confirms this has actually stabilized
 under the current model.
 
+**30. `git_push_allows_feature_branch` kept recurring via the same
+"status-check detour" class finding #15 already diagnosed and fixed, now
+under Claude Haiku - moved to `KNOWN_FLAKY_EVAL_IDS`.** Three more CI runs
+(PRs #554, #544, #545, none of which touch `git_push`/`start_feature_branch`
+or this case's fixture) failed this case again, each via a different exact
+call sequence but the same root class as finding #15 ("the model checks
+status/state proactively instead of the scripted action directly"): full
+refusal with no tool calls at all, `load_state_from_repo()` alone, and
+`repo_status()` + `load_state_from_repo()`. Finding #15's prompt fix (state
+the repo/sprint is already fully configured, skip `repo_status`/
+`init_scrum_state`/`list_docs`) evidently still leaves `load_state_from_repo`
+itself as an available, plausible-looking "let me check the current state
+first" move the live model reaches for under this fixture - fixing that
+specific gap only chases whichever exact call the model happens to pick
+next, the same whack-a-mole already called out for
+`set_priority_refuses_to_demote_a_committed_blocking_precedent` (finding
+#29) above. Moved here instead of a further prompt-tightening attempt;
+promote back out only if a run of consecutive clean CI passes confirms this
+has actually stabilized.
+
 ## Removed: `sub_agent_blocked_without_budget_capped_virtual_key`
 
 This case asserted the "no budget-capped LiteLLM key yet" refusal
