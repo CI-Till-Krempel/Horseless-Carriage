@@ -949,18 +949,34 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
     backlog: List[Dict[str, Any]] = list(s.get("product_backlog", []))
     item_id = item.get("id")
     title = item.get("title")
-    
-    # If ID is missing or is a placeholder, generate a new one
+
     item_type = item.get("type", "User Story")
     prefix = _ID_PREFIXES.get(item_type, "US")
     placeholder = f"{prefix}-XXXX"
-    
-    if not item_id or item_id == placeholder:
-        item_id = _generate_next_id(prefix, tool_context)
-        item["id"] = item_id
+    # Treat a missing/placeholder id as "no id supplied" rather than
+    # generating a fresh one immediately. SPEC-ISSUE-0090: generating it
+    # this early, before matches() below ever runs, let the fresh (wrong)
+    # id silently overwrite a title-matched existing item's (correct) one
+    # in the merge further down, renaming the same logical item's id on
+    # every call that omits 'id' - which callers do by design (e.g.
+    # run_release_audit's upsert_issue) to rely entirely on title-match
+    # dedup to update the same Issue each release instead of filing a
+    # duplicate.
+    item_id = item_id if (item_id and item_id != placeholder) else None
 
     if not item_id and not title:
         return {"status": "error", "message": "Backlog item needs at least 'id' or 'title'."}
+
+    def matches(x: Dict[str, Any]) -> bool:
+        return (item_id and x.get("id") == item_id) or (title and x.get("title") == title)
+
+    # Only ever generate a fresh id once we know no existing item matches
+    # by id/title - a genuine title match keeps that item's own id; a new
+    # id is generated only for a genuinely new item. See the comment above.
+    if item_id is None:
+        existing_match = next((x for x in backlog if matches(x)), None)
+        item_id = existing_match.get("id") if existing_match else _generate_next_id(prefix, tool_context)
+    item["id"] = item_id
 
     # GH issue #343: validate depends_on before it's ever saved - a cycle
     # (direct self-reference, or transitive: A depends on B depends on A)
@@ -983,9 +999,6 @@ def upsert_backlog_item(item: Dict[str, Any], tool_context=None) -> Dict[str, An
                     "item's own depends_on list is wrong."
                 ),
             }
-
-    def matches(x: Dict[str, Any]) -> bool:
-        return (item_id and x.get("id") == item_id) or (title and x.get("title") == title)
 
     # SPEC-ISSUE-0008: warn (don't block - a naive check would false-positive on
     # legitimately similar titles) when this title is a near-exact match of

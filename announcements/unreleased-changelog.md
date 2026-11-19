@@ -32,8 +32,10 @@ makes `_update_story_markdown` write a new `specs/requirements/<new-id>-...md` f
 the old one. `transcript.md` confirms both `SPEC-ISSUE-0001-...md` and `SPEC-ISSUE-0003-...md`
 sitting in `specs/requirements/` side by side by sprint 3, byte-identical titles.
 
-Filed as SPEC-ISSUE-0090 (Ready, not yet implemented) - the fix is to only generate a new ID for
-`upsert_backlog_item` once no existing item matches by title, never unconditionally up front.
+Filed as SPEC-ISSUE-0090 and fixed in a follow-up change: `upsert_backlog_item` now only generates a
+new ID once it's confirmed no existing item matches by title - an explicit `id` is still always
+honored, and a genuine title match keeps that item's own existing `id` instead of a freshly
+generated one overwriting it in the merge.
 
 ### adk-eval required check was permanently red on every Dependabot PR
 

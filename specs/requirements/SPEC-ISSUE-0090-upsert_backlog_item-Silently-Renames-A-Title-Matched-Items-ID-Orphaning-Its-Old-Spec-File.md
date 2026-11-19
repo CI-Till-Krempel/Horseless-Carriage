@@ -2,10 +2,10 @@
 
 - Issue ID: SPEC-ISSUE-0090
 - Title: `upsert_backlog_item` Silently Renames A Title-Matched Item's ID, Orphaning Its Old Spec File
-- Status: Ready
+- Status: Done
 - Priority: Should
 - Owner: Architect
-- Last Updated: 2026-11-13
+- Last Updated: 2026-11-19
 
 ## Overview
 A real eval run (0.2.1-run94) stalled hard: `report.md` scored Team Efficiency 1/5 ("severe process
