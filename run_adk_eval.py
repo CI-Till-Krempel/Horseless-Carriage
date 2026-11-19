@@ -194,6 +194,13 @@ KNOWN_FLAKY_EVAL_IDS = {
     # (finding #20) - irreducible live-model variance, not a fixture/prompt
     # gap left to find.
     "advance_story_stage_rejects_tested_with_unacknowledged_content_loss",
+    # eval/adk/README.md finding #29: already tightened once (finding #28)
+    # to stop an exact-arg trajectory mismatch, but kept failing a different
+    # way each time across three more CI runs spanning both Gemini (a
+    # detour into the wrong tool) and Claude Haiku (refusing outright with
+    # no tool calls at all) - irreducible live-model variance, not a
+    # fixture/prompt gap.
+    "set_priority_refuses_to_demote_a_committed_blocking_precedent",
 }
 
 LITELLM_KEY_GENERATE_URL = "http://localhost:4000/key/generate"
