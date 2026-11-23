@@ -272,6 +272,43 @@ class TestScrumTools(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("category", result["message"])
 
+    def test_add_impediment_persists_priority_on_the_entry(self):
+        """
+        Acceptance Criteria (SPEC-ISSUE-0091): priority must survive onto
+        the stored impediment_log entry, not just be used transiently for
+        category="human" escalation - _file_retro_items_as_issues (tools/
+        budget.py) reads it later, often in a different sprint, to decide
+        whether a category="technical" finding is a genuine blocker.
+        """
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        add_impediment("A real concrete impediment", "ScrumMaster", category="technical", tool_context=tool_context)
+        self.assertEqual(tool_context.state["impediment_log"][0]["priority"], "normal")
+
+        tool_context2 = MagicMock()
+        tool_context2.state = ScrumState().model_dump()
+        add_impediment(
+            "The build is broken for everyone", "ScrumMaster", category="technical", priority="high",
+            tool_context=tool_context2,
+        )
+        self.assertEqual(tool_context2.state["impediment_log"][0]["priority"], "high")
+
+    def test_add_retro_action_persists_priority_on_the_entry(self):
+        """Mirrors test_add_impediment_persists_priority_on_the_entry above
+        for add_retro_action's own entry (SPEC-ISSUE-0091)."""
+        tool_context = MagicMock()
+        tool_context.state = ScrumState().model_dump()
+        add_retro_action("Improve testing", "ScrumMaster", "CI passes", category="technical", tool_context=tool_context)
+        self.assertEqual(tool_context.state["retro_actions"][0]["priority"], "normal")
+
+        tool_context2 = MagicMock()
+        tool_context2.state = ScrumState().model_dump()
+        add_retro_action(
+            "The build is broken for everyone", "ScrumMaster", "CI passes", category="technical", priority="high",
+            tool_context=tool_context2,
+        )
+        self.assertEqual(tool_context2.state["retro_actions"][0]["priority"], "high")
+
     def test_add_retro_action_rejects_unknown_priority(self):
         tool_context = MagicMock()
         tool_context.state = ScrumState().model_dump()
