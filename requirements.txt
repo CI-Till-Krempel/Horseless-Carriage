@@ -1,6 +1,6 @@
 google-adk==2.15.0
 litellm==1.90.2
-python-dotenv==1.2.2
+python-dotenv==1.2.4
 PyJWT==2.13.0
 orjson==3.11.9
 pytest==9.1.1
