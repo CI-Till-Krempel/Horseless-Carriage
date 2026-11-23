@@ -1,4 +1,4 @@
-google-adk==2.4.0
+google-adk==2.15.0
 litellm==1.90.2
 python-dotenv==1.2.2
 PyJWT==2.13.0
