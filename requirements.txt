@@ -1,9 +1,9 @@
-google-adk==2.4.0
+google-adk==2.15.0
 litellm==1.90.2
-python-dotenv==1.2.2
+python-dotenv==1.2.4
 PyJWT==2.13.0
-orjson==3.11.9
-pytest==9.1.1
+orjson==3.13.0
+pytest==9.2.0
 pytest-cov==7.1.0
 radon==6.0.1
 bandit==1.9.4
