@@ -2180,6 +2180,41 @@ class TestUpsertBacklogItemGuards(unittest.TestCase):
         result = upsert_backlog_item({"id": "US-0050", "title": "A real story"}, tool_context=tc)
         self.assertNotIn("filed_sprint", result["item"])
 
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_omitting_id_on_a_title_match_keeps_the_existing_items_id(self, mock_save, mock_md):
+        """SPEC-ISSUE-0090: upsert_backlog_item used to generate a fresh id
+        before ever checking for a title match, letting the merge below
+        silently overwrite a title-matched existing item's real id with
+        that fresh one - renaming the same logical Issue's id on every
+        call that omits 'id' by design (e.g. run_release_audit's
+        upsert_issue, which relies entirely on title-match dedup to
+        update the same Issue each release instead of filing a
+        duplicate)."""
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        title = "Release audit: security scan findings need triage"
+        first = upsert_backlog_item({"title": title, "type": "Issue"}, tool_context=tc)
+        first_id = first["item"]["id"]
+        second = upsert_backlog_item({"title": title, "type": "Issue", "overview": "Updated findings"}, tool_context=tc)
+        self.assertEqual(second["item"]["id"], first_id)
+        self.assertEqual(len(tc.state["product_backlog"]), 1)
+
+    @patch("agents.scrum_team.tools.requirements._update_story_markdown", return_value={"status": "ok"})
+    @patch("agents.scrum_team.tools.scrum.save_state_to_repo", return_value={"status": "ok"})
+    def test_omitting_id_with_no_title_match_still_generates_a_fresh_one(self, mock_save, mock_md):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_backlog_item({"title": "A brand-new story"}, tool_context=tc)
+        self.assertEqual(result["status"], "ok")
+        self.assertTrue(result["item"]["id"].startswith("US-"))
+
+    def test_missing_both_id_and_title_is_rejected(self):
+        tc = MagicMock()
+        tc.state = ScrumState().model_dump()
+        result = upsert_backlog_item({"type": "Issue"}, tool_context=tc)
+        self.assertEqual(result["status"], "error")
+
 
 class TestUpsertStoryEpicIssueCoerceJsonStringArg(unittest.TestCase):
     """
