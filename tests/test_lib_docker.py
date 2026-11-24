@@ -327,7 +327,7 @@ class TestEnsureDevPortsAvailable:
         (tmp_path / ".env").write_text("LITELLM_HOST_PORT='4000'\nAGENT_WEB_HOST_PORT='8000'\n")
         monkeypatch.setattr(lib_docker, "compose_running_services", lambda compose_args, cwd=None: [])
         monkeypatch.setattr(lib_docker, "is_port_free", lambda port: port != 4000)
-        monkeypatch.setattr(lib_docker, "find_free_port", lambda preferred, max_attempts=50: 4001)
+        monkeypatch.setattr(lib_docker, "find_free_port", lambda preferred, max_attempts=50, exclude=None: 4001)
 
         changes = lib_docker.ensure_dev_ports_available(tmp_path, [])
 
@@ -352,7 +352,7 @@ class TestEnsureDevPortsAvailable:
         (tmp_path / ".env").write_text("LITELLM_HOST_PORT='4000'\n")
         monkeypatch.setattr(lib_docker, "compose_running_services", lambda compose_args, cwd=None: [])
         monkeypatch.setattr(lib_docker, "is_port_free", lambda port: False)
-        monkeypatch.setattr(lib_docker, "find_free_port", lambda preferred, max_attempts=50: None)
+        monkeypatch.setattr(lib_docker, "find_free_port", lambda preferred, max_attempts=50, exclude=None: None)
 
         assert lib_docker.ensure_dev_ports_available(tmp_path, []) == []
         assert lib_env.read_env_var(tmp_path / ".env", "LITELLM_HOST_PORT") == "4000"

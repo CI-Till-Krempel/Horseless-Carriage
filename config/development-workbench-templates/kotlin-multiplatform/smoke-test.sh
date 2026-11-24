@@ -20,7 +20,7 @@
 #   config/development-workbench-templates/kotlin-multiplatform/smoke-test.sh
 #
 # What it does: builds a throwaway image using this template's own
-# workbench-setup.sh (installing JDK 17 + the Android SDK command-line
+# workbench-setup.sh (installing JDK 21 + the Android SDK command-line
 # tools, exactly as agent.Dockerfile's COPY+RUN does for a real project),
 # scaffolds a minimal Gradle/Kotlin Android library module inside it, and
 # runs its Android unit test task - proving the Android side of the

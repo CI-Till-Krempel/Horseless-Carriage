@@ -39,6 +39,27 @@ the sprint it was applied during and can never mask a later, real `.env` fix. Th
 audited: it appends a `budget_override` entry to `blocking_interactions` with the operator's given
 reason. See [docs/BUDGET.md](../docs/BUDGET.md) "Recovering From A Stuck Budget Halt".
 
+### doctor.py now repairs host ports shared by registered projects, and flags workbench scripts needing OpenJDK < 21 (SPEC-ISSUE-0093)
+
+`python3 run.py` failed for a real project with
+`E: Unable to locate package openjdk-17-jdk` at the workbench step of the agent image build, right
+after two `port ... reassigned` notes that made it look like a port problem. The actual cause:
+`python:3.11-slim` now resolves to Debian trixie, which dropped OpenJDK 17, and the project's
+Architect-authored `.hc/workbench-setup.sh` (as well as our own `kotlin-multiplatform` and
+`react-vite-firebase` reference templates) still installed it. `doctor.py` now raises an error for
+any `openjdk-<N>` with `N < 21` in `.hc/workbench-setup.sh` and names the replacement package, and
+both templates install `openjdk-21-*`.
+
+Investigating it exposed a real port gap too: every port guard (`new_project.py`,
+`ensure_dev_ports_available`) only checked whether a port was bound *right now*, so a stopped
+registered project's ports looked free and could be handed to another project. `doctor.py` now scans
+every project in `~/.horseless-carriage/projects.json` plus its own checkout, and reassigns
+duplicates to free, unclaimed ports (`lib_docker.repair_registered_port_conflicts`; a project with
+a running stack keeps its port; `--dry-run` only warns). Startup and install-time assignment now also
+skip ports other registered projects claim. Host tests now always run against a tmp registry
+(autouse fixture in `tests/conftest.py`), so they can never rewrite a developer's real project
+`.env` files.
+
 ### Every release audit silently renamed the same security-scan Issue's ID, orphaning its old spec file each time (0.2.1-run94, SPEC-ISSUE-0090)
 
 A real eval run (0.2.1-run94) scored Team Efficiency 1/5: five sprints, only two stories delivered,

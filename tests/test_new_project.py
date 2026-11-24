@@ -63,7 +63,7 @@ class TestConfigureForTargetProject:
              patch.object(lib_docker, "find_free_port", return_value=4001) as mock_find:
             new_project._configure_for_target_project(repo_root, target_repo)
 
-        mock_find.assert_any_call(4001)
+        mock_find.assert_any_call(4001, exclude=set())
         import lib_env
         assert lib_env.read_env_var(repo_root / ".env", "LITELLM_HOST_PORT") == "4001"
 

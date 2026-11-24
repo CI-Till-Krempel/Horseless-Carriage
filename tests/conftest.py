@@ -77,3 +77,18 @@ def mock_proxy():
     finally:
         server.shutdown()
         thread.join(timeout=5)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_project_registry(tmp_path_factory, monkeypatch):
+    """Never let a host-side test read or write the developer's real
+    ~/.horseless-carriage/projects.json. doctor.check() now scans every
+    registered project's .env for duplicate host ports and auto-repairs them
+    (lib_docker.repair_registered_port_conflicts) - against the real registry
+    that would rewrite real projects' LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT.
+    Tests that need registry content register into this tmp location."""
+    import project_registry
+    monkeypatch.setattr(
+        project_registry, "REGISTRY_PATH",
+        tmp_path_factory.mktemp("hc-registry") / "projects.json",
+    )
