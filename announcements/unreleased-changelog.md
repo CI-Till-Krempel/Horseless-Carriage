@@ -13,6 +13,31 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### `reset_budget.py`: a supported way to unstick a sprint halted on its budget (SPEC-ISSUE-0096)
+
+A user reported that the docs never say how to actually reset or override the budget when a project
+is stuck. The only guidance was the halt text, *"raise SPRINT_TOKEN_BUDGET in .env and restart"*.
+That fixes the **limit**, but this sprint's accumulated **usage** (`token_usage`) is only ever cleared
+by `start_sprint`, which isn't reachable mid-sprint. Usage is also stored twice: in
+`.hc/state.json`, and in the ADK sqlite session store (`sessions/adk_sessions.db`). A resumed
+session's copy silently overwrites a hand-edited `state.json` on its next save. On a real installation,
+the two stores showed sprint 0 / 0 tokens and sprint 4 / 840,665 tokens respectively. The USD ceiling
+likewise had a second copy in LiteLLM's `scrum-sprint-budget`, which is only re-synced when a role's
+key is created.
+
+New host script `reset_budget.py` (stdlib only):
+
+- Read-only status by default.
+- `--reset-usage` clears the same budget keys `start_sprint` clears, in both stores, and commits a
+  local checkpoint in the state repo.
+- `--token-budget N` / `--usd-budget X` raise the limits in `.env`, in state and in LiteLLM.
+- Asks before changing anything, and refuses while the agent is running.
+- Never resets recorded USD spend.
+
+A test pins its reset keys to `sprint_budget_reset_state_delta()` so the two can't drift (the
+SPEC-ISSUE-0049 failure mode). The procedure, including the manual equivalent and the LiteLLM API
+call, is in [docs/BUDGET.md § 3](../docs/BUDGET.md#3-recovering-a-sprint-stuck-on-its-budget).
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

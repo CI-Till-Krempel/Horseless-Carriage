@@ -148,6 +148,75 @@ there are two ways to recover:
   `--user-id` to target a specific one (e.g. if more than one session exists in
   `sessions/adk_sessions.db`).
 
+## 3. Recovering a sprint stuck on its budget
+
+When a budget trips, every non-grace agent gets `🚫 [TOKEN BUDGET EXCEEDED]` or `🚫 [USD BUDGET
+EXCEEDED]`. Scrum Master's ritual budget and Product Owner's close-out grace normally let the sprint
+close out on its own: that produces the report and release PR, and the next `start_sprint` resets the
+token budget. You only need to step in when you want **this** sprint to keep working, or when close-out
+itself is stuck.
+
+Two different things can be "stuck", and they need different fixes:
+
+| Situation | What actually blocks | Fix |
+|---|---|---|
+| The per-sprint **limit** is too small | `SPRINT_TOKEN_BUDGET` | Raise it in `.env`, then restart. `sync_budgets_from_env` (`agents/scrum_team/tools/scrum.py`) copies it into `budgets.total` on every turn, so a restart is enough. |
+| The limit is fine, but this sprint's **usage** is used up | `token_usage.total` in state | Reset the usage counters. Only `start_sprint` does this automatically, and it isn't reachable mid-sprint. |
+| The whole-engagement **USD ceiling** is reached | `TOTAL_USD_BUDGET` + LiteLLM's `scrum-sprint-budget` | Raise the ceiling in `.env` **and** in LiteLLM. The LiteLLM side is only re-synced when a role's key is created. |
+
+`reset_budget.py` does all three on the host, with no container or Python dependencies needed:
+
+```bash
+python3 reset_budget.py                          # read-only: limits, usage, open budget halts
+docker compose stop agent                        # add your usual -f/-p flags; the script prints the exact command
+python3 reset_budget.py --reset-usage            # same sprint, fresh token allowance
+python3 reset_budget.py --token-budget 8000000   # raise SPRINT_TOKEN_BUDGET
+python3 reset_budget.py --usd-budget 25          # raise TOTAL_USD_BUDGET + LiteLLM's scrum-sprint-budget
+python3 run.py                                   # restart; `docker compose up` picks up the .env change
+```
+
+The flags can be combined. Each mutating run shows what it will change and asks first (`--yes` skips
+the prompt). It refuses while the agent container is running (`--force` overrides that).
+
+**Why a script and not just a JSON edit:** usage is persisted in **two** places, and both have to agree:
+
+- `<STATE_REPO_PATH>/.hc/state.json` is loaded on a **new** session's first turn.
+- `sessions/adk_sessions.db` (ADK's sqlite session store) holds a **resumed** session's own copy. That
+  copy overwrites `state.json` again on its next save, so editing only `state.json` doesn't stick.
+
+`--reset-usage` clears the same budget keys `start_sprint`'s own reset clears
+(`sprint_budget_reset_state_delta`, `agents/scrum_team/tools/budget.py`): `token_usage`,
+`budget_exhaustion_synced`, `critical_halt_notified` and `_budget_warning_pct_fired`. It also marks the
+stale `[TOKEN BUDGET EXCEEDED]` blocking interactions resolved (they're kept as history). It does this
+in `state.json`, committed as a local checkpoint in the state repo so `git revert` undoes it, and in
+the most recent ADK session. Use `--session-id ID` or `--all-sessions` to target other sessions.
+Sprint progress (backlog, stages, reports) is untouched.
+
+What it deliberately does **not** do:
+
+- **Reset LiteLLM's recorded USD spend.** `TOTAL_USD_BUDGET` is a whole-engagement ceiling. Spending
+  more is an explicit decision to raise the ceiling, not to erase what was already spent.
+- **Change any guardrail or default in code.** It only acts on an explicit human command, with the same
+  knobs this page already documents.
+
+### Doing it by hand
+
+If you can't run the script, the equivalent manual steps are:
+
+1. Stop the agent container.
+2. Edit `SPRINT_TOKEN_BUDGET` / `TOTAL_USD_BUDGET` in `.env`.
+3. For a usage reset, set `"token_usage": {"total": 0, "agents": {}}` in `.hc/state.json`, then start a
+   **new** session instead of resuming the old one. A new ADK web UI tab does this by default. In CLI
+   mode, use a new `SESSION_ID` or move `sessions/<SESSION_ID>.session.json` aside.
+4. For a higher USD ceiling, also raise `scrum-sprint-budget` in the LiteLLM UI
+   (`http://localhost:4000/ui`), or call its API directly:
+   ```bash
+   curl -X POST http://localhost:4000/budget/update \
+     -H "Authorization: Bearer $LITELLM_MASTER_KEY" -H "Content-Type: application/json" \
+     -d '{"budget_id": "scrum-sprint-budget", "max_budget": 25}'
+   ```
+5. Restart with `python3 run.py`.
+
 ## Monitoring & Reporting
 
 ### Quality KPIs

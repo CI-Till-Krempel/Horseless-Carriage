@@ -13,7 +13,7 @@ python3 run_tests.py
 ## Host-script tests (`tests/`)
 
 Covers the setup/doctor tooling itself (`lib_env.py`, `lib_llm_test.py`,
-`setup_llm.py`, `doctor.py`, `check_state_repo.py`, `run.py`) - `.env`
+`setup_llm.py`, `doctor.py`, `check_state_repo.py`, `reset_budget.py`, `run.py`) - `.env`
 read/write correctness, LiteLLM model-YAML generation for all 4 providers,
 each provider's live-model-list fetch/filtering logic (mocked HTTP), the
 state-repository setup logic (clone/init/leave-alone, against a local git

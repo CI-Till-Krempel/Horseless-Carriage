@@ -215,7 +215,7 @@ for what `doctor.py` checks.
 ## Setting up on Windows
 
 All of this project's host-side tooling (`setup_all.py`, `setup_llm.py`, `setup_project.py`,
-`doctor.py`, `run.py`, `run_tests.py`, `check_state_repo.py`, `rebuild_images.py`, `update_hc.py`,
+`doctor.py`, `run.py`, `run_tests.py`, `check_state_repo.py`, `reset_budget.py`, `rebuild_images.py`, `update_hc.py`,
 `watch_roadmap.py`) is plain stdlib Python - no bash, no WSL2 required. Docker Desktop may still use
 WSL2 internally as its own backend, but that's automatic and not something you need to set up
 yourself.
