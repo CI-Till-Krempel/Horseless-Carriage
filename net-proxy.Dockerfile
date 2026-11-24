@@ -11,7 +11,7 @@
 # single-purpose addition (plain TCP forwarding, no HTTP-level logic) kept
 # in this already-minimal, repo-controlled image rather than reaching for a
 # third-party reverse-proxy image.
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache tinyproxy socat
 
