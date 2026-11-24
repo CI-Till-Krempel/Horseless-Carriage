@@ -1174,8 +1174,13 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                     f"Current usage: {token_usage:,}. Agent execution halted."
                 )
                 detail = (
-                    "To resume immediately: raise SPRINT_TOKEN_BUDGET in .env and restart the agent "
-                    "container. To let this sprint close out as-is: no action needed - Scrum Master's "
+                    "To resume immediately, without a restart: `python3 run.py override-budget "
+                    "--tokens N --reason \"...\"` (raises the limit for this sprint only). If this "
+                    "sprint's usage itself should start over: stop the agent, run `python3 "
+                    "reset_budget.py --reset-usage`, then `python3 run.py`. Permanently: raise "
+                    "SPRINT_TOKEN_BUDGET in .env (or `python3 reset_budget.py --token-budget N`) and "
+                    "restart. See docs/BUDGET.md 'Recovering From A Stuck Budget Halt'. "
+                    "To let this sprint close out as-is: no action needed - Scrum Master's "
                     "own ritual budget lets it close the sprint out (retro/KPIs/report) regardless, "
                     "and Product Owner has a small grace allowance left to finish the release PR; "
                     "check list_blocking_interactions() or this log for confirmation once it does."
@@ -1291,10 +1296,12 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                     f"Current spend: ${current_spend:.2f}. Agent execution halted."
                 )
                 detail = (
-                    "To resume immediately: raise TOTAL_USD_BUDGET in .env and restart the agent "
-                    "container, or raise the 'scrum-sprint-budget' budget in the LiteLLM dashboard "
-                    "(http://localhost:4000/ui). The team has a small grace allowance left to close "
-                    "the sprint out on its own first."
+                    "To resume immediately, without a restart: `python3 run.py override-budget "
+                    "--usd N --reason \"...\"` (raises the local check for this sprint only). "
+                    "Permanently: stop the agent, run `python3 reset_budget.py --usd-budget N` (updates "
+                    "TOTAL_USD_BUDGET in .env and LiteLLM's 'scrum-sprint-budget'), then `python3 "
+                    "run.py`. See docs/BUDGET.md 'Recovering From A Stuck Budget Halt'. The team has a "
+                    "small grace allowance left to close the sprint out on its own first."
                 )
                 return _budget_halt_response(callback_context, llm_request, msg, agent_name, detail=detail)
     except requests.RequestException as e:

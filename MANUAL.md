@@ -129,6 +129,19 @@ Check live status any time with `get_budget_status`, or the LiteLLM admin UI at
 `http://localhost:4000/ui`. Per-agent spend is trackable there too, since each
 agent role gets its own virtual key.
 
+**Stuck on an exhausted budget mid-sprint?** Run `python3 reset_budget.py` on the host to
+see which limit tripped. Then:
+
+- To raise the limit live, without a restart (current sprint only):
+  `python3 run.py override-budget --tokens N [--usd N] --reason "..."`.
+- To give the current sprint a fresh token allowance: stop the agent and run
+  `python3 reset_budget.py --reset-usage`.
+- To raise the limits permanently: stop the agent and run `--token-budget N` /
+  `--usd-budget X`. This also updates LiteLLM's `scrum-sprint-budget`.
+
+Restart with `python3 run.py` after any `reset_budget.py` change. See
+[docs/BUDGET.md § Recovering From A Stuck Budget Halt](docs/BUDGET.md#recovering-from-a-stuck-budget-halt).
+
 **No agent can spend on an unscoped key.** Every specialist agent is blocked from
 making any LLM call at all until it has its own `scrum-sprint-budget`-attached
 virtual key (`create_litellm_virtual_key`) — this is enforced in code

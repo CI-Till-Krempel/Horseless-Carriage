@@ -13,6 +13,43 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### Budget halts now name the actual recovery commands; new `reset_budget.py` resets usage and undoes overrides (SPEC-ISSUE-0096)
+
+A user reported that the docs never say how to actually reset or override the budget when a project
+is stuck. `python3 run.py override-budget` (SPEC-ISSUE-0092, above) already existed, but the halt's own
+`detail` text, which is what every notifier and blocking interaction shows, still said only *"raise
+SPRINT_TOKEN_BUDGET in .env and restart"*. `TROUBLESHOOTING.md`, `MANUAL.md` and `README.md` never
+mentioned the override at all.
+
+Investigating it turned up gaps that neither path covered:
+
+- **Usage could never be reset mid-sprint.** `override-budget` and `.env` only raise the *limit*;
+  `token_usage` is only ever cleared by `start_sprint`.
+- **Usage is stored twice.** It lives in `.hc/state.json` and in the ADK sqlite session store
+  (`sessions/adk_sessions.db`). A resumed session's copy silently overwrites a hand-edited
+  `state.json` on its next save. On a real installation the two stores showed sprint 0 / 0 tokens and
+  sprint 4 / 840,665 tokens respectively.
+- **An override silently masked any later `.env` fix.** While `budget_human_override` pins a key,
+  `sync_budgets_from_env` ignores `.env` for it, until the next sprint and with no way to undo it.
+- **LiteLLM's `scrum-sprint-budget` `max_budget` was never updated** by either path.
+
+New host script `reset_budget.py` (stdlib only), the offline counterpart to `override-budget`:
+
+- Read-only status by default, including any live override pin.
+- `--reset-usage` clears the same budget keys `start_sprint` clears, in both stores, and commits a
+  local checkpoint in the state repo.
+- `--token-budget N` / `--usd-budget X` raise the limits in `.env`, in state and in LiteLLM, and unpin
+  a conflicting override.
+- `--clear-override` undoes a live override early.
+- Asks before changing anything, refuses while the agent is running, and never resets recorded USD
+  spend.
+
+A test pins its reset keys to `sprint_budget_reset_state_delta()` so the two can't drift (the
+SPEC-ISSUE-0049 failure mode). Both halt `detail` texts now name `override-budget`, `reset_budget.py`
+and the docs section. `docs/BUDGET.md`'s recovery section is now one decision table covering both
+tools and the manual steps, including the LiteLLM API call:
+[docs/BUDGET.md § Recovering From A Stuck Budget Halt](../docs/BUDGET.md#recovering-from-a-stuck-budget-halt).
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent
