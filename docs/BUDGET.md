@@ -128,6 +128,26 @@ if you haven't renamed it in your own `.env` yet.
     since that combination is almost always this pricing gap rather than genuinely free
     usage.
 
+## Recovering From A Stuck Budget Halt
+If a sprint is stuck repeating `🚫 [TOKEN BUDGET EXCEEDED]` or `🚫 [USD BUDGET EXCEEDED]` (SPEC-ISSUE-0092),
+there are two ways to recover:
+
+- **Permanent fix**: raise `SPRINT_TOKEN_BUDGET`/`TOTAL_USD_BUDGET` in `.env` and restart the agent
+  container (`python3 run.py`) - the new ceiling applies from then on, every sprint.
+- **Immediate, no-restart override**: `python3 run.py override-budget --tokens N [--usd N] --reason
+  "..."` raises the ceiling live on the already-running `agent` container's current ADK session (via
+  `agents/scrum_team/scripts/override_budget.py`, exec'd inside it) - the very next turn sees it,
+  with no `.env` edit or restart. This is a **human-triggered escape hatch**, not a change to
+  `check_cost_budget_callback`'s own enforcement: it's deliberately scoped to the sprint it's applied
+  during only, and is cleared automatically the moment the next sprint starts
+  (`sprint_budget_reset_state_delta`, `agents/scrum_team/tools/budget.py`) - it can never linger and
+  mask a later, real `.env` fix the way a standing override would. It's also audited: it appends a
+  `budget_override` entry to `blocking_interactions` (the same list `list_blocking_interactions()`
+  and every other human-facing incident already use) carrying the reason given via `--reason`.
+  Targets whichever session was updated most recently by default; pass `--session-id`/`--app-name`/
+  `--user-id` to target a specific one (e.g. if more than one session exists in
+  `sessions/adk_sessions.db`).
+
 ## Monitoring & Reporting
 
 ### Quality KPIs

@@ -177,6 +177,18 @@ def sprint_budget_reset_state_delta() -> Dict[str, Any]:
         # own approach to the ceiling warns again, rather than staying
         # silently suppressed because a previous sprint already crossed 90%.
         "_budget_warning_pct_fired": 0,
+        # Human-in-the-loop recovery (see override_budget.py /
+        # sync_budgets_from_env's own override guard) for a sprint stuck on
+        # a 🚫 BUDGET EXCEEDED halt: a live, no-restart-needed bump of
+        # budgets.total/total_usd that sync_budgets_from_env must NOT
+        # immediately stomp back to the .env-configured value every turn
+        # the way it otherwise unconditionally does. Deliberately scoped to
+        # ONE sprint only - cleared here, at the next sprint's start, so it
+        # can never go stale and silently mask a real .env fix + container
+        # restart the way the exact staleness bug this reset dict already
+        # guards against (see sync_budgets_from_env's own docstring, GH
+        # issue #220) would if this lingered forever instead.
+        "budget_human_override": None,
     }
 
 

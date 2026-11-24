@@ -133,15 +133,27 @@ def sync_budgets_from_env(tool_context=None) -> Dict[str, Any]:
     """
     s = tool_context.state
     budgets = s.get("budgets", {}) or {}
+    # Human-in-the-loop recovery (see override_budget.py): a live operator
+    # can bump budgets.total/total_usd on an already-running session to
+    # unstick a sprint halted by a 🚫 BUDGET EXCEEDED message, without
+    # editing .env + restarting the container. That only works if THIS
+    # function - which otherwise unconditionally re-pulls both values from
+    # os.environ on every single turn, by design (see this function's own
+    # docstring) - doesn't immediately stomp the override back to the
+    # stale .env value next turn. budget_human_override names exactly
+    # which key(s) a human has pinned; sprint_budget_reset_state_delta
+    # clears it at the next sprint's start, so a stale override can never
+    # linger past the sprint it was meant to unstick.
+    override = s.get("budget_human_override") or {}
     env_token_budget = os.environ.get("SPRINT_TOKEN_BUDGET")
-    if env_token_budget:
+    if env_token_budget and "total" not in override:
         try:
             budgets["total"] = int(env_token_budget)
         except (ValueError, TypeError):
             pass
 
     env_usd_budget = get_env_with_deprecated_fallback("TOTAL_USD_BUDGET", "SPRINT_USD_BUDGET")
-    if env_usd_budget:
+    if env_usd_budget and "total_usd" not in override:
         try:
             budgets["total_usd"] = float(env_usd_budget)
         except (ValueError, TypeError):
