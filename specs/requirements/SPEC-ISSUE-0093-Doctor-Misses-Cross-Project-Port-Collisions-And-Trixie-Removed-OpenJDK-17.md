@@ -1,6 +1,6 @@
 # Issue
 
-- Issue ID: SPEC-ISSUE-0092
+- Issue ID: SPEC-ISSUE-0093
 - Title: doctor.py misses cross-project host-port collisions and workbench scripts that need an OpenJDK the base image no longer ships
 - Status: Done
 - Priority: Should

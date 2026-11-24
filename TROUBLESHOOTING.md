@@ -99,12 +99,12 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   stopped project's ports look free to the startup check, so another project could be assigned the
   same one. Run `python3 doctor.py`: it scans every project in `~/.horseless-carriage/projects.json`
   and reassigns duplicates in the affected project's `.env` (a project with a running stack keeps
-  its port). `python3 doctor.py --dry-run` only reports them. (SPEC-ISSUE-0092)
+  its port). `python3 doctor.py --dry-run` only reports them. (SPEC-ISSUE-0093)
 - **Image build fails with `E: Unable to locate package openjdk-17-jdk`** (at
   `RUN ... /tmp/workbench-setup.sh`) — the agent image's base `python:3.11-slim` is now Debian
   trixie, which only ships OpenJDK 21+. Change the product repo's `.hc/workbench-setup.sh` to
   `openjdk-21-jdk-headless` (or `default-jdk-headless`); `doctor.py` flags this as an error and names
-  the replacement. Any "port ... reassigned" notes printed just before are unrelated. (SPEC-ISSUE-0092)
+  the replacement. Any "port ... reassigned" notes printed just before are unrelated. (SPEC-ISSUE-0093)
 - **Windows: `docker compose up` never asks about file sharing, then the agent can't see your state
   repo** — whichever drive `STATE_REPO_PATH` is on must be shared with Docker Desktop (**Settings →
   Resources → File Sharing**). See [Setup § Setting up on Windows](docs/SETUP.md#setting-up-on-windows).
