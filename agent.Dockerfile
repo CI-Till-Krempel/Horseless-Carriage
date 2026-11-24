@@ -51,6 +51,17 @@ ENV PATH="/root/.local/bin:${PATH}"
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# SPEC-ISSUE-0095: as of the google-adk 2.4.0 -> 2.15.0 bump (#549), every `adk` subcommand (web, run,
+# eval, ...) blocks on an interactive "Enable telemetry? [Y/n]" input() prompt
+# whenever stdin is a TTY and ~/.adk/config.json holds no recorded answer.
+# The agent service runs with `tty: true`/`stdin_open: true` (needed for
+# AGENT_MODE=cli) but nobody is attached in web/daemon mode, so `adk web`
+# hung forever before binding port 8000 - container "Up", web UI unreachable.
+# Record an explicit opt-out once, at build time, so no container ever asks
+# (and so a stray Enter can't opt in - the prompt's default is "Y").
+# `adk telemetry ...` itself is exempt from the prompt.
+RUN adk telemetry disable
+
 
 # --- Test Stage ---
 FROM base AS test
