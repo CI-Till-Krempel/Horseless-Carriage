@@ -205,3 +205,43 @@ def test_declined_confirmation_changes_nothing(install, monkeypatch):
     before = state_path.read_text()
     assert reset_budget.run(hc, ["--reset-usage"]) == 1
     assert state_path.read_text() == before
+
+
+# --- interplay with `run.py override-budget` (SPEC-ISSUE-0092) -------------
+
+def test_token_budget_unpins_only_the_token_override():
+    state = dict(_stuck_state(), budget_human_override={"total": 2000, "total_usd": 50.0})
+    new = reset_budget.set_budget_limits(state, token_budget=8_000_000)
+    # .env's new value would otherwise be ignored by sync_budgets_from_env
+    assert new["budget_human_override"] == {"total_usd": 50.0}
+    new = reset_budget.set_budget_limits(new, usd_budget=60)
+    assert new["budget_human_override"] is None
+
+
+def test_clear_human_override():
+    state = dict(_stuck_state(), budget_human_override={"total": 2000})
+    assert reset_budget.clear_human_override(state)["budget_human_override"] is None
+    # no override key at all -> don't invent one
+    assert "budget_human_override" not in reset_budget.clear_human_override(_stuck_state())
+
+
+def test_effective_token_limit_respects_override_pin():
+    state = {"budgets": {"total": 1000}, "budget_human_override": {"total": 2000}}
+    assert reset_budget.effective_token_limit("6000000", state) == 2000
+
+
+def test_clear_override_end_to_end(install, capsys):
+    hc, _, _, db = install
+    conn = sqlite3.connect(db)
+    pinned = dict(_stuck_state(), budget_human_override={"total": 2000})
+    conn.execute("UPDATE sessions SET state = ? WHERE id = 'new'", (json.dumps(pinned),))
+    conn.commit()
+    conn.close()
+
+    assert reset_budget.run(hc, []) == 0
+    assert "live override pin" in capsys.readouterr().out
+
+    assert reset_budget.run(hc, ["--clear-override", "--yes"]) == 0
+    new = _session_states(db)["new"]
+    assert new["budget_human_override"] is None
+    assert new["token_usage"]["total"] == 1500  # usage untouched without --reset-usage

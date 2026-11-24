@@ -13,30 +13,42 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
-### `reset_budget.py`: a supported way to unstick a sprint halted on its budget (SPEC-ISSUE-0096)
+### Budget halts now name the actual recovery commands; new `reset_budget.py` resets usage and undoes overrides (SPEC-ISSUE-0096)
 
 A user reported that the docs never say how to actually reset or override the budget when a project
-is stuck. The only guidance was the halt text, *"raise SPRINT_TOKEN_BUDGET in .env and restart"*.
-That fixes the **limit**, but this sprint's accumulated **usage** (`token_usage`) is only ever cleared
-by `start_sprint`, which isn't reachable mid-sprint. Usage is also stored twice: in
-`.hc/state.json`, and in the ADK sqlite session store (`sessions/adk_sessions.db`). A resumed
-session's copy silently overwrites a hand-edited `state.json` on its next save. On a real installation,
-the two stores showed sprint 0 / 0 tokens and sprint 4 / 840,665 tokens respectively. The USD ceiling
-likewise had a second copy in LiteLLM's `scrum-sprint-budget`, which is only re-synced when a role's
-key is created.
+is stuck. `python3 run.py override-budget` (SPEC-ISSUE-0092, above) already existed, but the halt's own
+`detail` text, which is what every notifier and blocking interaction shows, still said only *"raise
+SPRINT_TOKEN_BUDGET in .env and restart"*. `TROUBLESHOOTING.md`, `MANUAL.md` and `README.md` never
+mentioned the override at all.
 
-New host script `reset_budget.py` (stdlib only):
+Investigating it turned up gaps that neither path covered:
 
-- Read-only status by default.
+- **Usage could never be reset mid-sprint.** `override-budget` and `.env` only raise the *limit*;
+  `token_usage` is only ever cleared by `start_sprint`.
+- **Usage is stored twice.** It lives in `.hc/state.json` and in the ADK sqlite session store
+  (`sessions/adk_sessions.db`). A resumed session's copy silently overwrites a hand-edited
+  `state.json` on its next save. On a real installation the two stores showed sprint 0 / 0 tokens and
+  sprint 4 / 840,665 tokens respectively.
+- **An override silently masked any later `.env` fix.** While `budget_human_override` pins a key,
+  `sync_budgets_from_env` ignores `.env` for it, until the next sprint and with no way to undo it.
+- **LiteLLM's `scrum-sprint-budget` `max_budget` was never updated** by either path.
+
+New host script `reset_budget.py` (stdlib only), the offline counterpart to `override-budget`:
+
+- Read-only status by default, including any live override pin.
 - `--reset-usage` clears the same budget keys `start_sprint` clears, in both stores, and commits a
   local checkpoint in the state repo.
-- `--token-budget N` / `--usd-budget X` raise the limits in `.env`, in state and in LiteLLM.
-- Asks before changing anything, and refuses while the agent is running.
-- Never resets recorded USD spend.
+- `--token-budget N` / `--usd-budget X` raise the limits in `.env`, in state and in LiteLLM, and unpin
+  a conflicting override.
+- `--clear-override` undoes a live override early.
+- Asks before changing anything, refuses while the agent is running, and never resets recorded USD
+  spend.
 
 A test pins its reset keys to `sprint_budget_reset_state_delta()` so the two can't drift (the
-SPEC-ISSUE-0049 failure mode). The procedure, including the manual equivalent and the LiteLLM API
-call, is in [docs/BUDGET.md § 3](../docs/BUDGET.md#3-recovering-a-sprint-stuck-on-its-budget).
+SPEC-ISSUE-0049 failure mode). Both halt `detail` texts now name `override-budget`, `reset_budget.py`
+and the docs section. `docs/BUDGET.md`'s recovery section is now one decision table covering both
+tools and the manual steps, including the LiteLLM API call:
+[docs/BUDGET.md § Recovering From A Stuck Budget Halt](../docs/BUDGET.md#recovering-from-a-stuck-budget-halt).
 
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 

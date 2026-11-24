@@ -129,85 +129,91 @@ if you haven't renamed it in your own `.env` yet.
     usage.
 
 ## Recovering From A Stuck Budget Halt
-If a sprint is stuck repeating `🚫 [TOKEN BUDGET EXCEEDED]` or `🚫 [USD BUDGET EXCEEDED]` (SPEC-ISSUE-0092),
-there are two ways to recover:
-
-- **Permanent fix**: raise `SPRINT_TOKEN_BUDGET`/`TOTAL_USD_BUDGET` in `.env` and restart the agent
-  container (`python3 run.py`) - the new ceiling applies from then on, every sprint.
-- **Immediate, no-restart override**: `python3 run.py override-budget --tokens N [--usd N] --reason
-  "..."` raises the ceiling live on the already-running `agent` container's current ADK session (via
-  `agents/scrum_team/scripts/override_budget.py`, exec'd inside it) - the very next turn sees it,
-  with no `.env` edit or restart. This is a **human-triggered escape hatch**, not a change to
-  `check_cost_budget_callback`'s own enforcement: it's deliberately scoped to the sprint it's applied
-  during only, and is cleared automatically the moment the next sprint starts
-  (`sprint_budget_reset_state_delta`, `agents/scrum_team/tools/budget.py`) - it can never linger and
-  mask a later, real `.env` fix the way a standing override would. It's also audited: it appends a
-  `budget_override` entry to `blocking_interactions` (the same list `list_blocking_interactions()`
-  and every other human-facing incident already use) carrying the reason given via `--reason`.
-  Targets whichever session was updated most recently by default; pass `--session-id`/`--app-name`/
-  `--user-id` to target a specific one (e.g. if more than one session exists in
-  `sessions/adk_sessions.db`).
-
-## 3. Recovering a sprint stuck on its budget
-
 When a budget trips, every non-grace agent gets `🚫 [TOKEN BUDGET EXCEEDED]` or `🚫 [USD BUDGET
 EXCEEDED]`. Scrum Master's ritual budget and Product Owner's close-out grace normally let the sprint
 close out on its own: that produces the report and release PR, and the next `start_sprint` resets the
 token budget. You only need to step in when you want **this** sprint to keep working, or when close-out
-itself is stuck.
+itself is stuck (SPEC-ISSUE-0092, SPEC-ISSUE-0096).
 
-Two different things can be "stuck", and they need different fixes:
-
-| Situation | What actually blocks | Fix |
-|---|---|---|
-| The per-sprint **limit** is too small | `SPRINT_TOKEN_BUDGET` | Raise it in `.env`, then restart. `sync_budgets_from_env` (`agents/scrum_team/tools/scrum.py`) copies it into `budgets.total` on every turn, so a restart is enough. |
-| The limit is fine, but this sprint's **usage** is used up | `token_usage.total` in state | Reset the usage counters. Only `start_sprint` does this automatically, and it isn't reachable mid-sprint. |
-| The whole-engagement **USD ceiling** is reached | `TOTAL_USD_BUDGET` + LiteLLM's `scrum-sprint-budget` | Raise the ceiling in `.env` **and** in LiteLLM. The LiteLLM side is only re-synced when a role's key is created. |
-
-`reset_budget.py` does all three on the host, with no container or Python dependencies needed:
+Run this first, at any time. It is read-only and shows limits, usage in both state stores, open budget
+halts, and any live override pin:
 
 ```bash
-python3 reset_budget.py                          # read-only: limits, usage, open budget halts
-docker compose stop agent                        # add your usual -f/-p flags; the script prints the exact command
-python3 reset_budget.py --reset-usage            # same sprint, fresh token allowance
-python3 reset_budget.py --token-budget 8000000   # raise SPRINT_TOKEN_BUDGET
-python3 reset_budget.py --usd-budget 25          # raise TOTAL_USD_BUDGET + LiteLLM's scrum-sprint-budget
-python3 run.py                                   # restart; `docker compose up` picks up the .env change
+python3 reset_budget.py
 ```
 
-The flags can be combined. Each mutating run shows what it will change and asks first (`--yes` skips
-the prompt). It refuses while the agent container is running (`--force` overrides that).
+Then pick the fix that matches what is actually stuck:
 
-**Why a script and not just a JSON edit:** usage is persisted in **two** places, and both have to agree:
+| What's stuck | Agent running? | Command |
+|---|---|---|
+| The per-sprint **limit** is too small, and you want to resume *now* | yes | `python3 run.py override-budget --tokens N [--usd N] --reason "..."` |
+| The per-sprint **limit** is too small, for every sprint from now on | no | `python3 reset_budget.py --token-budget N`, then `python3 run.py` |
+| The limit is fine, but this sprint's **usage** is used up | no | `python3 reset_budget.py --reset-usage`, then `python3 run.py` |
+| The whole-engagement **USD ceiling** is reached | no | `python3 reset_budget.py --usd-budget X`, then `python3 run.py` |
+| A live override should be **undone** before the next sprint | no | `python3 reset_budget.py --clear-override`, then `python3 run.py` |
 
-- `<STATE_REPO_PATH>/.hc/state.json` is loaded on a **new** session's first turn.
+Stop the agent first for every `reset_budget.py` change. The script prints the exact
+`docker compose ... stop agent` command for your setup, and refuses while the agent is running
+(`--force` overrides that).
+
+### Live override: `run.py override-budget`
+`python3 run.py override-budget --tokens N [--usd N] --reason "..."` raises the ceiling live on the
+already-running `agent` container's current ADK session. It runs
+`agents/scrum_team/scripts/override_budget.py` inside the container, so the very next turn sees the
+new ceiling, with no `.env` edit or restart.
+
+- **A human-triggered escape hatch, not a change to enforcement.** `check_cost_budget_callback` is
+  unchanged.
+- **Pinned for the current sprint only.** It writes a `budget_human_override` marker, and
+  `sync_budgets_from_env` skips re-syncing the pinned key(s) from `.env` while the marker exists.
+  `sprint_budget_reset_state_delta` (`agents/scrum_team/tools/budget.py`) clears the marker when the
+  next sprint starts, so an override can never linger and mask a later, real `.env` fix. To undo it
+  earlier, stop the agent and run `python3 reset_budget.py --clear-override`.
+- **Audited.** It appends a `budget_override` entry carrying your `--reason` to `blocking_interactions`,
+  the same list `list_blocking_interactions()` and every other human-facing incident use.
+- **Targets the most recently updated session by default.** Pass `--session-id`/`--app-name`/
+  `--user-id` to target a specific one, for example when `sessions/adk_sessions.db` holds several.
+- **What it can't do:** reset this sprint's accumulated usage, or raise LiteLLM's own
+  `scrum-sprint-budget` `max_budget`. `--usd` only raises the local check. For either, use
+  `reset_budget.py` below.
+
+### Offline repair: `reset_budget.py`
+A host script with no container or Python dependencies needed. The flags can be combined. Each
+mutating run shows what it will change and asks first (`--yes` skips the prompt).
+
+- `--token-budget N` / `--usd-budget X` set `SPRINT_TOKEN_BUDGET` / `TOTAL_USD_BUDGET` in `.env` and
+  `budgets.*` in state, and unpin that key from a live override so the new `.env` value actually
+  applies. `--usd-budget` also updates LiteLLM's `scrum-sprint-budget` `max_budget`
+  (`POST /budget/update`). Otherwise that only happens when a role's key is created.
+- `--reset-usage` clears the same budget keys `start_sprint`'s own reset clears: `token_usage`,
+  `budget_exhaustion_synced`, `critical_halt_notified` and `_budget_warning_pct_fired`. A test pins
+  this list to `sprint_budget_reset_state_delta()`. It also marks stale `[TOKEN BUDGET EXCEEDED]`
+  blocking interactions resolved, kept as history. Sprint progress (backlog, stages, reports) is
+  untouched.
+- `--clear-override` removes a live `override-budget` pin, so `.env` applies again from the next turn.
+- Edits the most recent ADK session by default. Use `--session-id ID` or `--all-sessions` for others.
+
+**Why a script and not just a JSON edit:** sprint usage is persisted in **two** places, and both have to
+agree:
+
+- `<STATE_REPO_PATH>/.hc/state.json` is loaded on a **new** session's first turn. The script commits its
+  change there as a local checkpoint in the state repo, so `git revert` undoes it.
 - `sessions/adk_sessions.db` (ADK's sqlite session store) holds a **resumed** session's own copy. That
   copy overwrites `state.json` again on its next save, so editing only `state.json` doesn't stick.
 
-`--reset-usage` clears the same budget keys `start_sprint`'s own reset clears
-(`sprint_budget_reset_state_delta`, `agents/scrum_team/tools/budget.py`): `token_usage`,
-`budget_exhaustion_synced`, `critical_halt_notified` and `_budget_warning_pct_fired`. It also marks the
-stale `[TOKEN BUDGET EXCEEDED]` blocking interactions resolved (they're kept as history). It does this
-in `state.json`, committed as a local checkpoint in the state repo so `git revert` undoes it, and in
-the most recent ADK session. Use `--session-id ID` or `--all-sessions` to target other sessions.
-Sprint progress (backlog, stages, reports) is untouched.
-
-What it deliberately does **not** do:
-
-- **Reset LiteLLM's recorded USD spend.** `TOTAL_USD_BUDGET` is a whole-engagement ceiling. Spending
-  more is an explicit decision to raise the ceiling, not to erase what was already spent.
-- **Change any guardrail or default in code.** It only acts on an explicit human command, with the same
-  knobs this page already documents.
+**Never reset:** LiteLLM's recorded USD spend. `TOTAL_USD_BUDGET` is a whole-engagement ceiling.
+Spending more is an explicit decision to raise the ceiling, not to erase what was already spent.
+Neither tool changes any guardrail or default in code. Both only act on an explicit human command.
 
 ### Doing it by hand
-
-If you can't run the script, the equivalent manual steps are:
+If you can't run either tool, these are the equivalent manual steps:
 
 1. Stop the agent container.
 2. Edit `SPRINT_TOKEN_BUDGET` / `TOTAL_USD_BUDGET` in `.env`.
 3. For a usage reset, set `"token_usage": {"total": 0, "agents": {}}` in `.hc/state.json`, then start a
    **new** session instead of resuming the old one. A new ADK web UI tab does this by default. In CLI
-   mode, use a new `SESSION_ID` or move `sessions/<SESSION_ID>.session.json` aside.
+   mode, use a new `SESSION_ID` or move `sessions/<SESSION_ID>.session.json` aside. A new session also
+   carries no `budget_human_override`.
 4. For a higher USD ceiling, also raise `scrum-sprint-budget` in the LiteLLM UI
    (`http://localhost:4000/ui`), or call its API directly:
    ```bash

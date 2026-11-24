@@ -142,12 +142,18 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   persistent provider rate limit. See [MANUAL.md §5](MANUAL.md#5-budgets) and
   [Budget Management](docs/BUDGET.md).
 - **Sprint stays stuck on `[TOKEN BUDGET EXCEEDED]` / `[USD BUDGET EXCEEDED]` and you want it to
-  keep working** — raising the limit in `.env` alone isn't always enough. This sprint's accumulated
-  usage only resets at the next `start_sprint`, and it's stored both in `.hc/state.json` and in the
-  ADK session store (`sessions/adk_sessions.db`). Run `python3 reset_budget.py` (read-only) to see
-  which limit is tripped. Then stop the agent and run `--reset-usage`, `--token-budget N` and/or
-  `--usd-budget X`, and restart with `python3 run.py`. See
-  [BUDGET.md § Recovering a sprint stuck on its budget](docs/BUDGET.md#3-recovering-a-sprint-stuck-on-its-budget).
+  keep working** — run `python3 reset_budget.py` (read-only) to see which limit tripped. Then:
+  - To resume *now*, without a restart:
+    `python3 run.py override-budget --tokens N [--usd N] --reason "..."`. This raises the limit for
+    the current sprint only.
+  - If this sprint's **usage** is spent, raising the limit isn't enough. Usage only resets at the next
+    `start_sprint`, and it's stored both in `.hc/state.json` and in `sessions/adk_sessions.db`. Stop
+    the agent, run `python3 reset_budget.py --reset-usage`, then restart with `python3 run.py`.
+  - For a permanent change, stop the agent and run `--token-budget N` / `--usd-budget X`. The USD
+    variant also updates LiteLLM. Then restart.
+  - To undo a live override early, stop the agent and run `--clear-override`.
+
+  See [BUDGET.md § Recovering From A Stuck Budget Halt](docs/BUDGET.md#recovering-from-a-stuck-budget-halt).
 - **`🚫 [NO BUDGET-CAPPED KEY]` response from an agent** — that agent has no `scrum-sprint-budget`
   -attached LiteLLM virtual key yet; every specialist agent is hard-blocked in code
   (`check_cost_budget_callback`) from making any LLM call until one exists, so no agent can

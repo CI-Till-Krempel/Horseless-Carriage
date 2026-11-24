@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
 Inspect and repair a project whose sprint is stuck on an exhausted budget
-(SPEC-ISSUE-0096).
+(SPEC-ISSUE-0096). The offline counterpart to `python3 run.py override-budget`
+(SPEC-ISSUE-0092), which raises the limit live inside the running container
+but can neither reset usage nor be undone before the next sprint.
 
     python3 reset_budget.py                       # read-only status report (default)
     python3 reset_budget.py --token-budget 8000000  # raise SPRINT_TOKEN_BUDGET in .env
     python3 reset_budget.py --usd-budget 25       # raise TOTAL_USD_BUDGET in .env (+ LiteLLM)
     python3 reset_budget.py --reset-usage         # zero this sprint's token counters
+    python3 reset_budget.py --clear-override      # drop a live override-budget pin
 
 Why this exists: the halt messages say "raise SPRINT_TOKEN_BUDGET in .env and
 restart", which works for the *limit* (sync_budgets_from_env, agents/
@@ -103,14 +106,40 @@ def resolve_halts(state: dict, markers: tuple) -> int:
 
 def set_budget_limits(state: dict, token_budget=None, usd_budget=None) -> dict:
     """Copy of state with budgets.total / budgets.total_usd updated - the same
-    fields sync_budgets_from_env writes from .env on every turn."""
+    fields sync_budgets_from_env writes from .env on every turn.
+
+    Also unpins that key from budget_human_override (the live
+    `run.py override-budget` marker, SPEC-ISSUE-0092): while a key is pinned
+    there, sync_budgets_from_env ignores .env for it, so the new .env value
+    this script just wrote would otherwise be silently ignored until the
+    next sprint starts."""
     new_state = json.loads(json.dumps(state))
     budgets = new_state.get("budgets") or {}
+    unpin = []
     if token_budget is not None:
         budgets["total"] = int(token_budget)
+        unpin.append("total")
     if usd_budget is not None:
         budgets["total_usd"] = float(usd_budget)
+        unpin.append("total_usd")
     new_state["budgets"] = budgets
+    if unpin:
+        new_state = clear_human_override(new_state, unpin)
+    return new_state
+
+
+def clear_human_override(state: dict, keys=None) -> dict:
+    """Copy of state with the `run.py override-budget` pin removed for `keys`
+    (default: all of it), so .env applies again from the next turn - the
+    same value sprint_budget_reset_state_delta() would leave at the next
+    sprint start (None). budgets.* itself is left as-is; sync_budgets_from_env
+    re-syncs it from .env on the very next turn once unpinned."""
+    new_state = json.loads(json.dumps(state))
+    override = dict(new_state.get("budget_human_override") or {})
+    for key in (keys if keys is not None else list(override)):
+        override.pop(key, None)
+    if "budget_human_override" in new_state or override:
+        new_state["budget_human_override"] = override or None
     return new_state
 
 
@@ -224,8 +253,12 @@ def litellm_host_url(env_path: Path) -> str:
 
 def effective_token_limit(env_value: str, state: dict) -> int:
     """What check_cost_budget_callback will enforce after the next restart:
-    .env wins (sync_budgets_from_env runs every turn), then state, then the
+    a live `run.py override-budget` pin wins (sync_budgets_from_env skips .env
+    for a pinned key), then .env (re-synced every turn), then state, then the
     default."""
+    pinned = ((state or {}).get("budget_human_override") or {}).get("total")
+    if pinned:
+        return int(pinned)
     if env_value:
         try:
             return int(env_value)
@@ -257,6 +290,10 @@ def describe_state(label: str, state: dict, token_limit: int) -> list:
     ]
     if open_halts:
         lines.append(f"  open budget halts:  {len(open_halts)} (latest: {open_halts[-1].get('summary', '')[:90]})")
+    override = state.get("budget_human_override") or {}
+    if override:
+        lines.append(f"  live override pin:  {override}  (from `run.py override-budget`; .env is ignored for "
+                     "these keys until the next sprint or --clear-override)")
     return lines
 
 
@@ -278,7 +315,8 @@ def parse_args(argv):
     p = argparse.ArgumentParser(
         description="Inspect and repair a sprint stuck on an exhausted token/USD budget. "
                     "Read-only unless a mutating flag is given. See docs/BUDGET.md "
-                    "'Recovering a sprint stuck on its budget'.",
+                    "'Recovering From A Stuck Budget Halt'. For a live raise while the agent keeps "
+                    "running, use `python3 run.py override-budget` instead.",
     )
     p.add_argument("--token-budget", type=int, metavar="TOKENS",
                    help="Set SPRINT_TOKEN_BUDGET in .env (and budgets.total in state).")
@@ -288,6 +326,10 @@ def parse_args(argv):
     p.add_argument("--reset-usage", action="store_true",
                    help="Zero this sprint's token_usage and clear the sticky halt/warning flags, in "
                         "both .hc/state.json and the ADK session store. Does not touch USD spend.")
+    p.add_argument("--clear-override", action="store_true",
+                   help="Remove a live `run.py override-budget` pin (budget_human_override) from the ADK "
+                        "session, so .env's SPRINT_TOKEN_BUDGET/TOTAL_USD_BUDGET apply again on the next "
+                        "turn instead of only at the next sprint start.")
     target = p.add_mutually_exclusive_group()
     target.add_argument("--session-id", help="Only edit this ADK session (default: the most recent one).")
     target.add_argument("--all-sessions", action="store_true", help="Edit every stored scrum_team session.")
@@ -337,12 +379,14 @@ def run(repo_root: Path, argv=None) -> int:
     else:
         print(f"ADK session store: no scrum_team sessions in {db_path}")
 
-    if args.token_budget is None and args.usd_budget is None and not args.reset_usage:
+    if args.token_budget is None and args.usd_budget is None and not args.reset_usage and not args.clear_override:
         print("\nRead-only - nothing changed. To unstick a sprint, see docs/BUDGET.md "
-              "'Recovering a sprint stuck on its budget', e.g.:\n"
-              "  python3 reset_budget.py --reset-usage           # same sprint, fresh token allowance\n"
-              "  python3 reset_budget.py --token-budget 8000000  # raise the per-sprint limit\n"
-              "  python3 reset_budget.py --usd-budget 25         # raise the whole-engagement USD ceiling")
+              "'Recovering From A Stuck Budget Halt', e.g.:\n"
+              "  python3 run.py override-budget --tokens 8000000 --reason \"...\"  # live, agent keeps running\n"
+              "  python3 reset_budget.py --reset-usage           # agent stopped: same sprint, fresh token allowance\n"
+              "  python3 reset_budget.py --token-budget 8000000  # agent stopped: raise the per-sprint limit\n"
+              "  python3 reset_budget.py --usd-budget 25         # agent stopped: raise the USD ceiling (+ LiteLLM)\n"
+              "  python3 reset_budget.py --clear-override        # agent stopped: drop a live override pin")
         return 0
 
     # --- mutating path ---
@@ -371,6 +415,8 @@ def run(repo_root: Path, argv=None) -> int:
         plan.append(f"set TOTAL_USD_BUDGET={args.usd_budget:g} in .env and LiteLLM's {LITELLM_BUDGET_ID}")
     if args.reset_usage:
         plan.append("zero token_usage and clear budget halt/warning flags")
+    if args.clear_override:
+        plan.append("remove the live override-budget pin (budget_human_override)")
     where = [".env"] if (args.token_budget is not None or args.usd_budget is not None) else []
     if repo_state is not None:
         where.append(str(state_path))
@@ -395,6 +441,8 @@ def run(repo_root: Path, argv=None) -> int:
 
     def _transform(state: dict) -> dict:
         state = set_budget_limits(state, args.token_budget, args.usd_budget)
+        if args.clear_override:
+            state = clear_human_override(state)
         if args.reset_usage:
             return apply_budget_reset(state, markers)
         resolve_halts(state, markers)
