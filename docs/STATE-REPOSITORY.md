@@ -35,6 +35,16 @@ snapshot locally as a checkpoint. This is purely local (never pushed - that's a 
 step via the agent's own `git_push` tool); it exists so `.hc/state.json`'s git history is a trail of
 restorable checkpoints, not just whatever bytes happen to be sitting in the working tree right now.
 
+Because each checkpoint lands on whatever branch happens to be checked out, mid-sprint checkpoints
+often sit on a story's feature branch. A story's `Implemented`/`Reviewed`/`Tested` stage update is
+pushed there deliberately (GH #383), and that branch may never merge if the sprint ends first. What
+the *next* sprint loads is develop's copy, so every close-out step that publishes to develop
+re-serializes `.hc/state.json`, `specs/ROADMAP.md` and in-flight story files from the live session
+right after checking develop out, and pushes them. Those steps are `create_release_pr` (both
+before the PR opens and once more after its own sprint reset) and the budget-halt safety nets.
+Without this, a checkout of develop silently swaps in its own, possibly whole-sprint-stale, copy
+(SPEC-ISSUE-0094).
+
 If `load_state_from_repo()` ever finds `.hc/state.json` corrupted or unparseable, it automatically
 searches git history (newest first) for the most recent commit whose own snapshot still parses, and
 repairs the working-tree file with it, rather than failing outright - this is the fallback path the

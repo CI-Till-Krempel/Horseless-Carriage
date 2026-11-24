@@ -1119,15 +1119,19 @@ class TestCreateReleasePrLandsSprintReport(unittest.TestCase):
         result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
-        mock_checkout.assert_called_once()
+        # Twice: once to land the report (before the PR), once more after it
+        # opens to publish the release's own state reset (SPEC-ISSUE-0094).
+        self.assertEqual(mock_checkout.call_count, 2)
         mock_render.assert_called_once_with(tool_context=tool_context)
         mock_transcript.assert_called_once_with(tool_context=tool_context)
         # integrate_open_changes (scoped to specs/.hc/, see its own
         # docstring) - not add_all=True - sweeps in anything else this
         # sprint's grace-period work left dangling (a final update_roadmap/
         # upsert_issue/generate_workflow_diagram call), never a stray
-        # unrelated file.
-        mock_integrate.assert_called_once_with(tool_context=tool_context)
+        # unrelated file. Called a second time by the post-PR state publish
+        # (SPEC-ISSUE-0094), same scope.
+        mock_integrate.assert_called_with(tool_context=tool_context)
+        self.assertEqual(mock_integrate.call_count, 2)
         mock_push.assert_called_once_with(
             branch="develop", commit_message=unittest.mock.ANY, add_all=False,
             allow_protected=True, tool_context=tool_context,
@@ -1140,13 +1144,20 @@ class TestCreateReleasePrLandsSprintReport(unittest.TestCase):
     def test_skips_landing_when_no_sprint_report_exists_yet(self, mock_checkout, mock_run, mock_gh_pr_create):
         """No create_sprint_report call happened at all this sprint (a
         separate, pre-existing gap this function isn't responsible for) -
-        must behave exactly as before this fix, not error out."""
+        must not error out, and must not land/re-render a report.
+
+        SPEC-ISSUE-0094: develop IS still checked out exactly once - after
+        the PR opens, by _push_live_state_to_develop, to publish the
+        release's own state reset - never before it (no land step)."""
+        mock_checkout.return_value = {"status": "ok", "checkout": {"status": "ok"}, "fetch": {"status": "ok"}, "auto_integrated": None}
         tool_context = self._tool_context(sprint_report="")
 
-        result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
+        with patch("agents.scrum_team.tools.budget.render_fallback_sprint_report") as mock_render:
+            result = create_release_pr(title="Sprint 1", body="body", tool_context=tool_context)
 
         self.assertEqual(result["status"], "ok")
-        mock_checkout.assert_not_called()
+        mock_render.assert_not_called()
+        mock_checkout.assert_called_once()
         mock_gh_pr_create.assert_called_once()
 
     @patch("agents.scrum_team.tools.github.gh_pr_create")

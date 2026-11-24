@@ -13,7 +13,7 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
-### A sprint closing with a feature branch checked out never wrote its live state to develop (SPEC-ISSUE-0094, Ready - not yet fixed)
+### A sprint closing with a feature branch checked out never wrote its live state to develop (SPEC-ISSUE-0094)
 
 A real eval run (0.2.1-run95) shipped 1 of 12 stories in 3 sprints and stopped with
 `budget_critical_halt`. The team's retro and the judge both blamed "phase boundary enforcement" for
@@ -30,8 +30,20 @@ branch. `advance_story_stage`'s GH #383 `state_push` sends `Implemented`/`Review
 and leaves the tree checked out there. Both close-out paths (`_ensure_sprint_report_on_final_halt`
 and `create_release_pr`'s land step) then `checkout -B develop origin/develop`, which silently swaps in
 develop's stale `state.json`. They re-render only the report files from live state and push, so the
-stale state ships and the next sprint loads it. Fix shape and failing-test design are in
-`specs/requirements/SPEC-ISSUE-0094-*.md`.
+stale state ships and the next sprint loads it.
+
+**Fix:** a new `_rewrite_live_state_into_working_tree` re-serializes `.hc/state.json`,
+`specs/ROADMAP.md` and every in-flight story file from live session state right after each
+close-out's develop checkout. It runs in `create_release_pr`'s land step and in both `agent.py`
+budget-halt safety nets.
+
+`create_release_pr`'s trailing local-only `save_state_to_repo` is now a real push to develop
+(`_push_live_state_to_develop`). Its own sprint reset (`sprint_backlog_pr_sprint = 0`,
+`sprint_report_pending_release = False`) finally reaches what the next sprint loads, so
+`start_sprint` gets through instead of seeing `'Development'`.
+
+New real-git regression tests (`test_live_state_reaches_develop.py`) reproduce run95's
+`['Draft', 'Ready']` on origin/develop before the fix and pass after it.
 
 ### A sprint stuck on a budget halt had no live recovery path - only .env + a container restart (SPEC-ISSUE-0092)
 

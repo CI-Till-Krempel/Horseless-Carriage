@@ -2,7 +2,7 @@
 
 - Issue ID: SPEC-ISSUE-0094
 - Title: Live State Never Reaches Develop When A Sprint Closes With A Feature Branch Checked Out - Stage Progress, Sprint Close And Budget Reset All Silently Lost
-- Status: Ready
+- Status: Done
 - Priority: Must
 - Owner: Architect
 - Last Updated: 2026-11-24
@@ -169,3 +169,50 @@ close-out step then builds on develop's stale snapshot.
 - Eval follow-up: the next Team Performance Evaluation run should show `team_sprint_number`
   incrementing per harness sprint, and no story's `stages_completed` shrinking between consecutive
   manifest snapshots (the Step 2 query in `.claude/skills/investigate-eval-run/SKILL.md`).
+
+## Resolution
+Fixed in the same PR that filed this issue (2026-11-24).
+
+- **New `_rewrite_live_state_into_working_tree`** (`agents/scrum_team/tools/github.py`) writes the
+  following from in-memory state onto whatever is checked out:
+  - `.hc/state.json`, via `save_state_to_repo`;
+  - `specs/ROADMAP.md`, via `sync_all_active_stories_to_roadmap`;
+  - the story file of every non-Epic backlog item past Ready, via `_update_story_markdown`.
+
+  Each artifact is best-effort, so one failure doesn't block the others.
+- **New `_push_live_state_to_develop`** checks out develop (`_checkout_develop_or_recover`), runs the
+  rewrite and `integrate_open_changes`, then publishes through `_preserve_local_only_develop_commits`
+  (push, or merge-then-push if diverged). A call with nothing new to publish creates no empty commit.
+- **`create_release_pr`**:
+  - The land step now runs the rewrite right after its develop checkout and before
+    `integrate_open_changes`.
+  - The trailing local-only `save_state_to_repo` is replaced by `_push_live_state_to_develop`. The
+    release-success reset (`sprint_report_pending_release`, `sprint_backlog_pr_sprint`) and
+    `finalize_release_version`'s state changes now actually reach origin/develop.
+  - The response gains `state_push`, plus a `state_push_warning` if publishing failed. The release
+    itself still reports `ok`, since the PR already opened.
+- **`agent.py`**: `_ensure_sprint_report_on_final_halt` and `_sync_and_commit_roadmap_on_exhaustion`
+  run the rewrite right after their own develop checkout. In the latter it replaces the roadmap-only
+  sync.
+- **Tests**: `agents/scrum_team/tests/test_live_state_reaches_develop.py` uses a real bare `origin`
+  and real git, with only `gh` stubbed, and reproduces run95's shape: a stale develop, and live state
+  checkpointed only on a pushed feature branch. It asserts on `git show develop:.hc/state.json` in
+  origin:
+  - `create_release_pr`: the story keeps `Implemented`, the report and live token usage are present,
+    `sprint_report_pending_release` is False, `sprint_backlog_pr_sprint` is 0,
+    `current_sprint_phase` is not `Development`, and the story file says Implemented.
+  - `_push_live_state_to_develop` is a no-op (no new commit) when develop already matches.
+  - `_ensure_sprint_report_on_final_halt`: the story keeps `Implemented`, live token usage and the
+    report are present, and the phase is `Review, Retro & Release`.
+
+  All three fail against the pre-fix code (origin/develop showed `['Draft', 'Ready']`, exactly as in
+  run95) and pass after the fix. Two `test_github.py` assertions and three `test_agent.py` patch
+  targets were updated for the intentional extra checkout/integrate and the renamed sync call.
+  `python3 run_tests.py`: 863 host + 1486 agent passed.
+- **Not changed** (deliberately out of scope): advance_story_stage's GH #383 feature-branch
+  `state_push`. Persisting in-flight progress on the feature branch is still correct; the gap was
+  only that close-out never re-published live state to develop. The `agent.py` close-out paths also
+  still use a raw `checkout -B develop origin/develop` rather than `_checkout_develop_or_recover`.
+  Live state is now rewritten after that checkout anyway, so a discarded local-only develop
+  checkpoint no longer loses state, but a discarded local-only `specs/` commit could still be lost
+  there. That's a pre-existing SPEC-ISSUE-0050-class gap, worth its own follow-up.
