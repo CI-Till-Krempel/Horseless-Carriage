@@ -13,6 +13,32 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### A sprint stuck on a budget halt had no live recovery path - only .env + a container restart (SPEC-ISSUE-0092)
+
+A real production run got stuck: the agent container answered every turn with
+`🚫 [TOKEN BUDGET EXCEEDED]`, and nothing typed into the running session could unstick it. The
+halt's own message named the only documented recovery - raise `SPRINT_TOKEN_BUDGET` in `.env` and
+restart the agent container - a heavyweight round-trip for "let this one sprint keep going right
+now."
+
+**Confirmed mechanism:** `check_cost_budget_callback` is a `BeforeModelCallback` - it synthesizes its
+halt response and returns *before* the LLM is ever invoked, so no chat message or tool call from a
+human can reach a live model turn to resolve it; the existing `resolve_blocking_interaction`
+human-in-the-loop tool is exactly as unreachable as everything else once the halt trips.
+`sync_budgets_from_env` also re-syncs `state.budgets.total`/`total_usd` from `.env` unconditionally
+on *every* turn (a deliberate anti-staleness fix from a prior incident), so even a direct write to
+the live session's budget would be silently undone the next turn.
+
+Added `python3 run.py override-budget --tokens N [--usd N] --reason "..."`: execs
+`agents/scrum_team/scripts/override_budget.py` inside the already-running agent container to bump
+`budgets.total`/`total_usd` directly on the live ADK session, no restart needed.
+`sync_budgets_from_env` now checks a `budget_human_override` marker and skips re-syncing whichever
+key(s) a human has pinned, so the override isn't immediately clobbered - and
+`sprint_budget_reset_state_delta` clears that marker at the next sprint's start, so it's scoped to
+the sprint it was applied during and can never mask a later, real `.env` fix. The override is
+audited: it appends a `budget_override` entry to `blocking_interactions` with the operator's given
+reason. See [docs/BUDGET.md](../docs/BUDGET.md) "Recovering From A Stuck Budget Halt".
+
 ### Every release audit silently renamed the same security-scan Issue's ID, orphaning its old spec file each time (0.2.1-run94, SPEC-ISSUE-0090)
 
 A real eval run (0.2.1-run94) scored Team Efficiency 1/5: five sprints, only two stories delivered,
