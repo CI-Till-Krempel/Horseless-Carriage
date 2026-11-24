@@ -84,6 +84,12 @@ class TestBudgetTools(unittest.TestCase):
         self.assertEqual(delta["sprint_report_kpis"], {})
         self.assertEqual(delta["sprint_report_path"], "", "a new sprint must allocate its own fresh report number, not reuse the previous sprint's")
         self.assertEqual(delta["transcript_path"], "", "a new sprint must allocate its own fresh transcript number, not reuse the previous sprint's")
+        self.assertIsNone(
+            delta["budget_human_override"],
+            "a human override (see override_budget.py) must not survive into a new sprint, or it could "
+            "mask a real .env fix + container restart indefinitely - the same staleness bug GH issue "
+            "#220 already fixed for sync_budgets_from_env itself",
+        )
 
     def test_sprint_budget_reset_state_delta_returns_independent_copies(self):
         """Two calls must not share the same nested dict - a caller

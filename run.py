@@ -30,6 +30,14 @@ Usage:
                                   rebuilds agent/ollama images fresh before
                                   starting (see rebuild_images.py) and runs
                                   with LOG_LEVEL=debug for this invocation.
+  python3 run.py override-budget --tokens N [--usd N] --reason "..."
+                                  Human override for a sprint stuck on a
+                                  🚫 BUDGET EXCEEDED halt: raises the token/
+                                  USD budget ceiling on the already-running
+                                  agent container's live session, with no
+                                  .env edit or container restart needed.
+                                  Scoped to the current sprint only - see
+                                  override_budget.py.
 """
 
 import os
@@ -78,6 +86,63 @@ def parse_args(argv):
         else:
             extra.append(arg)
     return mode, daemon, dev, extra
+
+
+def override_budget(argv: list) -> None:
+    """Handles `python3 run.py override-budget ...`. Unlike every other mode
+    above, this doesn't start the stack - it talks to an already-running
+    `agent` container's live ADK session (via override_budget.py, exec'd
+    inside it), to unstick a sprint halted by check_cost_budget_callback's
+    🚫 [TOKEN BUDGET EXCEEDED]/[USD BUDGET EXCEEDED] message without the
+    slow path (raise SPRINT_TOKEN_BUDGET/TOTAL_USD_BUDGET in .env, restart
+    the container) that message itself documents as the only prior option."""
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="run.py override-budget",
+        description="Raise the current sprint's token/USD budget ceiling on the "
+                     "already-running agent container's live session - unsticks a sprint "
+                     "halted by a \U0001f6ab BUDGET EXCEEDED message. No .env edit or "
+                     "container restart needed; the change is scoped to the current "
+                     "sprint only.",
+    )
+    parser.add_argument("--tokens", type=int, help="New sprint token budget ceiling")
+    parser.add_argument("--usd", type=float, help="New sprint USD budget ceiling")
+    parser.add_argument("--reason", required=True, help="Why - recorded in the sprint's blocking_interactions audit log")
+    parser.add_argument("--session-id", help="Defaults to whichever session was updated most recently")
+    parser.add_argument("--app-name", help="Defaults to whichever session was updated most recently")
+    parser.add_argument("--user-id", help="Defaults to whichever session was updated most recently")
+    args = parser.parse_args(argv)
+    if args.tokens is None and args.usd is None:
+        parser.error("pass --tokens and/or --usd")
+
+    if shutil.which("docker") is None:
+        print("ERROR: 'docker' command not found. Please install Docker.")
+        sys.exit(1)
+
+    os.chdir(Path(__file__).resolve().parent)
+    compose_args = compose_file_args(Path("."))
+    full_compose_args = compose_args + lib_docker.compose_project_args("dev")
+
+    cmd = ["docker", "compose", *full_compose_args, "exec", "agent",
+           "python3", "agents/scrum_team/scripts/override_budget.py",
+           "--reason", args.reason]
+    if args.tokens is not None:
+        cmd += ["--tokens", str(args.tokens)]
+    if args.usd is not None:
+        cmd += ["--usd", str(args.usd)]
+    if args.session_id:
+        cmd += ["--session-id", args.session_id]
+    if args.app_name:
+        cmd += ["--app-name", args.app_name]
+    if args.user_id:
+        cmd += ["--user-id", args.user_id]
+
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        print("Could not apply the override - is the agent container running? "
+              "(`docker compose ps` to check; start it with `python3 run.py` or "
+              "`python3 run.py daemon` first.)")
+    sys.exit(result.returncode)
 
 
 def _active_model_name(active_config_path: Path, active_provider: str, env: dict) -> str:
@@ -272,8 +337,16 @@ def main(argv: list = None) -> None:
 
 def _main(argv: list = None) -> None:
     os.chdir(Path(__file__).resolve().parent)
+    raw_argv = sys.argv[1:] if argv is None else argv
+    if raw_argv and raw_argv[0] == "override-budget":
+        # Doesn't start the stack - talks to an already-running one. Skip
+        # the banner/experimental-warning/doctor startup ceremony below,
+        # none of which applies to a maintenance command against a
+        # container that (if this works at all) is already up.
+        override_budget(raw_argv[1:])
+        return
     banner.print_banner()
-    mode, daemon, dev, extra_args = parse_args(sys.argv[1:] if argv is None else argv)
+    mode, daemon, dev, extra_args = parse_args(raw_argv)
     print_experimental_warning(Path("."), mode, daemon)
 
     if shutil.which("docker") is None:

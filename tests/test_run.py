@@ -732,3 +732,92 @@ class TestPrintExperimentalWarning:
         assert "WARNING" in out
         assert secret not in out
         assert urllib.parse.quote(secret) not in out
+
+
+class TestOverrideBudgetDispatch:
+    """
+    Acceptance Criteria: `python3 run.py override-budget ...` is a human-in-
+    the-loop recovery path for a sprint stuck on a token/USD budget halt -
+    it must exec override_budget.py inside the already-running `agent`
+    container (not start a fresh stack, not run doctor's startup gatekeeper)
+    and forward the given flags.
+    """
+
+    def _common_mocks(self, monkeypatch):
+        monkeypatch.setattr(run.os, "chdir", lambda _path: None)
+        monkeypatch.setattr(run.shutil, "which", lambda _cmd: "/usr/bin/docker")
+        monkeypatch.setattr(run, "compose_file_args", lambda _root: [])
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("override-budget must not run the normal startup gatekeeper")
+        monkeypatch.setattr(run.doctor, "check", fail_if_called)
+        monkeypatch.setattr(run.banner, "print_banner", fail_if_called)
+
+    def test_forwards_tokens_and_reason_as_docker_compose_exec(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", [
+            "run.py", "override-budget", "--tokens", "2000000", "--reason", "stuck sprint",
+        ])
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return run.subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+
+        assert exc_info.value.code == 0
+        cmd = captured["cmd"]
+        assert cmd[:2] == ["docker", "compose"]
+        assert cmd[-6:] == [
+            "python3", "agents/scrum_team/scripts/override_budget.py",
+            "--reason", "stuck sprint", "--tokens", "2000000",
+        ]
+        assert "exec" in cmd and cmd[cmd.index("exec") + 1] == "agent"
+
+    def test_forwards_usd_and_session_id(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", [
+            "run.py", "override-budget", "--usd", "25.5", "--reason", "stuck sprint",
+            "--session-id", "my-sprint",
+        ])
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return run.subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(run.subprocess, "run", fake_run)
+
+        with pytest.raises(SystemExit):
+            run.main()
+
+        cmd = captured["cmd"]
+        assert "--usd" in cmd and cmd[cmd.index("--usd") + 1] == "25.5"
+        assert "--session-id" in cmd and cmd[cmd.index("--session-id") + 1] == "my-sprint"
+
+    def test_requires_tokens_or_usd(self, monkeypatch):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", ["run.py", "override-budget", "--reason", "stuck sprint"])
+
+        def fail_if_called(*a, **k):
+            raise AssertionError("must not exec into the container with neither --tokens nor --usd")
+        monkeypatch.setattr(run.subprocess, "run", fail_if_called)
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+        assert exc_info.value.code != 0
+
+    def test_nonzero_exec_exit_code_prints_a_hint_and_propagates(self, monkeypatch, capsys):
+        self._common_mocks(monkeypatch)
+        monkeypatch.setattr(run.sys, "argv", [
+            "run.py", "override-budget", "--tokens", "2000000", "--reason", "stuck sprint",
+        ])
+        monkeypatch.setattr(run.subprocess, "run", lambda cmd, **k: run.subprocess.CompletedProcess(cmd, 1))
+
+        with pytest.raises(SystemExit) as exc_info:
+            run.main()
+
+        assert exc_info.value.code == 1
+        assert "agent container running" in capsys.readouterr().out
