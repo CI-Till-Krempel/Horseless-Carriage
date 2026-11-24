@@ -1078,6 +1078,58 @@ class TestSyncBudgetsFromEnv(unittest.TestCase):
         self.assertEqual(tool_context.state["budgets"]["total"], 50000)
         self.assertEqual(tool_context.state["budgets"]["total_usd"], 1.5)
 
+    def test_human_override_of_token_budget_is_not_clobbered_by_env_resync(self):
+        """override_budget.py (human-in-the-loop recovery for a sprint stuck
+        on a 🚫 TOKEN BUDGET EXCEEDED halt) bumps budgets.total live and
+        records the pinned key in budget_human_override - this function
+        otherwise unconditionally re-pulls from SPRINT_TOKEN_BUDGET every
+        single turn, which would silently undo the override on the very
+        next turn if it didn't check this flag."""
+        with patch.dict("os.environ", {"SPRINT_TOKEN_BUDGET": "100"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {
+                "budgets": {"total": 9000000, "total_usd": 10.0},
+                "budget_human_override": {"total": 9000000},
+            }
+            sync_budgets_from_env(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["budgets"]["total"], 9000000)
+
+    def test_human_override_of_usd_budget_is_not_clobbered_by_env_resync(self):
+        with patch.dict("os.environ", {"TOTAL_USD_BUDGET": "10"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {
+                "budgets": {"total": 5000000, "total_usd": 500.0},
+                "budget_human_override": {"total_usd": 500.0},
+            }
+            sync_budgets_from_env(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["budgets"]["total_usd"], 500.0)
+
+    def test_override_of_one_key_still_lets_the_other_sync_from_env_normally(self):
+        """A human overriding only the token budget must not accidentally
+        freeze the USD budget too - only the explicitly-pinned key is
+        protected from the live env resync."""
+        with patch.dict("os.environ", {"SPRINT_TOKEN_BUDGET": "9000000", "TOTAL_USD_BUDGET": "20"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {
+                "budgets": {"total": 9000000, "total_usd": 1.0},
+                "budget_human_override": {"total": 9000000},
+            }
+            sync_budgets_from_env(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["budgets"]["total"], 9000000)
+        self.assertEqual(tool_context.state["budgets"]["total_usd"], 20.0)
+
+    def test_no_override_present_behaves_exactly_as_before(self):
+        with patch.dict("os.environ", {"SPRINT_TOKEN_BUDGET": "6000000", "TOTAL_USD_BUDGET": "20"}, clear=True):
+            tool_context = MagicMock()
+            tool_context.state = {"budgets": {"total": 100, "total_usd": 0.0}}
+            sync_budgets_from_env(tool_context=tool_context)
+
+        self.assertEqual(tool_context.state["budgets"]["total"], 6000000)
+        self.assertEqual(tool_context.state["budgets"]["total_usd"], 20.0)
+
 
 class TestInitScrumStateCorruptionSurfacing(unittest.TestCase):
     """
