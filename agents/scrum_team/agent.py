@@ -371,7 +371,7 @@ from .tools import (
 # genuinely needs to push straight to a protected branch on the sprint
 # budget running out. See git_push's own docstring for why allow_protected
 # is deliberately not a parameter any agent-facing tool call can set.
-from .tools.github import _git_push_impl, integrate_open_changes
+from .tools.github import _git_push_impl, integrate_open_changes, _rewrite_live_state_into_working_tree
 from .tools.quality import (
     calculate_kpis,
     update_sprint_report as update_sprint_report_with_kpis,
@@ -399,7 +399,6 @@ from .tools.budget import (
 # _sync_and_commit_roadmap_on_exhaustion/_ensure_sprint_report_on_final_halt_
 # once below, the mechanical last-gasp actions triggered when the sprint
 # budget runs out mid-turn.
-from .tools.requirements import sync_all_active_stories_to_roadmap
 from .tools.budget import render_fallback_sprint_report
 from .tools.scrum import sync_budgets_from_env
 from .tools.base import _configured_repo_root, _run, _redact_secrets, _develop_branch_name
@@ -576,7 +575,12 @@ def _sync_and_commit_roadmap_on_exhaustion(callback_context: CallbackContext) ->
         # the checkout above (not before) since it renders straight from
         # in-memory state - the resulting write is correct on whichever
         # branch is now actually checked out.
-        sync_all_active_stories_to_roadmap(callback_context)
+        #
+        # SPEC-ISSUE-0094: not just ROADMAP.md - .hc/state.json and every
+        # in-flight story file too. The checkout above swapped all of them
+        # for develop's own (possibly stale) committed copies, and the
+        # roadmap alone leaves develop's state.json contradicting it.
+        _rewrite_live_state_into_working_tree(callback_context)
 
         if branch:
             _git_push_impl(
@@ -663,6 +667,16 @@ def _ensure_sprint_report_on_final_halt(callback_context: CallbackContext, reaso
             branch = current_branch if current_branch and current_branch != "HEAD" else None
 
         render_fallback_sprint_report(callback_context, reason=reason)
+
+        # SPEC-ISSUE-0094: the `checkout -B develop origin/develop` above
+        # silently swapped .hc/state.json/ROADMAP.md/story files for
+        # develop's own committed copies - which a real eval run
+        # (0.2.1-run95) showed can be a whole sprint stale, every later
+        # checkpoint having landed on an unmerged feature branch instead.
+        # The report is re-rendered from live state; the state itself must
+        # be too, or integrate_open_changes (dirty files only) ships the
+        # stale snapshot and the next sprint loads it.
+        _rewrite_live_state_into_working_tree(callback_context)
 
         # SPEC-ISSUE-0077: commit/PR wording must match why this actually
         # fired - "budget exhausted" is simply false for the "nudges" case

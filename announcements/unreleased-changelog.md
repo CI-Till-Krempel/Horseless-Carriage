@@ -30,6 +30,38 @@ prompt's own default is "yes". Verified with a PTY-driven `adk web` in a throwaw
 stops at the prompt without the opt-out and reaches `Uvicorn running` with it. A new
 `tests/test_agent_dockerfile.py` case guards the line.
 
+### A sprint closing with a feature branch checked out never wrote its live state to develop (SPEC-ISSUE-0094)
+
+A real eval run (0.2.1-run95) shipped 1 of 12 stories in 3 sprints and stopped with
+`budget_critical_halt`. The team's retro and the judge both blamed "phase boundary enforcement" for
+US-0002 never reaching Tested. That isn't what happened: the team lost its own state between sprints.
+US-0002 was `Implemented` at the end of sprint 2 and back at `Ready` in sprint 3 (`"Cannot mark
+'US-0002' as Reviewed - it hasn't completed ['Implemented'] yet"`). The team's sprint number also
+stayed at 1 for all three harness sprints, because `start_sprint` was refused as still in
+`'Development'` every time. As a result sprints 2 and 3 never got a budget reset and each started with
+only about 1.3M of 5M tokens left.
+
+**Confirmed mechanism (eval-repo git history):** develop's `.hc/state.json` last changed at 10:34, six
+minutes into a 15-minute run. Every later state checkpoint landed on US-0002's never-merged feature
+branch. `advance_story_stage`'s GH #383 `state_push` sends `Implemented`/`Reviewed` there by design,
+and leaves the tree checked out there. Both close-out paths (`_ensure_sprint_report_on_final_halt`
+and `create_release_pr`'s land step) then `checkout -B develop origin/develop`, which silently swaps in
+develop's stale `state.json`. They re-render only the report files from live state and push, so the
+stale state ships and the next sprint loads it.
+
+**Fix:** a new `_rewrite_live_state_into_working_tree` re-serializes `.hc/state.json`,
+`specs/ROADMAP.md` and every in-flight story file from live session state right after each
+close-out's develop checkout. It runs in `create_release_pr`'s land step and in both `agent.py`
+budget-halt safety nets.
+
+`create_release_pr`'s trailing local-only `save_state_to_repo` is now a real push to develop
+(`_push_live_state_to_develop`). Its own sprint reset (`sprint_backlog_pr_sprint = 0`,
+`sprint_report_pending_release = False`) finally reaches what the next sprint loads, so
+`start_sprint` gets through instead of seeing `'Development'`.
+
+New real-git regression tests (`test_live_state_reaches_develop.py`) reproduce run95's
+`['Draft', 'Ready']` on origin/develop before the fix and pass after it.
+
 ### A sprint stuck on a budget halt had no live recovery path - only .env + a container restart (SPEC-ISSUE-0092)
 
 A real production run got stuck: the agent container answered every turn with
@@ -55,6 +87,27 @@ key(s) a human has pinned, so the override isn't immediately clobbered - and
 the sprint it was applied during and can never mask a later, real `.env` fix. The override is
 audited: it appends a `budget_override` entry to `blocking_interactions` with the operator's given
 reason. See [docs/BUDGET.md](../docs/BUDGET.md) "Recovering From A Stuck Budget Halt".
+
+### doctor.py now repairs host ports shared by registered projects, and flags workbench scripts needing OpenJDK < 21 (SPEC-ISSUE-0093)
+
+`python3 run.py` failed for a real project with
+`E: Unable to locate package openjdk-17-jdk` at the workbench step of the agent image build, right
+after two `port ... reassigned` notes that made it look like a port problem. The actual cause:
+`python:3.11-slim` now resolves to Debian trixie, which dropped OpenJDK 17, and the project's
+Architect-authored `.hc/workbench-setup.sh` (as well as our own `kotlin-multiplatform` and
+`react-vite-firebase` reference templates) still installed it. `doctor.py` now raises an error for
+any `openjdk-<N>` with `N < 21` in `.hc/workbench-setup.sh` and names the replacement package, and
+both templates install `openjdk-21-*`.
+
+Investigating it exposed a real port gap too: every port guard (`new_project.py`,
+`ensure_dev_ports_available`) only checked whether a port was bound *right now*, so a stopped
+registered project's ports looked free and could be handed to another project. `doctor.py` now scans
+every project in `~/.horseless-carriage/projects.json` plus its own checkout, and reassigns
+duplicates to free, unclaimed ports (`lib_docker.repair_registered_port_conflicts`; a project with
+a running stack keeps its port; `--dry-run` only warns). Startup and install-time assignment now also
+skip ports other registered projects claim. Host tests now always run against a tmp registry
+(autouse fixture in `tests/conftest.py`), so they can never rewrite a developer's real project
+`.env` files.
 
 ### Every release audit silently renamed the same security-scan Issue's ID, orphaning its old spec file each time (0.2.1-run94, SPEC-ISSUE-0090)
 

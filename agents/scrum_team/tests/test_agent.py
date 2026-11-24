@@ -2781,7 +2781,7 @@ class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):
         with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
              patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
              patch("agents.scrum_team.agent._run", side_effect=fake_run) as mock_run, \
-             patch("agents.scrum_team.agent.sync_all_active_stories_to_roadmap") as mock_sync, \
+             patch("agents.scrum_team.agent._rewrite_live_state_into_working_tree") as mock_sync, \
              patch("agents.scrum_team.agent._git_push_impl") as mock_push:
             _sync_and_commit_roadmap_on_exhaustion(mock_context)
 
@@ -2808,7 +2808,7 @@ class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):
         with patch("agents.scrum_team.agent._configured_repo_root", return_value="/repo"), \
              patch("agents.scrum_team.agent._develop_branch_name", return_value="develop"), \
              patch("agents.scrum_team.agent._run", side_effect=fake_run), \
-             patch("agents.scrum_team.agent.sync_all_active_stories_to_roadmap"), \
+             patch("agents.scrum_team.agent._rewrite_live_state_into_working_tree"), \
              patch("agents.scrum_team.agent._git_push_impl") as mock_push:
             _sync_and_commit_roadmap_on_exhaustion(mock_context)
 
@@ -2847,7 +2847,7 @@ class TestSyncAndCommitRoadmapOnExhaustion(unittest.TestCase):
         real_project_root = str(_project_root())
 
         with patch("agents.scrum_team.agent._run") as mock_run, \
-             patch("agents.scrum_team.agent.sync_all_active_stories_to_roadmap"), \
+             patch("agents.scrum_team.agent._rewrite_live_state_into_working_tree"), \
              patch("agents.scrum_team.agent._git_push_impl") as mock_push:
             mock_run.return_value = {"status": "ok", "stdout": "", "stderr": ""}
             _sync_and_commit_roadmap_on_exhaustion(mock_context)

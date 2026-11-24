@@ -379,7 +379,7 @@ def is_port_free(port: int, host: str = "127.0.0.1") -> bool:
             return False
 
 
-def find_free_port(preferred: int, max_attempts: int = 50) -> Optional[int]:
+def find_free_port(preferred: int, max_attempts: int = 50, exclude: Optional[set] = None) -> Optional[int]:
     """preferred if free, else the first free port scanning upward - so a
     second/third concurrent installation gets its own port instead of
     failing to bind at `docker compose up` time with no clear reason why.
@@ -387,8 +387,15 @@ def find_free_port(preferred: int, max_attempts: int = 50) -> Optional[int]:
     callers with different error-handling needs (new_project.py's one-shot
     interactive setup dies outright; run.py/dashboard.py's startup checks
     below just skip reassignment and let the real `docker compose up`
-    failure, if any, surface normally) decide how to react themselves."""
+    failure, if any, surface normally) decide how to react themselves.
+
+    exclude: ports to skip even if nothing currently has them bound - e.g.
+    ports another *registered* project's .env already claims while its stack
+    happens to be stopped (see registered_dev_port_claims)."""
+    exclude = exclude or set()
     for port in range(preferred, preferred + max_attempts):
+        if port in exclude:
+            continue
         if is_port_free(port):
             return port
     return None
@@ -421,19 +428,152 @@ def ensure_dev_ports_available(repo_root: Path, compose_args: list) -> list:
     if compose_running_services(compose_args, cwd=repo_root):
         return []
 
+    # A port another registered project's .env claims counts as taken even
+    # while that project's stack is stopped - otherwise this project could
+    # grab it now and the two would collide the moment both are started.
+    claimed_by_others = {
+        claim["port"] for claim in registered_dev_port_claims()
+        if claim["hc_path"] != _norm_hc_path(repo_root)
+    }
+
     env_path = Path(repo_root) / ".env"
     changes = []
     for var, default_port in _DEV_HOST_PORT_VARS:
         current = lib_env.read_env_var(env_path, var)
         port = int(current) if current else default_port
-        if is_port_free(port):
+        if port not in claimed_by_others and is_port_free(port):
             continue
-        new_port = find_free_port(port + 1)
+        new_port = find_free_port(port + 1, exclude=claimed_by_others)
         if new_port is None:
             continue  # best-effort; the real `docker compose up` bind failure (if any) will surface on its own
         lib_env.update_env_var(env_path, var, str(new_port))
+        claimed_by_others.add(new_port)
         changes.append((var, port, new_port))
     return changes
+
+
+def _norm_hc_path(path) -> str:
+    try:
+        return str(Path(path).expanduser().resolve())
+    except OSError:
+        return str(path)
+
+
+def registered_dev_port_claims(extra_hc_paths: Optional[list] = None) -> list:
+    """Every LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT claimed by a project in
+    project_registry.py (dashboard.py's ~/.horseless-carriage/projects.json),
+    read from each project's own <hc_path>/.env - a missing var counts as
+    its default (4000/8000), exactly like docker-compose.yaml's own
+    `${LITELLM_HOST_PORT:-4000}` fallback. extra_hc_paths adds checkouts
+    that may not be registered (doctor.py's own repo_root), appended after
+    the registry entries. Entries whose .env doesn't exist are skipped (a
+    stale registry row isn't claiming anything), as are duplicate hc_paths.
+
+    Returns a list of {"name", "hc_path", "var", "port"} dicts in registry
+    order - that order is what repair_registered_port_conflicts uses to pick
+    which project keeps a contested port."""
+    import project_registry  # local import: keeps lib_docker importable without it in odd contexts
+
+    entries = [(e.get("name") or Path(e.get("hc_path", "")).parent.name, e.get("hc_path"))
+               for e in project_registry.load() if e.get("hc_path")]
+    for path in extra_hc_paths or []:
+        entries.append((Path(path).resolve().parent.name or str(path), str(path)))
+
+    claims, seen = [], set()
+    for name, hc_path in entries:
+        norm = _norm_hc_path(hc_path)
+        env_path = Path(norm) / ".env"
+        if norm in seen or not env_path.is_file():
+            continue
+        seen.add(norm)
+        for var, default_port in _DEV_HOST_PORT_VARS:
+            raw = lib_env.read_env_var(env_path, var)
+            try:
+                port = int(raw) if raw else default_port
+            except ValueError:
+                continue  # malformed value - not ours to interpret here
+            claims.append({"name": name, "hc_path": norm, "var": var, "port": port})
+    return claims
+
+
+def find_registered_port_conflicts(claims: list) -> dict:
+    """{port: [claim, ...]} for every host port claimed more than once across
+    claims (see registered_dev_port_claims) - whichever var claims it, since
+    a LiteLLM port colliding with another project's ADK web port is just as
+    much a bind failure."""
+    by_port = {}
+    for claim in claims:
+        by_port.setdefault(claim["port"], []).append(claim)
+    return {port: group for port, group in by_port.items() if len(group) > 1}
+
+
+def _dev_stack_running(hc_path: str) -> bool:
+    root = Path(hc_path)
+    compose_args = compose_file_args(root) + compose_project_args("dev", root)
+    return bool(compose_running_services(compose_args, cwd=root))
+
+
+def repair_registered_port_conflicts(extra_hc_paths: Optional[list] = None, dry_run: bool = False) -> dict:
+    """Detects (and, unless dry_run, fixes) host ports assigned to more than
+    one registered Horseless Carriage project. Before this, the only
+    port-collision guards were new_project.py's install-time check and
+    ensure_dev_ports_available's startup check, and both only ask "is this
+    port bound *right now*" - a project whose stack happened to be stopped
+    looked like it wasn't using its ports at all, so two projects could end
+    up configured with the same one and only discover it as a Docker bind
+    failure (or a surprise reassignment) once both were started.
+
+    For each contested port, one project keeps it: the first one whose dev
+    stack is actually running (it really holds the port - moving it would
+    break a live stack), else the first in registry order. Every other
+    claimant gets a fresh port that's free on this machine AND unclaimed by
+    any registered project, persisted to its own .env via
+    lib_env.update_env_var. A claimant whose own stack is running is never
+    rewritten (its containers were started with the old value) - it's
+    reported as unresolved instead. In dry_run no Docker calls are made and
+    nothing is written; every contested claimant past the first is reported
+    as unresolved.
+
+    Returns {"changes": [(name, hc_path, var, old, new)], "unresolved":
+    [(name, hc_path, var, port, reason)]}."""
+    claims = registered_dev_port_claims(extra_hc_paths)
+    conflicts = find_registered_port_conflicts(claims)
+    result = {"changes": [], "unresolved": []}
+    if not conflicts:
+        return result
+
+    claimed = {c["port"] for c in claims}
+    running_cache = {}
+
+    def running(hc_path):
+        if hc_path not in running_cache:
+            running_cache[hc_path] = _dev_stack_running(hc_path)
+        return running_cache[hc_path]
+
+    for port, group in sorted(conflicts.items()):
+        if dry_run:
+            for claim in group[1:]:
+                result["unresolved"].append((claim["name"], claim["hc_path"], claim["var"], port,
+                                             f"also claimed by {group[0]['name']}"))
+            continue
+        keeper = next((c for c in group if running(c["hc_path"])), group[0])
+        for claim in group:
+            if claim is keeper:
+                continue
+            if running(claim["hc_path"]):
+                result["unresolved"].append((claim["name"], claim["hc_path"], claim["var"], port,
+                                             "its stack is running - stop it, then re-run doctor.py"))
+                continue
+            default_port = dict(_DEV_HOST_PORT_VARS)[claim["var"]]
+            new_port = find_free_port(max(port, default_port) + 1, exclude=claimed)
+            if new_port is None:
+                result["unresolved"].append((claim["name"], claim["hc_path"], claim["var"], port,
+                                             "no free port found nearby"))
+                continue
+            lib_env.update_env_var(Path(claim["hc_path"]) / ".env", claim["var"], str(new_port))
+            claimed.add(new_port)
+            result["changes"].append((claim["name"], claim["hc_path"], claim["var"], port, new_port))
+    return result
 
 
 def print_stack_conflict_hint(project_args: list) -> None:

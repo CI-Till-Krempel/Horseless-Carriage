@@ -9,7 +9,7 @@
 set -e
 
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates gnupg openjdk-17-jre-headless
+apt-get install -y --no-install-recommends ca-certificates gnupg openjdk-21-jre-headless
 
 # Node.js LTS via NodeSource (base image has no Node at all).
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -

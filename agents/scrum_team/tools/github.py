@@ -156,6 +156,111 @@ def integrate_open_changes(tool_context=None) -> Dict[str, Any]:
     return {"status": "ok", "integrated": True, "files": files, "commit": commit}
 
 
+# Stages whose story-file/roadmap updates advance_story_stage pushes to the
+# story's own feature branch (GH #383) rather than develop - exactly the
+# progress that goes missing from develop if the sprint ends before that
+# branch merges (SPEC-ISSUE-0094). Accepted already pushes straight to
+# develop, but re-rendering it is idempotent, so it's included too.
+_POST_PLANNING_STAGES = ("Implemented", "Reviewed", "Tested", "Accepted")
+
+
+def _rewrite_live_state_into_working_tree(tool_context=None) -> Dict[str, Any]:
+    """
+    SPEC-ISSUE-0094: re-serialize the live session's state onto whatever
+    branch is checked out right now - .hc/state.json, specs/ROADMAP.md, and
+    the story file of every story past Ready - rendered from in-memory
+    state, never from what happens to be on disk.
+
+    Call this immediately AFTER any checkout of develop that precedes a
+    close-out push (create_release_pr's land step, agent.py's budget-halt
+    safety nets) and BEFORE integrate_open_changes. That checkout silently
+    swaps the working tree's clean, committed .hc/state.json for develop's
+    own copy, which can be arbitrarily stale. Every checkpoint since the
+    team last touched develop may have landed on an unmerged feature branch
+    instead: advance_story_stage's GH #383 state_push targets the feature
+    branch for Implemented/Reviewed/Tested, and save_state_to_repo commits
+    onto whatever branch is checked out. integrate_open_changes only commits
+    *dirty* files, so without this step the stale copy shipped unchanged. A
+    real eval run (0.2.1-run95) lost a story's Implemented stage, a whole
+    sprint's close-out (token usage, sprint report) and create_release_pr's
+    sprint reset this way, so start_sprint was refused as 'Development'
+    every sprint and the budget never reset.
+
+    Best-effort per artifact: one failing sync never prevents the others.
+    Returns each sub-result so a caller can surface it.
+    """
+    from .scrum import save_state_to_repo
+    from .requirements import sync_all_active_stories_to_roadmap, _update_story_markdown
+
+    results: Dict[str, Any] = {}
+    try:
+        results["state"] = save_state_to_repo(tool_context)
+    except Exception as e:
+        results["state"] = {"status": "error", "message": str(e)}
+    try:
+        results["roadmap"] = sync_all_active_stories_to_roadmap(tool_context)
+    except Exception as e:
+        results["roadmap"] = {"status": "error", "message": str(e)}
+    stories: Dict[str, Any] = {}
+    state = tool_context.state if tool_context is not None and getattr(tool_context, "state", None) else {}
+    for item in state.get("product_backlog") or []:
+        if item.get("type", "User Story") == "Epic":
+            continue
+        if not any(stage in _POST_PLANNING_STAGES for stage in (item.get("stages_completed") or [])):
+            continue
+        key = item.get("id") or item.get("title")
+        try:
+            stories[key] = _update_story_markdown(item, tool_context)
+        except Exception as e:
+            stories[key] = {"status": "error", "message": str(e)}
+    results["stories"] = stories
+    return results
+
+
+def _push_live_state_to_develop(tool_context=None) -> Dict[str, Any]:
+    """
+    SPEC-ISSUE-0094: check out develop, re-serialize live state onto it
+    (_rewrite_live_state_into_working_tree), commit, and actually push it.
+    This is for state changes made after a caller's own last push to develop.
+    create_release_pr's release-success reset (sprint_report_pending_release
+    = False, sprint_backlog_pr_sprint = 0) is the case this was built for:
+    start_sprint is phase-gated on exactly those two fields, and before this
+    they only ever reached a local-only save_state_to_repo checkpoint
+    (_checkpoint_state_commit: "Never pushes").
+
+    Pushes via _preserve_local_only_develop_commits (push local-ahead
+    develop, merging origin first if diverged) rather than _git_push_impl,
+    so a call with nothing new to publish creates no empty commit. Returns
+    {"status", "pushed", ...}; "pushed" False with status "ok" means develop
+    already matched live state.
+    """
+    repo_root = str(_configured_repo_root(tool_context))
+    develop = _develop_branch_name(tool_context)
+    checkout_res = _checkout_develop_or_recover(repo_root, develop, tool_context=tool_context)
+    if checkout_res.get("status") != "ok":
+        checkout_err = checkout_res.get("checkout") or {}
+        return {
+            "status": "error",
+            "pushed": False,
+            "message": (
+                f"Could not check out '{develop}' to publish live state: "
+                f"{checkout_err.get('stderr') or checkout_err.get('message')}"
+            ),
+        }
+    rewrite = _rewrite_live_state_into_working_tree(tool_context)
+    integrated = integrate_open_changes(tool_context=tool_context)
+    preserved = _preserve_local_only_develop_commits(repo_root, develop, tool_context=tool_context)
+    if preserved is None:
+        return {"status": "ok", "pushed": False, "rewrite": rewrite, "integrated": integrated}
+    return {
+        "status": preserved.get("status", "error"),
+        "pushed": bool(preserved.get("in_sync")),
+        "preserved": preserved,
+        "rewrite": rewrite,
+        "integrated": integrated,
+    }
+
+
 def _untrack_gitignored_dirty_files(repo_root: str, tool_context=None) -> Dict[str, Any]:
     """
     SPEC-ISSUE-0085: integrate_open_changes only ever sweeps specs/.hc -
@@ -2091,6 +2196,13 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         # plus whatever else update_roadmap/upsert_story/upsert_issue/
         # generate_workflow_diagram left uncommitted this sprint) - never
         # a stray build artifact or leftover file swept in by "-A".
+        #
+        # SPEC-ISSUE-0094: the checkout above just swapped .hc/state.json
+        # (and ROADMAP.md/story files) for develop's own, possibly stale,
+        # committed copies - re-serialize live state first, or the release
+        # ships the stale snapshot unchanged (it's clean, so
+        # integrate_open_changes alone never picks it up).
+        _rewrite_live_state_into_working_tree(tool_context)
         integrate_open_changes(tool_context=tool_context)
         land_res = _git_push_impl(
             branch=develop,
@@ -2280,9 +2392,19 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
     # sprint_report_step_active() condition (helpers.py) that locked
     # Scrum Master out of every tool but transfer_to_agent, bouncing
     # with Product Owner until the loop breaker tripped (0.1.0-run50).
+    #
+    # SPEC-ISSUE-0094: saving alone wasn't enough either - save_state_to_
+    # repo's checkpoint is local-only, so these resets (plus
+    # finalize_release_version's own state changes above) never reached
+    # origin/develop, which is exactly what the next sprint loads. A real
+    # eval run (0.2.1-run95) had start_sprint refused as 'Development' at
+    # every sprint start because develop still carried sprint_backlog_pr_
+    # sprint=1. Publish them to develop - the open release PR picks the
+    # commit up. Best-effort: the PR itself already opened fine, so a
+    # failure here is surfaced as a warning, not an error.
+    state_push = None
     if tool_context and getattr(tool_context, "state", None):
-        from .scrum import save_state_to_repo
-        save_state_to_repo(tool_context)
+        state_push = _push_live_state_to_develop(tool_context)
     result = {
         "status": "ok",
         "released": True,
@@ -2291,6 +2413,15 @@ def create_release_pr(title: str, body: str, tool_context=None) -> Dict[str, Any
         "pr_number": pr_number,
         "pr_url": pr_url,
     }
+    if state_push is not None:
+        result["state_push"] = {k: state_push.get(k) for k in ("status", "pushed", "message") if k in state_push}
+        if state_push.get("status") != "ok":
+            result["state_push_warning"] = (
+                f"The release PR is open, but publishing the release's own state reset to "
+                f"'{develop}' failed ({state_push.get('message') or state_push.get('preserved')}) - "
+                "the next sprint may load stale state. Retry create_release_pr (it won't re-open "
+                "the PR) to publish it."
+            )
     if changelog_warning:
         result["changelog_warning"] = changelog_warning
     if version_warning:

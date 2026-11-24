@@ -198,12 +198,16 @@ def _configure_for_target_project(repo_root: Path, target_repo: Path) -> None:
         info(f"COMPOSE_PROJECT_NAME_PREFIX set to '{prefix}' - keeps this project's containers/images "
              "from colliding with another Horseless Carriage installation's.")
 
+    # Ports another registered project's .env already claims are taken even
+    # while that project's stack is stopped (is_port_free can't see that).
+    claimed_by_others = {c["port"] for c in lib_docker.registered_dev_port_claims()
+                         if c["hc_path"] != lib_docker._norm_hc_path(repo_root)}
     for var, default_port in (("LITELLM_HOST_PORT", 4000), ("AGENT_WEB_HOST_PORT", 8000)):
         if lib_env.read_env_var(env_path, var):
             continue
-        if lib_docker.is_port_free(default_port):
+        if default_port not in claimed_by_others and lib_docker.is_port_free(default_port):
             continue
-        free_port = lib_docker.find_free_port(default_port + 1)
+        free_port = lib_docker.find_free_port(default_port + 1, exclude=claimed_by_others)
         if free_port is None:
             die(f"Could not find a free port near {default_port} after 50 attempts.")
         lib_env.update_env_var(env_path, var, str(free_port))
