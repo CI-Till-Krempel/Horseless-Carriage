@@ -51,7 +51,7 @@ template" below covers contributing one.
 | Template name | Tech stack | Additional runtime allowlist hosts |
 |---|---|---|
 | `python-flask` | Python + Flask: scaffold, install, test (pytest/pytest-flask), run, debug (debugpy), and exploratory-test (HTTPie/`flask shell`) a Flask application. | `pypi.org`, `files.pythonhosted.org` |
-| `kotlin-multiplatform` | Kotlin Multiplatform (KMP) targeting Android & iOS: shared-module scaffold, JDK 17 + Android SDK + Gradle, Gradle test tasks for both targets, Android run/debug. iOS *test* tasks run here; iOS *build/run/debug* needs a real macOS host with Xcode and is explicitly out of scope for this container-based workbench. | `services.gradle.org`, `plugins.gradle.org`, `repo.maven.apache.org`, `repo1.maven.org`, `dl.google.com` |
+| `kotlin-multiplatform` | Kotlin Multiplatform (KMP) targeting Android & iOS: shared-module scaffold, JDK 21 + Android SDK + Gradle, Gradle test tasks for both targets, Android run/debug. iOS *test* tasks run here; iOS *build/run/debug* needs a real macOS host with Xcode and is explicitly out of scope for this container-based workbench. | `services.gradle.org`, `plugins.gradle.org`, `repo.maven.apache.org`, `repo1.maven.org`, `dl.google.com` |
 | `react-vite-firebase` | Vite + React frontend with Firebase Functions + Firestore backend: scaffold, install, test (Vitest), run the Vite dev server and the Firebase emulator suite, debug via Node's inspector. | `registry.npmjs.org`, `firebase.googleapis.com`, `firestore.googleapis.com`, `cloudfunctions.googleapis.com`, `www.googleapis.com` |
 
 This table is a convenience, hand-kept in sync with each template's own

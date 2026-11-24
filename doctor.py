@@ -37,6 +37,14 @@ This script will:
    250 lines (GH issue #513 - context-window optimizations) - checked
    against this project's own checkout (repo_root), not a target project's
    STATE_REPO_PATH.
+8. Check every project in the dashboard registry (project_registry.py), plus
+   this checkout, for LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT values assigned
+   to more than one project, and reassign the duplicates to free, unclaimed
+   ports (dry_run only reports them). See
+   lib_docker.repair_registered_port_conflicts.
+9. Error if .hc/workbench-setup.sh installs an OpenJDK package the agent
+   image's Debian base no longer ships (e.g. openjdk-17-jdk on trixie) -
+   otherwise the image build fails with 'Unable to locate package'.
 
 Every problem found is collected into a punch list of ActionableItems (see
 check()) instead of stopping at the first one - a user fixing configuration
@@ -50,6 +58,7 @@ Stdlib-only, works identically on macOS/Linux/Windows.
 """
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -96,6 +105,31 @@ def _detect_unsupported_ecosystem(state_repo_path: Path) -> str | None:
                 return ecosystem
         elif (state_repo_path / pattern).exists():
             return ecosystem
+    return None
+
+
+# agent.Dockerfile's `FROM python:3.11-slim` floats with Debian's stable
+# release. Since it moved to trixie, OpenJDK < 21 is gone from apt
+# (trixie ships openjdk-21+), so a workbench-setup.sh written against
+# bookworm's openjdk-17-jdk breaks the whole agent image build.
+_BASE_IMAGE_DEBIAN_RELEASE = "trixie"
+_MIN_AVAILABLE_OPENJDK = 21
+_OPENJDK_PACKAGE_RE = re.compile(r"\bopenjdk-(\d+)(-[a-z-]+)?")
+
+
+def _unavailable_openjdk_package(state_repo_path: Path) -> str | None:
+    """The first `openjdk-<N>...` package .hc/workbench-setup.sh installs
+    that the base image's Debian release doesn't have, or None."""
+    script = state_repo_path / ".hc" / "workbench-setup.sh"
+    if not script.is_file():
+        return None
+    text = script.read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for match in _OPENJDK_PACKAGE_RE.finditer(line):
+            if int(match.group(1)) < _MIN_AVAILABLE_OPENJDK:
+                return match.group(0)
     return None
 
 
@@ -342,6 +376,21 @@ def check(
                 ".env values)."
             )
 
+    # 2b. Host ports shared by more than one registered project - see
+    # lib_docker.repair_registered_port_conflicts. Auto-repaired (the
+    # non-keeper's .env gets a fresh free port) unless dry_run, in which
+    # case it's only reported. repo_root itself is included even if it
+    # isn't registered, so a standalone checkout is checked too.
+    if env_path.is_file():
+        port_report = lib_docker.repair_registered_port_conflicts(extra_hc_paths=[repo_root], dry_run=dry_run)
+        for name, hc_path, var, old_port, new_port in port_report["changes"]:
+            print(f"FIXED: port {old_port} was assigned to more than one registered project - "
+                  f"{name}'s {var} reassigned to {new_port} ({hc_path}/.env).")
+        for name, hc_path, var, port, reason in port_report["unresolved"]:
+            warn(f"Port {port} ({var}) of project '{name}' ({hc_path}) is assigned to more than one "
+                 f"registered Horseless Carriage project ({reason}) - both stacks can't run at once. "
+                 "Run python3 doctor.py (without --dry-run) to reassign it automatically.")
+
     # 3. Check GitHub configuration
     if not env.get("GITHUB_REPO_URL"):
         warn("GITHUB_REPO_URL is not set in .env. The agent might not know which repository to use.")
@@ -512,6 +561,16 @@ def check(
                      ".hc/workbench-setup.sh is still the untouched placeholder - the agent image has no JDK, "
                      "so `./gradlew test`/`./mvnw test` can't run. The Architect should call "
                      "propose_framework_change to add one.")
+
+            unavailable_jdk = _unavailable_openjdk_package(state_repo_path)
+            if unavailable_jdk:
+                suggested_jdk = _OPENJDK_PACKAGE_RE.sub(
+                    lambda m: f"openjdk-{_MIN_AVAILABLE_OPENJDK}{m.group(2) or ''}", unavailable_jdk)
+                error(f".hc/workbench-setup.sh installs '{unavailable_jdk}', which the agent image's base "
+                      f"(python:3.11-slim, now Debian {_BASE_IMAGE_DEBIAN_RELEASE}) no longer ships - the image "
+                      "build fails with 'E: Unable to locate package'. Switch it to "
+                      f"'{suggested_jdk}' "
+                      "(or default-jdk-headless) in the product repo's .hc/workbench-setup.sh.")
 
             # SPEC-ISSUE-0064: guarantees the agent image's build (agent.Dockerfile's
             # `COPY --from=workbench ...`) never fails for a project that has

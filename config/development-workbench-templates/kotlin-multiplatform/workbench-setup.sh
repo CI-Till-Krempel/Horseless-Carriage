@@ -35,7 +35,7 @@
 set -e
 
 apt-get update
-apt-get install -y --no-install-recommends openjdk-17-jdk-headless unzip curl
+apt-get install -y --no-install-recommends openjdk-21-jdk-headless unzip curl
 
 # Android SDK command-line tools (headless install, no Android Studio GUI).
 ANDROID_SDK_ROOT=/opt/android-sdk
@@ -59,7 +59,7 @@ sdkmanager --sdk_root="$ANDROID_SDK_ROOT" \
 } >> /etc/profile.d/android-sdk.sh
 
 cat <<'EOF'
-kotlin-multiplatform workbench ready (JDK 17 + Android SDK installed).
+kotlin-multiplatform workbench ready (JDK 21 + Android SDK installed).
 Android target: fully usable in this container. iOS target: SEE THE
 "iOS LIMITATION" COMMENT AT THE TOP OF THIS SCRIPT - build/run/debug needs
 a macOS host with Xcode; it is not something this container can do.
