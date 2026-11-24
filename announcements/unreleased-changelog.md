@@ -13,6 +13,23 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
+
+After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent
+container reported `Up`, but the ADK web UI was unreachable. The agent log ended at
+`Help improve the ADK (CLI and Web UI) by allowing Google to collect pseudonymized usage data?`.
+
+**Confirmed mechanism:** ADK 2.15's CLI asks `input("Enable telemetry? [Y/n]: ")` before running
+any subcommand whenever stdin is a TTY and `~/.adk/config.json` has no recorded answer. The `agent`
+service runs with `tty: true` (needed for CLI mode), and a fresh container never has that file. In
+web/daemon mode nobody is attached, so `adk web` blocked forever before binding port 8000.
+
+`agent.Dockerfile` now runs `adk telemetry disable` at build time, right after installing
+dependencies, so no `adk` subcommand in any stage ever prompts. Opting out is deliberate: the
+prompt's own default is "yes". Verified with a PTY-driven `adk web` in a throwaway container: it
+stops at the prompt without the opt-out and reaches `Uvicorn running` with it. A new
+`tests/test_agent_dockerfile.py` case guards the line.
+
 ### A sprint stuck on a budget halt had no live recovery path - only .env + a container restart (SPEC-ISSUE-0092)
 
 A real production run got stuck: the agent container answered every turn with

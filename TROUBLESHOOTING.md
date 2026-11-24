@@ -95,6 +95,11 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   Carriage stack — see above) is bound to it; stop that process or the leftover stack, then retry.
   (Postgres is no longer published to the host at all as of GH issue #240 — only `litellm` reaches
   it, over the internal Compose network.)
+- **Agent container is `Up` but the ADK web UI never loads, and the agent log ends at "Help improve
+  the ADK ... Enable telemetry?"** — the image was built before SPEC-ISSUE-0095's fix. ADK is
+  waiting for an answer on the container's TTY that nobody will type. Rebuild the agent image
+  (`python3 run.py dev`, or `docker compose ... build agent`). For a one-off unblock, run
+  `docker attach <agent container>`, type `n`, press Enter, and detach with Ctrl-P Ctrl-Q.
 - **Windows: `docker compose up` never asks about file sharing, then the agent can't see your state
   repo** — whichever drive `STATE_REPO_PATH` is on must be shared with Docker Desktop (**Settings →
   Resources → File Sharing**). See [Setup § Setting up on Windows](docs/SETUP.md#setting-up-on-windows).
