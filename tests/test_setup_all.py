@@ -238,14 +238,15 @@ class TestMain:
         monkeypatch.setattr(setup_all.check_state_repo, "main", lambda: None)
         monkeypatch.setattr(setup_all.setup_project, "main", lambda: None)
         monkeypatch.setattr(setup_all.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=False))
-        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev: None)
+        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev, **k: None)
+        monkeypatch.setattr(setup_all, "ensure_github_auth", lambda *a, **k: True)
 
     def test_happy_path_reaches_offer_to_start(self, monkeypatch):
         self._mock_all_steps_succeed(monkeypatch)
         monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py"])
 
         offered = []
-        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev: offered.append(dev))
+        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev, **k: offered.append(dev))
 
         setup_all.main()
 
@@ -256,7 +257,7 @@ class TestMain:
         monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py", "--dev"])
 
         offered = []
-        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev: offered.append(dev))
+        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev, **k: offered.append(dev))
 
         setup_all.main()
 
@@ -298,7 +299,7 @@ class TestMain:
         monkeypatch.setattr(setup_all.doctor, "check", lambda *a, **k: _FakeDoctorResult(has_errors=True))
         monkeypatch.setattr("builtins.input", lambda _p: "n")  # decline the gate's retry prompt
 
-        def fail_if_called(dev):
+        def fail_if_called(dev, **k):
             raise AssertionError("offer_to_start must not run if the doctor gate never cleared")
         monkeypatch.setattr(setup_all, "offer_to_start", fail_if_called)
 
@@ -322,6 +323,33 @@ class TestMain:
 
         assert order == ["setup_llm", "check_state_repo", "setup_project"]
 
+    def test_github_auth_step_runs_after_setup_project_before_doctor_gate(self, monkeypatch):
+        """GH issue #565 / SPEC-ISSUE-0100: GitHub auth is its own step, after
+        setup_project.py (which creates .env) and before the doctor gate, and
+        its result reaches offer_to_start."""
+        self._mock_all_steps_succeed(monkeypatch)
+        monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py", "--skip-github-auth"])
+        order = []
+        monkeypatch.setattr(setup_all.setup_project, "main", lambda: order.append("setup_project"))
+
+        def fake_auth(env_path, skip=False, **k):
+            order.append(("github_auth", env_path.name, skip))
+            return False
+        monkeypatch.setattr(setup_all, "ensure_github_auth", fake_auth)
+
+        def fake_check(*a, **k):
+            order.append("doctor")
+            return _FakeDoctorResult(has_errors=False)
+        monkeypatch.setattr(setup_all.doctor, "check", fake_check)
+        offered = []
+        monkeypatch.setattr(setup_all, "offer_to_start", lambda dev, **k: offered.append(k))
+
+        setup_all.main()
+
+        assert order == ["setup_project", ("github_auth", ".env", True), "doctor"]
+        assert offered == [{"github_auth_ok": False}]
+
+
     def test_state_repo_check_failure_stops_before_setup_project(self, monkeypatch):
         self._mock_all_steps_succeed(monkeypatch)
         monkeypatch.setattr(setup_all.sys, "argv", ["setup_all.py"])
@@ -338,3 +366,115 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             setup_all.main()
         assert exc_info.value.code == 1
+
+
+class TestEnsureGithubAuth:
+    """GH issue #565 / SPEC-ISSUE-0100: setup_all.py never configured GitHub
+    auth and still called the setup "Ready to start the agent"."""
+
+    def _no_input(self, monkeypatch):
+        def fail_if_called(*_a):
+            raise AssertionError("must not prompt")
+        monkeypatch.setattr("builtins.input", fail_if_called)
+        monkeypatch.setattr(setup_all.getpass, "getpass", fail_if_called)
+
+    def test_existing_token_skips_without_prompting(self, monkeypatch, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text("GITHUB_TOKEN='ghp_example'\n")
+        self._no_input(monkeypatch)
+        assert setup_all.ensure_github_auth(env, interactive=True) is True
+
+    def test_existing_github_app_skips_without_prompting(self, monkeypatch, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\nGITHUB_APP_ID="1"\nGITHUB_APP_PRIVATE_KEY="k"\nGITHUB_APP_INSTALLATION_ID="2"\n')
+        self._no_input(monkeypatch)
+        assert setup_all.ensure_github_auth(env, interactive=True) is True
+
+    def test_partial_github_app_is_not_configured(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\nGITHUB_APP_ID="1"\n')
+        assert setup_all.github_auth_configured(env) is False
+
+    def test_missing_env_file_is_not_configured(self, tmp_path):
+        assert setup_all.github_auth_configured(tmp_path / ".env") is False
+
+    def test_non_interactive_never_prompts_and_warns(self, monkeypatch, tmp_path, capsys):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\n')
+        self._no_input(monkeypatch)
+        assert setup_all.ensure_github_auth(env, interactive=False) is False
+        out = capsys.readouterr().out
+        assert "No GitHub authentication configured" in out
+        assert "setup_github_app.py" in out
+
+    def test_no_tty_defaults_to_non_interactive(self, monkeypatch, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\n')
+        self._no_input(monkeypatch)
+        monkeypatch.setattr(setup_all.sys.stdin, "isatty", lambda: False, raising=False)
+        assert setup_all.ensure_github_auth(env) is False
+
+    def test_skip_flag_never_prompts(self, monkeypatch, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\n')
+        self._no_input(monkeypatch)
+        assert setup_all.ensure_github_auth(env, skip=True, interactive=True) is False
+
+    def test_pat_choice_writes_token_to_env(self, monkeypatch, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\nGITHUB_REPO_URL="git@github.com:acme/widgets.git"\n')
+        monkeypatch.setattr("builtins.input", lambda _p: "2")
+        monkeypatch.setattr(setup_all.getpass, "getpass", lambda _p: "  ghp_secret  ")
+        checked = []
+        monkeypatch.setattr(setup_all.lib_github, "check_repo_access",
+                            lambda o, r, t: checked.append((o, r, t)) or (True, "ok"))
+
+        assert setup_all.ensure_github_auth(env, interactive=True) is True
+        assert setup_all.lib_env.read_env_var(env, "GITHUB_TOKEN") == "ghp_secret"
+        assert checked == [("acme", "widgets", "ghp_secret")]
+
+    def test_github_app_choice_runs_setup_github_app_with_this_env(self, monkeypatch, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\n')
+        monkeypatch.setattr("builtins.input", lambda _p: "")  # default choice: GitHub App
+        calls = []
+
+        def fake_app_main(argv=None, env_path=None):
+            calls.append((argv, env_path))
+            for k, v in (("GITHUB_APP_ID", "1"), ("GITHUB_APP_PRIVATE_KEY", "k"), ("GITHUB_APP_INSTALLATION_ID", "2")):
+                setup_all.lib_env.update_env_var(env_path, k, v)
+        monkeypatch.setattr(setup_all.setup_github_app, "main", fake_app_main)
+
+        assert setup_all.ensure_github_auth(env, interactive=True) is True
+        assert calls == [([], env)]
+
+    def test_failed_app_setup_offers_retry_then_gives_up(self, monkeypatch, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\n')
+        answers = iter(["1", "n"])  # GitHub App, then decline retry
+        monkeypatch.setattr("builtins.input", lambda _p: next(answers))
+
+        def failing_app_main(argv=None, env_path=None):
+            raise SystemExit(1)
+        monkeypatch.setattr(setup_all.setup_github_app, "main", failing_app_main)
+
+        assert setup_all.ensure_github_auth(env, interactive=True) is False
+
+    def test_skip_choice_returns_false(self, monkeypatch, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text('GITHUB_TOKEN=""\n')
+        monkeypatch.setattr("builtins.input", lambda _p: "3")
+        assert setup_all.ensure_github_auth(env, interactive=True) is False
+
+    def test_offer_to_start_without_auth_warns_and_defaults_to_not_starting(self, monkeypatch, capsys):
+        monkeypatch.setattr("builtins.input", lambda _p: "")  # accept the default
+
+        def fail_if_called(_argv):
+            raise AssertionError("must not default to starting the agent without GitHub auth")
+        monkeypatch.setattr(setup_all.run, "main", fail_if_called)
+
+        setup_all.offer_to_start(dev=False, github_auth_ok=False)
+
+        out = capsys.readouterr().out
+        assert "GitHub authentication is NOT configured" in out
+        assert "Ready to start the agent" not in out

@@ -54,7 +54,9 @@ python3 setup_all.py
 
 Asks about developer mode first (before any container work happens - a Local/Ollama setup's own live
 test starts a container developer mode would rebuild, so this can't wait until the end), then runs
-steps 1-3 below in order, then offers to start the agent (`run.py`) - this is the fastest path for a
+steps 1-3 below in order, then configures GitHub authentication if `.env` doesn't have it yet (GitHub
+App or Personal Access Token - see [GitHub Integration](GITHUB-INTEGRATION.md); `--skip-github-auth`
+or a non-TTY run only warns), then gates on `doctor.py`, then offers to start the agent (`run.py`) - this is the fastest path for a
 first-time or new-machine setup. Each step is still a fully standalone script (see the sections below)
 if you'd rather run just one of them, or control the pace yourself; `setup_all.py` just chains them
 and adds a fix→retry loop around each one.
