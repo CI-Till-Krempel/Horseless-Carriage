@@ -124,6 +124,8 @@ services:
       - ./agents:/app/agents:ro
       - ./spec-templates:/app/spec-templates:ro
       - ./eval:/app/eval:ro
+      # GH issue #569: see docker-compose.yaml's identical entry.
+      - ./VERSION:/app/VERSION:ro
       # US-0021: see docker-compose.yaml's identical entry - Development
       # Workbench templates, read by the running Architect role via
       # tools/workbench_templates.py.

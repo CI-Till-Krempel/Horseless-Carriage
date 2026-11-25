@@ -407,3 +407,19 @@ class TestEnvTemplatesLeaveGithubAuthUnconfigured:
                     "placeholder is read back as truthy/configured by every consumer "
                     "of this var."
                 )
+
+
+class TestAgentSeesTheCheckoutsCurrentVersion:
+    """GH issue #569 / SPEC-ISSUE-0104: agent.Dockerfile bakes VERSION into
+    the image, and update_hc.py doesn't rebuild for a VERSION-only bump - so
+    without a bind mount the agent's _hc_version() (tools/base.py) kept
+    reporting the build-time version into state.json after every update."""
+
+    def _agent_volumes(self, filename):
+        data = yaml.safe_load((REPO_ROOT / filename).read_text())
+        return data["services"]["agent"].get("volumes", [])
+
+    def test_version_file_is_bind_mounted_into_the_agent_container(self):
+        for filename in ("docker-compose.yaml", "docker-compose.local.yaml",
+                         "docker-compose.local-hostollama.yaml"):
+            assert "./VERSION:/app/VERSION:ro" in self._agent_volumes(filename), filename
