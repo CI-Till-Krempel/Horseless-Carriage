@@ -13,6 +13,33 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### Hitting the USD cap left the sprint impossible to close (GH #563, SPEC-ISSUE-0098)
+
+A user reported that once `TOTAL_USD_BUDGET` was reached, the active sprint could not be recovered or
+closed. The only way out was to discard `.hc/state.json`, losing the last sprint's results. The token
+budget, by contrast, already closes a sprint out gracefully.
+
+**Confirmed mechanism (`check_cost_budget_callback`, `agents/scrum_team/agent.py`):** the USD check
+admitted only ProductOwner/ScrumOrchestrator to its close-out grace. On the token path, Scrum Master
+runs on its own ritual budget (GH #395), but the USD path has no such split. So Scrum Master, the only
+role that can write the retro, KPIs and sprint report, was hard-halted the moment spend crossed the
+cap. Meanwhile ProductOwner was told to hand off to it anyway.
+
+Past the grace ceiling, a non-grace role was still redirected to an equally frozen ProductOwner, so
+the mechanical close-out (fallback report, state commit, release PR) was never guaranteed to fire. A
+LiteLLM-proxy budget rejection (`Budget has been exceeded!`) produced only a `[BUDGET LIMIT]` text
+reply, every turn, with no close-out at all.
+
+**Fix:**
+- Scrum Master now shares the existing USD close-out grace, the same ceiling as before, and only
+  while its sprint report is outstanding.
+- Past that ceiling, any role runs the mechanical close-out once, with zero further LLM spend.
+- A new after-model callback does the same when the proxy rejects a call for budget.
+
+The USD cap itself is unchanged; it needs maintainer sign-off per AGENTS.md §12. This complements
+`run.py override-budget` (SPEC-ISSUE-0092) and `reset_budget.py` (SPEC-ISSUE-0096). Those unstick a
+halted sprint by hand; this makes the halt close the sprint out on its own first.
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

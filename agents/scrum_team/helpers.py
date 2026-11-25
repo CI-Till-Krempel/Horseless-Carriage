@@ -220,6 +220,40 @@ NON_GRACE_FLOOR_ROLES = frozenset({"DevTeam", "QA", "Architect"})
 SPRINT_CLOSEOUT_GRACE_ROLES = frozenset({"ProductOwner", "ScrumOrchestrator"})
 
 
+def usd_closeout_grace_applies(agent_name: str, state) -> bool:
+    """
+    SPEC-ISSUE-0098 / GH issue #563: which roles may still spend inside the
+    SPRINT CLOSE SEQUENCE grace window once TOTAL_USD_BUDGET is exhausted
+    (check_cost_budget_callback's USD branch, agent.py).
+
+    The token path never needed ScrumMaster here - GH #395 moved its
+    retro/KPI/sprint-report work onto a separate ritual budget the main
+    token ceiling doesn't touch. But TOTAL_USD_BUDGET is a single,
+    whole-engagement dollar figure with no such split: the USD check used
+    to apply SPRINT_CLOSEOUT_GRACE_ROLES (ProductOwner/ScrumOrchestrator)
+    only, so the instant spend crossed the cap ScrumMaster - the only role
+    that can run the retrospective, KPIs and create_sprint_report - was
+    hard-halted, and ProductOwner was told (by _budget_halt_response's
+    redirect text) to hand off to a ScrumMaster that could never answer.
+    The sprint could not be closed out at all.
+
+    ScrumMaster is admitted here only while its own close-out work is
+    still outstanding (no sprint report yet this sprint - i.e.
+    sprint_report_pending_release is not set). Once the report exists the
+    only remaining step is ProductOwner's create_release_pr, so ScrumMaster
+    halts again - it can't use the USD grace window to start a new sprint
+    or do anything else. This never raises the USD ceiling itself: every
+    role admitted here is still bounded by the same shared
+    closeout_grace_percent ceiling ProductOwner/ScrumOrchestrator already
+    had.
+    """
+    if agent_name in SPRINT_CLOSEOUT_GRACE_ROLES:
+        return True
+    if agent_name == "ScrumMaster":
+        return not getattr(state, "sprint_report_pending_release", False)
+    return False
+
+
 # --- Budget env var naming (GH issue #81) ---
 # TOTAL_USD_BUDGET replaces SPRINT_USD_BUDGET as the canonical name for the
 # whole-engagement, never-reset-per-sprint USD ceiling - the old name looked

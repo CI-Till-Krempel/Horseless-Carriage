@@ -2147,7 +2147,11 @@ class TestCriticalHaltNotifications(unittest.TestCase):
         with patch.dict("os.environ", {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy"}, clear=True):
             with patch("requests.get") as mock_get:
                 mock_get.return_value.json.return_value = {"info": {"spend": 6.0}}
-                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                # SPEC-ISSUE-0098: $6 is past the default 20% grace ceiling, so
+                # the mechanical close-out now fires too - stubbed here, since
+                # this test is only about the halt's own notification.
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"), \
+                        patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt"):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
 
         self.assertIsNotNone(result)
@@ -2396,6 +2400,173 @@ class TestSprintCloseoutGrace(unittest.TestCase):
                 with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
                     result = check_cost_budget_callback(mock_context, MagicMock(model=None))
                 self.assertIsNotNone(result, f"{agent_name} must not get a second reserved turn")
+
+
+class TestUsdBudgetGracefulCloseout(unittest.TestCase):
+    """
+    SPEC-ISSUE-0098 / GH issue #563: hitting TOTAL_USD_BUDGET left the active
+    sprint impossible to close. The USD check only ever admitted
+    SPRINT_CLOSEOUT_GRACE_ROLES (ProductOwner/ScrumOrchestrator) to its grace
+    window, so ScrumMaster - the only role that can run the retro, KPIs and
+    create_sprint_report - was hard-halted the instant spend crossed the cap;
+    past the grace ceiling a non-grace role was merely redirected to an
+    equally-frozen ProductOwner and the mechanical close-out safety net never
+    fired; and a LiteLLM-proxy-side budget rejection triggered no close-out at
+    all. None of this may raise the USD ceiling itself (AGENTS.md section 12).
+    """
+
+    ENV = {"LITELLM_MASTER_KEY": "mk", "LITELLM_PROXY_API_BASE": "http://proxy", "SPRINT_CLOSEOUT_GRACE_PERCENT": "5"}
+
+    def _context(self, agent_name, spend_state_extra=None):
+        mock_context = MagicMock()
+        mock_context.agent_name = agent_name
+        state = ScrumState()
+        state.budgets.total = 1000000
+        state.budgets.total_usd = 10.0
+        state.token_usage.agents[agent_name] = 1
+        state.token_usage.total = 1
+        # Spend is summed over every specialist's key; ScrumOrchestrator has
+        # none of its own, so give it a teammate's key to sum over.
+        state.litellm_keys[agent_name if agent_name != "ScrumOrchestrator" else "ProductOwner"] = "sk-test-agent-key"
+        for k, v in (spend_state_extra or {}).items():
+            setattr(state, k, v)
+        mock_context.state = state.model_dump()
+        return mock_context
+
+    def _check(self, mock_context, spend):
+        with patch.dict("os.environ", self.ENV, clear=True):
+            with patch("requests.get") as mock_get:
+                mock_get.return_value.json.return_value = {"info": {"spend": spend}}
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"), \
+                        patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt") as safety_net:
+                    result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        return result, safety_net
+
+    def test_scrum_master_gets_the_usd_grace_to_close_the_sprint(self):
+        # $10 cap, 5% grace -> $10.50 ceiling; $10.40 is over the cap, inside grace.
+        result, safety_net = self._check(self._context("ScrumMaster"), 10.4)
+        self.assertIsNone(result, "ScrumMaster must be able to run retro/KPIs/sprint report after the USD cap")
+        safety_net.assert_not_called()
+
+    def test_scrum_master_usd_grace_ends_once_its_report_exists(self):
+        """Only the close-out work it owns is admitted - once the report is
+        written (sprint_report_pending_release), it can't keep spending (or
+        e.g. start a new sprint) inside the USD grace window."""
+        ctx = self._context("ScrumMaster", {"sprint_report_pending_release": True})
+        result, _ = self._check(ctx, 10.4)
+        self.assertIsNotNone(result)
+        self.assertIn("USD BUDGET EXCEEDED", result.content.parts[0].text)
+
+    def test_scrum_master_grace_never_exceeds_the_existing_ceiling(self):
+        result, _ = self._check(self._context("ScrumMaster"), 10.6)
+        self.assertIsNotNone(result, "the grace ceiling itself must not be raised for ScrumMaster")
+
+    def test_non_grace_roles_still_hard_halt_inside_the_usd_grace_window(self):
+        for agent_name in ("DevTeam", "QA", "Architect"):
+            with self.subTest(agent_name=agent_name):
+                result, safety_net = self._check(self._context(agent_name), 10.4)
+                self.assertIsNotNone(result)
+                safety_net.assert_not_called()
+
+    def test_past_the_usd_grace_ceiling_any_role_closes_the_sprint_out_mechanically(self):
+        """The USD figure is shared - past its grace ceiling nobody can make
+        another call, so the halt must run the mechanical close-out itself
+        instead of redirecting to an equally-frozen ProductOwner."""
+        for agent_name in ("DevTeam", "QA", "Architect", "ScrumMaster", "ProductOwner", "ScrumOrchestrator"):
+            with self.subTest(agent_name=agent_name):
+                result, safety_net = self._check(self._context(agent_name), 10.6)
+                self.assertIsNotNone(result)
+                self.assertIn("closed out mechanically", result.content.parts[0].text)
+                safety_net.assert_called_once()
+                self.assertFalse(
+                    any(getattr(p, "function_call", None) for p in result.content.parts),
+                    "nobody has budget left - a transfer would just hand off to another frozen agent",
+                )
+
+    def test_mechanical_closeout_fires_once_per_sprint(self):
+        ctx = self._context("DevTeam")
+        with patch.dict("os.environ", self.ENV, clear=True):
+            with patch("requests.get") as mock_get:
+                mock_get.return_value.json.return_value = {"info": {"spend": 10.6}}
+                with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"), \
+                        patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt") as safety_net:
+                    check_cost_budget_callback(ctx, MagicMock(model=None))
+                    check_cost_budget_callback(ctx, MagicMock(model=None))
+        safety_net.assert_called_once()
+
+    def test_token_path_still_redirects_non_grace_roles_unchanged(self):
+        """Regression guard: the token path's own redirect behavior (SPEC-ISSUE-0045)
+        is untouched - only the USD path's final halt changed."""
+        mock_context = MagicMock()
+        mock_context.agent_name = "DevTeam"
+        state = ScrumState()
+        state.budgets.total = 100
+        state.token_usage.total = 200
+        state.token_usage.agents["DevTeam"] = 200
+        mock_context.state = state.model_dump()
+        with patch.dict("os.environ", {"SPRINT_CLOSEOUT_GRACE_PERCENT": "5"}, clear=True):
+            with patch("agents.scrum_team.agent._sync_roadmap_on_exhaustion_once"):
+                result = check_cost_budget_callback(mock_context, MagicMock(model=None))
+        calls = [p.function_call for p in result.content.parts if getattr(p, "function_call", None)]
+        self.assertEqual(len(calls), 1)
+
+
+class TestLiteLlmBudgetRejectionCloseout(unittest.TestCase):
+    """SPEC-ISSUE-0098 / GH issue #563: the LiteLLM proxy's own USD-cap
+    rejection must trigger the same mechanical close-out as the in-process
+    USD check - previously it only produced a "[BUDGET LIMIT]" text reply,
+    forever, with no report, no state commit and no release PR."""
+
+    def _run(self, coro):
+        import asyncio
+        return asyncio.run(coro)
+
+    def _rate_limit(self, message):
+        import litellm.exceptions
+
+        async def _raise(self, *args, **kwargs):
+            raise litellm.exceptions.RateLimitError(message=message, llm_provider="openai", model="scrum-eval-cheap")
+        return _raise
+
+    def test_budget_exceeded_rejection_is_tagged(self):
+        with patch.object(agent_module, "_orig_adk_acompletion", self._rate_limit(
+                "Budget has been exceeded! Current cost: 10.2, Max budget: 10.0")):
+            response = self._run(agent_module._patched_adk_acompletion(MagicMock(), model="scrum-eval-cheap"))
+        text = response.choices[0].message.content
+        self.assertIn("BUDGET LIMIT", text)
+        self.assertIn(agent_module.LITELLM_BUDGET_EXCEEDED_MARKER, text)
+
+    def test_plain_rate_limit_is_not_tagged(self):
+        with patch.object(agent_module, "_orig_adk_acompletion", self._rate_limit("Rate limit reached: 60 RPM")):
+            response = self._run(agent_module._patched_adk_acompletion(MagicMock(), model="scrum-eval-cheap"))
+        self.assertNotIn(agent_module.LITELLM_BUDGET_EXCEEDED_MARKER, response.choices[0].message.content)
+
+    def _response(self, text):
+        return LlmResponse(content=types.Content(role="model", parts=[types.Part(text=text)]))
+
+    def test_tagged_rejection_closes_the_sprint_out_once(self):
+        ctx = MagicMock()
+        ctx.agent_name = "ScrumMaster"
+        ctx.state = ScrumState().model_dump()
+        response = self._response(f"⚠️ [BUDGET LIMIT] rejected. {agent_module.LITELLM_BUDGET_EXCEEDED_MARKER}")
+        with patch("agents.scrum_team.agent._sync_and_commit_roadmap_on_exhaustion") as sync, \
+                patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt") as safety_net:
+            self.assertIsNone(agent_module.closeout_on_litellm_budget_rejection_callback(ctx, response))
+            agent_module.closeout_on_litellm_budget_rejection_callback(ctx, response)
+        sync.assert_called_once()
+        safety_net.assert_called_once()
+        self.assertEqual(ctx.state["blocking_interactions"][0]["kind"], "critical_error")
+
+    def test_ordinary_reply_does_nothing(self):
+        ctx = MagicMock()
+        ctx.state = ScrumState().model_dump()
+        with patch("agents.scrum_team.agent._ensure_sprint_report_on_final_halt") as safety_net:
+            agent_module.closeout_on_litellm_budget_rejection_callback(ctx, self._response("⚠️ [BUDGET LIMIT] 60 RPM"))
+        safety_net.assert_not_called()
+
+    def test_registered_on_every_agent(self):
+        for agent in (product_owner, scrum_master, dev_team, qa_agent, architect, root_agent):
+            self.assertIn(agent_module.closeout_on_litellm_budget_rejection_callback, agent.canonical_after_model_callbacks)
 
 
 class TestScrumMasterRitualBudget(unittest.TestCase):
