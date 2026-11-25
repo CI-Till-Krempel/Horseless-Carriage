@@ -536,6 +536,35 @@ class TestUnresolvedHighPriorityGeneralBlocker:
         assert result is not None
         assert result["description"] == "the real one"
 
+    # GH #567 / SPEC-ISSUE-0102: a framework change proposal must not stop
+    # the Team Performance Evaluation - a human-only finding that only
+    # waits on one (its draft PR, or the operator-side allowlist step its
+    # PR body asks for) is skipped; anything else still stops the run.
+
+    def test_skips_a_high_priority_blocker_that_only_waits_on_the_allowlist_step(self):
+        sprint_result = {"general_blockers": [{
+            "description": "Human operator must add pypi.org to NET_PROXY_EXTRA_ALLOWLIST_HOSTS before tests can run",
+            "priority": "high", "resolved": False,
+        }]}
+        assert _unresolved_high_priority_general_blocker(sprint_result) is None
+
+    def test_skips_a_high_priority_blocker_naming_a_framework_proposal_pr_url(self):
+        pr_url = "https://github.com/example/eval-repo/pull/887"
+        sprint_result = {
+            "general_blockers": [{"description": f"Waiting for a human to review and merge {pr_url}", "priority": "high", "resolved": False}],
+            "framework_change_proposals": [{"pr_url": pr_url, "branch": "eval-x/framework/workbench-1"}],
+        }
+        assert _unresolved_high_priority_general_blocker(sprint_result) is None
+
+    def test_still_stops_on_an_unrelated_high_priority_blocker_next_to_a_skipped_one(self):
+        sprint_result = {"general_blockers": [
+            {"description": "Framework change PR for the workbench awaits human merge", "priority": "high", "resolved": False},
+            {"description": "Need a decision on which auth provider to use", "priority": "high", "resolved": False},
+        ]}
+        result = _unresolved_high_priority_general_blocker(sprint_result)
+        assert result is not None
+        assert result["description"] == "Need a decision on which auth provider to use"
+
 
 @patch.dict(os.environ, {}, clear=False)
 class TestSprintNeedsHumanThisHarnessCannotProvide:
@@ -583,6 +612,28 @@ class TestSprintNeedsHumanThisHarnessCannotProvide:
         story_id, blocked, reason = result
         assert story_id == "US-0001"
         assert reason == "needs_human"
+
+    def test_framework_proposal_followup_is_not_an_immediate_needs_human_stop(self):
+        """GH #567 / SPEC-ISSUE-0102: a product-category blocker that only
+        waits on a framework change proposal's human review gets the normal
+        one-sprint grace instead of stopping the run immediately."""
+        sprint_result = {
+            "product_backlog": [_story("US-0001", {
+                "category": "product",
+                "question": "Can a human approve the workbench framework change PR so pytest is installed?",
+            })]
+        }
+        assert _sprint_needs_human_this_harness_cannot_provide(sprint_result, set()) is None
+
+    def test_framework_proposal_followup_still_stops_once_unresolved_across_a_sprint(self):
+        sprint_result = {
+            "product_backlog": [_story("US-0001", {
+                "category": "product", "question": "Waiting on the allowlist change for the workbench",
+            })]
+        }
+        result = _sprint_needs_human_this_harness_cannot_provide(sprint_result, {"US-0001"})
+        assert result is not None
+        assert result[2] == "unresolved_across_sprint"
 
     def test_mechanically_detected_blocker_stops_immediately_without_waiting_a_sprint(self):
         """

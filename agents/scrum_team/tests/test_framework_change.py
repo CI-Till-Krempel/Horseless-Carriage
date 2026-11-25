@@ -21,6 +21,7 @@ here therefore uses its own distinct script content, never a shared
 constant - sidesteps the leakage regardless of root cause, same as that
 file's own workaround.
 """
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -222,6 +223,68 @@ class TestProposeFrameworkChange(unittest.TestCase):
         self.assertEqual(len(blocking_calls), 1)
         self.assertEqual(blocking_calls[0]["kind"], "framework_change")
         self.assertIn("repo.maven.apache.org", blocking_calls[0]["summary"])
+
+    def _propose_with_allowlist_at_level(self, level, marker):
+        tc = _make_tool_context()
+        script = _script(marker)
+        blocking_calls = []
+        pr_calls = []
+
+        def recording_gh_pr_create(title, body="", base=None, head=None, draft=False, head_is_resolved=False, tool_context=None):
+            pr_calls.append({"body": body, "draft": draft})
+            return _fake_gh_pr_create(title, body, base, head, draft, head_is_resolved, tool_context)
+
+        def recording_blocking_interaction(kind, summary, detail="", tool_context=None):
+            blocking_calls.append(kind)
+            return _fake_record_blocking_interaction(kind, summary, detail, tool_context)
+
+        with patch.dict(os.environ, {"INTERACTION_LEVEL": level}):
+            result = self._run_with_patches(
+                lambda: propose_framework_change(script, ["pypi.org"], _A_RATIONALE, tool_context=tc),
+                gh_pr_create=recording_gh_pr_create,
+                record_blocking_interaction=recording_blocking_interaction,
+            )
+        return result, tc, blocking_calls, pr_calls
+
+    def test_eval_level_records_the_proposal_but_raises_no_blocking_interaction(self):
+        """
+        GH #567 / SPEC-ISSUE-0102: at INTERACTION_LEVEL=EVAL (the unattended
+        Team Performance Evaluation) there is no human operator - an
+        "ACTION NEEDED" framework_change interaction nobody can resolve only
+        stalls the run. The proposal itself must be unchanged and still
+        recorded; only the operator escalation is skipped, and the result
+        tells the team to keep going.
+        """
+        result, tc, blocking_calls, pr_calls = self._propose_with_allowlist_at_level(
+            "EVAL", "eval_level_records_the_proposal_but_raises_no_blocking_interaction"
+        )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(blocking_calls, [])
+        self.assertIn("eval_note", result)
+        self.assertIn("continue the sprint", result["eval_note"])
+        # Still a real, human-review-shaped draft PR with the operator section.
+        self.assertEqual(len(pr_calls), 1)
+        self.assertTrue(pr_calls[0]["draft"])
+        self.assertIn("HUMAN OPERATOR ACTION REQUIRED", pr_calls[0]["body"])
+        # Still recorded for the eval report.
+        self.assertEqual(tc.state["framework_change_proposal_count"], 1)
+        proposal = tc.state["framework_change_proposals"][-1]
+        self.assertEqual(proposal["additional_allowlist_hosts"], ["pypi.org"])
+        self.assertFalse(proposal["operator_escalated"])
+
+    def test_product_and_ceo_levels_still_escalate_to_the_operator(self):
+        """GH #567: the EVAL-only relaxation must never reach a real,
+        human-driven project."""
+        for level in ("Product", "CEO"):
+            with self.subTest(level=level):
+                result, tc, blocking_calls, _ = self._propose_with_allowlist_at_level(
+                    level, f"product_and_ceo_levels_still_escalate_{level}"
+                )
+                self.assertEqual(result["status"], "ok")
+                self.assertEqual(blocking_calls, ["framework_change"])
+                self.assertNotIn("eval_note", result)
+                self.assertTrue(tc.state["framework_change_proposals"][-1]["operator_escalated"])
 
     def test_no_blocking_interaction_when_no_new_hosts_requested(self):
         tc = _make_tool_context()

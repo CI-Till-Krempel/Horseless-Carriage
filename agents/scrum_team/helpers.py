@@ -313,6 +313,33 @@ _PRE_RELEASE_AUDIT_REQUIRED_BY_LEVEL = {
 }
 
 
+# GH #567 / SPEC-ISSUE-0102: whether propose_framework_change (tools/
+# workflow.py) escalates a workbench proposal that needs new network access
+# to a human operator via record_blocking_interaction("framework_change",
+# ...), at this interaction level. Product/CEO: always - a real human
+# operator genuinely has to edit Horseless Carriage's own .env
+# (NET_PROXY_EXTRA_ALLOWLIST_HOSTS) and restart the stack, and nothing else
+# surfaces that. EVAL: never - run_eval.py has no human in the loop at all,
+# the eval's net-proxy allowlist is a fixed, checked-in file
+# (config/net-proxy/allowlist-eval.filter via docker-compose.eval.yml) no
+# one can change mid-run, and an "ACTION NEEDED" item nobody can ever
+# resolve only nudges the team into waiting on it / filing a human-only
+# blocker that stops the whole run (run_eval.py's
+# _unresolved_high_priority_general_blocker). The proposal itself (draft
+# PR, PR-body operator section, framework_change_proposals record) is
+# unchanged at every level - only the escalation is level-dependent.
+_FRAMEWORK_CHANGE_OPERATOR_ESCALATION_BY_LEVEL = {
+    "Product": True,
+    "CEO": True,
+    "EVAL": False,
+}
+
+
+def framework_change_escalates_to_operator(level: str | None = None) -> bool:
+    """Whether propose_framework_change raises a "framework_change" blocking interaction for new allowlist hosts at this interaction level - see _FRAMEWORK_CHANGE_OPERATOR_ESCALATION_BY_LEVEL. Unknown levels fail closed (True)."""
+    return _FRAMEWORK_CHANGE_OPERATOR_ESCALATION_BY_LEVEL.get(level or get_interaction_level(), True)
+
+
 def get_interaction_level() -> str:
     """
     Reads INTERACTION_LEVEL from the environment (case-insensitive),

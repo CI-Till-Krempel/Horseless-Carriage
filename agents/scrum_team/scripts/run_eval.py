@@ -352,7 +352,52 @@ def _merge_open_steering_prs(local_path: Path, develop_branch: str) -> list:
     see workflow.py), which is the eval harness's stand-in for the human
     review propose_steering_change's own PR body asks for - the same
     stand-in role _merge_open_prs already plays for the release PR.
-    Returns a list of {number, merged, message} for the report.
+    Returns a list of {number, merged, message, kind} for the report.
+
+    Thin wrapper over _merge_open_proposal_prs (GH #567), kept so the
+    steering-only behavior stays independently testable.
+    """
+    return _merge_open_proposal_prs(local_path, develop_branch, kinds=("steering",))
+
+
+# GH #567 / SPEC-ISSUE-0102: head-branch path segments each proposal tool
+# creates (tools/workflow.py) - propose_steering_change opens
+# `steering/<role>-identity-<ts>`, propose_framework_change opens
+# `framework/workbench-<ts>`, both prefixed with this run's own
+# `eval-<run-id>/` by _with_eval_branch_prefix (tools/base.py).
+_PROPOSAL_BRANCH_KINDS = ("steering", "framework")
+
+
+def _proposal_kind(head_ref: str, kinds) -> Optional[str]:
+    padded = "/" + (head_ref or "")
+    for kind in kinds:
+        if f"/{kind}/" in padded:
+            return kind
+    return None
+
+
+def _merge_open_proposal_prs(local_path: Path, develop_branch: str, kinds=_PROPOSAL_BRANCH_KINDS) -> list:
+    """
+    Auto-merges open proposal PRs against develop_branch - the eval
+    harness's stand-in for the human review both proposal tools' PR bodies
+    ask for (see _merge_open_steering_prs above for the original GH #405
+    steering-only rationale and why this is never a blanket develop sweep).
+
+    GH #567 / SPEC-ISSUE-0102 extended this to `propose_framework_change`'s
+    `framework/workbench-...` PRs: left unmerged, `.hc/workbench-setup.sh`
+    never lands on develop, so check_workbench_tooling (start_sprint's own
+    `workbench_check`) keeps reporting action_needed every sprint and the
+    Architect re-proposes the same workbench sprint after sprint (a real
+    eval run, 0.2.1-run94, opened three identical python-flask proposals -
+    eval-repo PRs #887/#893/#897 - in three consecutive sprints, each with
+    its own never-resolvable "ACTION NEEDED"). Merging here does
+    NOT rebuild the running agent image or change this run's network
+    allowlist - both are fixed for the whole run - it only records the
+    proposal as reviewed so the team stops waiting on it.
+
+    Both proposal tools open their PRs as drafts, which GitHub refuses to
+    merge, so each is marked ready (`gh pr ready`, best-effort) first.
+    Returns a list of {number, merged, message, kind} for the report.
     """
     results = []
     list_res = subprocess.run(
@@ -366,9 +411,14 @@ def _merge_open_steering_prs(local_path: Path, develop_branch: str) -> list:
     except json.JSONDecodeError:
         prs = []
     for pr in prs:
-        if "/steering/" not in (pr.get("headRefName") or ""):
+        kind = _proposal_kind(pr.get("headRefName"), kinds)
+        if not kind:
             continue
         number = pr["number"]
+        subprocess.run(
+            ["gh", "pr", "ready", str(number)],
+            cwd=str(local_path), capture_output=True, text=True,
+        )
         merge_res = subprocess.run(
             ["gh", "pr", "merge", str(number), "--merge", "--admin"],
             cwd=str(local_path), capture_output=True, text=True,
@@ -377,6 +427,7 @@ def _merge_open_steering_prs(local_path: Path, develop_branch: str) -> list:
             "number": number,
             "merged": merge_res.returncode == 0,
             "message": (merge_res.stdout + merge_res.stderr).strip(),
+            "kind": kind,
         })
     return results
 
@@ -579,11 +630,55 @@ def _unresolved_high_priority_general_blocker(sprint_result: dict) -> Optional[d
     to burn further sprints' budget on work that can't resolve a
     high-priority human-only blocker is the same wasted-budget bet #336
     already stops for story-level blockers.
+
+    GH #567 / SPEC-ISSUE-0102: a human-only finding that is only about a
+    framework change proposal (see _is_framework_change_followup) is skipped
+    - it never stops the run.
     """
     for entry in sprint_result.get("general_blockers") or []:
         if entry.get("priority") == "high" and not entry.get("resolved"):
+            if _is_framework_change_followup(entry.get("description"), sprint_result):
+                continue
             return entry
     return None
+
+
+# GH #567 / SPEC-ISSUE-0102: phrases that tie a human-only blocker's text
+# to a propose_framework_change proposal (its workbench script, its
+# PR-body "HUMAN OPERATOR ACTION REQUIRED" allowlist section, or the tool
+# itself) rather than to anything else a human would need to decide.
+_FRAMEWORK_CHANGE_FOLLOWUP_MARKERS = (
+    "propose_framework_change",
+    "framework change",
+    "framework/workbench",
+    "workbench",
+    "allowlist",
+    "net_proxy_extra_allowlist_hosts",
+)
+
+
+def _is_framework_change_followup(text: Optional[str], sprint_result: dict) -> bool:
+    """
+    GH #567 / SPEC-ISSUE-0102: True if a human-only blocker's text is only a
+    follow-up on a framework change proposal - waiting on its draft PR's
+    review or on the operator-side allowlist step its PR body asks for.
+    Neither can ever happen inside this harness (no human; the eval's
+    net-proxy allowlist is the fixed, checked-in allowlist-eval.filter), and
+    the PR itself is merged by _merge_open_proposal_prs as the stand-in
+    reviewer - so stopping the whole run on it only discards the remaining
+    sprints' signal. Matches on the proposal's own PR URL/branch (this
+    sprint's framework_change_proposals) or _FRAMEWORK_CHANGE_FOLLOWUP_MARKERS.
+    The finding is still reported (run_eval_analysis's Blockers section
+    reads general_blockers/product_backlog directly, unfiltered).
+    """
+    lowered = (text or "").lower()
+    if not lowered:
+        return False
+    for proposal in sprint_result.get("framework_change_proposals") or []:
+        for ref in (proposal.get("pr_url"), proposal.get("branch")):
+            if ref and ref.lower() in lowered:
+                return True
+    return any(marker in lowered for marker in _FRAMEWORK_CHANGE_FOLLOWUP_MARKERS)
 
 
 def _sprint_needs_human_this_harness_cannot_provide(sprint_result: dict, previously_blocked_ids: set) -> Optional[tuple]:
@@ -629,11 +724,21 @@ def _sprint_needs_human_this_harness_cannot_provide(sprint_result: dict, previou
       concluding this, not an immediate stop, since Architect/whoever owns
       it may genuinely still be working it when the sprint just happens to
       end.
+
+    GH #567 / SPEC-ISSUE-0102: a "needs_human" blocker whose question is only
+    a framework-change-proposal follow-up (_is_framework_change_followup) is
+    not an immediate stop - by the next sprint the harness has already
+    merged that proposal's PR (_merge_open_proposal_prs), so the team gets
+    the same one-sprint "unresolved_across_sprint" grace as a technical
+    blocker instead.
     """
     from agents.scrum_team.helpers import should_escalate_blocker_to_user
     current_blocked = _blocked_stories(sprint_result)
     for story_id, blocked in current_blocked.items():
-        if should_escalate_blocker_to_user(blocked.get("category"), level="Product"):
+        if (
+            should_escalate_blocker_to_user(blocked.get("category"), level="Product")
+            and not _is_framework_change_followup(blocked.get("question"), sprint_result)
+        ):
             return (story_id, blocked, "needs_human")
         if blocked.get("mechanically_detected"):
             return (story_id, blocked, "mechanically_detected")
@@ -981,6 +1086,13 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # stop-early check (_sprint_needs_human_this_harness_cannot_provide)
         # right below.
         "general_blockers": session.state.get("general_blockers"),
+        # GH #567 / SPEC-ISSUE-0102: every propose_framework_change proposal
+        # so far (cumulative, persisted in .hc/state.json) - rendered in
+        # run_eval_analysis.py's "Framework Change Proposals" section so a
+        # proposal stays visible in the report even though it no longer
+        # stops the run, and used by _is_framework_change_followup to
+        # recognize a blocker that only references one of these PRs.
+        "framework_change_proposals": session.state.get("framework_change_proposals"),
         "stop_reason": stop_reason,
         # Set by _notify_critical_halt (agent.py) whenever
         # check_cost_budget_callback halts this sprint on a token/USD
@@ -1163,12 +1275,15 @@ async def _main_async(args: argparse.Namespace) -> dict:
                 manifest["stop_reason"] = "release_pr_conflict_unrecoverable"
                 manifest["unresolvable_release_pr"] = unresolvable
                 break
-            # GH #405: steering proposals are the one develop-targeted PR
-            # type the eval harness treats as "reviewed" on the team's
-            # behalf (see _merge_open_steering_prs's own docstring) - swept
-            # separately from the release-PR merge above, every sprint.
-            steering_merges = _merge_open_steering_prs(args.local_path, args.develop_branch)
-            manifest["pr_merges"].extend([{**m, "after_sprint": sprint_number, "steering": True} for m in steering_merges])
+            # GH #405 / GH #567: steering and framework change proposals are
+            # the only develop-targeted PR types the eval harness treats as
+            # "reviewed" on the team's behalf (see _merge_open_proposal_prs's
+            # own docstring) - swept separately from the release-PR merge
+            # above, every sprint.
+            proposal_merges = _merge_open_proposal_prs(args.local_path, args.develop_branch)
+            manifest["pr_merges"].extend([
+                {**m, "after_sprint": sprint_number, m.get("kind") or "proposal": True} for m in proposal_merges
+            ])
             _sync_local_clone_to_branch(args.develop_branch, args.local_path, args.github_token)
         except Exception as e:
             # Whatever crashed (a real run hit an uncaught litellm.RateLimitError
