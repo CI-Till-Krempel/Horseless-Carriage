@@ -484,12 +484,17 @@ def _reachability_dot(reachable: bool) -> str:
     return f"<span style='color:{color}' title='{title}'>&#9679;</span>"
 
 
-def _doctor_badge(doctor_items: list) -> str:
+def _doctor_badge(doctor_items: list, fold_key: str = "") -> str:
     """A compact "is this project's setup healthy" summary - doctor.py was
     previously something you had to remember to run by hand; this surfaces
     the same punch list right on the row it's about. <details>/<summary>
     rather than a tooltip: a tooltip can't hold a multi-item list legibly,
-    and this needs no JS to expand."""
+    and this needs no JS to expand.
+
+    `fold_key` (the project name) is emitted as `data-fold-key` so
+    _FOLD_STATE_SCRIPT can restore this <details>' open state after the
+    page's 10s <meta refresh> reload, which otherwise re-renders every
+    <details> closed (GH issue #564, SPEC-ISSUE-0099)."""
     e = html.escape
     errors = [i for i in doctor_items if i["severity"] == "error"]
     warnings = [i for i in doctor_items if i["severity"] == "warning"]
@@ -503,9 +508,34 @@ def _doctor_badge(doctor_items: list) -> str:
     color = "#c62828" if errors else "#e65100"
     items_html = "".join(f"<li>[{i['severity'].upper()}] {e(i['message'])}</li>" for i in doctor_items)
     return (
-        f"<details><summary style='color:{color};cursor:pointer'>&#9888; {', '.join(parts)}</summary>"
+        f"<details data-fold-key='doctor:{e(fold_key)}'><summary style='color:{color};cursor:pointer'>&#9888; {', '.join(parts)}</summary>"
         f"<ul style='margin:0.25rem 0 0 1rem;padding:0'>{items_html}</ul></details>"
     )
+
+
+# GH issue #564 / SPEC-ISSUE-0099: the page reloads itself every 10s via
+# <meta http-equiv="refresh">, and a full reload renders every <details>
+# closed again - so a warnings list a user had just unfolded snapped shut
+# before they could read it. Persist which <details data-fold-key=...> are
+# open in sessionStorage (per-tab, survives reloads, needs no server state)
+# and re-open them on load. Keyed by project, not position, so a project
+# being added/removed between refreshes doesn't open the wrong row.
+_FOLD_STATE_SCRIPT = """<script>
+(function () {
+  var KEY = "hc-dashboard-open-folds";
+  var open = {};
+  try { open = JSON.parse(sessionStorage.getItem(KEY) || "{}") || {}; } catch (err) { open = {}; }
+  function save() { try { sessionStorage.setItem(KEY, JSON.stringify(open)); } catch (err) {} }
+  document.querySelectorAll("details[data-fold-key]").forEach(function (d) {
+    var k = d.getAttribute("data-fold-key");
+    if (open[k]) { d.open = true; }
+    d.addEventListener("toggle", function () {
+      if (d.open) { open[k] = true; } else { delete open[k]; }
+      save();
+    });
+  });
+})();
+</script>"""
 
 
 def _render_page(message: str = "") -> str:
@@ -630,7 +660,7 @@ def _render_page(message: str = "") -> str:
             f"<td>{product_version_html}</td>"
             f"<td>{hc_version_html}</td>"
             f"<td>{github_html}</td>"
-            f"<td>{_doctor_badge(snap['doctor_items'])}</td>"
+            f"<td>{_doctor_badge(snap['doctor_items'], fold_key=snap['name'])}</td>"
             f"<td>{ports_html} / {web_html}</td>"
             f"<td>{action}</td>"
             "</tr>"
@@ -665,6 +695,7 @@ th {{ background: #f0f0f0; }}
 {"".join(rows)}
 </table>
 <p><small>Auto-refreshes every 10s. Registry: {html.escape(str(project_registry.REGISTRY_PATH))}</small></p>
+{_FOLD_STATE_SCRIPT}
 </body></html>
 """
 
