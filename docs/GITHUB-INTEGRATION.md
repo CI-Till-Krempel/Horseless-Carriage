@@ -23,6 +23,13 @@ If you clear the LiteLLM database (e.g., via `docker compose down -v`), your old
 
 The agents can interact with GitHub using either a **Personal Account** (via the `gh` CLI) or a **GitHub App** (for a dedicated "Agent" identity).
 
+`python3 setup_all.py` checks for GitHub auth right after `setup_project.py` (GH issue #565): if
+`.env` has neither `GITHUB_TOKEN` nor all three `GITHUB_APP_*` values, it asks you to pick a GitHub App
+(runs the `setup_github_app.py` flow below) or a Personal Access Token (entered hidden and written only
+to the git-ignored `.env`, then checked against `GITHUB_REPO_URL`). It's skipped when auth is already
+configured. Without a TTY, or with `--skip-github-auth`, it never prompts - it prints these options
+and warns again before offering to start the agent, where "Start the agent now?" then defaults to no.
+
 ## Option 1: Personal Account
 This is the simplest setup. Ensure the `gh` CLI is installed and authenticated on your host machine:
 ```bash

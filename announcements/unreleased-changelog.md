@@ -13,6 +13,25 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### `setup_all.py` never set up GitHub auth, then called the setup "ready" (SPEC-ISSUE-0100, GH #565)
+
+`setup_all.py` chained `setup_llm.py` -> `check_state_repo.py` -> `setup_project.py` -> the doctor
+gate -> "Ready to start the agent", but no step ever configured `GITHUB_TOKEN` or the
+`GITHUB_APP_*` credentials. `doctor.py` only *warns* about missing GitHub auth, so the gate passed,
+and `setup_project.py` itself ended with "Run the agent using: python3 run.py". A user could finish
+the guided setup and start an agent that couldn't read or write the target repo.
+
+`setup_all.py` now has a GitHub auth step between `setup_project.py` and the doctor gate. It's
+skipped when `.env` already has `GITHUB_TOKEN` or all three `GITHUB_APP_*` values. Otherwise it
+offers a GitHub App (reusing `setup_github_app.py`'s flow, which now accepts `argv`/`env_path` so
+`setup_all.py`'s own `--dev` flag never reaches its parser) or a Personal Access Token (read with
+`getpass`, written only to the git-ignored `.env`, and checked against `GITHUB_REPO_URL`). Without a
+TTY, or with the new `--skip-github-auth` flag, it never prompts: it prints the options and carries
+on. If auth is still missing at the end, the final step shows a warning instead of "Ready to start
+the agent", and "Start the agent now?" defaults to no.
+
+---
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

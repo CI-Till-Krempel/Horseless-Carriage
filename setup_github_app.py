@@ -276,14 +276,18 @@ def _verify(owner: str, repo: str, env_path: Path) -> None:
     (info if ok else warn)(detail)
 
 
-def main() -> None:
+def main(argv=None, env_path: Path = None) -> None:
+    """argv/env_path default to the standalone CLI's own (sys.argv, ./.env) -
+    setup_all.py passes both explicitly (GH issue #565 / SPEC-ISSUE-0100) so
+    its own flags (e.g. --dev) never reach this parser and the .env it
+    writes is the same one setup_all.py checked."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--owner-repo", help="Target 'owner/repo' - defaults to .env's GITHUB_REPO_URL.")
     parser.add_argument("--timeout", type=int, default=DEFAULT_WAIT_SECONDS,
                          help=f"Seconds to wait for each browser round-trip before offering to paste the URL manually (default {DEFAULT_WAIT_SECONDS}).")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    env_path = Path(".env")
+    env_path = Path(env_path) if env_path is not None else Path(".env")
     if not env_path.is_file():
         die(".env not found - run setup_project.py/setup_llm.py first.")
 

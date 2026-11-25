@@ -126,7 +126,9 @@ def main() -> None:
     print("--- Setup Complete ---")
     print("Next steps:")
     print("1. Edit the .env file with your specific API keys and settings.")
-    print("2. Run the agent using: python3 run.py")
+    print("2. Configure GitHub auth (required): GITHUB_TOKEN in .env, or python3 setup_github_app.py")
+    print("   (python3 setup_all.py walks you through either).")
+    print("3. Run the agent using: python3 run.py")
 
 
 if __name__ == "__main__":
