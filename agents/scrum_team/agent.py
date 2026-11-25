@@ -112,6 +112,24 @@ _setup_logging()
 logger = logging.getLogger("scrum-team")
 transcript_logger = _setup_transcript_logger()
 
+# SPEC-ISSUE-0098 / GH issue #563: appended to the degraded "[BUDGET LIMIT]"
+# response below when the LiteLLM proxy itself rejected a call because a
+# budget (the shared scrum-sprint-budget / a key's max_budget) is spent -
+# the LiteLLM-layer half of TOTAL_USD_BUDGET. Read back by
+# closeout_on_litellm_budget_rejection_callback to trigger the same
+# mechanical sprint close-out the in-process USD check does.
+LITELLM_BUDGET_EXCEEDED_MARKER = "[LITELLM BUDGET EXCEEDED - SPRINT CLOSED OUT MECHANICALLY]"
+
+
+def _is_litellm_budget_exceeded_error(e: Exception) -> bool:
+    """True for LiteLLM's spend-cap rejection ("Budget has been exceeded!
+    Current cost: ..., Max budget: ...", ExceededBudget / BudgetExceededError),
+    False for an ordinary, transient TPM/RPM rate limit - both surface as
+    litellm.RateLimitError (HTTP 429) through the proxy."""
+    text = f"{type(e).__name__} {e}".lower()
+    return "budget" in text and "exceed" in text
+
+
 # --- Monkey patch for OpenAI and LiteLLM APIError incompatibility ---
 try:
     import openai
@@ -226,6 +244,14 @@ try:
                     "or reset it (see README.md \"Budget Management\"); this agent cannot make "
                     "further LLM calls on this key until then."
                 )
+                if _is_litellm_budget_exceeded_error(e):
+                    # SPEC-ISSUE-0098 / GH issue #563: tagged so
+                    # closeout_on_litellm_budget_rejection_callback (an
+                    # after_model_callback, which - unlike this patch - has
+                    # the session state) can close the sprint out
+                    # mechanically. A plain rate limit (TPM/RPM) is
+                    # transient and deliberately NOT tagged.
+                    error_msg += f" {LITELLM_BUDGET_EXCEEDED_MARKER}"
                 return _degraded_llm_response("rate-limit-error", "stop", error_msg, model_name, kwargs.get("stream"))
             # SPEC-ISSUE-0086: a real local-Ollama install (OLLAMA_HOST_MODE=
             # true, which - unlike the dockerized ollama service - never
@@ -273,6 +299,7 @@ from .helpers import (
     get_env_with_deprecated_fallback,
     closeout_grace_percent,
     SPRINT_CLOSEOUT_GRACE_ROLES,
+    usd_closeout_grace_applies,
     NON_GRACE_FLOOR_ROLES,
     ritual_token_budget,
     ritual_hard_ceiling,
@@ -788,7 +815,7 @@ def _notify_critical_halt(callback_context: CallbackContext, msg: str, detail: s
     callback_context.state["critical_halt_notified"] = True
 
 
-def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmRequest, msg: str, agent_name: str, detail: str = "") -> LlmResponse:
+def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmRequest, msg: str, agent_name: str, detail: str = "", final: bool = False) -> LlmResponse:
     """
     Builds the LlmResponse for check_cost_budget_callback's two "budget
     actually exceeded" branches (token and USD). A non-grace role
@@ -828,7 +855,13 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
     """
     _notify_critical_halt(callback_context, msg, detail=detail)
     parts = [types.Part(text=msg)]
-    if agent_name not in SPRINT_CLOSEOUT_GRACE_ROLES:
+    if final:
+        # SPEC-ISSUE-0098: the caller has established that NO role has any
+        # budget left (the shared USD grace ceiling is gone) - there is
+        # nobody to redirect to, so close out mechanically now regardless
+        # of which role is active.
+        _ensure_sprint_report_on_final_halt_once(callback_context)
+    elif agent_name not in SPRINT_CLOSEOUT_GRACE_ROLES:
         # Real grace headroom may still be available to ProductOwner (see
         # docstring above) - NOT yet the final halt, so the sprint report
         # safety net below deliberately does not fire on this branch.
@@ -859,6 +892,46 @@ def _budget_halt_response(callback_context: CallbackContext, llm_request: LlmReq
         content=types.Content(role="model", parts=parts),
         model_version=llm_request.model or "unknown",
     )
+
+
+def closeout_on_litellm_budget_rejection_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> None:
+    """
+    AfterModelCallback (SPEC-ISSUE-0098 / GH issue #563): the LiteLLM proxy
+    enforces the USD ceiling too, independently of
+    check_cost_budget_callback's own pre-call check - a call that the
+    in-process check let through (e.g. inside the close-out grace window,
+    or because the per-key spend lookup lagged) can still come back
+    rejected by the proxy. _patched_adk_acompletion degrades that rejection
+    into a "[BUDGET LIMIT]" text reply tagged with
+    LITELLM_BUDGET_EXCEEDED_MARKER - previously that was the end of it: no
+    roadmap sync, no fallback sprint report, no release PR, and every
+    following turn got the same rejection, leaving the sprint impossible to
+    close. Treat it exactly like the in-process USD check's final halt:
+    close the sprint out mechanically (once per sprint - the *_once guards
+    are cleared by start_sprint), with no further LLM spend.
+
+    Only the tagged budget-exceeded variant triggers this; an ordinary,
+    transient rate limit is left alone. Best-effort: never raises.
+    """
+    try:
+        parts = (llm_response.content.parts if llm_response and llm_response.content else None) or []
+        if not any(LITELLM_BUDGET_EXCEEDED_MARKER in (getattr(p, "text", None) or "") for p in parts):
+            return None
+        _sync_roadmap_on_exhaustion_once(callback_context)
+        _notify_critical_halt(
+            callback_context,
+            "🚫 [USD BUDGET EXCEEDED] The LiteLLM proxy rejected a call because the USD budget is spent - "
+            "the sprint has been closed out mechanically (fallback sprint report, state/roadmap commit, "
+            "release PR).",
+            detail=(
+                "The sprint's results are committed - no need to discard .hc/state.json. To keep working: "
+                "raise TOTAL_USD_BUDGET in .env and restart the agent container (python3 run.py)."
+            ),
+        )
+        _ensure_sprint_report_on_final_halt_once(callback_context)
+    except Exception as e:
+        logger.warning(f"closeout_on_litellm_budget_rejection_callback failed (non-fatal): {e}")
+    return None
 
 
 SPECIALIST_AGENT_NAMES = ("ProductOwner", "ScrumMaster", "DevTeam", "QA", "Architect")
@@ -1281,11 +1354,18 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
 
         if current_spend >= budget_limit:
             _sync_roadmap_on_exhaustion_once(callback_context)
-            # Same SPRINT CLOSE SEQUENCE grace as the token check above.
+            # Same SPRINT CLOSE SEQUENCE grace ceiling as the token check
+            # above - never a higher one (AGENTS.md section 12).
             grace_usd_limit = budget_limit * (1 + closeout_grace_percent(state) / 100.0)
-            if agent_name in SPRINT_CLOSEOUT_GRACE_ROLES and current_spend < grace_usd_limit:
+            if current_spend < grace_usd_limit and usd_closeout_grace_applies(agent_name, state):
+                # SPEC-ISSUE-0098 / GH issue #563: unlike the token path,
+                # ScrumMaster has no separate ritual pool for USD - it is
+                # admitted to this same grace window while its retro/KPI/
+                # report work is still outstanding (see
+                # usd_closeout_grace_applies, helpers.py). Previously it was
+                # hard-halted here, so no role could ever close the sprint.
                 pass
-            else:
+            elif current_spend < grace_usd_limit:
                 msg = (
                     f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) reached. "
                     f"Current spend: ${current_spend:.2f}. Agent execution halted."
@@ -1297,6 +1377,29 @@ def check_cost_budget_callback(callback_context: CallbackContext, llm_request: L
                     "the sprint out on its own first."
                 )
                 return _budget_halt_response(callback_context, llm_request, msg, agent_name, detail=detail)
+            else:
+                # SPEC-ISSUE-0098 / GH issue #563: the USD figure is one
+                # shared, whole-engagement number - once it passes the grace
+                # ceiling, NO role can make another call, so redirecting a
+                # non-grace role to ProductOwner (the token path's behavior)
+                # just hands off to an agent that is equally frozen, and the
+                # mechanical safety net (which used to fire only from a
+                # grace-eligible role's own halt) might never run at all.
+                # Close the sprint out mechanically right here instead -
+                # fallback report, roadmap/state commit, release PR - with
+                # zero further LLM spend, whichever role happens to be active.
+                msg = (
+                    f"🚫 [USD BUDGET EXCEEDED] Total USD budget (${budget_limit:.2f}) and its close-out "
+                    f"grace (${grace_usd_limit:.2f}) are exhausted. Current spend: ${current_spend:.2f}. "
+                    "The sprint has been closed out mechanically (fallback sprint report, state/roadmap "
+                    "commit, release PR) so its results are preserved. Agent execution halted."
+                )
+                detail = (
+                    "The sprint's results are committed - no need to discard .hc/state.json. To keep "
+                    "working: raise TOTAL_USD_BUDGET in .env and restart the agent container (python3 "
+                    "run.py), then start the next sprint as usual."
+                )
+                return _budget_halt_response(callback_context, llm_request, msg, agent_name, detail=detail, final=True)
     except requests.RequestException as e:
         _sync_roadmap_on_exhaustion_once(callback_context)
         msg = f"❌ [BUDGET ERROR] Could not verify budget status with LiteLLM proxy: {e}. Agent execution halted to prevent unmonitored spending."
@@ -2849,7 +2952,7 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, role_identity_injection_callback, phase_awareness_injection_callback, agent_thinking_start_callback],
-    "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, history_management_after_callback],
+    "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, closeout_on_litellm_budget_rejection_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
     "after_tool_callback": log_tool_result_callback,
     "on_tool_error_callback": on_tool_error_callback,
@@ -3106,6 +3209,7 @@ root_agent = LlmAgent(
         agent_thinking_stop_callback,
         recover_fake_tool_call_callback,
         update_token_usage_callback,
+        closeout_on_litellm_budget_rejection_callback,
         history_management_after_callback
     ],
     before_tool_callback=log_tool_invocation_callback,

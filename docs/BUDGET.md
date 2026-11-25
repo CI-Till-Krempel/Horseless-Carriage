@@ -104,6 +104,26 @@ if you haven't renamed it in your own `.env` yet.
   the USD check outright (rather than run a check that can never meaningfully fail). **The
   token budget above is the only guardrail that applies to a local/Ollama sprint** — set
   `SPRINT_TOKEN_BUDGET` accordingly.
+- **Graceful close-out when the cap is hit (GH issue #563, SPEC-ISSUE-0098)**: the USD cap closes
+  the sprint out the same way the token budget does. The sprint's results are preserved and you
+  never need to discard `.hc/state.json`. Nothing here raises the ceiling.
+  - **At the cap**: DevTeam/QA/Architect halt immediately. ProductOwner, ScrumOrchestrator and
+    **Scrum Master** (only while this sprint's report hasn't been written yet) may keep spending
+    inside the same close-out grace ceiling the token path uses,
+    `TOTAL_USD_BUDGET x (1 + closeout_grace_percent)`. Scrum Master needs it to run the retro, KPIs
+    and `create_sprint_report`. The token path covers this with Scrum Master's separate ritual
+    budget, which has no USD counterpart. See `usd_closeout_grace_applies` in
+    `agents/scrum_team/helpers.py`.
+  - **Past the grace ceiling**: the USD figure is shared, so no role can make another call.
+    Whichever role is active runs the mechanical close-out (`_ensure_sprint_report_on_final_halt`:
+    fallback sprint report, live state/roadmap committed to develop, release PR) once per sprint,
+    with zero further LLM spend. It is no longer handed off to an equally frozen ProductOwner.
+  - **LiteLLM-proxy rejection**: if the proxy itself rejects a call because its budget is spent
+    (`Budget has been exceeded!`), `closeout_on_litellm_budget_rejection_callback`
+    (`agents/scrum_team/agent.py`) runs that same mechanical close-out. An ordinary, transient
+    TPM/RPM rate limit does not trigger it.
+  - **To keep working afterwards**: raise `TOTAL_USD_BUDGET` and restart. See "Recovering From A
+    Stuck Budget Halt" below.
 - **Tools**: `update_budgets(total_usd=0.50)`, `create_litellm_virtual_key()`.
 - **Depends on LiteLLM's bundled pricing table being current** (GH issue #298): every USD
   figure above - `scrum-sprint-budget` spend, and the "Actual USD Spend" line in the sprint

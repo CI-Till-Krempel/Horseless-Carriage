@@ -141,6 +141,14 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   sprint automatically pauses for review once the token or USD budget is exhausted, or on a
   persistent provider rate limit. See [MANUAL.md §5](MANUAL.md#5-budgets) and
   [Budget Management](docs/BUDGET.md).
+- **Hit the `TOTAL_USD_BUDGET` cap (`🚫 [USD BUDGET EXCEEDED]`) - do I have to delete `.hc/state.json`?**
+  No (GH issue #563, SPEC-ISSUE-0098). The sprint closes itself out once the USD cap is hit. Scrum
+  Master still gets the small close-out grace to write the retro, KPIs and sprint report. Once
+  that grace is spent too, or the LiteLLM proxy itself rejects a call for budget, the team commits a
+  fallback sprint report and the live state/roadmap to develop and opens the release PR, with no
+  further LLM spend. The halt message then says "closed out mechanically". To keep working, raise
+  `TOTAL_USD_BUDGET` in `.env` and restart (`python3 run.py`). See
+  [BUDGET.md § 2](docs/BUDGET.md#2-usd-budget-litellm-layer).
 - **`🚫 [NO BUDGET-CAPPED KEY]` response from an agent** — that agent has no `scrum-sprint-budget`
   -attached LiteLLM virtual key yet; every specialist agent is hard-blocked in code
   (`check_cost_budget_callback`) from making any LLM call until one exists, so no agent can
