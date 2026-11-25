@@ -69,6 +69,7 @@ import argparse
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import lib_docker
@@ -262,8 +263,38 @@ def main() -> None:
     _install_if_nested(repo_root)
 
     print()
-    os.chdir(repo_root)
-    setup_all.main()
+    _run_setup_all(this_checkout, repo_root)
+
+
+def _run_setup_all(this_checkout: Path, repo_root: Path) -> None:
+    """Hands off to setup_all.py's guided flow for repo_root.
+
+    GH issue #562 / SPEC-ISSUE-0097: when --target-repo added a fresh
+    submodule, repo_root is a *different* checkout from the one this script
+    (and therefore every module it imported) was loaded from. setup_all.py
+    and the steps it chains (setup_llm.py, setup_project.py,
+    check_state_repo.py, doctor's gate, run.py) all resolve their working
+    directory from their OWN __file__ (`os.chdir(Path(__file__).resolve()
+    .parent)`), not the caller's cwd - so a plain `os.chdir(repo_root);
+    setup_all.main()` in-process was silently undone by setup_llm.main()'s
+    first line, and the whole wizard then rewrote .env/litellm.yaml/
+    config/model-templates/ of the checkout new_project.py was launched
+    from, instead of the newly added project's. Running the submodule's
+    own setup_all.py as a child process (cwd=repo_root) makes every one of
+    those __file__-relative paths resolve inside the added project."""
+    if repo_root.resolve() == this_checkout.resolve():
+        os.chdir(repo_root)
+        setup_all.main()
+        return
+
+    setup_script = repo_root / "setup_all.py"
+    if not setup_script.is_file():
+        die(f"{setup_script} not found - is {repo_root} really a Horseless Carriage checkout?")
+    info(f"Continuing setup inside {repo_root} (its own setup_all.py) - only that project's "
+         "configuration is written, not this checkout's.")
+    result = subprocess.run([sys.executable, str(setup_script)], cwd=str(repo_root))
+    if result.returncode != 0:
+        sys.exit(result.returncode)
 
 
 if __name__ == "__main__":
