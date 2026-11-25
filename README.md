@@ -114,7 +114,9 @@ This adds Horseless Carriage as a `horseless-carriage/` submodule of that projec
 `git init`-ing it first if it doesn't exist yet), then pre-fills `.env` with per-project defaults —
 `STATE_REPO_PATH` pointed at the project itself, a `COMPOSE_PROJECT_NAME_PREFIX` derived from its
 directory name, and free host ports if `4000`/`8000` are already taken by another running
-installation — before handing off to the same guided `setup_all.py` flow above. If you've already
+installation — before handing off to the same guided `setup_all.py` flow above (the new
+submodule's own copy, run inside it — only the added project's configuration is written, never the
+checkout you ran `new_project.py` from; GH issue #562). If you've already
 added the submodule yourself (`git submodule add <this-repo-url> horseless-carriage`), just run
 `python3 new_project.py` from inside it — same effect, no `--target-repo` needed.
 

@@ -196,3 +196,70 @@ class TestInstallIfNested:
 
         mock_configure.assert_not_called()
         assert not registry_path.is_file()
+
+
+class TestMainHandsOffSetupToTheAddedProject:
+    """GH issue #562 / SPEC-ISSUE-0097: `new_project.py --target-repo X`
+    must run the guided setup against X's own horseless-carriage/
+    submodule, never against the checkout new_project.py was launched
+    from. setup_all.py's steps chdir to their own module's __file__
+    directory, so an in-process setup_all.main() (the pre-fix behavior)
+    always configured the launching checkout instead."""
+
+    def _fake_submodule(self, tmp_path):
+        target_repo = tmp_path / "product"
+        repo_root = target_repo / "horseless-carriage"
+        repo_root.mkdir(parents=True)
+        # A stand-in for the submodule's own setup_all.py: records which
+        # directory it ran in and writes "its" config there.
+        (repo_root / "setup_all.py").write_text(
+            "import os\n"
+            "from pathlib import Path\n"
+            "Path('.env').write_text('CONFIGURED=1\\n')\n"
+            "(Path(__file__).resolve().parent / 'ran_in.txt').write_text(os.getcwd())\n"
+        )
+        return target_repo, repo_root
+
+    def test_target_repo_setup_runs_in_the_added_submodule_not_this_checkout(self, tmp_path, monkeypatch):
+        target_repo, repo_root = self._fake_submodule(tmp_path)
+        launching_checkout = Path(new_project.__file__).resolve().parent
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["new_project.py", "--target-repo", str(target_repo)])
+
+        with patch.object(new_project, "_add_as_submodule", return_value=repo_root), \
+             patch.object(new_project, "_install_if_nested"), \
+             patch.object(new_project.setup_all, "main") as in_process_setup:
+            new_project.main()
+
+        # This checkout's own setup_all.main() (which would chdir back to
+        # the launching checkout and rewrite ITS .env) must never run.
+        in_process_setup.assert_not_called()
+        assert (repo_root / ".env").read_text() == "CONFIGURED=1\n"
+        assert Path((repo_root / "ran_in.txt").read_text()).resolve() == repo_root.resolve()
+        assert repo_root.resolve() != launching_checkout
+
+    def test_failing_submodule_setup_propagates_its_exit_code(self, tmp_path, monkeypatch):
+        target_repo, repo_root = self._fake_submodule(tmp_path)
+        (repo_root / "setup_all.py").write_text("import sys\nsys.exit(3)\n")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["new_project.py", "--target-repo", str(target_repo)])
+
+        with patch.object(new_project, "_add_as_submodule", return_value=repo_root), \
+             patch.object(new_project, "_install_if_nested"):
+            with pytest.raises(SystemExit) as exc:
+                new_project.main()
+        assert exc.value.code == 3
+
+    def test_without_target_repo_setup_still_runs_in_process_for_this_checkout(self, monkeypatch):
+        launching_checkout = Path(new_project.__file__).resolve().parent
+        monkeypatch.setattr("sys.argv", ["new_project.py"])
+        monkeypatch.chdir(launching_checkout)
+
+        with patch.object(new_project, "_install_if_nested") as mock_install, \
+             patch.object(new_project.setup_all, "main") as in_process_setup, \
+             patch.object(new_project.subprocess, "run") as mock_run:
+            new_project.main()
+
+        mock_install.assert_called_once_with(launching_checkout)
+        in_process_setup.assert_called_once_with()
+        mock_run.assert_not_called()

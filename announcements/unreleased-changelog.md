@@ -13,6 +13,25 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### `new_project.py --target-repo` reconfigured the launching checkout instead of the added project (SPEC-ISSUE-0097, GH #562)
+
+Adding a project from an existing Horseless Carriage checkout
+(`python3 new_project.py --target-repo /path/to/product`) correctly pre-filled the new
+`product/horseless-carriage/.env`, but then the guided setup wizard overwrote the **launching**
+checkout's `.env`, `litellm.yaml` and `config/model-templates/` instead of the new submodule's.
+
+**Confirmed mechanism:** `new_project.main()` did `os.chdir(repo_root); setup_all.main()`
+in-process. But `setup_all`, `setup_llm`, `setup_project` and `check_state_repo` were imported from
+the launching checkout, and each resolves its working directory from its own `__file__`.
+`setup_llm.main()` starts with `os.chdir(Path(__file__).resolve().parent)`, which undid the chdir
+before the first prompt.
+
+`new_project.py` now runs the submodule's own `setup_all.py` as a child process with
+`cwd=<submodule>` whenever `--target-repo` added a different checkout, and passes on its exit code.
+Running `new_project.py` from inside an existing submodule (no `--target-repo`) is unchanged. New
+`tests/test_new_project.py::TestMainHandsOffSetupToTheAddedProject` cases fail against the old
+in-process hand-off.
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

@@ -86,6 +86,13 @@ newer Horseless Carriage into an existing submodule) is always safe. It then han
 `setup_all.py` guided flow described below - everything from here on works identically whether
 you're in a traditional standalone checkout or an installed submodule.
 
+With `--target-repo`, that hand-off runs the **new submodule's own** `setup_all.py`, inside the
+submodule directory - so the wizard only ever writes the added project's `.env`, `litellm.yaml`
+and `config/model-templates/`, never those of the checkout you launched `new_project.py` from.
+The only thing outside the new project it touches is the machine-wide project registry
+(`~/.horseless-carriage/projects.json`, below). (Before GH issue #562 / SPEC-ISSUE-0097 it ran the
+launching checkout's copy in-process, which silently reconfigured the launching checkout instead.)
+
 If you've already added the submodule yourself
 (`git submodule add <this-repo-url> horseless-carriage`, run from inside your project), skip
 `--target-repo` and just run `python3 new_project.py` from inside that submodule directory.
