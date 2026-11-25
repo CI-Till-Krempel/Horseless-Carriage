@@ -692,6 +692,49 @@ def _render_blockers_section(manifest: dict) -> list:
     return lines
 
 
+def _render_framework_proposals_section(manifest: dict) -> list:
+    """
+    GH #567 / SPEC-ISSUE-0102: every propose_framework_change proposal made
+    during the run (the last sprint's cumulative framework_change_proposals,
+    captured by run_eval.py's _run_one_sprint) and what the harness did with
+    its PR - a proposal no longer stops the run (no human operator exists
+    here), so this is where a reviewer still sees it. Omitted entirely when
+    the run made none.
+    """
+    sprints = manifest.get("sprints", [])
+    proposals = (sprints[-1].get("framework_change_proposals") or []) if sprints else []
+    if not proposals:
+        return []
+    merges_by_url_suffix = {
+        f"/pull/{m['number']}": m
+        for m in manifest.get("pr_merges", [])
+        if m.get("framework") and "number" in m
+    }
+    lines = [
+        "## Framework Change Proposals",
+        "",
+        "Recorded, not acted on by a human: this unattended harness merges each proposal's draft PR "
+        "as the stand-in reviewer but never rebuilds the agent image or changes the run's fixed "
+        "network allowlist (`config/net-proxy/allowlist-eval.filter`).",
+        "",
+    ]
+    for proposal in proposals:
+        pr_url = proposal.get("pr_url") or "(no PR URL recorded)"
+        merge = next((m for suffix, m in merges_by_url_suffix.items() if pr_url.endswith(suffix)), None)
+        merge_text = (
+            f"merged by harness after sprint {merge.get('after_sprint')}" if merge and merge.get("merged")
+            else ("harness merge failed" if merge else "not merged by harness")
+        )
+        hosts = ", ".join(proposal.get("additional_allowlist_hosts") or []) or "none"
+        lines.append(
+            f"- {pr_url} ({merge_text}) - template: {proposal.get('template_name') or 'custom script'}, "
+            f"requested allowlist hosts: {hosts}, proposed by {proposal.get('proposed_by', 'unknown')}: "
+            f"{proposal.get('rationale', '(no rationale recorded)')}"
+        )
+    lines.append("")
+    return lines
+
+
 def _render_report(manifest: dict, judgment: dict) -> str:
     lines = [
         "# Team Performance Evaluation Report",
@@ -708,6 +751,7 @@ def _render_report(manifest: dict, judgment: dict) -> str:
     ]
     lines += _render_stopped_early_callout(manifest)
     lines += _render_blockers_section(manifest)
+    lines += _render_framework_proposals_section(manifest)
     lines += [
         "## Methodology note",
         "This run used a scripted, unattended driver (`run_eval.py`) that pre-approves "

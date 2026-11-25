@@ -324,6 +324,16 @@ PR-body text), that step is:
    effect — `entrypoint.sh` merges `NET_PROXY_EXTRA_ALLOWLIST_HOSTS` into
    the live allowlist idempotently on container start.
 
+The blocking interaction is raised at the `Product` and `CEO` interaction
+levels only (`helpers.framework_change_escalates_to_operator`, GH #567 /
+SPEC-ISSUE-0102). At `INTERACTION_LEVEL=EVAL` (the unattended Team
+Performance Evaluation) no operator exists, and the run's allowlist is the
+fixed `config/net-proxy/allowlist-eval.filter`. The PR and its operator
+section are still produced and recorded, but the tool returns an `eval_note`
+telling the team to keep going instead of raising an item nobody can resolve.
+The harness merges the PR at sprint end as the stand-in reviewer
+([EVALUATION.md](EVALUATION.md)).
+
 This is deliberately **today's** behavior, not ADR-0002's design: see
 `specs/architecture/ADR-0002-Per-Project-Workbench-Network-Allowlist-Proposals.md`
 (Status: Proposed, not yet implemented) for a tracked

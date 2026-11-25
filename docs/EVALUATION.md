@@ -33,6 +33,16 @@ what you need:
   eval repo, using the cheap `scrum-eval-cheap` model alias (see the active
   `litellm.yaml` / [Setup](SETUP.md)) and its own [budget guardrails](BUDGET.md)
   (`EVAL_SPRINT_TOKEN_BUDGET`/`EVAL_USD_BUDGET_PER_SPRINT`).
+- **Proposals don't stop the run** (GH #567, SPEC-ISSUE-0102): the harness
+  stands in for the human reviewer of the team's own proposal PRs. At the end
+  of each sprint it marks open `steering/...` (`propose_steering_change`) and
+  `framework/...` (`propose_framework_change`) draft PRs ready and merges them
+  into the run's develop. At `EVAL` level, `propose_framework_change` raises
+  no "ACTION NEEDED" operator item for allowlist hosts, because no human can
+  act on one. The run's allowlist is the fixed `allowlist-eval.filter`, and the
+  agent image is never rebuilt mid-run. A human-only blocker that only waits on
+  such a proposal no longer stops the run. Every proposal is listed in
+  `report.md`'s "Framework Change Proposals" section.
 - **Local (non-CI) runs** check the LiteLLM proxy is actually reachable before
   spending anything, and refuse to proceed without an explicit `--dev-mode`
   flag if it isn't (since the USD guardrail lives entirely in the proxy).

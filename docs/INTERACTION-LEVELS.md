@@ -68,6 +68,10 @@ PRs is the harness's own stand-in for human release review, documented in that s
 docstring. EVAL uses the same `full` report detail as Product (see below) - the report is analyzed
 by tooling afterwards, not read by a human, so there's nothing to gain from trimming it.
 
+EVAL also suppresses `propose_framework_change`'s "ACTION NEEDED" operator escalation for new
+allowlist hosts (GH #567 / SPEC-ISSUE-0102). The draft PR and its record are unchanged. Product and
+CEO still raise it. See [WORKBENCHES.md](WORKBENCHES.md) "The network-allowlist step".
+
 ## Report detail tiers
 
 `INTERACTION_LEVEL` also controls how much detail `create_sprint_report` (`agents/scrum_team/tools/

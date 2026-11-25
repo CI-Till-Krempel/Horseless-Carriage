@@ -13,6 +13,35 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### Framework change proposals no longer stall the Team Performance Evaluation (SPEC-ISSUE-0102, GH #567)
+
+The Architect's `propose_framework_change` opens a draft PR for the project's workbench. If the
+workbench needs new hosts, it also raised an `[ACTION NEEDED - framework_change]` item asking a
+human operator to edit `NET_PROXY_EXTRA_ALLOWLIST_HOSTS`. The eval harness has no human, so the
+proposal could never be resolved there.
+
+What the runs showed:
+- **0.2.1-run94:** nothing merged the `framework/...` PR, so `check_workbench_tooling` kept reporting
+  `action_needed` and the Architect re-proposed the same `python-flask` workbench in sprints 1, 2
+  and 3 (eval-repo PRs #887/#893/#897).
+- **0.2.1-run95:** ScrumMaster opened sprints 2 and 3 by working through the unresolvable
+  interaction.
+- **Stop risk:** escalating the proposal as a high-priority human-only finding would have ended the
+  run as `human_blocker_unresolved`.
+
+The same investigation found that the GH #405 steering-PR auto-merge had never worked. Every merge
+in run94's manifest failed with `GraphQL: Pull Request is still a draft (mergePullRequest)`.
+
+What changed:
+- **No operator item in EVAL:** at `INTERACTION_LEVEL=EVAL`, `propose_framework_change` still opens
+  and records the same PR but raises no blocking interaction, and tells the team to continue.
+  Product and CEO are unchanged.
+- **Proposal PRs get merged:** the harness now marks open `steering/...` and `framework/...` PRs
+  ready and merges them at the end of each sprint.
+- **No stop on proposal follow-ups:** a human-only blocker that only waits on such a proposal no
+  longer stops the run.
+- **Proposals still reported:** `report.md` gets a new "Framework Change Proposals" section.
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

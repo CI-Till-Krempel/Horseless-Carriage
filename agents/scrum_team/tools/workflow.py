@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from .base import _configured_repo_root, _develop_branch_name, _run
+from ..helpers import framework_change_escalates_to_operator
 from .github import _checkout_develop_or_recover, git_push, gh_pr_create
 from .notifications import record_blocking_interaction
 from .workbench_templates import resolve_workbench_template, WORKBENCH_SCRIPT_RELATIVE_PATH
@@ -398,6 +399,18 @@ def propose_framework_change(
     JVM incident that led to this tool needed a human for in the first
     place.
 
+    GH #567 / SPEC-ISSUE-0102: that blocking interaction is raised at the
+    Product/CEO interaction levels only (helpers.framework_change_escalates_
+    to_operator). At INTERACTION_LEVEL=EVAL (run_eval.py's unattended Team
+    Performance Evaluation) there is no human operator to act on it and the
+    eval's net-proxy allowlist is a fixed, checked-in file - the proposal is
+    still opened and recorded exactly the same way (draft PR, PR-body
+    operator section, framework_change_proposals entry, which the eval
+    report renders), but instead of an "ACTION NEEDED" item no one can ever
+    resolve, the result carries an `eval_note` telling the team to keep
+    going; the harness merges the PR at sprint end as its stand-in reviewer
+    (run_eval.py's _merge_open_proposal_prs).
+
     Refuses a missing/too-short rationale, an unknown/invalid template_name,
     neither workbench_setup_script nor template_name given, or a no-op
     (effective script and MCP config both already match what's there).
@@ -542,6 +555,17 @@ def propose_framework_change(
         tool_context=tool_context,
     )
     ok = pr_res.get("status") == "ok"
+    escalate_to_operator = framework_change_escalates_to_operator()
+    eval_note = None
+    if ok and effective_allowlist_hosts and not escalate_to_operator:
+        eval_note = (
+            "INTERACTION_LEVEL=EVAL: no human operator is in the loop for this run, so no blocking "
+            "interaction was raised for the requested allowlist host(s). This proposal is recorded "
+            "(framework_change_proposals, shown in the eval report) and the eval harness merges its "
+            "draft PR at sprint end as the stand-in reviewer. This run's network allowlist is fixed "
+            "(config/net-proxy/allowlist-eval.filter) - do not wait on this proposal or file a "
+            "human-category blocker/impediment for it; continue the sprint."
+        )
     if ok and tool_context and getattr(tool_context, "state", None):
         tool_context.state["framework_change_proposal_count"] = tool_context.state.get("framework_change_proposal_count", 0) + 1
         tool_context.state["framework_change_proposals"] = list(tool_context.state.get("framework_change_proposals", [])) + [{
@@ -553,8 +577,9 @@ def propose_framework_change(
             "additional_allowlist_hosts": effective_allowlist_hosts,
             "pr_url": (pr_res.get("stdout") or "").strip(),
             "branch": actual_branch,
+            "operator_escalated": bool(effective_allowlist_hosts) and escalate_to_operator,
         }]
-        if effective_allowlist_hosts:
+        if effective_allowlist_hosts and escalate_to_operator:
             record_blocking_interaction(
                 "framework_change",
                 f"Workbench change needs new network access: {', '.join(effective_allowlist_hosts)}",
@@ -575,4 +600,5 @@ def propose_framework_change(
         "additional_allowlist_hosts": effective_allowlist_hosts,
         "push": push_res,
         "pr": pr_res,
+        **({"eval_note": eval_note} if eval_note else {}),
     }

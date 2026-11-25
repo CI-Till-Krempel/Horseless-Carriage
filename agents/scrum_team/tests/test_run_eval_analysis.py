@@ -17,6 +17,7 @@ from agents.scrum_team.scripts.run_eval_analysis import (
     _collect_blockers,
     _collect_general_blockers,
     _render_blockers_section,
+    _render_framework_proposals_section,
     _render_stopped_early_callout,
     _sprint_metrics_table,
     _total_tokens_used,
@@ -50,6 +51,34 @@ def test_render_report_includes_hc_commit():
 def test_render_report_defaults_hc_commit_to_unknown_when_absent():
     report = _render_report(dict(_BASE_MANIFEST), _JUDGMENT)
     assert "- Horseless Carriage commit: unknown" in report
+
+
+def test_framework_change_proposals_stay_visible_in_the_report():
+    """GH #567 / SPEC-ISSUE-0102: a framework change proposal no longer
+    stops the run - the report is where a reviewer still sees it, with what
+    the harness did with its PR."""
+    manifest = dict(
+        _BASE_MANIFEST,
+        sprints=[{"sprint_number": 1, "framework_change_proposals": [{
+            "proposed_by": "Architect",
+            "rationale": "To-Do app needs Flask and pytest",
+            "template_name": "python-flask",
+            "additional_allowlist_hosts": ["pypi.org", "files.pythonhosted.org"],
+            "pr_url": "https://github.com/example/eval-repo/pull/887",
+        }]}],
+        pr_merges=[{"number": 887, "merged": True, "after_sprint": 1, "framework": True, "kind": "framework"}],
+    )
+    section = "\n".join(_render_framework_proposals_section(manifest))
+    assert "## Framework Change Proposals" in section
+    assert "pull/887 (merged by harness after sprint 1)" in section
+    assert "python-flask" in section
+    assert "pypi.org, files.pythonhosted.org" in section
+    assert "## Framework Change Proposals" in _render_report(manifest, _JUDGMENT)
+
+
+def test_no_framework_change_proposals_section_when_none_were_made():
+    assert _render_framework_proposals_section(dict(_BASE_MANIFEST)) == []
+    assert "## Framework Change Proposals" not in _render_report(dict(_BASE_MANIFEST), _JUDGMENT)
 
 
 def _sprint(number, backlog=None, kpis=None):

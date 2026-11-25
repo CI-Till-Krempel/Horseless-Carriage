@@ -14,16 +14,20 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from agents.scrum_team.scripts.run_eval import _merge_open_steering_prs
+from agents.scrum_team.scripts.run_eval import _merge_open_proposal_prs, _merge_open_steering_prs
 
 
-def _fake_run(list_stdout=None, list_returncode=0, merge_returncode=0):
+def _fake_run(list_stdout=None, list_returncode=0, merge_returncode=0, calls=None):
     def fake(cmd, cwd=None, capture_output=None, text=None):
         class _Result:
             pass
 
+        if calls is not None:
+            calls.append(list(cmd))
         r = _Result()
-        if cmd[:3] == ["gh", "pr", "list"]:
+        if cmd[:3] == ["gh", "pr", "ready"]:
+            r.returncode, r.stdout, r.stderr = 0, "", ""
+        elif cmd[:3] == ["gh", "pr", "list"]:
             r.returncode = list_returncode
             r.stdout = json.dumps(list_stdout or [])
             r.stderr = "" if list_returncode == 0 else "gh: something went wrong"
@@ -71,7 +75,7 @@ def test_records_merge_failure_without_raising():
         side_effect=_fake_run(list_stdout=prs, merge_returncode=1),
     ):
         results = _merge_open_steering_prs(Path("."), "develop")
-    assert results == [{"number": 301, "merged": False, "message": "merge failed"}]
+    assert results == [{"number": 301, "merged": False, "message": "merge failed", "kind": "steering"}]
 
 
 def test_surfaces_gh_pr_list_failure_as_an_error_entry():
@@ -81,3 +85,40 @@ def test_surfaces_gh_pr_list_failure_as_an_error_entry():
     ):
         results = _merge_open_steering_prs(Path("."), "develop")
     assert results == [{"error": "gh pr list failed: gh: something went wrong"}]
+
+
+# --- GH #567 / SPEC-ISSUE-0102: framework change proposal PRs -------------
+
+
+def test_steering_only_wrapper_never_merges_a_framework_proposal():
+    prs = [{"number": 401, "headRefName": "eval-0.2.1-run94/framework/workbench-20261113125500"}]
+    with patch("agents.scrum_team.scripts.run_eval.subprocess.run", side_effect=_fake_run(list_stdout=prs)):
+        results = _merge_open_steering_prs(Path("."), "develop")
+    assert results == []
+
+
+def test_proposal_sweep_merges_framework_and_steering_prs_but_never_feature_prs():
+    prs = [
+        {"number": 887, "headRefName": "eval-0.2.1-run94/framework/workbench-20261113125500"},
+        {"number": 888, "headRefName": "eval-0.2.1-run94/feature/US-0001-tech-stack"},
+        {"number": 889, "headRefName": "eval-0.2.1-run94/steering/qa-identity-20261113130000"},
+        {"number": 890, "headRefName": "framework/workbench-20261113131500"},  # no eval prefix
+    ]
+    with patch("agents.scrum_team.scripts.run_eval.subprocess.run", side_effect=_fake_run(list_stdout=prs)):
+        results = _merge_open_proposal_prs(Path("."), "develop")
+    assert [(r["number"], r["kind"]) for r in results] == [(887, "framework"), (889, "steering"), (890, "framework")]
+    assert all(r["merged"] for r in results)
+
+
+def test_proposal_sweep_marks_a_draft_ready_before_merging_it():
+    """Both proposal tools open DRAFT PRs (gh_pr_create(draft=True)), which
+    GitHub refuses to merge - each must be marked ready first."""
+    calls = []
+    prs = [{"number": 893, "headRefName": "eval-0.2.1-run94/framework/workbench-20261113140000"}]
+    with patch(
+        "agents.scrum_team.scripts.run_eval.subprocess.run",
+        side_effect=_fake_run(list_stdout=prs, calls=calls),
+    ):
+        _merge_open_proposal_prs(Path("."), "develop")
+    non_list_calls = [c[:4] for c in calls if c[:3] != ["gh", "pr", "list"]]
+    assert non_list_calls == [["gh", "pr", "ready", "893"], ["gh", "pr", "merge", "893"]]
