@@ -40,6 +40,35 @@ def _make_project(tmp_path, name="my-project"):
 
 
 class TestProjectSnapshot:
+    def test_context_utilisation_kpi_is_surfaced_for_the_current_sprint(self, tmp_path):
+        """GH issue #566: the live session records per-call context-window
+        utilisation into state.json's context_utilisation; the dashboard
+        shows the current sprint's mean/peak, and nothing when absent."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({
+            "sprint_number": 2,
+            "token_usage": {"total": 10},
+            "context_utilisation": {"sprints": {"2": {"high_water_percent": 80.0, "agents": {"DevTeam": {
+                "model": "scrum-dev", "context_window_tokens": 100000, "window_source": "litellm_proxy",
+                "calls": 2, "sum_percent": 100.0, "sum_prompt_tokens": 100000,
+                "peak_percent": 90.0, "peak_prompt_tokens": 90000, "high_water_calls": 1,
+            }}}}},
+        }))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+
+        assert snap["context_utilisation"] == "ctx mean 50.0% / peak 90.0% (1 ≥80%)"
+
+    def test_context_utilisation_is_empty_without_data(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+        assert snap["context_utilisation"] == ""
+
     def test_missing_hc_path_is_reported_without_raising(self, tmp_path):
         entry = {"name": "gone", "hc_path": str(tmp_path / "nowhere"), "target_repo": str(tmp_path)}
         snap = dashboard.project_snapshot(entry)

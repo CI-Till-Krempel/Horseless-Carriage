@@ -46,5 +46,12 @@ what you need:
   Either way, a maintainer must explicitly approve the run before anything
   executes (real LLM spend).
 
+- **KPI trends**: the report's "KPI Trends" section plots per-sprint series
+  (velocity, Say-Do Ratio, test coverage, ...) including the runtime
+  context-window utilisation KPI (GH issue #566): team mean %, peak % and the
+  number of LLM calls at/above the high-water mark - a rising peak is the
+  signal to revisit the eval model choice or trim prompts. See
+  [BUDGET.md "Quality KPIs"](BUDGET.md#quality-kpis).
+
 For the exact commands to run this locally, see
 [MANUAL.md § Running it locally](../MANUAL.md#running-it-locally).

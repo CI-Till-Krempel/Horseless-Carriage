@@ -13,6 +13,32 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### Runtime context-window utilisation is now a tracked KPI (GH issue #566, US-0034)
+
+Until now the only context-window figure was US-0033's static one: how much of each role's window
+its system prompt costs before any conversation happens. How full the window actually got at
+runtime - prompt plus history, injected status blocks and tool results - wasn't recorded anywhere.
+`update_token_usage_callback` read `usage_metadata.total_token_count` for the budget, and nothing
+read `prompt_token_count`. So a role creeping towards its model's limit was only noticed when its
+output got worse.
+
+A new after-model callback, `track_context_utilisation_callback` (`agents/scrum_team/agent.py`),
+measures every call's `prompt_token_count` against the role's model's context window. It stores
+per-sprint, per-role aggregates in a new optional `ScrumState.context_utilisation` field: mean %,
+peak %, and the number of calls at or above a high-water mark (`CONTEXT_UTILISATION_HIGH_WATER_PERCENT`,
+default 80). The window is resolved from `CONTEXT_WINDOW_OVERRIDES`, then the LiteLLM proxy's
+`/model/info` (cached), then litellm's model map, then `CONTEXT_WINDOW_FALLBACK_TOKENS` (default
+128000, reported as an estimate).
+
+You'll find it in `calculate_kpis()`, in a "Context Utilisation" section of both the authored and
+the fallback sprint report, in the eval report's KPI Trends (mean %, peak %, high-water calls), and
+in the dashboard's budget cell. When a role reaches the mark, the sprint report flags it as a
+trigger to review that role's model choice or trim its prompt or history.
+
+It's observability only: the callback never touches `token_usage`/`budgets` and never returns a
+response, so budget enforcement is unchanged. The new state field is additive, so existing state
+repos load as before and no migration is needed.
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

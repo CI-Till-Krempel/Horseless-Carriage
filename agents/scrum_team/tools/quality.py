@@ -101,6 +101,85 @@ def _fetch_model_context_windows() -> Dict[str, Dict[str, Any]]:
     return windows
 
 
+# GH issue #566: resolve_context_window below runs on EVERY LLM call (via
+# agent.py's track_context_utilisation_callback), so the proxy's /model/info
+# is fetched at most once per TTL window per process, not per call - and a
+# failed fetch ({}) is cached too, so an unreachable proxy can't add a 10s
+# timeout to every model turn.
+_CONTEXT_WINDOW_CACHE_TTL_SECS = 600.0
+_context_window_cache: Dict[str, Any] = {"fetched_at": None, "windows": {}}
+
+
+def _cached_model_context_windows() -> Dict[str, Dict[str, Any]]:
+    import time
+    now = time.monotonic()
+    fetched_at = _context_window_cache.get("fetched_at")
+    if fetched_at is None or now - fetched_at > _CONTEXT_WINDOW_CACHE_TTL_SECS:
+        _context_window_cache["windows"] = _fetch_model_context_windows()
+        _context_window_cache["fetched_at"] = now
+    return _context_window_cache["windows"]
+
+
+def resolve_context_window(model: str) -> tuple:
+    """
+    GH issue #566: the context window (max input tokens) to measure a
+    runtime LLM call's prompt against, as `(tokens, source)`. Resolution
+    order:
+
+    1. "override"           - CONTEXT_WINDOW_OVERRIDES (`<model>=<tokens>,...`),
+                              keyed by the role's configured model alias.
+    2. "litellm_proxy"      - the LiteLLM proxy's /model/info for that alias
+                              (cached, see _cached_model_context_windows) - a
+                              `model_info: max_input_tokens:` entry in
+                              litellm.yaml is honoured here too.
+    3. "litellm_model_map"  - litellm.get_model_info(model) directly, for a
+                              role configured with a real model name rather
+                              than a proxy alias.
+    4. "fallback"           - CONTEXT_WINDOW_FALLBACK_TOKENS (default 128000),
+                              flagged as an estimate wherever it's reported.
+
+    Never raises - observability only, never a correctness gate.
+    """
+    from ..context_utilisation import (
+        FALLBACK_SOURCE,
+        fallback_context_window_tokens,
+        parse_context_window_overrides,
+    )
+
+    overrides = parse_context_window_overrides()
+    if model in overrides:
+        return overrides[model], "override"
+    try:
+        window = _cached_model_context_windows().get(model)
+    except Exception:
+        window = None
+    if window and window.get("max_input_tokens"):
+        try:
+            return int(window["max_input_tokens"]), "litellm_proxy"
+        except (TypeError, ValueError):
+            pass
+    try:
+        info = litellm.get_model_info(model) or {}
+        tokens = info.get("max_input_tokens") or info.get("max_tokens")
+        if tokens:
+            return int(tokens), "litellm_model_map"
+    except Exception:
+        pass
+    return fallback_context_window_tokens(), FALLBACK_SOURCE
+
+
+def calculate_context_utilisation(tool_context=None) -> Dict[str, Any]:
+    """GH issue #566: the current sprint's runtime context-utilisation KPI
+    summary (see agents/scrum_team/context_utilisation.py::summarize), read
+    from session state - recorded per LLM call by agent.py's
+    track_context_utilisation_callback, not recomputed here."""
+    from ..context_utilisation import summarize
+    state = getattr(tool_context, "state", None) if tool_context else None
+    if state is None:
+        return summarize(None, None)
+    return summarize(state.get("context_utilisation"), state.get("sprint_number", 0))
+
+
 def calculate_prompt_context_usage() -> Dict[str, Dict[str, Any]]:
     """
     For every role, measures how many tokens its concatenated, STATIC
@@ -859,6 +938,8 @@ def calculate_kpis(tool_context=None) -> Dict[str, Any]:
         "security": security,
         "prompt_context_usage": calculate_prompt_context_usage(),
         "prompt_module_breakdown": calculate_prompt_module_breakdown(),
+        # GH issue #566: runtime (not static-prompt) context-window fill.
+        "context_utilisation": calculate_context_utilisation(tool_context),
     }
 
 def update_sprint_report(kpis: Dict[str, Any], tool_context=None) -> Dict[str, Any]:

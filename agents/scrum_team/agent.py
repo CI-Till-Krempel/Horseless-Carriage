@@ -378,7 +378,11 @@ from .tools.quality import (
     check_build,
     recheck_test_suite,
     run_release_audit,
+    resolve_context_window,
+    _model_alias_for_role,
+    _ROLE_MODEL_KEYS,
 )
+from .context_utilisation import record_call as record_context_utilisation_call
 from .tools.workflow import (
     generate_workflow_diagram,
     gather_workflow_improvement_proposals,
@@ -1470,6 +1474,47 @@ def update_token_usage_callback(callback_context: CallbackContext, llm_response:
             except Exception:
                 pass
 
+    return None
+
+def track_context_utilisation_callback(callback_context: CallbackContext, llm_response: LlmResponse) -> Optional[LlmResponse]:
+    """
+    AfterModelCallback (GH issue #566): records how full this call's
+    context window was - the provider-reported prompt/input tokens
+    (`usage_metadata.prompt_token_count`, i.e. system prompt + history +
+    injected status + tool results actually sent) against the role's
+    model's context window (tools/quality.py's resolve_context_window) -
+    into state["context_utilisation"], aggregated per sprint and role (see
+    agents/scrum_team/context_utilisation.py). Surfaced as a KPI in the
+    sprint report, calculate_kpis(), the eval report and the dashboard.
+
+    Pure observability: writes only its own state key, never touches
+    token_usage/budgets, and never returns a response - so it cannot alter
+    budget enforcement (AGENTS.md section 12) or short-circuit the
+    after_model_callback chain. Any failure is swallowed (logged at debug).
+    """
+    try:
+        usage = llm_response.usage_metadata
+        if not usage:
+            return None
+        prompt_tokens = getattr(usage, "prompt_token_count", None)
+        if isinstance(prompt_tokens, bool) or not isinstance(prompt_tokens, (int, float)) or prompt_tokens <= 0:
+            return None
+        agent_name = callback_context.agent_name
+        model = _model_alias_for_role(agent_name) if agent_name in _ROLE_MODEL_KEYS else agent_name
+        window_tokens, window_source = resolve_context_window(model)
+        state = callback_context.state
+        updated = record_context_utilisation_call(
+            state.get("context_utilisation"),
+            state.get("sprint_number", 0),
+            agent_name,
+            model,
+            prompt_tokens,
+            window_tokens,
+            window_source,
+        )
+        state["context_utilisation"] = updated
+    except Exception as e:  # observability must never break a model turn
+        logger.debug(f"track_context_utilisation_callback: skipped ({type(e).__name__}: {e})")
     return None
 
 # --- Sprint Status Injection Callback ---
@@ -2849,7 +2894,7 @@ def on_tool_error_callback(tool: BaseTool, args: Dict[str, Any], tool_context: T
 # --- Common Agent Configuration ---
 COMMON_AGENT_CALLBACKS = {
     "before_model_callback": [inject_litellm_key_callback, check_cost_budget_callback, role_identity_injection_callback, phase_awareness_injection_callback, agent_thinking_start_callback],
-    "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, history_management_after_callback],
+    "after_model_callback": [agent_thinking_stop_callback, recover_fake_tool_call_callback, update_token_usage_callback, track_context_utilisation_callback, history_management_after_callback],
     "before_tool_callback": log_tool_invocation_callback,
     "after_tool_callback": log_tool_result_callback,
     "on_tool_error_callback": on_tool_error_callback,
@@ -3106,6 +3151,7 @@ root_agent = LlmAgent(
         agent_thinking_stop_callback,
         recover_fake_tool_call_callback,
         update_token_usage_callback,
+        track_context_utilisation_callback,
         history_management_after_callback
     ],
     before_tool_callback=log_tool_invocation_callback,

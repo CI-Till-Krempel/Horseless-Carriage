@@ -175,6 +175,22 @@ The system tracks performance indicators to provide visibility into team health:
   `prompt_modules/*.md` file over 250 lines (this project's own steering-document guideline,
   stated directly in GH #513) as a non-blocking warning - trimming a file that trips it is
   deliberately left as separate, carefully-reviewed work, never auto-applied.
+- **Context Utilisation** (GH issue #566, US-0034): how full each role's context window actually
+  gets *at runtime* - unlike the static prompt figures above, this includes conversation history,
+  injected status blocks and tool results. Every LLM call's provider-reported input size
+  (`usage_metadata.prompt_token_count`) is measured against the role's model's context window by
+  `track_context_utilisation_callback` (`agents/scrum_team/agent.py`) and aggregated per sprint and
+  role into `state.context_utilisation`: mean %, peak % (and the prompt size at the peak), and the
+  number of calls at or above a high-water mark (`CONTEXT_UTILISATION_HIGH_WATER_PERCENT`, default
+  80). A role whose peak reaches the mark is flagged in the sprint report as a trigger to consider a
+  larger-context model, trimming its prompt modules, or compacting its history. The window is
+  resolved from `CONTEXT_WINDOW_OVERRIDES` (`<model alias>=<tokens>,...`), then the LiteLLM proxy's
+  `/model/info` (`max_input_tokens` - also settable per model via `model_info:` in `litellm.yaml`),
+  then litellm's own model map, then `CONTEXT_WINDOW_FALLBACK_TOKENS` (default 128000 - reported as
+  an estimate). Reported in `calculate_kpis()` (`context_utilisation`), the sprint report's "Context
+  Utilisation" section (team headline at every level, per-agent breakdown at full detail), the eval
+  report's KPI Trends and the dashboard. Pure observability: it never reads or writes
+  `token_usage`/`budgets` and has no effect on any budget limit.
 
 ### Sprint Report
 At the end of each sprint, the Scrum Master generates a report via `create_sprint_report`
@@ -231,6 +247,13 @@ No impediments logged.
 - Say-Do Ratio: 0.9
 - Test Coverage: 85%
 - Defect Escape Rate: 2%
+
+### Context Utilisation
+- Team: mean 14.2% / peak 83.1% of context window (peak: DevTeam) across 212 LLM calls; 3 call(s) at or above the 80% high-water mark
+- ⚠️ Context pressure: DevTeam reached the 80% high-water mark - consider a larger-context model for that role, trimming its prompt modules, or compacting its conversation history (GH issue #566).
+
+#### Per-Agent Context Utilisation
+  - DevTeam (scrum-dev, 128,000-token window, litellm_proxy): mean 31.4% / peak 83.1% (106,368 tokens) over 74 calls, 3 at/above high-water
 
 ### Per-Agent Prompt Context Usage
   - ProductOwner (scrum-po): 5,318 / 1,048,576 tokens (0.51%)

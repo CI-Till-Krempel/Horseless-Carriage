@@ -131,6 +131,9 @@ the background beyond the dashboard's own lightweight polling (GH issue #310). E
 **Update** links that pull the latest release (or `main`) into that project's `horseless-carriage/`
 submodule — stopping the stack first, rebuilding images if the update actually needs it, and
 restarting again — see `update_hc.py` below.
+The budget column also shows the current sprint's runtime context-window utilisation (mean/peak %
+and calls above the high-water mark, GH issue #566) once the agents have recorded some - see
+[docs/BUDGET.md "Quality KPIs"](docs/BUDGET.md#quality-kpis).
 
 ## Documentation
 

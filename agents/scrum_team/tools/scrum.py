@@ -43,6 +43,7 @@ REPO_STATE_KEYS = [
     "sprint_report",
     "budgets",
     "token_usage",
+    "context_utilisation",
     "story_estimates",
     "sprint_report_kpis",
     "kpi_update_count",

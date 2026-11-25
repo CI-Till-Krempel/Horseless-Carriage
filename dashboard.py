@@ -44,6 +44,8 @@ import lib_llm_test
 import project_registry
 import update_hc
 from agents.scrum_team.helpers import current_sprint_phase
+from agents.scrum_team.context_utilisation import short_label as context_utilisation_label
+from agents.scrum_team.context_utilisation import summarize as summarize_context_utilisation
 
 _STACK_ACTION_TIMEOUT_SECS = 300
 _REACHABILITY_CHECK_TIMEOUT_SECS = 2
@@ -360,6 +362,16 @@ def project_snapshot(entry: dict) -> dict:
     except Exception:
         current_ticket = ""
 
+    # GH issue #566: the current sprint's runtime context-window utilisation
+    # KPI (recorded per LLM call by the live agent session into state.json's
+    # context_utilisation) - "" when nothing has been recorded yet.
+    try:
+        context_utilisation = context_utilisation_label(
+            summarize_context_utilisation(state_data.get("context_utilisation"), sprint_number)
+        ) if state_data else ""
+    except Exception:
+        context_utilisation = ""
+
     hc_env = lib_env.load_env_file(hc_path / ".env")
     product_version, product_commit = _product_version_and_commit(target_repo, owner_repo, hc_env)
     # agents/scrum_team/tools/scrum.py's init_scrum_state sets this to
@@ -395,6 +407,7 @@ def project_snapshot(entry: dict) -> dict:
         "doctor_items": doctor_items,
         "token_usage": token_usage.get("total", 0),
         "token_budget": budgets.get("total", "unset"),
+        "context_utilisation": context_utilisation,
         "usd_budget": budgets.get("total_usd"),
         # GH issue #481: already computed and persisted by the live agent
         # session's own cost-budget callback (agent.py, check_cost_budget_
@@ -616,6 +629,11 @@ def _render_page(message: str = "") -> str:
         product_version_html = e(snap["product_version"])
         if snap.get("product_commit"):
             product_version_html += f" ({e(snap['product_commit'])})"
+        context_html = (
+            f"<br><small title='Context-window utilisation this sprint (GH issue #566)'>"
+            f"{e(snap['context_utilisation'])}</small>"
+            if snap.get("context_utilisation") else ""
+        )
         hc_version_html = e(snap["hc_version"])
         if snap.get("hc_commit"):
             hc_version_html += f" ({e(snap['hc_commit'])})"
@@ -626,7 +644,8 @@ def _render_page(message: str = "") -> str:
             f"<td>{e(snap['config_mode'])}</td>"
             f"<td>{e(snap['interaction_level'])}</td>"
             f"<td>{sprint_goal_html}</td>"
-            f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {e(spend_str)} / {usd} budget</td>"
+            f"<td>{snap['token_usage']:,} / {e(str(snap['token_budget']))} tokens, {e(spend_str)} / {usd} budget"
+            f"{context_html}</td>"
             f"<td>{product_version_html}</td>"
             f"<td>{hc_version_html}</td>"
             f"<td>{github_html}</td>"

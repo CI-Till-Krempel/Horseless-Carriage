@@ -36,6 +36,12 @@ class ScrumState(BaseModel):
     sprint_report: str = ""
     budgets: Budgets = Field(default_factory=Budgets)
     token_usage: TokenUsage = Field(default_factory=TokenUsage)
+    # GH issue #566: runtime context-window utilisation KPI, recorded per LLM
+    # call by agent.py's track_context_utilisation_callback and keyed by
+    # sprint number - see agents/scrum_team/context_utilisation.py for the
+    # exact shape. Additive/optional: an older state without it is simply
+    # "no data yet". Observability only - never read by budget enforcement.
+    context_utilisation: Dict[str, Any] = Field(default_factory=dict)
     litellm_keys: Dict[str, str] = Field(default_factory=dict)
     story_estimates: Dict[str, Any] = Field(default_factory=dict)
     sprint_report_kpis: Dict = Field(default_factory=dict)
