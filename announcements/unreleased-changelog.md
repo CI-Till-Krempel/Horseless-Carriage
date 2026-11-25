@@ -13,6 +13,29 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### Dashboard button output and agent logs are now visible in the dashboard (SPEC-ISSUE-0103, GH #568)
+
+The dashboard's Start/Stop/Update buttons ran real commands but kept none of their output.
+`_start_stack`/`_stop_stack` and `update_hc._git` captured stdout/stderr and dropped it unless the
+command failed. `rebuild_images.rebuild` didn't capture at all, so `docker compose build` output went
+to the terminal running `dashboard.py`. A failed rebuild then told the browser user to "see output
+above", where there was no output. Whatever message did survive only lived in a one-shot `?msg=`
+redirect parameter. There was also no way to see the agent container's own log from the dashboard.
+
+Each button click now runs inside `dashboard.run_logged_action`. It tees everything the action prints
+into `~/.horseless-carriage/dashboard-logs/<project>-<hash>.log` and still to the server console. The
+log records every command (`$ cmd`, its output, `[exit code N]`) and the message shown on the page. A
+`RESULT` line reports `OK` or `FAILED` with the non-zero exit codes. `update_hc` now echoes
+`git fetch`/`git checkout`, and `rebuild_images.rebuild(capture=True)` routes the build output
+through the same path. The interactive CLI's default stays uncaptured.
+
+A new read-only **Logs** page per project shows the latest action and its status, plus earlier
+actions. It also shows the last 200 lines of `docker compose logs agent`, using the same dev-project
+scoping as every other dashboard call, so it never reads the eval/test stacks' containers. The page
+only accepts registered projects. Logs are capped at 2 MB, and likely credentials (`sk-`, `ghp_`,
+`*_API_KEY=`, ...) are masked before they're written to disk or shown. Host-only change: nothing
+under `agents/scrum_team/` changed.
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

@@ -1077,3 +1077,265 @@ class TestStartStack:
             message = dashboard._start_stack(hc_path)
 
         assert "Start failed" in message
+
+    def test_successful_start_output_is_printed_not_dropped(self, tmp_path, capsys):
+        """GH issue #568: `docker compose up -d`'s output was captured and
+        discarded on success - it must reach print() so the dashboard's
+        action log records it."""
+        hc_path, _ = _make_project(tmp_path)
+
+        with patch.object(dashboard.lib_docker, "ensure_dev_ports_available", return_value=[]), \
+             patch.object(dashboard.subprocess, "run", return_value=dashboard.subprocess.CompletedProcess(
+                 [], 0, stdout="", stderr="Container x-agent-1 Started\n")), \
+             patch.object(dashboard.lib_llm_test, "llm_wait_for_proxy", return_value=True):
+            dashboard._start_stack(hc_path)
+
+        out = capsys.readouterr().out
+        assert "up -d" in out
+        assert "Container x-agent-1 Started" in out
+        assert "[exit code 0]" in out
+
+
+# --- GH issue #568 / SPEC-ISSUE-0103: action logs + agent log view ---------
+
+# Obviously-fake, assembled at runtime so no literal token-shaped string sits
+# in this file for a secret scanner (or a human) to mistake for a real one.
+_FAKE_OPENAI_KEY = "sk-" + "FAKE" * 6
+_FAKE_GH_TOKEN = "ghp_" + "x" * 30
+
+
+@pytest.fixture
+def registry_in_tmp(tmp_path):
+    registry_path = tmp_path / "home" / ".horseless-carriage" / "projects.json"
+    with patch.object(dashboard.project_registry, "REGISTRY_PATH", registry_path):
+        yield registry_path
+
+
+class TestRedactSecrets:
+    def test_masks_known_token_shapes_and_key_assignments(self):
+        text = (
+            f"key={_FAKE_OPENAI_KEY}\n"
+            f"token {_FAKE_GH_TOKEN}\n"
+            "LITELLM_MASTER_KEY=not-a-real-value\n"
+            "POSTGRES_PASSWORD: 'hunter2'\n"
+            "plain line stays\n"
+        )
+        out = dashboard.redact_secrets(text)
+        assert _FAKE_OPENAI_KEY not in out
+        assert _FAKE_GH_TOKEN not in out
+        assert "not-a-real-value" not in out
+        assert "hunter2" not in out
+        assert "LITELLM_MASTER_KEY=***REDACTED***" in out
+        assert "plain line stays" in out
+
+
+class TestActionLogPath:
+    def test_lives_next_to_the_registry_not_inside_the_checkout(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+        log_path = dashboard._action_log_path(hc_path)
+        assert log_path.parent == registry_in_tmp.parent / "dashboard-logs"
+        assert hc_path not in log_path.parents
+
+    def test_distinct_checkouts_with_the_same_dir_name_get_distinct_logs(self, tmp_path, registry_in_tmp):
+        a = tmp_path / "a" / "proj" / "horseless-carriage"
+        b = tmp_path / "b" / "proj" / "horseless-carriage"
+        assert dashboard._action_log_path(a) != dashboard._action_log_path(b)
+
+
+class TestRunLoggedAction:
+    def test_records_printed_output_message_and_ok_status(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+
+        def action():
+            dashboard.update_hc.print_command_result(
+                ["docker", "compose", "up", "-d"],
+                subprocess.CompletedProcess([], 0, stdout="Container agent Started\n", stderr=""),
+            )
+            return "Started."
+
+        message = dashboard.run_logged_action(str(hc_path), "Start", action)
+
+        assert message == "Started."
+        latest, _ = dashboard._read_action_log(hc_path)
+        assert latest.startswith(dashboard._ACTION_START_MARKER)
+        assert "Start" in latest
+        assert "$ docker compose up -d" in latest
+        assert "Container agent Started" in latest
+        assert "[exit code 0]" in latest
+        assert dashboard._ACTION_END_MARKER in latest and "OK" in latest
+
+    def test_nonzero_exit_code_marks_the_action_failed(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+
+        def action():
+            dashboard.update_hc.print_command_result(
+                ["git", "fetch"], subprocess.CompletedProcess([], 128, stdout="", stderr="fatal: no remote\n"),
+            )
+            return "git fetch failed"
+
+        dashboard.run_logged_action(str(hc_path), "Update (main)", action)
+
+        latest, _ = dashboard._read_action_log(hc_path)
+        assert "fatal: no remote" in latest
+        assert "FAILED" in latest and "[128]" in latest
+
+    def test_an_unexpected_exception_is_logged_and_returned_not_raised(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+
+        def action():
+            raise RuntimeError("kaboom")
+
+        message = dashboard.run_logged_action(str(hc_path), "Stop", action)
+
+        assert "kaboom" in message
+        latest, _ = dashboard._read_action_log(hc_path)
+        assert "Traceback" in latest
+        assert "FAILED (unexpected error)" in latest
+
+    def test_secrets_are_redacted_before_they_reach_disk(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+
+        def action():
+            print(f"OPENAI_API_KEY={_FAKE_OPENAI_KEY}")
+            return "done"
+
+        dashboard.run_logged_action(str(hc_path), "Start", action)
+
+        on_disk = dashboard._action_log_path(hc_path).read_text()
+        assert _FAKE_OPENAI_KEY not in on_disk
+        assert "OPENAI_API_KEY=***REDACTED***" in on_disk
+
+    def test_latest_block_is_split_from_earlier_history(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+        dashboard.run_logged_action(str(hc_path), "Start", lambda: print("first-run-output") or "Started.")
+        dashboard.run_logged_action(str(hc_path), "Stop", lambda: print("second-run-output") or "Stopped.")
+
+        latest, history = dashboard._read_action_log(hc_path)
+
+        assert "second-run-output" in latest and "first-run-output" not in latest
+        assert "first-run-output" in history
+
+    def test_log_is_trimmed_when_it_grows_past_the_cap(self, tmp_path, registry_in_tmp, monkeypatch):
+        hc_path, _ = _make_project(tmp_path)
+        monkeypatch.setattr(dashboard, "_ACTION_LOG_MAX_BYTES", 2000)
+        monkeypatch.setattr(dashboard, "_ACTION_LOG_KEEP_BYTES", 1000)
+        for _ in range(10):
+            dashboard.run_logged_action(str(hc_path), "Start", lambda: print("x" * 300) or "Started.")
+        # Trimmed before each append: never more than the cap plus one action's block.
+        assert dashboard._action_log_path(hc_path).stat().st_size < 2000 + 1000
+
+
+class TestStopStackLogsOutput:
+    def test_successful_stop_output_is_printed_not_dropped(self, tmp_path, capsys):
+        hc_path, _ = _make_project(tmp_path)
+        with patch.object(dashboard.subprocess, "run", return_value=dashboard.subprocess.CompletedProcess(
+                [], 0, stdout="", stderr="Container x-agent-1 Removed\n")):
+            assert dashboard._stop_stack(hc_path) == "Stopped."
+        out = capsys.readouterr().out
+        assert "Container x-agent-1 Removed" in out
+        assert "[exit code 0]" in out
+
+
+class TestAgentContainerLogs:
+    def test_uses_dev_project_scoping_bounded_tail_and_redacts(self, tmp_path):
+        hc_path, _ = _make_project(tmp_path)
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["cwd"] = kwargs.get("cwd")
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"agent-1 | using {_FAKE_OPENAI_KEY}\n", stderr="")
+
+        with patch.object(dashboard.subprocess, "run", side_effect=fake_run):
+            out = dashboard._agent_container_logs(hc_path, tail=50)
+
+        cmd = seen["cmd"]
+        assert cmd[:2] == ["docker", "compose"]
+        project_args = dashboard.lib_docker.compose_project_args("dev", hc_path)
+        idx = cmd.index("-p")
+        assert cmd[idx:idx + 2] == project_args
+        assert cmd[-3:] == ["--tail", "50", "agent"]
+        assert "logs" in cmd
+        assert seen["cwd"] == hc_path
+        assert _FAKE_OPENAI_KEY not in out
+
+    def test_docker_failure_is_reported_not_raised(self, tmp_path):
+        hc_path, _ = _make_project(tmp_path)
+        with patch.object(dashboard.subprocess, "run", side_effect=FileNotFoundError("docker")):
+            out = dashboard._agent_container_logs(hc_path)
+        assert "Could not read agent logs" in out
+
+
+class _FakeHandler(dashboard._DashboardHandler):
+    """Drive do_GET without a socket - record what it would send."""
+
+    def __init__(self, path):  # deliberately skips BaseHTTPRequestHandler.__init__
+        self.path = path
+        self.sent = None
+        self.redirect = None
+
+    def _send_html(self, body, code=200):
+        self.sent = (code, body)
+
+    def _redirect_to_root(self, message, log_hc_path=""):
+        self.redirect = (message, log_hc_path)
+
+
+class TestLogsRoutes:
+    def test_logs_page_refuses_an_unregistered_path(self, tmp_path):
+        with patch.object(dashboard.project_registry, "load", return_value=[]), \
+             patch.object(dashboard.subprocess, "run") as mock_run:
+            handler = _FakeHandler(f"/logs?hc_path={tmp_path}")
+            handler.do_GET()
+        assert handler.sent[0] == 404
+        mock_run.assert_not_called()
+
+    def test_logs_page_shows_latest_action_and_agent_logs(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+        dashboard.run_logged_action(str(hc_path), "Update (main)", lambda: print("<fetch output>") or "Updated.")
+        entry = {"name": "my-project", "hc_path": str(hc_path)}
+        with patch.object(dashboard.project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.subprocess, "run", return_value=subprocess.CompletedProcess(
+                 [], 0, stdout="agent-1 | Sprint 3 started\n", stderr="")):
+            handler = _FakeHandler(f"/logs?hc_path={dashboard.quote(str(hc_path))}")
+            handler.do_GET()
+        code, body = handler.sent
+        assert code == 200
+        assert "Update (main)" in body
+        assert "&lt;fetch output&gt;" in body  # escaped, never raw HTML
+        assert "OK (every command exited 0)" in body
+        assert "agent-1 | Sprint 3 started" in body
+
+    def test_logs_page_without_any_action_yet(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+        with patch.object(dashboard.subprocess, "run",
+                          return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")):
+            body = dashboard._render_logs_page(str(hc_path), "my-project")
+        assert "No Start/Stop/Update action has been run" in body
+        assert "stack running?" in body
+
+    def test_button_actions_are_logged_and_redirect_links_the_log(self, tmp_path, registry_in_tmp):
+        hc_path, _ = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path)}
+        with patch.object(dashboard.project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard, "_stop_stack", lambda p: print("compose down output") or "Stopped."):
+            handler = _FakeHandler(f"/stop?hc_path={dashboard.quote(str(hc_path))}")
+            handler.do_GET()
+        assert handler.redirect == ("Stopped.", str(hc_path))
+        latest, _ = dashboard._read_action_log(hc_path)
+        assert "compose down output" in latest
+
+    def test_unregistered_action_is_not_logged(self, tmp_path, registry_in_tmp):
+        with patch.object(dashboard.project_registry, "load", return_value=[]):
+            handler = _FakeHandler(f"/stop?hc_path={tmp_path}")
+            handler.do_GET()
+        assert handler.redirect == ("Not a registered project.", "")
+
+    def test_rendered_page_links_logs_per_row_and_after_an_action(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+        with patch.object(dashboard.project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page("Stopped.", str(hc_path))
+        assert f"/logs?hc_path={dashboard.quote(str(hc_path))}" in page
+        assert "Full output of this action" in page

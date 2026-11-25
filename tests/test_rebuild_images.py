@@ -75,6 +75,38 @@ class TestRebuild:
         )
         assert rebuild_images.rebuild([]) == 1
 
+    def test_capture_mode_echoes_build_output_and_exit_code_through_print(self, monkeypatch, capsys):
+        """GH issue #568 / SPEC-ISSUE-0103: from the dashboard's Update
+        button, the build's output must reach print() (which the dashboard
+        redirects into the project's action log), not the inherited fd."""
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["kwargs"] = kwargs
+            return rebuild_images.subprocess.CompletedProcess(cmd, 2, stdout="step 1/3\nboom\n")
+        monkeypatch.setattr(rebuild_images.subprocess, "run", fake_run)
+
+        assert rebuild_images.rebuild([], capture=True) == 2
+
+        assert captured["kwargs"]["stdout"] == rebuild_images.subprocess.PIPE
+        assert captured["kwargs"]["stderr"] == rebuild_images.subprocess.STDOUT
+        out = capsys.readouterr().out
+        assert "$ docker compose build --pull agent" in out
+        assert "step 1/3\nboom\n" in out
+        assert "[exit code 2]" in out
+
+    def test_default_mode_does_not_capture(self, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["kwargs"] = kwargs
+            return rebuild_images.subprocess.CompletedProcess(cmd, 0)
+        monkeypatch.setattr(rebuild_images.subprocess, "run", fake_run)
+
+        rebuild_images.rebuild([])
+
+        assert captured["kwargs"] == {}
+
 
 class TestMain:
     def test_builds_expected_docker_command_for_cloud_setup(self, monkeypatch, tmp_path):

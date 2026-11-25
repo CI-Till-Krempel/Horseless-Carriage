@@ -134,6 +134,11 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   (appending a warning if it doesn't come up within 30s), so a row showing a plain "Started." means
   it's actually ready; if you still can't connect, check `docker compose logs litellm` for a real
   startup failure instead.
+- **A dashboard Start/Stop/Update click failed (or did something unexpected) and the one-line
+  message doesn't say why** — open that row's **Logs** link. It shows every command the click ran
+  (`docker compose up`/`down`, `git fetch`/`checkout`, `docker compose build`) with its full output
+  and exit code, an overall OK/FAILED line, and the last 200 lines of the agent container's own log.
+  The same action output is kept in `~/.horseless-carriage/dashboard-logs/` (GH issue #568).
 
 ## 3. Budget / cost problems
 

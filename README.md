@@ -130,7 +130,10 @@ Start/stop each project's own docker stack right from the dashboard — nothing 
 the background beyond the dashboard's own lightweight polling (GH issue #310). Each row also has
 **Update** links that pull the latest release (or `main`) into that project's `horseless-carriage/`
 submodule — stopping the stack first, rebuilding images if the update actually needs it, and
-restarting again — see `update_hc.py` below.
+restarting again — see `update_hc.py` below. Each row's **Logs** link shows the full output of the
+last Start/Stop/Update click (every `git`/`docker compose` command, its exit code, and an overall
+OK/FAILED status), plus the last 200 lines of that project's agent container log. Action output is
+kept in `~/.horseless-carriage/dashboard-logs/`, with likely secrets masked (GH issue #568).
 
 ## Documentation
 

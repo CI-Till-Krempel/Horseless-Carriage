@@ -9,7 +9,10 @@ version, and assigned LITELLM_HOST_PORT/AGENT_WEB_HOST_PORT - with manual
 start/stop per project's docker stack. Starting a stopped project
 re-checks its ports are still actually free and reassigns+persists (then
 rebuilds) if another process has since taken one - see
-lib_docker.ensure_dev_ports_available.
+lib_docker.ensure_dev_ports_available. Every Start/Stop/Update click's full
+command output is appended to a per-project log, and each project's /logs page
+shows it along with the agent container's recent log (GH issue #568,
+SPEC-ISSUE-0103 - see run_logged_action).
 
 Minimal first cut, per GH issue #310's own decision comment: reads each
 project's cached `.hc/state.json` and `.env` (and, only while that
@@ -26,11 +29,15 @@ Usage:
 """
 import argparse
 import contextlib
+import hashlib
 import html
 import io
 import json
+import re
 import subprocess
+import sys
 import time
+import traceback
 import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -431,6 +438,7 @@ def _start_stack(hc_path: Path) -> str:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=hc_path, timeout=_STACK_ACTION_TIMEOUT_SECS)
     except Exception as e:
         return f"Failed to start: {e}"
+    update_hc.print_command_result(cmd, result)
     if result.returncode != 0:
         return f"Start failed:\n{result.stdout}\n{result.stderr}"
 
@@ -464,7 +472,238 @@ def _stop_stack(hc_path: Path) -> str:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=hc_path, timeout=_STACK_ACTION_TIMEOUT_SECS)
     except Exception as e:
         return f"Failed to stop: {e}"
+    update_hc.print_command_result(cmd, result)
     return "Stopped." if result.returncode == 0 else f"Stop failed:\n{result.stdout}\n{result.stderr}"
+
+
+# --- Per-project action log + agent log view (GH issue #568, SPEC-ISSUE-0103) ---
+#
+# Every Start/Stop/Update button used to run its commands with
+# capture_output=True and then throw the output away unless the command
+# failed - and even a failure only surfaced as a one-shot `?msg=` redirect
+# parameter. rebuild_images.rebuild's `docker compose build` didn't capture at
+# all, so its output went to whatever terminal was running this server. Now
+# each button-triggered action runs with sys.stdout/sys.stderr tee'd into a
+# persistent per-project log file (and still to this server's own console),
+# and /logs shows the latest action's output, its overall exit status, and a
+# bounded, read-only tail of the agent container's own `docker compose logs`.
+
+_ACTION_LOG_MAX_BYTES = 2 * 1024 * 1024
+_ACTION_LOG_KEEP_BYTES = 1024 * 1024
+_ACTION_LOG_HISTORY_LINES = 400
+_AGENT_LOG_TAIL_LINES = 200
+_AGENT_LOG_TIMEOUT_SECS = 15
+_ACTION_START_MARKER = "##### ACTION "
+_ACTION_END_MARKER = "##### RESULT "
+_EXIT_CODE_RE = re.compile(r"^\[exit code (-?\d+)\]$", re.MULTILINE)
+
+# A logged `docker compose`/git/build output (or the agent's own container
+# log) can echo an env var or a provider error that quotes a key. These are
+# best-effort masks for the credential shapes this project actually handles
+# (SECURITY.md "Secret handling") - applied both before writing the action
+# log to disk and before rendering any log into the page.
+_SECRET_PATTERNS = [
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"), "sk-***REDACTED***"),
+    (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}"), "gh*_***REDACTED***"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "github_pat_***REDACTED***"),
+    (re.compile(r"\bAIza[0-9A-Za-z_\-]{20,}"), "AIza***REDACTED***"),
+    (re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}"), "xox*-***REDACTED***"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
+     "***REDACTED PRIVATE KEY***"),
+    (re.compile(
+        r"(?i)\b([A-Z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|MASTER_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*[=:]\s*)"
+        r"(['\"]?)[^\s'\"]+\2"
+    ), r"\1***REDACTED***"),
+]
+
+
+def redact_secrets(text: str) -> str:
+    for pattern, replacement in _SECRET_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _action_log_path(hc_path: Path) -> Path:
+    """~/.horseless-carriage/dashboard-logs/<project-dir>-<hash>.log - next
+    to project_registry's own projects.json, deliberately NOT inside the
+    checkout itself: update_hc.run_update refuses to update a checkout with
+    a dirty working tree, and a log file growing inside it would be exactly
+    the kind of thing a future .gitignore slip turns into that. The short
+    hash keeps two checkouts whose parent dirs share a name apart."""
+    hc_path = Path(hc_path)
+    digest = hashlib.sha1(_norm_path(hc_path).encode("utf-8")).hexdigest()[:8]
+    name = re.sub(r"[^A-Za-z0-9_.-]", "_", hc_path.parent.name or hc_path.name) or "project"
+    return project_registry.REGISTRY_PATH.parent / "dashboard-logs" / f"{name}-{digest}.log"
+
+
+def _trim_log(log_path: Path) -> None:
+    """Keep the log bounded: once over _ACTION_LOG_MAX_BYTES, keep only the
+    last _ACTION_LOG_KEEP_BYTES (from the next line boundary on)."""
+    try:
+        if log_path.stat().st_size <= _ACTION_LOG_MAX_BYTES:
+            return
+        data = log_path.read_bytes()[-_ACTION_LOG_KEEP_BYTES:]
+        newline = data.find(b"\n")
+        log_path.write_bytes(data[newline + 1:] if newline != -1 else data)
+    except OSError:
+        pass
+
+
+class _RedactingTee(io.TextIOBase):
+    """Writes everything to a log file (redacted) and to the original
+    console stream (unchanged - that's the operator's own terminal)."""
+
+    def __init__(self, log_file, console):
+        self._log_file = log_file
+        self._console = console
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, s: str) -> int:
+        self._log_file.write(redact_secrets(s))
+        self._log_file.flush()
+        if self._console is not None:
+            try:
+                self._console.write(s)
+            except Exception:
+                pass
+        return len(s)
+
+    def flush(self) -> None:
+        self._log_file.flush()
+        if self._console is not None:
+            with contextlib.suppress(Exception):
+                self._console.flush()
+
+
+def run_logged_action(hc_path: Path, label: str, action) -> str:
+    """Run action() (a no-arg callable returning the user-facing message,
+    like _start_stack/_stop_stack/update_hc.run_update) with everything it
+    prints - including every command echoed via
+    update_hc.print_command_result and rebuild_images.rebuild(capture=True)
+    - appended to this project's action log between a start marker and a
+    RESULT marker carrying the overall status. Never raises (same contract
+    as the actions themselves): an exception is logged with its traceback
+    and returned as the message.
+
+    Swapping sys.stdout/sys.stderr process-wide is safe here only because
+    this server is a plain (single-threaded) HTTPServer - one request, and
+    therefore one action, at a time."""
+    log_path = _action_log_path(hc_path)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _trim_log(log_path)
+        log_file = open(log_path, "a", encoding="utf-8")
+    except OSError as e:
+        # Logging is a diagnostic aid, never a reason to refuse the action.
+        message = action()
+        return f"{message}\n(could not write action log {log_path}: {e})"
+
+    start_offset = log_path.stat().st_size
+    with log_file:
+        out = _RedactingTee(log_file, sys.stdout)
+        err = _RedactingTee(log_file, sys.stderr)
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            print(f"{_ACTION_START_MARKER}{time.strftime('%Y-%m-%d %H:%M:%S')} {label} [{hc_path}]")
+            raised = False
+            try:
+                message = action()
+            except Exception as e:  # the actions themselves promise never to raise - belt and braces
+                raised = True
+                traceback.print_exc()
+                message = f"{label} failed with an unexpected error: {e}"
+            print("--- message shown in the dashboard ---")
+            print(message)
+        log_file.flush()
+        block = log_path.read_bytes()[start_offset:].decode("utf-8", errors="replace")
+        failed_codes = [int(c) for c in _EXIT_CODE_RE.findall(block) if int(c) != 0]
+        if raised:
+            status = "FAILED (unexpected error)"
+        elif failed_codes:
+            status = f"FAILED ({len(failed_codes)} command(s) exited non-zero: {failed_codes})"
+        else:
+            status = "OK (every command exited 0)"
+        log_file.write(f"{_ACTION_END_MARKER}{time.strftime('%Y-%m-%d %H:%M:%S')} {status}\n\n")
+    return message
+
+
+def _read_action_log(hc_path: Path) -> tuple:
+    """(latest_action_block, older_history_tail) - both already redacted,
+    "" if there's nothing logged yet."""
+    log_path = _action_log_path(hc_path)
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    text = redact_secrets(text)
+    idx = text.rfind(_ACTION_START_MARKER)
+    if idx == -1:
+        return "", "\n".join(text.splitlines()[-_ACTION_LOG_HISTORY_LINES:])
+    history = "\n".join(text[:idx].splitlines()[-_ACTION_LOG_HISTORY_LINES:])
+    return text[idx:].rstrip("\n"), history
+
+
+def _agent_container_logs(hc_path: Path, tail: int = _AGENT_LOG_TAIL_LINES) -> str:
+    """Bounded, read-only tail of this project's agent container log - the
+    same dev-project-scoped compose args (_compose_args ->
+    lib_docker.compose_project_args("dev", hc_path)) every other dashboard
+    call uses, so it can never read another stack's (eval/test) container."""
+    cmd = ["docker", "compose", *_compose_args(hc_path), "logs", "--no-color", "--timestamps",
+           "--tail", str(int(tail)), "agent"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=hc_path, timeout=_AGENT_LOG_TIMEOUT_SECS)
+    except Exception as e:
+        return f"Could not read agent logs: {e}"
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        return redact_secrets(f"`docker compose logs` exited {result.returncode}:\n{output}")
+    return redact_secrets(output) if output.strip() else "(no agent container log output - is this project's stack running?)"
+
+
+def _render_logs_page(hc_path: str, name: str) -> str:
+    e = html.escape
+    latest, history = _read_action_log(Path(hc_path))
+    status_html = ""
+    if latest:
+        result_line = next((ln for ln in latest.splitlines() if ln.startswith(_ACTION_END_MARKER)), "")
+        if result_line:
+            color = "#c62828" if "FAILED" in result_line else "#2e7d32"
+            status_html = (
+                f"<p style='color:{color};font-weight:bold'>{e(result_line[len(_ACTION_END_MARKER):])}</p>"
+            )
+        else:
+            status_html = "<p style='color:#e65100;font-weight:bold'>Still running (or interrupted)</p>"
+    latest_html = (
+        f"{status_html}<pre>{e(latest)}</pre>" if latest
+        else "<p><em>No Start/Stop/Update action has been run from this dashboard for this project yet.</em></p>"
+    )
+    history_html = (
+        f"<details><summary>Earlier actions (last {_ACTION_LOG_HISTORY_LINES} lines)</summary>"
+        f"<pre>{e(history)}</pre></details>" if history.strip() else ""
+    )
+    agent_logs = _agent_container_logs(Path(hc_path))
+    return f"""<!doctype html>
+<html><head><meta http-equiv="refresh" content="15">
+<title>Horseless Carriage - Logs - {e(name)}</title>
+<style>
+body {{ font-family: sans-serif; margin: 2rem; }}
+pre {{ background: #f5f5f5; border: 1px solid #ccc; padding: 0.75rem; overflow-x: auto;
+       white-space: pre-wrap; word-break: break-word; max-height: 40rem; overflow-y: auto; }}
+</style>
+</head><body>
+<p><a href="/">&larr; All projects</a></p>
+<h1>Logs - {e(name)}</h1>
+<h2>Latest dashboard action</h2>
+{latest_html}
+{history_html}
+<p><small>Action log file: {e(str(_action_log_path(Path(hc_path))))}</small></p>
+<h2>Agent container (last {_AGENT_LOG_TAIL_LINES} lines)</h2>
+<pre>{e(agent_logs)}</pre>
+<p><small>Auto-refreshes every 15s. Read-only. Likely secrets are masked, but logs may still contain
+project details - don't paste them publicly without reading them first.</small></p>
+</body></html>
+"""
 
 
 _STATE_BADGE_COLOR = {
@@ -508,7 +747,7 @@ def _doctor_badge(doctor_items: list) -> str:
     )
 
 
-def _render_page(message: str = "") -> str:
+def _render_page(message: str = "", log_hc_path: str = "") -> str:
     projects = project_registry.load()
     rows = []
     for entry in projects:
@@ -535,6 +774,9 @@ def _render_page(message: str = "") -> str:
         action += (
             f"<br><a href='/update?hc_path={e(hc_path)}&channel=release'>Update (latest release)</a>"
             f"<br><a href='/update?hc_path={e(hc_path)}&channel=main'>Update (main)</a>"
+            # GH issue #568: every button's full command output + the agent
+            # container's own recent log, instead of only a one-line message.
+            f"<br><a href='/logs?hc_path={e(quote(hc_path))}'>Logs</a>"
         )
         web_url = f"http://localhost:{snap['agent_web_port']}"
         state_html = f"<span style='color:{color};font-weight:bold'>{e(snap['state'])}</span>"
@@ -646,6 +888,11 @@ def _render_page(message: str = "") -> str:
     message_html = (
         f"<p style='color:#1565c0;white-space:pre-line'>{html.escape(message)}</p>" if message else ""
     )
+    if message and log_hc_path:
+        message_html += (
+            f"<p><a href='/logs?hc_path={html.escape(quote(log_hc_path))}'>"
+            "Full output of this action &rarr;</a></p>"
+        )
     return f"""<!doctype html>
 <html><head><meta http-equiv="refresh" content="10">
 <title>Horseless Carriage - Projects</title>
@@ -681,15 +928,18 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _redirect_to_root(self, message: str) -> None:
+    def _redirect_to_root(self, message: str, log_hc_path: str = "") -> None:
         # update_hc.run_update's own messages are routinely multi-line (one
         # line per step) - quote() (not html.escape, which leaves newlines
         # and '&' as literal bytes) so a multi-line message can't break the
         # Location header's own line framing or get parsed as extra query
         # params; _render_page html-escapes the value again once parse_qs on
         # the other end has decoded it back.
+        location = f"/?msg={quote(message)}"
+        if log_hc_path:
+            location += f"&log={quote(log_hc_path)}"
         self.send_response(303)
-        self.send_header("Location", f"/?msg={quote(message)}")
+        self.send_header("Location", location)
         self.end_headers()
 
     def do_GET(self):
@@ -697,26 +947,43 @@ class _DashboardHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if parsed.path == "/":
-            self._send_html(_render_page(query.get("msg", [""])[0]))
+            self._send_html(_render_page(query.get("msg", [""])[0], query.get("log", [""])[0]))
+        elif parsed.path == "/logs":
+            # GH issue #568: read-only, but still registry-gated - the query
+            # param alone must not make this run `docker compose logs` in, or
+            # read an action log for, an arbitrary local directory.
+            hc_path = query.get("hc_path", [""])[0]
+            entry = next((p for p in project_registry.load() if p.get("hc_path") == hc_path), None)
+            if entry is None:
+                self._send_html("Not a registered project.", code=404)
+            else:
+                self._send_html(_render_logs_page(hc_path, entry.get("name") or hc_path))
         elif parsed.path in ("/start", "/stop", "/update"):
             hc_path = query.get("hc_path", [""])[0]
             # Only ever act on a path that's actually in the registry - the
             # query param alone must not be enough to make this endpoint
             # run `docker compose`/git against an arbitrary local directory.
             registered_paths = {entry.get("hc_path") for entry in project_registry.load()}
+            log_hc_path = ""
             if hc_path not in registered_paths:
                 message = "Not a registered project."
             elif parsed.path == "/start":
-                message = _start_stack(Path(hc_path))
+                message = run_logged_action(hc_path, "Start", lambda: _start_stack(Path(hc_path)))
+                log_hc_path = hc_path
             elif parsed.path == "/stop":
-                message = _stop_stack(Path(hc_path))
+                message = run_logged_action(hc_path, "Stop", lambda: _stop_stack(Path(hc_path)))
+                log_hc_path = hc_path
             else:
                 channel = query.get("channel", ["release"])[0]
                 if channel not in update_hc.CHANNELS:
                     message = f"Unknown update channel '{channel}'."
                 else:
-                    message = update_hc.run_update(Path(hc_path), channel=channel)
-            self._redirect_to_root(message)
+                    message = run_logged_action(
+                        hc_path, f"Update ({channel})",
+                        lambda: update_hc.run_update(Path(hc_path), channel=channel),
+                    )
+                    log_hc_path = hc_path
+            self._redirect_to_root(message, log_hc_path)
         else:
             self._send_html("Not found", code=404)
 
