@@ -43,6 +43,7 @@ import requests
 from agents.scrum_team.scripts._eval_git_utils import get_github_token, run_git, eval_repo_slug
 from agents.scrum_team.helpers import get_env_with_deprecated_fallback
 from agents.scrum_team.tools.base import _hc_version, _redact_secrets
+from agents.scrum_team.context_utilisation import summarize as summarize_context_utilisation
 
 DEFAULT_EVAL_REPO_URL = "git@github.com:CI-Till-Krempel/horseless-carriage-eval-todo-app.git"
 EVAL_ROLES = ["ORCHESTRATOR", "PO", "SM", "DEV", "QA", "ARCH"]
@@ -973,6 +974,13 @@ async def _run_one_sprint(runner, session_service, app_name: str, user_id: str, 
         # wrongly discarded real KPIs whenever a sprint's recomputed numbers
         # happened to coincide with the previous sprint's.
         "sprint_report_kpis": fresh_kpis,
+        # GH issue #566: runtime context-window utilisation KPI for the
+        # team's current sprint, summarized straight from session state
+        # (recorded per LLM call regardless of whether calculate_kpis ran) -
+        # run_eval_analysis.py plots its mean/peak as KPI trends.
+        "context_utilisation": summarize_context_utilisation(
+            session.state.get("context_utilisation"), session.state.get("sprint_number", 0)
+        ),
         # GH issue #342: "human"-category retro/impediment findings
         # (add_retro_action/add_impediment's category param) - not tied to
         # any one story, unlike product_backlog/sprint_backlog's own

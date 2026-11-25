@@ -275,6 +275,12 @@ def _kpi_time_series(manifest: dict) -> dict:
         "Say-Do Ratio": [],
         "Quality (defect escape rate)": [],
         "Test Coverage": [],
+        # GH issue #566: runtime context-window utilisation (% of the role's
+        # model's context window filled by a call's prompt) - recorded per
+        # LLM call by agent.py, summarized per sprint by run_eval.py.
+        "Context Utilisation (mean %)": [],
+        "Context Utilisation (peak %)": [],
+        "Context Utilisation (calls >= high-water)": [],
     }
     prev_accepted_keys = set()
     prev_issue_accepted_keys = set()
@@ -316,6 +322,16 @@ def _kpi_time_series(manifest: dict) -> dict:
         coverage = (kpis.get("maintainability") or {}).get("test_coverage")
         if coverage is not None:
             series["Test Coverage"].append((n, coverage))
+
+        context = sprint.get("context_utilisation") or {}
+        if isinstance(context, dict) and context.get("available"):
+            team = context.get("team") or {}
+            if team.get("mean_percent") is not None:
+                series["Context Utilisation (mean %)"].append((n, float(team["mean_percent"])))
+            if team.get("peak_percent") is not None:
+                series["Context Utilisation (peak %)"].append((n, float(team["peak_percent"])))
+            if team.get("high_water_calls") is not None:
+                series["Context Utilisation (calls >= high-water)"].append((n, int(team["high_water_calls"])))
     return series
 
 
@@ -343,6 +359,12 @@ _KPI_NOTE_LOCATIONS = {
 def _kpi_unavailable_message(manifest: dict, name: str) -> str:
     """Why `name`'s series ended up empty in _kpi_time_series - see
     _KPI_NOTE_LOCATIONS' own comment for the exact distinction this draws."""
+    if name.startswith("Context Utilisation"):
+        return (
+            "No data available for this run - no LLM call reported prompt-token usage "
+            "(usage_metadata.prompt_token_count), or this run predates the context-utilisation "
+            "KPI (GH issue #566)."
+        )
     location = _KPI_NOTE_LOCATIONS.get(name)
     if location:
         parent_key, note_key = location

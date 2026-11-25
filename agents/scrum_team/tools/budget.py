@@ -885,6 +885,20 @@ def _file_retro_items_as_issues(tool_context) -> List[str]:
     return filed_ids
 
 
+def _context_utilisation_report_section(s, detail: str):
+    """GH issue #566: the sprint report's "Context Utilisation" section for
+    the current sprint, read straight from state["context_utilisation"]
+    (recorded per LLM call by agent.py's track_context_utilisation_callback)
+    rather than from sprint_report_kpis - so it's present even in a sprint
+    whose calculate_kpis step never ran. Never raises."""
+    from ..context_utilisation import render_report_section, summarize
+    try:
+        summary = summarize(s.get("context_utilisation"), s.get("sprint_number", 0))
+        return render_report_section(summary, detail)
+    except Exception:
+        return "", []
+
+
 def render_fallback_sprint_report(tool_context=None, reason: str = "budget") -> Dict[str, Any]:
     """
     Mechanically-rendered counterpart to create_sprint_report above - the
@@ -1044,6 +1058,9 @@ def render_fallback_sprint_report(tool_context=None, reason: str = "budget") -> 
             if current_spend is not None:
                 report += f"- Actual USD Spend: ${current_spend:.2f}\n"
                 report += _zero_cost_spend_warning(current_spend, usage.get("total", 0))
+        # GH issue #566: same context-utilisation KPI as create_sprint_report,
+        # rendered at the fallback report's own (fixed) level of detail.
+        report += _context_utilisation_report_section(s, "full")[0]
 
         blocked_stories = []
         seen_ids = set()
@@ -1498,6 +1515,12 @@ def create_sprint_report(summary: str, accomplishments: List[str], tool_context=
             report += f"  - {agent}: {agent_usage}\n"
     else:
         omitted_sections.append("Per-Agent Token Usage")
+
+    # GH issue #566: runtime context-window utilisation KPI - team headline
+    # at every level, per-agent breakdown at "full" only.
+    context_text, context_omitted = _context_utilisation_report_section(s, detail)
+    report += context_text
+    omitted_sections += context_omitted
 
     # Budget recommendation - relevant at every level, including CEO, since
     # it's literally a suggested change to the number a CEO approves.

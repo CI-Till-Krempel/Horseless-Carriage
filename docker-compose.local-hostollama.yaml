@@ -187,6 +187,12 @@ services:
       # GH #407: absolute backstop on the sprint-report-step's own uncapped
       # window - see ritual_hard_ceiling, agents/scrum_team/helpers.py.
       - RITUAL_HARD_CEILING_PERCENT=${RITUAL_HARD_CEILING_PERCENT:-50.0}
+      # GH issue #566: context-utilisation KPI knobs (observability only) -
+      # see .env.example's "Context Utilisation KPI" section. Empty defaults
+      # fall through to the code-side defaults (agents/scrum_team/context_utilisation.py).
+      - CONTEXT_WINDOW_OVERRIDES=${CONTEXT_WINDOW_OVERRIDES:-}
+      - CONTEXT_WINDOW_FALLBACK_TOKENS=${CONTEXT_WINDOW_FALLBACK_TOKENS:-}
+      - CONTEXT_UTILISATION_HIGH_WATER_PERCENT=${CONTEXT_UTILISATION_HIGH_WATER_PERCENT:-}
       # Per-sprint config for agents/scrum_team/scripts/run_eval.py - see
       # .env.example's "Eval Harness Budget Configuration" section. No inline
       # default here (unlike the vars above) - run_eval.py's own

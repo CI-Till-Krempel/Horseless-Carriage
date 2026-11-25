@@ -142,6 +142,23 @@ class TestKpiTimeSeries:
         assert series["Quality (defect escape rate)"] == [(1, 0.05)]
         assert series["Test Coverage"] == [(1, 0.72)]
 
+    def test_context_utilisation_series_from_sprint_summary(self):
+        """GH issue #566: run_eval.py captures each sprint's runtime
+        context-utilisation summary straight from state - plotted as KPI
+        trends; a sprint with no data (or an older manifest) is omitted, not
+        reported as 0."""
+        sprint_1 = dict(_sprint(1), context_utilisation={
+            "available": True,
+            "team": {"mean_percent": 12.5, "peak_percent": 81.0, "high_water_calls": 2},
+        })
+        sprint_2 = dict(_sprint(2), context_utilisation={"available": False, "team": {}})
+        sprint_3 = _sprint(3)  # older manifest: key absent entirely
+        series = _kpi_time_series({"sprints": [sprint_1, sprint_2, sprint_3]})
+
+        assert series["Context Utilisation (mean %)"] == [(1, 12.5)]
+        assert series["Context Utilisation (peak %)"] == [(1, 81.0)]
+        assert series["Context Utilisation (calls >= high-water)"] == [(1, 2)]
+
 
 class TestSprintMetricsTable:
     """GH issue #379: a real run (0.1.0-run47) had the table claim 'Sprint

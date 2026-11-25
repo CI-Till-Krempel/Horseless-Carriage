@@ -148,6 +148,15 @@ removes every human approval gate for that `.env`.
 | `PROCESS_OVERHEAD_PERCENTAGE` | Sizes ScrumMaster's own separate ritual budget (GH #395) | Always |
 | `SPRINT_CLOSEOUT_GRACE_PERCENT` | Extra allowance on top of `SPRINT_TOKEN_BUDGET`/the USD budget | Always — but only spendable by ProductOwner/ScrumOrchestrator, and only after the main budget trips |
 
+Context-utilisation KPI knobs (GH issue #566 - observability only, none of these change any budget
+limit; see [BUDGET.md "Quality KPIs"](BUDGET.md#quality-kpis)):
+
+| Var | Default | Purpose |
+|---|---|---|
+| `CONTEXT_WINDOW_OVERRIDES` | empty | `<model alias>=<tokens>,...` - a role's context window when the LiteLLM proxy/litellm's model map don't know it or overstate it (e.g. an Ollama model's smaller `num_ctx`) |
+| `CONTEXT_WINDOW_FALLBACK_TOKENS` | `128000` | Window assumed when nothing else knows it - flagged as an estimate in reports |
+| `CONTEXT_UTILISATION_HIGH_WATER_PERCENT` | `80` | A call filling at least this much of its window counts as high-water; a role peaking above it is flagged |
+
 `setup_llm.py`'s local-provider flow (`is_local=True`) skips the
 `TOTAL_USD_BUDGET` question entirely rather than asking something that can
 never be enforced — it still writes a harmless default so `.env` stays
