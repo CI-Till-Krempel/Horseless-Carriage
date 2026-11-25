@@ -623,6 +623,16 @@ class TestDoctorBadge:
         assert "<script>alert(1)</script>" not in badge
         assert "&lt;script&gt;" in badge
 
+    def test_carries_a_stable_per_project_fold_key(self):
+        """GH issue #564 / SPEC-ISSUE-0099: the open/closed state of the
+        warnings <details> is restored after the 10s auto-refresh by key,
+        so the badge must carry a key derived from the project, not its
+        row position - and escape it like any other project-supplied text."""
+        badge = dashboard._doctor_badge([{"severity": "warning", "message": "meh"}], fold_key="my-project")
+        assert "data-fold-key='doctor:my-project'" in badge
+        hostile = dashboard._doctor_badge([{"severity": "warning", "message": "meh"}], fold_key="x' onclick='y")
+        assert "x' onclick" not in hostile
+
 
 class TestProductVersion:
     def test_reads_version_file_if_present(self, tmp_path):
@@ -796,6 +806,27 @@ class TestRenderPage:
 
         assert "1 warning(s)" in page
         assert "GIT_USER_NAME is not set" in page
+
+    def test_warnings_fold_state_survives_the_auto_refresh(self, tmp_path):
+        """GH issue #564 / SPEC-ISSUE-0099: the page reloads itself every
+        10s, which re-rendered every <details> closed - an unfolded warnings
+        list snapped shut before it could be read. The page must key each
+        project's warnings <details> by project and ship the script that
+        persists/restores which ones are open across that reload."""
+        hc_path, target_repo = _make_project(tmp_path)
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+        items = [doctor.ActionableItem("warning", "GIT_USER_NAME is not set")]
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]), \
+             patch.object(dashboard.doctor, "check", return_value=doctor.DoctorResult(items=items)):
+            page = dashboard._render_page()
+
+        assert 'http-equiv="refresh"' in page
+        assert "<details data-fold-key='doctor:my-project'>" in page
+        assert dashboard._FOLD_STATE_SCRIPT in page
+        assert "sessionStorage" in dashboard._FOLD_STATE_SCRIPT
+        assert 'addEventListener("toggle"' in dashboard._FOLD_STATE_SCRIPT
 
     def test_renders_a_warning_when_the_running_container_has_drifted_from_the_configured_state_repo(self, tmp_path):
         """The actual bug report: a project's sprint goal/latest message

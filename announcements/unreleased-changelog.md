@@ -13,6 +13,19 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### Dashboard: unfolded doctor warnings no longer snap shut on auto-refresh (SPEC-ISSUE-0099)
+
+GH issue #564: unfolding a project's doctor warnings in `dashboard.py` was pointless - the page
+reloads itself every 10s (`<meta http-equiv="refresh">`), and a full reload renders every
+`<details>` closed again, so the list collapsed before it could be read.
+
+**Confirmed mechanism:** stateless full-page refresh, `<details>` defaulting to closed, and nothing
+remembering which ones the user had opened. Each project's warnings `<details>` now carries a
+`data-fold-key` derived from the project name, and a small inline script persists which ones are
+open in the tab's `sessionStorage` and re-opens them after each refresh. Keyed by project rather
+than row position, so adding/removing a project doesn't open the wrong list. New tests in
+`tests/test_dashboard.py` cover the key and the restore script.
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

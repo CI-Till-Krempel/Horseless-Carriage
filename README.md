@@ -132,6 +132,9 @@ the background beyond the dashboard's own lightweight polling (GH issue #310). E
 submodule — stopping the stack first, rebuilding images if the update actually needs it, and
 restarting again — see `update_hc.py` below.
 
+The page auto-refreshes every 10s; a doctor warnings list you unfold stays open across those
+refreshes for as long as that browser tab is open (GH issue #564).
+
 ## Documentation
 
 | Topic | What's there |
