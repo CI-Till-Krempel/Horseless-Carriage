@@ -135,6 +135,16 @@ Items" punch list in a single pass, rather than making you fix-one/rerun/discove
   it's actually ready; if you still can't connect, check `docker compose logs litellm` for a real
   startup failure instead.
 
+- **Dashboard shows an old Horseless Carriage version after updating** — before GH #569
+  (SPEC-ISSUE-0104), the HC Version column showed what the agent container last recorded into
+  `.hc/state.json`. That came from the `VERSION` file baked into the agent image at build time, and
+  `update_hc.py` doesn't rebuild images for a plain version bump. The column now reads the
+  checkout's own `VERSION` on every refresh. A `state last saved by vX` note under it means the
+  project's state was last written by an older version, and it clears once an agent session on the
+  new version saves state. If you updated by hand with `git pull` instead of the dashboard/
+  `update_hc.py`, restart the stack once (Stop, then Start) so the agent container picks up the new
+  `./VERSION` bind mount.
+
 ## 3. Budget / cost problems
 
 - **Sprint stops mid-work with a budget message** — this is a deliberate guardrail, not a bug: the

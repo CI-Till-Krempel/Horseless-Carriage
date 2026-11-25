@@ -13,6 +13,27 @@ start a fresh, empty `unreleased-changelog.md` for whatever comes after.
 
 ---
 
+### Dashboard's HC Version column kept showing the old version after an update (SPEC-ISSUE-0104, GH #569)
+
+After updating Horseless Carriage (the dashboard's Update link or `update_hc.py`), the
+dashboard's **HC Version** column still showed the previous version, next to the *new* commit
+hash (e.g. `0.2.0 (abc1234)`).
+
+**Confirmed mechanism:** the column never read the installed checkout. It showed `hc_version`
+from the target repo's `.hc/state.json`, which the agent container writes on session init using
+`/app/VERSION`. That file is the copy baked into the image at build time
+(`agent.Dockerfile` `COPY VERSION .`). Unlike `./agents`, it wasn't bind-mounted, and
+`update_hc.py` deliberately doesn't rebuild images for a VERSION/source-only bump. So the agent
+kept recording the version from the last image build, even across new sessions. The commit hash
+next to it is read host-side on every render, which made the stale version look like a wrong
+version.
+
+The dashboard now reads `<hc_path>/VERSION` fresh on every render. If `state.json` was last
+saved by a different version, it flags that with `state last saved by vX`. All three compose
+files now bind-mount `./VERSION:/app/VERSION:ro` into the `agent` service, so the recorded
+version is correct from the next session on. The update that brings in this fix changes the
+compose files, so `update_hc.py` rebuilds and recreates the agent container on its own.
+
 ### ADK web UI never came up after the google-adk 2.15.0 bump - blocked on a telemetry prompt (SPEC-ISSUE-0095)
 
 After Dependabot's `google-adk` `2.4.0` -> `2.15.0` bump (#549), every installation's agent

@@ -118,6 +118,18 @@ def _product_version(target_repo: Path) -> str:
     return "unknown"
 
 
+def _installed_hc_version(hc_path: Path):
+    """The Horseless Carriage checkout's own VERSION file, read fresh from
+    the host on every call (GH issue #569) - None if absent/unreadable.
+    Deliberately never cached: update_hc.py changes it underneath a running
+    dashboard."""
+    try:
+        text = (hc_path / "VERSION").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text or None
+
+
 def _git_short_commit(repo_path: Path) -> str:
     """Short HEAD commit hash of the git checkout at repo_path - used for
     both hc_commit (hc_path, this project's HC checkout - distinct from
@@ -369,7 +381,16 @@ def project_snapshot(entry: dict) -> dict:
     # Distinct from product_version above (the TARGET repo's own version) -
     # this is which version of the tooling itself actually produced this
     # sprint's data, independent of which product it's driving.
-    hc_version = state_data.get("hc_version") or "unknown"
+    hc_recorded_version = state_data.get("hc_version") or None
+    # GH issue #569 / SPEC-ISSUE-0104: state.json's hc_version only changes
+    # when a live agent session next initializes and persists state - and
+    # (before ./VERSION was bind-mounted into the agent container) it was
+    # read from the image's build-time VERSION copy, which update_hc.py
+    # never rebuilt for a VERSION-only bump. Showing it alone made an update
+    # look like it never happened. Read the installed checkout's own VERSION
+    # fresh on every render instead (host-side, same as hc_commit below),
+    # and keep the recorded value only to flag a mismatch.
+    hc_version = _installed_hc_version(hc_path) or hc_recorded_version or "unknown"
     # GH issue: the dashboard showed hc_version alone (e.g. "1.0.0"), which
     # doesn't pin down *which* commit at that version actually produced a
     # given sprint's data between releases - hc_commit is this project's HC
@@ -403,6 +424,7 @@ def project_snapshot(entry: dict) -> dict:
         "product_version": product_version,
         "product_commit": product_commit,
         "hc_version": hc_version,
+        "hc_recorded_version": hc_recorded_version,
         "hc_commit": hc_commit,
         "litellm_port": litellm_port,
         "agent_web_port": agent_web_port,
@@ -619,6 +641,15 @@ def _render_page(message: str = "") -> str:
         hc_version_html = e(snap["hc_version"])
         if snap.get("hc_commit"):
             hc_version_html += f" ({e(snap['hc_commit'])})"
+        recorded = snap.get("hc_recorded_version")
+        if recorded and snap["hc_version"] != "unknown" and recorded != snap["hc_version"]:
+            # GH issue #569: installed checkout and state.json disagree - the
+            # project's data was last written by an older (or newer) HC.
+            hc_version_html += (
+                f"<br><small title='state.json records the HC version of the last agent session "
+                f"that saved state; it catches up once a session on the installed version saves "
+                f"state again'>state last saved by v{e(recorded)}</small>"
+            )
         rows.append(
             "<tr>"
             f"<td>{e(snap['name'])}</td>"

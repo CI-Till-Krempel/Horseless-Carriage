@@ -112,6 +112,14 @@ services:
       - ./agents:/app/agents:ro
       - ./spec-templates:/app/spec-templates:ro
       - ./eval:/app/eval:ro
+      # GH issue #569 / SPEC-ISSUE-0104: VERSION is also COPY'd into the
+      # image (agent.Dockerfile), but update_hc.py deliberately doesn't
+      # rebuild for a VERSION-only bump - without this mount the running
+      # agent kept recording the *build-time* VERSION into state.json's
+      # hc_version forever, so the dashboard's HC Version column never moved
+      # after an update. Bind-mounted read-only like agents/ above so
+      # tools/base.py's _hc_version() always reads the checkout's current one.
+      - ./VERSION:/app/VERSION:ro
       # US-0021: Development Workbench templates (tools/workbench_templates.py
       # resolves these via _project_root()/config/development-workbench-
       # templates - i.e. THIS repo, read at propose_framework_change time by

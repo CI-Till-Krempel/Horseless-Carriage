@@ -418,6 +418,28 @@ class TestProjectSnapshot:
         assert snap["product_commit"] == "e83912ed"
         mock_release.assert_called_once_with("example", "example", "tok123")
 
+    def test_hc_version_reflects_the_installed_checkout_not_a_stale_state_json(self, tmp_path):
+        """GH issue #569 / SPEC-ISSUE-0104: after update_hc.py moves the
+        checkout to a newer release, state.json still carries the hc_version
+        the last agent session recorded - the dashboard must show the
+        installed VERSION (read fresh from hc_path) and keep the stale
+        recorded value only for flagging the mismatch."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / "VERSION").write_text("0.3.0\n")
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({"hc_version": "0.2.0"}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            snap = dashboard.project_snapshot(entry)
+            assert snap["hc_version"] == "0.3.0"
+            assert snap["hc_recorded_version"] == "0.2.0"
+
+            # An update underneath a running dashboard is picked up on the
+            # very next render - nothing is cached across renders.
+            (hc_path / "VERSION").write_text("0.4.0\n")
+            assert dashboard.project_snapshot(entry)["hc_version"] == "0.4.0"
+
     def test_hc_version_defaults_to_unknown_when_absent(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)
         entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
@@ -727,6 +749,36 @@ class TestRenderPage:
             page = dashboard._render_page()
 
         assert f"1.0.0 ({commit})" in page
+
+    def test_flags_when_state_json_was_last_saved_by_a_different_hc_version(self, tmp_path):
+        """GH issue #569: the installed version is the headline, and a
+        state.json written by an older HC is flagged rather than silently
+        shown as if it were current."""
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / "VERSION").write_text("0.3.0\n")
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({"hc_version": "0.2.0"}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "<td>0.3.0" in page
+        assert "state last saved by v0.2.0" in page
+
+    def test_no_version_mismatch_flag_when_state_json_matches_the_installed_version(self, tmp_path):
+        hc_path, target_repo = _make_project(tmp_path)
+        (hc_path / "VERSION").write_text("0.3.0\n")
+        (target_repo / ".hc").mkdir()
+        (target_repo / ".hc" / "state.json").write_text(json.dumps({"hc_version": "0.3.0"}))
+        entry = {"name": "my-project", "hc_path": str(hc_path), "target_repo": str(target_repo)}
+
+        with patch.object(project_registry, "load", return_value=[entry]), \
+             patch.object(dashboard.lib_docker, "compose_running_services", return_value=[]):
+            page = dashboard._render_page()
+
+        assert "state last saved by" not in page
 
     def test_renders_a_github_prs_link_when_configured(self, tmp_path):
         hc_path, target_repo = _make_project(tmp_path)
