@@ -53,14 +53,24 @@ def images_to_rebuild(compose_args: list) -> list:
     return services
 
 
-def rebuild(compose_args: list, no_cache: bool = False) -> int:
+def rebuild(compose_args: list, no_cache: bool = False, capture: bool = False) -> int:
     """Rebuilds this repo's own images for the given compose_args (see
     images_to_rebuild) and returns the process exit code. The shared logic
     behind both this script's own CLI (main(), below) and run.py's
     developer mode, which calls this directly - a plain `import run` at
     module level here would create a circular import with run.py importing
     this module, so compose_args is taken as a parameter instead of this
-    module computing it itself via run.compose_file_args()."""
+    module computing it itself via run.compose_file_args().
+
+    capture=True (GH issue #568, SPEC-ISSUE-0103): pipe `docker compose
+    build`'s combined stdout/stderr and re-emit it through print() (plus a
+    trailing `[exit code N]` line) instead of letting the child inherit the
+    process's real stdout fd. update_hc.run_update passes this so that, when
+    it runs from dashboard.py's Update button, the build output lands in that
+    project's dashboard action log (dashboard.py redirects sys.stdout for the
+    duration of an action) rather than only on whatever terminal happens to
+    be running the dashboard server. The default (False) keeps the
+    interactive CLI's live TTY progress output unchanged."""
     services = images_to_rebuild(compose_args)
     print(f"--- Rebuilding: {' + '.join(services)} ---")
 
@@ -69,7 +79,15 @@ def rebuild(compose_args: list, no_cache: bool = False) -> int:
         cmd.append("--no-cache")
     cmd.extend(services)
 
-    result = subprocess.run(cmd)
+    if not capture:
+        result = subprocess.run(cmd)
+        return result.returncode
+
+    print(f"$ {' '.join(cmd)}")
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    print(f"[exit code {result.returncode}]")
     return result.returncode
 
 

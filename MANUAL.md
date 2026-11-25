@@ -295,6 +295,11 @@ dashboard.py` now has an **Update** link per project — **(latest release)** or
    touching one you've already set, so your API keys/config are untouched).
 4. Restarts the stack again, if it was running before step 1.
 
+The page only shows a short summary of what happened. Click **Full output of this action** under it
+(or the row's **Logs** link at any time) to see every command the update ran, with its output and
+exit code, plus the agent container's most recent log lines. That output is also appended to
+`~/.horseless-carriage/dashboard-logs/<project>-<hash>.log`, so it survives a dashboard restart.
+
 The same thing is available from the command line, run from inside the submodule
 itself:
 

@@ -229,6 +229,37 @@ class TestRunUpdate:
         assert "NEW_FEATURE_FLAG" in message
         assert "NEW_FEATURE_FLAG=false" in (hc_path / ".env").read_text()
 
+    def test_fetch_and_checkout_output_is_printed_for_the_action_log(self, tmp_path, capsys):
+        """GH issue #568 / SPEC-ISSUE-0103: a successful update's own git
+        output used to be captured and dropped - dashboard.run_logged_action
+        can only record what reaches print()."""
+        origin = _init_origin(tmp_path)
+        hc_path = _clone(origin, tmp_path / "clone")
+        (origin / "VERSION").write_text("0.2.0\n")
+        _git(origin, "commit", "-q", "-am", "v0.2.0")
+
+        update_hc.run_update(hc_path, channel="main")
+
+        out = capsys.readouterr().out
+        assert "$ git fetch origin --tags --prune" in out
+        assert "$ git checkout -B main origin/main" in out
+        assert out.count("[exit code 0]") >= 2
+
+    def test_rebuild_is_requested_in_capture_mode(self, tmp_path, monkeypatch):
+        """The image rebuild must route its output through print() (not the
+        inherited stdout fd) so the dashboard's action log records it."""
+        origin = _init_origin(tmp_path)
+        hc_path = _clone(origin, tmp_path / "clone")
+        (origin / "requirements.txt").write_text("some-new-dependency==1.0\n")
+        _git(origin, "add", "-A")
+        _git(origin, "commit", "-q", "-m", "bump a dependency")
+        seen_kwargs = []
+        monkeypatch.setattr(update_hc.rebuild_images, "rebuild", lambda *a, **k: seen_kwargs.append(k) or 0)
+
+        update_hc.run_update(hc_path, channel="main")
+
+        assert seen_kwargs and seen_kwargs[0].get("capture") is True
+
     def test_doctor_errors_are_surfaced_not_swallowed(self, tmp_path, monkeypatch):
         hc_path = _clone(_init_origin(tmp_path), tmp_path / "clone")
         monkeypatch.setattr(

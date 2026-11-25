@@ -67,6 +67,34 @@ def _git(hc_path: Path, *args: str, timeout: int = _GIT_TIMEOUT_SECS) -> subproc
     )
 
 
+def print_command_result(cmd: list, result: subprocess.CompletedProcess) -> None:
+    """Echo a finished, output-captured command (`$ cmd`, its stdout/stderr,
+    `[exit code N]`) through print() - GH issue #568, SPEC-ISSUE-0103.
+    Every command the dashboard's Start/Stop/Update buttons run used
+    capture_output=True and then only ever looked at the output on failure
+    (and even then only as a one-shot redirect message), so a successful
+    `git fetch`/`git checkout`/`docker compose up` left no trace anywhere.
+    dashboard.py redirects sys.stdout into that project's action log for the
+    duration of a button-triggered action, so printing here is what gets it
+    recorded; the rebuild_images.rebuild(capture=True) path uses the same
+    `[exit code N]` line format."""
+    print(f"$ {' '.join(str(c) for c in cmd)}")
+    for stream in (result.stdout, result.stderr):
+        if stream:
+            print(stream, end="" if stream.endswith("\n") else "\n")
+    print(f"[exit code {result.returncode}]")
+
+
+def _git_logged(hc_path: Path, *args: str) -> subprocess.CompletedProcess:
+    """_git, plus print_command_result - for the state-changing calls
+    (fetch, checkout) a user actually needs to see in an update's log;
+    read-only plumbing (rev-parse, status, tag --list, diff --name-only)
+    stays quiet."""
+    result = _git(hc_path, *args)
+    print_command_result(["git", *args], result)
+    return result
+
+
 def _is_git_checkout(hc_path: Path) -> bool:
     return (hc_path / ".git").exists()
 
@@ -132,7 +160,7 @@ def _checkout(hc_path: Path, channel: str, ref: str, force: bool) -> subprocess.
         cmd += ["-B", "main", ref]
     else:
         cmd += ["--detach", ref]
-    return _git(hc_path, *cmd)
+    return _git_logged(hc_path, *cmd)
 
 
 def _changed_files(hc_path: Path, old_sha: str, new_sha: str) -> list:
@@ -220,7 +248,7 @@ def run_update(hc_path: Path, channel: str = "release", force: bool = False) -> 
         )
         return "\n".join(lines)
 
-    fetch = _git(hc_path, "fetch", "origin", "--tags", "--prune")
+    fetch = _git_logged(hc_path, "fetch", "origin", "--tags", "--prune")
     if fetch.returncode != 0:
         lines.append(f"git fetch failed:\n{fetch.stdout}\n{fetch.stderr}")
         return "\n".join(lines)
@@ -257,8 +285,15 @@ def run_update(hc_path: Path, channel: str = "release", force: bool = False) -> 
         if needs_rebuild(changed):
             lines.append("Dockerfile/requirements/compose changed since the last build - rebuilding images...")
             new_compose_args = _compose_args(hc_path)
-            rc = rebuild_images.rebuild(new_compose_args, no_cache=False)
-            lines.append("Image rebuild complete." if rc == 0 else f"Image rebuild failed (exit {rc}) - see output above.")
+            # capture=True (GH issue #568): route the build's own output
+            # through print() so dashboard.py's per-project action log
+            # actually records it instead of it going only to the
+            # dashboard server's terminal.
+            rc = rebuild_images.rebuild(new_compose_args, no_cache=False, capture=True)
+            lines.append(
+                "Image rebuild complete." if rc == 0
+                else f"Image rebuild failed (exit {rc}) - see the build output above / in this action's log."
+            )
 
     # dashboard.py's own _doctor_items helper redirects this same output away
     # for the same reason - check() prints a full human-readable report to
